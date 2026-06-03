@@ -242,9 +242,11 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 // ---------------------------------------------------------------------------
 
 // get_cycles reads each stand's balance from the management canister, so it is
-// an update call (not a query) even though it only reports state.
+// an update call (not a query) even though it only reports state. It requires
+// no special caller, so we call it anonymously — the solvency snapshot is
+// public (only top-up / reconcile / policy changes need authentication).
 export async function getCycles(): Promise<CyclesReport> {
-  return _parseQuery<CyclesReport>(await _actor(true).get_cycles());
+  return _parseQuery<CyclesReport>(await _actor().get_cycles());
 }
 
 export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {
