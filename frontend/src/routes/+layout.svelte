@@ -26,11 +26,13 @@
     <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
       <div class="flex items-center gap-6 min-w-0">
         <a href="/" class="flex items-center gap-2.5 group shrink-0">
-          <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background: var(--gradient-institutional);">
-            <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V18m0 0a3 3 0 11-6 0 3 3 0 016 0zm12-3v6m0 0a3 3 0 11-6 0 3 3 0 016 0zM9 9l12-3" />
-            </svg>
-          </div>
+          <img
+            src="/logo.png"
+            alt="Casals"
+            class="w-8 h-8 object-contain"
+            width="32"
+            height="32"
+          />
           <span class="text-lg font-semibold text-primary-900 group-hover:text-primary-700 transition-colors">
             Casals
           </span>

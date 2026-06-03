@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Casals logo" width="160" />
+</p>
+
 # Casals
 
 **An orchestrator for the full lifecycle of a project's canisters on the Internet Computer.**
@@ -233,6 +237,12 @@ governance**, built on proven IC primitives (chunk store, snapshots).
 
 ---
 
+## About the name
+
+*Named in honor of [Pablo Casals](https://en.wikipedia.org/wiki/Pablo_Casals) — the cellist and conductor whose life was devoted to music and to leading orchestras. This project coordinates canisters the way a conductor coordinates an orchestra.*
+
+---
+
 ## License
 
-TBD.
+[MIT](LICENSE)
