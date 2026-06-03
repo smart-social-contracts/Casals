@@ -44,19 +44,44 @@ def _candid_text_arg(json_str: str) -> str:
     return f'("{escaped}")'
 
 
+_CANDID_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\", "'": "'"}
+
+
+def _candid_unescape(s: str) -> str:
+    out = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s) and s[i + 1] in _CANDID_ESCAPES:
+            out.append(_CANDID_ESCAPES[s[i + 1]])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _parse(output: str):
-    """Parse icp/Candid text output `("<json>")` into a Python object."""
-    text = output.strip()
-    if text.startswith('("') and text.endswith('")'):
-        inner = (
-            text[2:-2]
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
+    """Parse icp/Candid text output into a Python object.
+
+    icp-cli prints a text return as a Candid literal, e.g. `("...")` or, for
+    long values, spread across multiple lines:
+        (
+          "...escaped json..."
         )
-        return json.loads(inner)
+    Extract the outer quoted string, undo Candid escaping, then JSON-decode.
+    """
+    text = output.strip()
+    first = text.find('"')
+    last = text.rfind('"')
+    if first != -1 and last > first:
+        inner = _candid_unescape(text[first + 1:last])
+        try:
+            return json.loads(inner)
+        except Exception:
+            return inner
     try:
-        return json.loads(text.strip("()").strip('"'))
+        return json.loads(text.strip("()").strip())
     except Exception:
         return text
 
@@ -64,12 +89,13 @@ def _parse(output: str):
 def call_canister(method: str, args: str = None):
     """Call a casals_backend method; icp-cli auto-detects query vs update.
 
-    `args` is the inner JSON string for endpoints that take one; omit for
-    no-arg endpoints. Returns the parsed JSON response.
+    `args` is the inner JSON string for endpoints that take one. No-arg
+    endpoints are still called with an explicit empty Candid tuple `()` —
+    icp-cli cannot always fetch the candid type from a prebuilt wasm to infer
+    the argument shape, so we never let it guess. Returns the parsed response.
     """
     cmd = ["canister", "call", CANISTER_NAME, method]
-    if args is not None:
-        cmd.append(_candid_text_arg(args))
+    cmd.append(_candid_text_arg(args) if args is not None else "()")
     return _parse(_icp(cmd).stdout)
 
 
