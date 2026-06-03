@@ -1,0 +1,11 @@
+.dfx/
+.basilisk/
+node_modules/
+dist/
+.svelte-kit/
+build/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+canister_ids.json
+.env

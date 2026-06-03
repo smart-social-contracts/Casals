@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v0.1.0/docs/schemas/icp-yaml-schema.json
+#
+# Casals is deployed with icp-cli (dfx is not used).
+# The Basilisk backend WASM is built out-of-band (see `make build`) and
+# installed via the prebuilt recipe; the SvelteKit frontend is built by the
+# asset-canister recipe at deploy time.
+
+canisters:
+  - name: casals_backend
+    recipe:
+      type: "@dfinity/prebuilt@v2.0.0"
+      configuration:
+        path: .basilisk/casals_backend/casals_backend.wasm
+        shrink: true
+        compress: true
+
+  - name: casals_frontend
+    recipe:
+      type: "@dfinity/asset-canister@v2.1.0"
+      configuration:
+        dir: frontend/dist
+        build:
+          - npm --prefix frontend ci
+          - npm --prefix frontend run build

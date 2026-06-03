@@ -1,0 +1,49 @@
+# Manually-triggered integration test: spins up a local replica with icp-cli,
+# builds + deploys the Casals backend, and runs the integration suite.
+#
+# Trigger from the GitHub UI (Actions ▸ Integration ▸ Run workflow) or via:
+#   gh workflow run integration.yml
+name: Integration (local replica)
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "pytest -v"
+        type: boolean
+        default: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install icp-cli + ic-wasm
+        run: npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+
+      - name: Install backend / test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Show toolchain versions
+        run: |
+          icp --version || true
+          python3 -m basilisk --version || true
+
+      # conftest.py starts the local replica, builds the Basilisk WASM, and
+      # deploys casals_backend; it stops the replica on teardown.
+      - name: Run integration tests
+        run: pytest tests/test_integration.py ${{ inputs.verbose && '-v' || '' }}
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop || true
