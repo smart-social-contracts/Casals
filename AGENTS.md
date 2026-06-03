@@ -42,6 +42,7 @@ git submodule update --init
 |-------------------|---------------------------------|-----|
 | casals_backend    | `ip2wh-iyaaa-aaaao-bbaoq-cai`  | [Candid UI](https://a4gq6-oaaaa-aaaab-qaa4q-cai.icp0.io/?id=ip2wh-iyaaa-aaaao-bbaoq-cai) |
 | casals_frontend   | `igz53-6qaaa-aaaao-bbapa-cai`  | https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io/ |
+| ic_file_registry  | `iby3p-tiaaa-aaaao-bbapq-cai`  | https://iby3p-tiaaa-aaaao-bbapq-cai.icp0.io/ |
 
 Deploy identity principal: `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2wn-uhjcc-xqe`
 
