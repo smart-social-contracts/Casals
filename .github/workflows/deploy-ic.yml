@@ -1,0 +1,90 @@
+# Manually-triggered deploy of the Casals instance to the IC mainnet.
+#
+# Trigger from the GitHub UI (Actions ▸ Deploy to IC mainnet ▸ Run workflow)
+# or via: gh workflow run deploy-ic.yml -f commit_sha=<sha> -f mode=upgrade
+#
+# Requirements:
+#   - Repo secret CASALS_IDENTITY_PEM: the PEM of the `casals` deploy identity
+#     (principal kem77-…-xqe). The identity must hold cycles on mainnet.
+#   - .icp/data (committed) holds the mainnet canister-ID mappings so each run
+#     targets the SAME canisters instead of creating new ones.
+name: Deploy to IC mainnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA to deploy (blank = latest main)"
+        type: string
+        required: false
+        default: ""
+      mode:
+        description: "Install mode (reinstall WIPES backend state)"
+        type: choice
+        options:
+          - upgrade
+          - reinstall
+        default: upgrade
+
+# Never run two mainnet deploys at once.
+concurrency:
+  group: deploy-ic
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve ref to deploy
+        id: ref
+        run: |
+          REF="${{ inputs.commit_sha }}"
+          if [ -z "$REF" ]; then REF="main"; fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Deploying ref: $REF (mode: ${{ inputs.mode }})"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli + ic-wasm
+        run: npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import deploy identity
+        env:
+          CASALS_IDENTITY_PEM: ${{ secrets.CASALS_IDENTITY_PEM }}
+        run: |
+          if [ -z "$CASALS_IDENTITY_PEM" ]; then
+            echo "::error::CASALS_IDENTITY_PEM secret is not set"; exit 1
+          fi
+          umask 077
+          printf '%s' "$CASALS_IDENTITY_PEM" > /tmp/casals_identity.pem
+          icp identity import casals --from-pem /tmp/casals_identity.pem --storage plaintext
+          echo "Deploy principal: $(icp identity principal --identity casals)"
+          echo "Cycles balance:   $(icp cycles balance --identity casals -e ic || true)"
+
+      - name: Build backend WASM
+        run: make build
+
+      - name: Deploy to IC mainnet
+        run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} -y
+
+      - name: Report deployed canisters
+        if: always()
+        run: icp canister list -e ic --identity casals || true
+
+      - name: Remove identity material
+        if: always()
+        run: rm -f /tmp/casals_identity.pem
