@@ -11,10 +11,12 @@ Run with:
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 
 import pytest
@@ -170,6 +172,42 @@ def registry_store(fr_id: str, namespace: str, path: str, data: bytes) -> str:
     return res["sha256"]
 
 
+def _registry_call_with_file(fr_id: str, method: str, json_arg: str):
+    """Call a file-registry method with a large candid arg via --args-file (the
+    OS argv limit forbids passing multi-hundred-KB args inline)."""
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".candid", delete=False, encoding="utf-8")
+    tmp.write(_candid_text_arg(json_arg))
+    tmp.close()
+    try:
+        return _parse(_icp([
+            "canister", "call", fr_id, method,
+            "--args-file", tmp.name, "--args-format", "candid", "-n", "local",
+        ]).stdout)
+    finally:
+        os.unlink(tmp.name)
+
+
+def registry_store_chunked(fr_id: str, namespace: str, path: str, data: bytes,
+                           chunk: int = 1024 * 1024) -> str:
+    """Chunk-upload bytes into the file-registry (for artifacts too big to pass
+    inline); return the locally computed sha256."""
+    total = (len(data) + chunk - 1) // chunk
+    for i in range(total):
+        part = data[i * chunk:(i + 1) * chunk]
+        res = _registry_call_with_file(fr_id, "store_file_chunk", json.dumps({
+            "namespace": namespace, "path": path, "chunk_index": i,
+            "total_chunks": total, "data_b64": base64.b64encode(part).decode("ascii"),
+            "content_type": "application/octet-stream",
+        }))
+        assert isinstance(res, dict) and res.get("ok"), res
+    digest = hashlib.sha256(data).hexdigest()
+    res = _registry_call_with_file(fr_id, "finalize_chunked_file", json.dumps({
+        "namespace": namespace, "path": path, "sha256": digest,
+    }))
+    assert isinstance(res, dict) and res.get("ok"), res
+    return digest
+
+
 def canister_module_hash(canister_id: str) -> str:
     """Return the installed module hash (hex) per the management canister, or ''.
 
@@ -195,6 +233,9 @@ class RegistryEnv:
 
     def store(self, namespace, path, data):
         return registry_store(self.id, namespace, path, data)
+
+    def store_chunked(self, namespace, path, data):
+        return registry_store_chunked(self.id, namespace, path, data)
 
 
 def _resolve_file_registry_wasm() -> str:

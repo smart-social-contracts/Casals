@@ -26,7 +26,11 @@ on:
           - reinstall
         default: upgrade
       seed:
-        description: "Seed the catalog (templates + demo section/desk) after deploy"
+        description: "Seed the template catalog (upload + authorize WASMs) after deploy"
+        type: boolean
+        default: false
+      deploy_sheet:
+        description: "Also deploy the live sheet (stand up the orchestra; creates/reuses canisters)"
         type: boolean
         default: false
 
@@ -87,9 +91,11 @@ jobs:
       - name: Deploy to IC mainnet
         run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} -y
 
-      - name: Seed catalog (templates + demo section/desk)
-        if: ${{ inputs.seed }}
-        run: python3 scripts/seed.py -e ic --identity casals
+      - name: Seed catalog (upload + authorize template WASMs)
+        if: ${{ inputs.seed || inputs.deploy_sheet }}
+        run: |
+          python3 scripts/seed.py -e ic --identity casals \
+            ${{ inputs.deploy_sheet && '--deploy' || '' }}
 
       - name: Report deployed canisters
         if: always()

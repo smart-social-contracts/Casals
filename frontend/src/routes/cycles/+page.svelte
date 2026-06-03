@@ -2,26 +2,43 @@
   import { onMount } from 'svelte';
   import {
     getCycles,
+    getCycleHistory,
     topUp,
     reconcile,
     formatCycles,
     cycleStatusBadge,
     shortPrincipal,
   } from '$lib/api';
-  import type { CyclesReport, StandCycles } from '$lib/api';
+  import type { CyclesReport, StandCycles, CycleHistory } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import LineChart from '$lib/components/LineChart.svelte';
+  import Treemap from '$lib/components/Treemap.svelte';
+  import { colorAt, type Series, type TreemapInput } from '$lib/charts';
 
   let report = $state<CyclesReport | null>(null);
+  let history = $state<CycleHistory | null>(null);
   let loading = $state(true);
   let error = $state('');
   let busy = $state('');
+
+  // ── chart controls ──
+  type Scope = 'total' | 'section' | 'desk' | 'canister';
+  type WindowKey = '1h' | '1d' | '1w' | '1month';
+  type Metric = 'burn' | 'balance';
+  const WINDOWS: Record<WindowKey, number> = { '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000 };
+  const WINDOW_LABELS: Record<WindowKey, string> = { '1h': '1 hour', '1d': '1 day', '1w': '1 week', '1month': '1 month' };
+  let scope = $state<Scope>('total');
+  let windowKey = $state<WindowKey>('1d');
+  let metric = $state<Metric>('burn');
 
   async function load() {
     loading = true;
     error = '';
     try {
-      report = await getCycles();
+      const [r, h] = await Promise.all([getCycles(), getCycleHistory()]);
+      report = r;
+      history = h;
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -30,6 +47,85 @@
   }
 
   onMount(load);
+
+  const now = $derived(history?.now ?? Math.floor(Date.now() / 1000));
+  const winSecs = $derived(WINDOWS[windowKey]);
+  const since = $derived(now - winSecs);
+  const samples = $derived(history?.samples ?? []);
+  const windowSamples = $derived(samples.filter((s) => s.ts >= since));
+
+  // Over-time series for the selected scope (sum by ts for aggregated scopes).
+  const lineSeries = $derived.by<Series[]>(() => {
+    const ss = windowSamples;
+    if (!ss.length) return [];
+    if (scope === 'canister') {
+      const byCan = new Map<string, { name: string; points: { t: number; v: number }[] }>();
+      for (const s of ss) {
+        let e = byCan.get(s.canister_id);
+        if (!e) { e = { name: s.stand || s.canister_id, points: [] }; byCan.set(s.canister_id, e); }
+        e.points.push({ t: s.ts, v: s.cycles });
+      }
+      return [...byCan.values()].map((e, i) => ({ name: e.name, color: colorAt(i), points: e.points }));
+    }
+    if (scope === 'total') {
+      const byTs = new Map<number, number>();
+      for (const s of ss) byTs.set(s.ts, (byTs.get(s.ts) ?? 0) + s.cycles);
+      return [{ name: 'Total', color: colorAt(0), points: [...byTs.entries()].map(([t, v]) => ({ t, v })) }];
+    }
+    const keyOf = scope === 'section' ? (s: typeof ss[number]) => s.section : (s: typeof ss[number]) => s.desk;
+    const byKey = new Map<string, Map<number, number>>();
+    for (const s of ss) {
+      const k = keyOf(s) || '(none)';
+      let m = byKey.get(k);
+      if (!m) { m = new Map(); byKey.set(k, m); }
+      m.set(s.ts, (m.get(s.ts) ?? 0) + s.cycles);
+    }
+    return [...byKey.entries()].map(([k, m], i) => ({
+      name: k,
+      color: colorAt(i),
+      points: [...m.entries()].map(([t, v]) => ({ t, v })),
+    }));
+  });
+
+  // Section ⊃ desk ⊃ canister tree sized by balance (latest) or burn (window).
+  const treemapRoot = $derived.by<TreemapInput>(() => {
+    const byCan = new Map<string, { section: string; desk: string; stand: string; canister_id: string; pts: typeof samples }>();
+    for (const s of samples) {
+      let e = byCan.get(s.canister_id);
+      if (!e) { e = { section: s.section, desk: s.desk, stand: s.stand, canister_id: s.canister_id, pts: [] }; byCan.set(s.canister_id, e); }
+      e.pts.push(s);
+      e.section = s.section; e.desk = s.desk; e.stand = s.stand;
+    }
+    const sections = new Map<string, Map<string, TreemapInput[]>>();
+    for (const e of byCan.values()) {
+      e.pts.sort((a, b) => a.ts - b.ts);
+      const end = e.pts[e.pts.length - 1];
+      let value: number;
+      if (metric === 'balance') {
+        value = end.cycles;
+      } else {
+        const start = [...e.pts].reverse().find((s) => s.ts <= since) ?? e.pts[0];
+        value = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
+      }
+      const secName = e.section || '(none)';
+      const deskName = e.desk || '(none)';
+      if (!sections.has(secName)) sections.set(secName, new Map());
+      const desks = sections.get(secName)!;
+      if (!desks.has(deskName)) desks.set(deskName, []);
+      desks.get(deskName)!.push({ name: e.stand || e.canister_id, value, section: secName, desk: deskName, canister_id: e.canister_id });
+    }
+    const children: TreemapInput[] = [];
+    for (const [secName, desks] of sections) {
+      const deskNodes: TreemapInput[] = [];
+      for (const [deskName, cans] of desks) {
+        deskNodes.push({ name: deskName, section: secName, desk: deskName, value: cans.reduce((a, c) => a + c.value, 0), children: cans });
+      }
+      children.push({ name: secName, section: secName, value: deskNodes.reduce((a, d) => a + d.value, 0), children: deskNodes });
+    }
+    return { name: 'root', value: 0, children };
+  });
+
+  const hasHistory = $derived(samples.length > 0);
 
   async function runReconcile() {
     busy = 'reconcile';
@@ -132,6 +228,62 @@
           {report.totals.low + report.totals.critical} low · {report.totals.frozen} frozen · {report.totals.error} err
         </p>
       </div>
+    </div>
+
+    <!-- Window selector (shared by both charts) -->
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs text-primary-500">Window</span>
+      <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+        {#each Object.keys(WINDOWS) as w (w)}
+          <button
+            class="px-3 py-1.5 text-xs font-medium {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+            onclick={() => (windowKey = w as WindowKey)}
+          >{w}</button>
+        {/each}
+      </div>
+      {#if !hasHistory}
+        <span class="text-xs text-primary-400">· History fills in as the sampler runs (hourly) or after a reconcile.</span>
+      {/if}
+    </div>
+
+    <!-- Cycles over time -->
+    <div class="card p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
+          <p class="text-xs text-primary-400">Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scope}.</p>
+        </div>
+        <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
+          {#each [['total', 'Total'], ['section', 'Section'], ['desk', 'Desk'], ['canister', 'Canister']] as opt (opt[0])}
+            <button
+              class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+              onclick={() => (scope = opt[0] as Scope)}
+            >{opt[1]}</button>
+          {/each}
+        </div>
+      </div>
+      <LineChart series={lineSeries} format={formatCycles} />
+    </div>
+
+    <!-- Treemap -->
+    <div class="card p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-primary-900">Cycles by section / desk / canister</h2>
+          <p class="text-xs text-primary-400">
+            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[windowKey]}` : 'Current balance'}, tiled by section ⊃ desk ⊃ canister.
+          </p>
+        </div>
+        <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
+          {#each [['burn', 'Burn'], ['balance', 'Balance']] as opt (opt[0])}
+            <button
+              class="px-3 py-1.5 text-xs font-medium {metric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+              onclick={() => (metric = opt[0] as Metric)}
+            >{opt[1]}</button>
+          {/each}
+        </div>
+      </div>
+      <Treemap root={treemapRoot} format={formatCycles} />
     </div>
 
     <!-- Per-stand table -->

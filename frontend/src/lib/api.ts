@@ -76,6 +76,9 @@ export interface AuthorizedWasm {
   wasm_hash: string;
   kind: string;
   description: string;
+  asset_namespace?: string;
+  asset_path?: string;
+  asset_content_type?: string;
 }
 
 export interface OrchestrationEvent {
@@ -125,10 +128,77 @@ export interface CyclesReport {
   stands: StandCycles[];
 }
 
+export interface CycleSamplePoint {
+  ts: number; // unix seconds
+  canister_id: string;
+  stand: string;
+  desk: string;
+  section: string;
+  kind: StandKind;
+  cycles: number; // balance at ts
+  deposited: number; // cumulative deposited into this stand at ts
+}
+
+export interface CycleHistory {
+  now: number; // unix seconds
+  samples: CycleSamplePoint[];
+}
+
 export interface UpdateResult {
   ok: boolean;
   error?: string;
   [key: string]: unknown;
+}
+
+export interface SheetStand {
+  name: string;
+  wasm_key: string;
+  kind?: StandKind;
+}
+
+export interface SheetDesk {
+  name: string;
+  description?: string;
+  commander_principal?: string;
+  stands?: SheetStand[];
+}
+
+export interface SheetSection {
+  name: string;
+  description?: string;
+  commander_principal?: string;
+  desks?: SheetDesk[];
+}
+
+export interface Sheet {
+  name?: string;
+  description?: string;
+  sections: SheetSection[];
+  [key: string]: unknown;
+}
+
+export interface DeployResult extends UpdateResult {
+  created_sections?: string[];
+  created_desks?: string[];
+  created_stands?: string[];
+  reused_stands?: string[];
+  reinstalled_stands?: string[];
+  retired_stands?: string[];
+  skipped_stands?: string[];
+  errors?: string[];
+}
+
+export interface PooledCanister {
+  canister_id: string;
+  status: 'free' | 'in_use';
+  stand_name: string;
+}
+
+export interface PoolReport {
+  total: number;
+  free: number;
+  in_use: number;
+  canisters: PooledCanister[];
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +308,35 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 }
 
 // ---------------------------------------------------------------------------
+// Sheet (ephemeral desired-orchestra) + canister pool
+// ---------------------------------------------------------------------------
+
+// The live sheet is public to read (it's just the desired layout); editing and
+// deploying require authentication.
+export async function getSheet(): Promise<Sheet> {
+  return _parseQuery<Sheet>(await _actor().get_sheet());
+}
+
+export async function listPool(): Promise<PoolReport> {
+  return _parseQuery<PoolReport>(await _actor().list_pool());
+}
+
+export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).set_sheet(JSON.stringify(sheet)));
+}
+
+export async function resetSheet(): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).reset_sheet());
+}
+
+// Idempotently stand up the whole orchestra described by the live sheet. If a
+// sheet is passed it is set live first, then deployed. Long-running.
+export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
+  const args = sheet ? { sheet } : {};
+  return _parseUpdate(await _actor(true).deploy_sheet(JSON.stringify(args))) as DeployResult;
+}
+
+// ---------------------------------------------------------------------------
 // Cycles management
 // ---------------------------------------------------------------------------
 
@@ -247,6 +346,13 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 // public (only top-up / reconcile / policy changes need authentication).
 export async function getCycles(): Promise<CyclesReport> {
   return _parseQuery<CyclesReport>(await _actor().get_cycles());
+}
+
+// Per-stand balance samples over time (public; recorded on-chain by a sampler
+// timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
+// time and the burn/balance treemap.
+export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
+  return _parseQuery<CycleHistory>(await _actor().get_cycle_history(JSON.stringify(opts)));
 }
 
 export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {

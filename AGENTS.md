@@ -11,15 +11,19 @@ Casals executes. Casals never embeds voting logic.
 
 ```
 src/main.py          — Basilisk (Python) conductor canister
-src/models.py        — ic_python_db entities (Section, Desk, Stand, …)
+src/models.py        — ic_python_db entities (Section, Desk, Stand, CycleSample, PooledCanister, …)
+src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
 src/util.py          — pure helpers (audit hash, stand URL)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
 icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
 Makefile             — build / deploy / seed / test targets
-frontend/            — SvelteKit UI (Orchestra tree view, Authorized WASMs, Settings)
+frontend/            — SvelteKit UI (Orchestra, Sheet, Cycles, Authorized WASMs, Settings)
 file_registry/       — git submodule: the file-registry canister (WASM store)
 templates/           — hello-world template sources (basilisk / rust / motoko)
-seed/                — seed manifest (mainnet.json) + committed template WASMs
+seed/templates.json  — default template catalog (what to upload + authorize)
+seed/templates/      — committed, gzipped template WASMs
+seed/sheets/         — sheets (desired orchestras), e.g. demo.json
+seed/assets/         — frontend asset files (index.html) uploaded into asset-canister stands
 scripts/             — build_templates.sh, seed.py
 tests/               — pytest unit + integration + e2e suites
 .icp/data/           — committed mainnet canister-ID mappings (do NOT delete)
@@ -86,7 +90,9 @@ Trigger the **"Deploy to IC mainnet"** workflow from the Actions tab:
 
 - **commit_sha** — the commit to deploy (blank = latest `main`)
 - **mode** — `upgrade` (safe, preserves state) or `reinstall` (wipes state)
-- **seed** — when checked, runs `scripts/seed.py` after deploy (idempotent)
+- **seed** — upload + authorize the template catalog after deploy (idempotent)
+- **deploy_sheet** — also deploy the live sheet (stand up the orchestra;
+  creates/reuses canisters)
 
 The workflow checks out submodules, imports the `CASALS_IDENTITY_PEM` secret,
 builds both Basilisk WASMs (`make build`), and runs `icp deploy -e ic` (which
@@ -124,12 +130,59 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `create_desk` | update | add a Desk to a Section |
 | `register_stand` | update | register an existing canister as a Stand |
 | `add_authorized_wasm` | update | authorize a WASM from the file-registry |
-| `create_stand` | update | create canister + install WASM + verify hash |
+| `create_stand` | update | create/reuse canister + install WASM + verify hash |
 | `upgrade_to` | update | snapshot → upgrade → verify (all-or-nothing) |
 | `create_snapshot` | update | snapshot a Stand |
 | `revert_snapshot` | update | roll a Stand back to its snapshot |
 | `stop_canister` | update | stop a Stand |
 | `start_canister` | update | start a Stand |
+| `get_sheet` | query | the live (ephemeral) sheet |
+| `set_sheet` | update | replace the live sheet (heap-only; nothing on-chain yet) |
+| `reset_sheet` | update | reload the live sheet from the bundled default |
+| `deploy_sheet` | update | idempotently reconcile the orchestra to the live sheet |
+| `list_pool` | query | every canister Casals ever created + its pool status |
+| `get_cycles` | update | live treasury + per-stand solvency (reads canister_status) |
+| `reconcile` / `top_up` / `set_cycle_policy` | update | native cycles management |
+| `get_cycle_history` | query | per-stand balance samples over time (Cycles charts) |
+
+## Sheets & the canister pool
+
+A **sheet** is a single declarative document describing the desired orchestra —
+`Sections ⊃ Desks ⊃ Stands`, where each stand references an authorized WASM by
+`wasm_key`. Sheets hold **no** template/WASM definitions; those are the catalog
+(see below). The default sheet is bundled in `src/default_sheet.py` and its
+on-disk twin is `seed/sheets/demo.json` (keep them in sync): a **Demo** section
+with one desk per language (**Motoko**, **Rust**, **Python**), each holding a
+backend stand and a certified-assets **frontend** stand.
+
+The live sheet is **ephemeral**: it is loaded from the default at every canister
+start and held only in the Wasm heap. `set_sheet` edits it; nothing changes
+on-chain until `deploy_sheet`, which **idempotently** reconciles real canisters
+to the sheet:
+
+- create any missing section / desk;
+- create any missing stand — **reusing a free pooled canister** before paying to
+  create a new one;
+- reinstall a stand whose authorized WASM no longer matches the sheet;
+- **retire** any stand not in the sheet: its canister is stopped and returned to
+  the pool (never deleted), ready to be reused.
+
+The pool (`PooledCanister` entity, stable memory) is the list of every canister
+Casals has ever created. Because creation is expensive, canisters are recycled,
+not discarded. The frontend **Sheet** page renders the live sheet in an editable
+JSON box with **Save** / **Reset** / **Deploy** and shows the pool.
+
+## Cycle history & charts
+
+The IC keeps no balance history, so Casals samples each stand's balance itself —
+a `CycleSample` (denormalized with section/desk/stand) written by a sampler timer
+(`cycles_sampling` / `cycles_sample_interval_secs`, default on/hourly), plus
+opportunistically on `reconcile` and (throttled) on `get_cycles`. Old samples are
+pruned (retention window + hard cap). Each top-up also bumps `Stand.cycles_deposited`
+so true consumption can be derived: `burn = Δdeposited − Δbalance`. `get_cycle_history`
+returns the raw samples; the frontend **Cycles** page aggregates them into a
+cycles-over-time line chart (total / section / desk / canister) and a
+section⊃desk⊃canister treemap sized by burn-over-window or current balance.
 
 ## Catalog templates & seeding
 
@@ -142,23 +195,34 @@ in `seed/templates/`:
 | `hello-world-rust` | Rust (ic-cdk) | `templates/hello-world-rust/` |
 | `hello-world-motoko` | Motoko | `templates/hello-world-motoko/` |
 | `hello-world-basilisk` | Basilisk (Python) | `templates/hello-world-basilisk/` |
+| `hello-world-frontend` | DFINITY certified-assets canister (kind `frontend`) | committed wasm + `seed/assets/index.html` |
+
+A `frontend` template carries an `asset` in `templates.json` (a file under
+`seed/assets/`). `seed.py` uploads both the WASM and the asset to the registry
+and records the asset's location on the authorized WASM; when Casals provisions a
+stand from it, it installs the assets canister with `(null)`, grants itself
+`Commit`, and `store`s the asset at `/index.html` so the stand serves a page.
 
 The WASMs are **committed** so the seed step needs no Rust/Motoko toolchains.
-Rebuild them only when changing a template (needs cargo + `wasm32-unknown-unknown`,
-and `ic-mops` for Motoko):
+The build embeds each template's Candid as public `candid:service` metadata
+(via `ic-wasm`) so the Candid UI can introspect a deployed stand. Rebuild only
+when changing a template (needs cargo + `wasm32-unknown-unknown`, `ic-mops` for
+Motoko, and `ic-wasm`):
 
 ```bash
 make build-templates    # regenerates seed/templates/*.wasm.gz
 git add seed/templates && git commit -m "chore: rebuild templates"
 ```
 
-`seed/mainnet.json` describes a neutral demo: upload the templates to the
-file-registry, authorize them on Casals, and create a `Demo` section with a
-`Playground` desk. Run the seed (idempotent — safe to re-run):
+`seed/templates.json` is the **catalog**: which committed WASMs to upload to the
+file-registry and authorize on Casals. `scripts/seed.py` does exactly that
+(idempotent — safe to re-run); the orchestra itself is stood up separately by
+deploying a sheet.
 
 ```bash
-make seed         # against the local replica
-make seed-ic      # against mainnet (uses the casals identity)
+make seed                              # catalog only, local replica
+make seed-ic                           # catalog only, mainnet (casals identity)
+python3 scripts/seed.py -e ic --identity casals --deploy   # catalog + deploy the sheet
 ```
 
 > The file-registry does **not** compute a SHA-256 on chain (hashing multi-MB
