@@ -10,15 +10,32 @@ Run with:
 (requires icp-cli + ic-wasm on PATH and `pip install -r requirements-dev.txt`)
 """
 
+import base64
+import gzip
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import time
 
 import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CANISTER_NAME = "casals_backend"
+
+# Sibling file-registry checkout (overridable in CI). Casals pulls authorized
+# WASMs from this canister, so the end-to-end tests deploy a real instance.
+FILE_REGISTRY_DIR = os.path.abspath(
+    os.environ.get("FILE_REGISTRY_DIR", os.path.join(REPO_ROOT, "..", "file-registry"))
+)
+FILE_REGISTRY_CANISTER = "ic_file_registry"
+# Committed, gzipped prebuilt of the file-registry WASM, used when the sibling
+# repo isn't checked out (e.g. CI). Refresh with `make refresh-registry-fixture`.
+FILE_REGISTRY_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ic_file_registry.wasm.gz")
+# Cycles topped into casals_backend so it can fund freshly created stands.
+CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
 
 
 def _icp(args, cwd=REPO_ROOT, check=True, timeout=300):
@@ -108,22 +125,122 @@ def replica():
     _icp(["network", "stop"], cwd=REPO_ROOT, check=False)
 
 
-@pytest.fixture(scope="session")
-def canister(replica):
-    # 1. Build the Basilisk backend WASM.
+def _build_basilisk(repo_dir, canister_name, did_name):
+    """Compile a Basilisk canister to WASM; return the .wasm path."""
     env = os.environ.copy()
-    env["CANISTER_CANDID_PATH"] = os.path.join(REPO_ROOT, "casals_backend.did")
+    env["CANISTER_CANDID_PATH"] = os.path.join(repo_dir, did_name)
     build = subprocess.run(
-        ["python3", "-m", "basilisk", CANISTER_NAME, "src/main.py"],
-        cwd=REPO_ROOT,
+        ["python3", "-m", "basilisk", canister_name, "src/main.py"],
+        cwd=repo_dir,
         capture_output=True,
         text=True,
         timeout=900,
         env=env,
     )
     if build.returncode != 0:
-        pytest.fail(f"basilisk build failed:\n{build.stderr[-1200:]}")
+        pytest.fail(f"basilisk build failed ({canister_name}):\n{build.stderr[-1200:]}")
+    return os.path.join(repo_dir, ".basilisk", canister_name, f"{canister_name}.wasm")
 
-    # 2. Deploy just the backend (skip the frontend asset build in CI).
+
+@pytest.fixture(scope="session")
+def canister(replica):
+    wasm = _build_basilisk(REPO_ROOT, CANISTER_NAME, "casals_backend.did")
+    assert os.path.exists(wasm), wasm
+    # Deploy just the backend (skip the frontend asset build in CI).
     _icp(["deploy", CANISTER_NAME], timeout=600)
     yield CANISTER_NAME
+
+
+# ── End-to-end environment: a real file-registry wired into Casals ────────────
+
+
+def _create_detached() -> str:
+    """Create a detached canister on the local network; return its principal."""
+    out = _icp(["canister", "create", "--detached", "-n", "local"]).stdout
+    m = re.search(r"ID\s+([a-z0-9-]+)", out)
+    if not m:
+        raise RuntimeError(f"could not parse created canister id from: {out!r}")
+    return m.group(1)
+
+
+def registry_store(fr_id: str, namespace: str, path: str, data: bytes) -> str:
+    """Store bytes in the file-registry; return the registry-computed sha256."""
+    arg = json.dumps({
+        "namespace": namespace,
+        "path": path,
+        "content_b64": base64.b64encode(data).decode("ascii"),
+        "content_type": "application/wasm",
+    })
+    res = _parse(_icp(["canister", "call", fr_id, "store_file", _candid_text_arg(arg), "-n", "local"]).stdout)
+    assert isinstance(res, dict) and res.get("ok") is True, res
+    return res["sha256"]
+
+
+def canister_module_hash(canister_id: str) -> str:
+    """Return the installed module hash (hex) per the management canister, or ''.
+
+    The deployer identity is not a controller of the stands Casals creates, but
+    the management canister still reports their module hash — enough to prove a
+    real install / upgrade / rollback happened on chain.
+    """
+    out = _icp(["canister", "status", canister_id, "-n", "local"], check=False).stdout
+    m = re.search(r"Module hash:\s*0x([0-9a-fA-F]+)", out)
+    return m.group(1).lower() if m else ""
+
+
+# A minimal but valid WASM module (magic + version, no exports). Installable on
+# the IC and trivial to upgrade. A custom section gives us a second, distinct
+# module for upgrade tests.
+EMPTY_WASM = bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00])
+EMPTY_WASM_V2 = EMPTY_WASM + bytes([0x00, 0x02, 0x01, 0x78])  # trailing custom section
+
+
+class RegistryEnv:
+    def __init__(self, fr_id):
+        self.id = fr_id
+
+    def store(self, namespace, path, data):
+        return registry_store(self.id, namespace, path, data)
+
+
+def _resolve_file_registry_wasm() -> str:
+    """Locate the file-registry WASM to deploy.
+
+    Prefer a fresh build from the sibling repo (local dev, always current);
+    fall back to the committed gzipped fixture (hermetic CI, no cross-repo
+    checkout needed).
+    """
+    src_main = os.path.join(FILE_REGISTRY_DIR, "src", "main.py")
+    if os.path.isfile(src_main):
+        return _build_basilisk(FILE_REGISTRY_DIR, FILE_REGISTRY_CANISTER, "ic_file_registry.did")
+    if os.path.exists(FILE_REGISTRY_FIXTURE):
+        out = os.path.join(tempfile.gettempdir(), "ic_file_registry.wasm")
+        with gzip.open(FILE_REGISTRY_FIXTURE, "rb") as src, open(out, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return out
+    pytest.skip(
+        "no file-registry WASM available; set FILE_REGISTRY_DIR to a checkout "
+        "or add tests/fixtures/ic_file_registry.wasm.gz"
+    )
+
+
+@pytest.fixture(scope="session")
+def registry(canister):
+    """Deploy a real file-registry on the same replica and wire Casals to it.
+
+    Also tops up casals_backend so it can fund the canisters it creates.
+    """
+    wasm = _resolve_file_registry_wasm()
+    assert os.path.exists(wasm), f"file-registry wasm not found at {wasm}"
+
+    fr_id = _create_detached()
+    _icp(["canister", "install", fr_id, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"], timeout=300)
+
+    # Fund Casals so create_stand can provision new canisters with cycles.
+    _icp(["canister", "top-up", CANISTER_NAME, "--amount", CASALS_TOPUP])
+
+    # Point Casals at the registry (caller is the controller deployer).
+    res = call_canister("set_settings", json.dumps({"file_registry_canister_id": fr_id}))
+    assert isinstance(res, dict) and res.get("ok") is True, res
+
+    yield RegistryEnv(fr_id)

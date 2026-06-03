@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 canister_ids.json
 .env
+
+# icp-cli local replica / deploy state
+.icp/
