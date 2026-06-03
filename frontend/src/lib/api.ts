@@ -99,14 +99,44 @@ export interface UpdateResult {
 // Actor setup
 // ---------------------------------------------------------------------------
 
-const CANISTER_ID = import.meta.env.VITE_CANISTER_ID ?? '';
-const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-const HOST = IS_LOCAL ? 'http://localhost:4943' : 'https://ic0.app';
+const IS_LOCAL =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname.endsWith('.localhost'));
+const HOST = IS_LOCAL ? 'http://localhost:4943' : 'https://icp-api.io';
+
+// icp-cli injects all canister IDs (and the network root key) into the asset
+// canister and exposes them to the browser via the `ic_env` cookie. We read the
+// backend's ID from there so the same build works in every environment. The
+// VITE_CANISTER_ID build-time var is honored first for local dev convenience.
+function _canisterEnv(): Record<string, string> {
+  if (typeof document === 'undefined') return {};
+  const match = document.cookie.match(/(?:^|;\s*)ic_env=([^;]+)/);
+  if (!match) return {};
+  const env: Record<string, string> = {};
+  for (const pair of decodeURIComponent(match[1]).split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return env;
+}
+
+function _backendCanisterId(): string {
+  const fromBuild = import.meta.env.VITE_CANISTER_ID as string | undefined;
+  if (fromBuild) return fromBuild;
+  return _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] ?? '';
+}
 
 function _makeActor(id: any = null) {
+  const canisterId = _backendCanisterId();
+  if (!canisterId) {
+    throw new Error(
+      'Backend canister ID not found. Expected the ic_env cookie (set by the ' +
+        'asset canister on deploy) or VITE_CANISTER_ID for local dev.'
+    );
+  }
   const agent = new HttpAgent({ identity: id ?? undefined, host: HOST });
   if (IS_LOCAL) agent.fetchRootKey().catch(() => {});
-  return Actor.createActor(idlFactory, { agent, canisterId: CANISTER_ID });
+  return Actor.createActor(idlFactory, { agent, canisterId });
 }
 
 function _actor(authenticated = false): any {
