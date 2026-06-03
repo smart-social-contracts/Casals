@@ -90,31 +90,8 @@ type Archives = record { archives : vec Archive };
 type SymbolResult = record { symbol : text };
 type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
-type Header = record { 0 : text; 1 : text };
-type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
-type HttpResponseIncoming = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
 
 service : {
-  "list_namespaces" : () -> (text) query;
-  "list_files" : (text) -> (text) query;
-  "get_file" : (text) -> (text) query;
-  "get_file_size" : (text) -> (text) query;
-  "get_file_chunk" : (text) -> (text) query;
-  "get_file_size_icc" : (text, text) -> (text) query;
-  "get_file_chunk_icc" : (text, text, text, text) -> (text) query;
-  "get_stats" : () -> (text) query;
-  "list_file_versions" : (text) -> (text) query;
-  "get_file_at_version" : (text) -> (text) query;
-  "get_acl" : () -> (text) query;
-  "store_file" : (text) -> (text);
-  "delete_file" : (text) -> (text);
-  "update_namespace" : (text) -> (text);
-  "delete_namespace" : (text) -> (text);
-  "grant_publish" : (text) -> (text);
-  "revoke_publish" : (text) -> (text);
-  "store_file_chunk" : (text) -> (text);
-  "finalize_chunked_file" : (text) -> (text);
-  "http_request" : (HttpRequest) -> (HttpResponseIncoming) query;
-  "http_request_update" : (HttpRequest) -> (HttpResponseIncoming);
+  "greet" : (text) -> (text) query;
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

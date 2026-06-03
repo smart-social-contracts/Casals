@@ -16,6 +16,12 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     get_events:            IDL.Func([IDL.Text], [IDL.Text], ['query']),
     cycleops_monitored:    IDL.Func([], [IDL.Text], ['query']),
 
+    // ── cycles management ──
+    get_cycles:            IDL.Func([], [IDL.Text], []),
+    top_up:                IDL.Func([IDL.Text], [IDL.Text], []),
+    reconcile:             IDL.Func([], [IDL.Text], []),
+    set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
+
     // ── governance / registration ──
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
     create_section:        IDL.Func([IDL.Text], [IDL.Text], []),

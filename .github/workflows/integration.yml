@@ -19,6 +19,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          # file_registry is a (public) submodule built + deployed by the e2e suite.
+          submodules: recursive
 
       - uses: actions/setup-python@v6
         with:
@@ -40,10 +43,10 @@ jobs:
           python3 -m basilisk --version || true
 
       # conftest.py starts the local replica, builds + deploys casals_backend,
-      # and for the e2e suite deploys a real file-registry (from the committed
-      # tests/fixtures/ic_file_registry.wasm.gz) on the same replica, then drives
-      # the full create/upgrade/snapshot/rollback lifecycle. The replica is
-      # stopped on teardown.
+      # and for the e2e suite builds + deploys the file-registry from the
+      # file_registry submodule on the same replica, then drives the full
+      # create/upgrade/snapshot/rollback lifecycle. The replica is stopped on
+      # teardown.
       - name: Run tests (unit + integration + e2e)
         run: pytest tests/ ${{ inputs.verbose && '-v' || '' }}
 

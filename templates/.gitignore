@@ -1,0 +1,5 @@
+# Template build artifacts — only the committed seed/templates/*.wasm.gz matter.
+hello-world-rust/target/
+hello-world-motoko/.icp/
+hello-world-motoko/.mops/
+**/Cargo.lock

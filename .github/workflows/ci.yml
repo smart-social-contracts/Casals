@@ -1,0 +1,48 @@
+# Fast, replica-free checks that run on every pull request and on pushes to
+# main. The heavier integration / e2e suite (which spins up a local replica) is
+# kept in integration.yml as a manual workflow.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend-unit:
+    name: Backend unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # tests/test_unit.py covers the pure helpers (stand URLs, audit hash chain,
+      # and the cycles policy/top-up decision logic) with no IC runtime needed.
+      - name: Run unit tests
+        run: pytest tests/test_unit.py -v
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      # A successful production build type-checks the SvelteKit app, including
+      # the Cycles page and the cycles bindings in lib/api.ts.
+      - name: Build frontend
+        run: npm --prefix frontend run build

@@ -14,11 +14,26 @@ src/main.py          — Basilisk (Python) conductor canister
 src/models.py        — ic_python_db entities (Section, Desk, Stand, …)
 src/util.py          — pure helpers (audit hash, stand URL)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
-icp.yaml             — icp-cli deploy config (prebuilt backend + asset frontend)
-Makefile             — build / deploy / test targets
+icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
+Makefile             — build / deploy / seed / test targets
 frontend/            — SvelteKit UI (Orchestra tree view, Authorized WASMs, Settings)
+file_registry/       — git submodule: the file-registry canister (WASM store)
+templates/           — hello-world template sources (basilisk / rust / motoko)
+seed/                — seed manifest (mainnet.json) + committed template WASMs
+scripts/             — build_templates.sh, seed.py
 tests/               — pytest unit + integration + e2e suites
 .icp/data/           — committed mainnet canister-ID mappings (do NOT delete)
+```
+
+`file_registry` is a **git submodule** of the public
+[file-registry](https://github.com/smart-social-contracts/file-registry) repo —
+the canonical source for the registry. Clone Casals with submodules, or init
+after the fact:
+
+```bash
+git clone --recurse-submodules <casals-url>
+# or, in an existing checkout:
+git submodule update --init
 ```
 
 ## Mainnet canisters
@@ -27,6 +42,7 @@ tests/               — pytest unit + integration + e2e suites
 |-------------------|---------------------------------|-----|
 | casals_backend    | `ip2wh-iyaaa-aaaao-bbaoq-cai`  | [Candid UI](https://a4gq6-oaaaa-aaaab-qaa4q-cai.icp0.io/?id=ip2wh-iyaaa-aaaao-bbaoq-cai) |
 | casals_frontend   | `igz53-6qaaa-aaaao-bbapa-cai`  | https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io/ |
+| ic_file_registry  | `iby3p-tiaaa-aaaao-bbapq-cai`  | https://iby3p-tiaaa-aaaao-bbapq-cai.icp0.io/ |
 
 Deploy identity principal: `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2wn-uhjcc-xqe`
 
@@ -70,10 +86,13 @@ Trigger the **"Deploy to IC mainnet"** workflow from the Actions tab:
 
 - **commit_sha** — the commit to deploy (blank = latest `main`)
 - **mode** — `upgrade` (safe, preserves state) or `reinstall` (wipes state)
+- **seed** — when checked, runs `scripts/seed.py` after deploy (idempotent)
 
-The workflow imports the `CASALS_IDENTITY_PEM` secret, builds the WASM, and
-runs `icp deploy -e ic`. Canister IDs are read from `.icp/data/` (committed),
-so every run targets the same mainnet canisters.
+The workflow checks out submodules, imports the `CASALS_IDENTITY_PEM` secret,
+builds both Basilisk WASMs (`make build`), and runs `icp deploy -e ic` (which
+deploys `casals_backend`, `ic_file_registry`, and `casals_frontend`). Canister
+IDs are read from `.icp/data/` (committed), so every run targets the same
+mainnet canisters.
 
 ## Open access
 
@@ -112,12 +131,37 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `stop_canister` | update | stop a Stand |
 | `start_canister` | update | start a Stand |
 
-## Refreshing the file-registry fixture
+## Catalog templates & seeding
 
-The e2e tests deploy a real file-registry. When the file-registry inter-canister
-API changes, regenerate the committed fixture:
+Casals ships a small catalog of hello-world templates so a fresh deployment is
+useful out of the box. Sources live in `templates/`, prebuilt (gzipped) WASMs
+in `seed/templates/`:
+
+| Key | Runtime | Source |
+|-----|---------|--------|
+| `hello-world-rust` | Rust (ic-cdk) | `templates/hello-world-rust/` |
+| `hello-world-motoko` | Motoko | `templates/hello-world-motoko/` |
+| `hello-world-basilisk` | Basilisk (Python) | `templates/hello-world-basilisk/` |
+
+The WASMs are **committed** so the seed step needs no Rust/Motoko toolchains.
+Rebuild them only when changing a template (needs cargo + `wasm32-unknown-unknown`,
+and `ic-mops` for Motoko):
 
 ```bash
-make refresh-registry-fixture   # rebuilds tests/fixtures/ic_file_registry.wasm.gz
-git add tests/fixtures && git commit -m "chore: refresh file-registry fixture"
+make build-templates    # regenerates seed/templates/*.wasm.gz
+git add seed/templates && git commit -m "chore: rebuild templates"
 ```
+
+`seed/mainnet.json` describes a neutral demo: upload the templates to the
+file-registry, authorize them on Casals, and create a `Demo` section with a
+`Playground` desk. Run the seed (idempotent — safe to re-run):
+
+```bash
+make seed         # against the local replica
+make seed-ic      # against mainnet (uses the casals identity)
+```
+
+> The file-registry does **not** compute a SHA-256 on chain (hashing multi-MB
+> WASMs exceeds the IC single-message instruction limit under WASI CPython).
+> The uploader supplies the hash for metadata; integrity is enforced when Casals
+> installs the WASM and checks the IC `module_hash` against the authorized hash.

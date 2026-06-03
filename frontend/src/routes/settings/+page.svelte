@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, cycleopsMonitored, setSettings, shortPrincipal } from '$lib/api';
+  import { casalsMetadata, cycleopsMonitored, setSettings, shortPrincipal, formatCycles, parseCycles } from '$lib/api';
   import type { Metadata, CycleOpsInfo, SettingsPatch } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
@@ -17,6 +17,12 @@
   let fileRegistryId = $state('');
   let cycleopsEnabled = $state(false);
   let cycleopsPrincipal = $state('');
+  // Native cycles management
+  let cyclesAutopilot = $state(false);
+  let cyclesIntervalHours = $state(6);
+  let defaultMinCycles = $state('');
+  let defaultTopupCycles = $state('');
+  let treasuryReserve = $state('');
 
   async function load() {
     loading = true;
@@ -27,6 +33,11 @@
       fileRegistryId = meta.file_registry_canister_id ?? '';
       cycleopsEnabled = meta.cycleops_enabled;
       cycleopsPrincipal = meta.cycleops_principal ?? '';
+      cyclesAutopilot = meta.cycles_autopilot;
+      cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 21600) / 3600));
+      defaultMinCycles = formatCycles(meta.default_min_cycles);
+      defaultTopupCycles = formatCycles(meta.default_topup_cycles);
+      treasuryReserve = formatCycles(meta.treasury_reserve);
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -45,7 +56,15 @@
         file_registry_canister_id: fileRegistryId.trim(),
         cycleops_enabled: cycleopsEnabled,
         cycleops_principal: cycleopsPrincipal.trim(),
+        cycles_autopilot: cyclesAutopilot,
+        cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
       };
+      const minC = parseCycles(defaultMinCycles);
+      const topupC = parseCycles(defaultTopupCycles);
+      const reserveC = parseCycles(treasuryReserve);
+      if (!Number.isNaN(minC)) patch.default_min_cycles = minC;
+      if (!Number.isNaN(topupC)) patch.default_topup_cycles = topupC;
+      if (!Number.isNaN(reserveC)) patch.treasury_reserve = reserveC;
       await setSettings(patch);
       toasts.success('Settings saved');
       await load();
@@ -63,7 +82,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Settings</h1>
-      <p class="text-sm text-primary-500 mt-1">Platform configuration & CycleOps monitoring</p>
+      <p class="text-sm text-primary-500 mt-1">Platform configuration, cycles management & CycleOps</p>
     </div>
     <button class="btn-secondary btn-sm self-start" onclick={load}>
       <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -114,6 +133,14 @@
           <dd>
             <span class="badge {meta.cycleops_enabled ? 'badge-frontend' : 'badge-neutral'}">
               {meta.cycleops_enabled ? 'enabled' : 'disabled'}
+            </span>
+          </dd>
+        </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-primary-500">Cycles autopilot</dt>
+          <dd>
+            <span class="badge {meta.cycles_autopilot ? 'badge-frontend' : 'badge-neutral'}">
+              {meta.cycles_autopilot ? 'enabled' : 'disabled'}
             </span>
           </dd>
         </div>
@@ -169,6 +196,38 @@
               placeholder="aaaaa-aa"
               bind:value={cycleopsPrincipal}
             />
+          </div>
+
+          <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-5">
+            <div>
+              <h3 class="text-sm font-semibold text-primary-800">Native cycles management</h3>
+              <p class="text-xs text-primary-400">Casals tops up stands from its own treasury. Amounts accept suffixes (e.g. 1t, 500b).</p>
+            </div>
+
+            <label class="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesAutopilot} />
+              <span class="text-sm font-medium text-primary-700">Autopilot</span>
+              <span class="text-xs text-primary-400">— periodically reconcile balances</span>
+            </label>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="label" for="cyclesInterval">Check interval (hours)</label>
+                <input id="cyclesInterval" type="number" min="1" class="input" bind:value={cyclesIntervalHours} />
+              </div>
+              <div>
+                <label class="label" for="treasuryReserve">Treasury reserve</label>
+                <input id="treasuryReserve" type="text" class="input font-mono" placeholder="1t" bind:value={treasuryReserve} />
+              </div>
+              <div>
+                <label class="label" for="defaultMin">Default min balance</label>
+                <input id="defaultMin" type="text" class="input font-mono" placeholder="500b" bind:value={defaultMinCycles} />
+              </div>
+              <div>
+                <label class="label" for="defaultTopup">Default top-up amount</label>
+                <input id="defaultTopup" type="text" class="input font-mono" placeholder="1t" bind:value={defaultTopupCycles} />
+              </div>
+            </div>
           </div>
 
           <div class="flex justify-end pt-1">

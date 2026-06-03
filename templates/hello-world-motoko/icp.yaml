@@ -1,0 +1,7 @@
+canisters:
+  - name: hello_world_motoko
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/main.mo
+        candid: hello_world_motoko.did

@@ -1,0 +1,40 @@
+{
+  "$comment": "Neutral demo seed for a fresh Casals deployment. Uploads the catalog templates to the file-registry, authorizes them, and creates a single demo section with a playground desk. Idempotent: re-running skips anything that already exists.",
+  "registry_namespace": "casals-templates",
+  "templates": [
+    {
+      "key": "hello-world-rust",
+      "file": "hello-world-rust.wasm.gz",
+      "path": "hello-world-rust.wasm",
+      "kind": "backend",
+      "description": "Rust hello-world canister (ic-cdk greet query)."
+    },
+    {
+      "key": "hello-world-motoko",
+      "file": "hello-world-motoko.wasm.gz",
+      "path": "hello-world-motoko.wasm",
+      "kind": "backend",
+      "description": "Motoko hello-world canister (greet query)."
+    },
+    {
+      "key": "hello-world-basilisk",
+      "file": "hello-world-basilisk.wasm.gz",
+      "path": "hello-world-basilisk.wasm",
+      "kind": "backend",
+      "description": "Basilisk (Python) hello-world canister (greet query)."
+    }
+  ],
+  "sections": [
+    {
+      "name": "Demo",
+      "description": "Neutral demo section for trying out Casals."
+    }
+  ],
+  "desks": [
+    {
+      "section": "Demo",
+      "name": "Playground",
+      "description": "Scratch space for creating demo stands from the catalog templates."
+    }
+  ]
+}
