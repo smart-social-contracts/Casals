@@ -11,13 +11,10 @@ Run with:
 """
 
 import base64
-import gzip
 import json
 import os
 import re
-import shutil
 import subprocess
-import tempfile
 import time
 
 import pytest
@@ -25,15 +22,12 @@ import pytest
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CANISTER_NAME = "casals_backend"
 
-# Sibling file-registry checkout (overridable in CI). Casals pulls authorized
-# WASMs from this canister, so the end-to-end tests deploy a real instance.
-FILE_REGISTRY_DIR = os.path.abspath(
-    os.environ.get("FILE_REGISTRY_DIR", os.path.join(REPO_ROOT, "..", "file-registry"))
-)
+# The file-registry is part of the Casals core, vendored as the `file_registry`
+# git submodule. The end-to-end tests build and deploy it from this same repo —
+# no sibling checkout or committed fixture needed.
 FILE_REGISTRY_CANISTER = "ic_file_registry"
-# Committed, gzipped prebuilt of the file-registry WASM, used when the sibling
-# repo isn't checked out (e.g. CI). Refresh with `make refresh-registry-fixture`.
-FILE_REGISTRY_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "ic_file_registry.wasm.gz")
+FILE_REGISTRY_ENTRY = "file_registry/src/main.py"
+FILE_REGISTRY_DID = "file_registry/ic_file_registry.did"
 # Cycles topped into casals_backend so it can fund freshly created stands.
 CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
 
@@ -125,12 +119,12 @@ def replica():
     _icp(["network", "stop"], cwd=REPO_ROOT, check=False)
 
 
-def _build_basilisk(repo_dir, canister_name, did_name):
+def _build_basilisk(repo_dir, canister_name, did_name, entry="src/main.py"):
     """Compile a Basilisk canister to WASM; return the .wasm path."""
     env = os.environ.copy()
     env["CANISTER_CANDID_PATH"] = os.path.join(repo_dir, did_name)
     build = subprocess.run(
-        ["python3", "-m", "basilisk", canister_name, "src/main.py"],
+        ["python3", "-m", "basilisk", canister_name, entry],
         cwd=repo_dir,
         capture_output=True,
         text=True,
@@ -204,23 +198,9 @@ class RegistryEnv:
 
 
 def _resolve_file_registry_wasm() -> str:
-    """Locate the file-registry WASM to deploy.
-
-    Prefer a fresh build from the sibling repo (local dev, always current);
-    fall back to the committed gzipped fixture (hermetic CI, no cross-repo
-    checkout needed).
-    """
-    src_main = os.path.join(FILE_REGISTRY_DIR, "src", "main.py")
-    if os.path.isfile(src_main):
-        return _build_basilisk(FILE_REGISTRY_DIR, FILE_REGISTRY_CANISTER, "ic_file_registry.did")
-    if os.path.exists(FILE_REGISTRY_FIXTURE):
-        out = os.path.join(tempfile.gettempdir(), "ic_file_registry.wasm")
-        with gzip.open(FILE_REGISTRY_FIXTURE, "rb") as src, open(out, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        return out
-    pytest.skip(
-        "no file-registry WASM available; set FILE_REGISTRY_DIR to a checkout "
-        "or add tests/fixtures/ic_file_registry.wasm.gz"
+    """Build the in-repo file-registry (Casals core) and return its WASM path."""
+    return _build_basilisk(
+        REPO_ROOT, FILE_REGISTRY_CANISTER, FILE_REGISTRY_DID, entry=FILE_REGISTRY_ENTRY
     )
 
 

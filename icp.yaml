@@ -14,6 +14,17 @@ canisters:
         shrink: true
         compress: true
 
+  # The file-registry is part of the Casals core: it stores the WASM artifacts
+  # (catalog templates, project releases) that Casals installs into stands.
+  # Built from file_registry/main.py by `make build` (Basilisk, like the backend).
+  - name: ic_file_registry
+    recipe:
+      type: "@dfinity/prebuilt@v2.0.0"
+      configuration:
+        path: .basilisk/ic_file_registry/ic_file_registry.wasm
+        shrink: true
+        compress: true
+
   - name: casals_frontend
     recipe:
       type: "@dfinity/asset-canister@v2.1.0"

@@ -78,20 +78,20 @@ class TestStructure:
 class TestAuthorizedWasms:
     def test_add_list_remove(self, canister):
         _ok("add_authorized_wasm", {
-            "key": "hello-world-motoko",
+            "key": "test-template",
             "registry_namespace": "wasm",
-            "registry_path": "hello-world-motoko.wasm",
+            "registry_path": "test-template.wasm",
             "wasm_hash": "ab" * 32,
             "kind": "backend",
-            "description": "default template",
+            "description": "integration-test template",
         })
         wasms = call_canister("list_authorized_wasms", json.dumps({}))
         keys = [w["key"] for w in wasms]
-        assert "hello-world-motoko" in keys
+        assert "test-template" in keys
 
-        _ok("remove_authorized_wasm", {"key": "hello-world-motoko"})
+        _ok("remove_authorized_wasm", {"key": "test-template"})
         wasms = call_canister("list_authorized_wasms", json.dumps({}))
-        assert "hello-world-motoko" not in [w["key"] for w in wasms]
+        assert "test-template" not in [w["key"] for w in wasms]
 
 
 class TestSettingsAndCommander:
