@@ -1,205 +1,122 @@
 # Casals
 
-**A token-free, membership-governed canister orchestration system for the Internet Computer.**
+**An orchestrator for the full lifecycle of a project's canisters on the Internet Computer.**
 
-Casals is an on-chain framework for letting a community **democratically govern the upgrade
-and lifecycle of a federation of canisters** — without a token, and without a single trusted
-controller. Think "SNS, but one-member-one-vote instead of token-weighted, and built for a
-parent canister plus a dynamic set of child canisters."
+Casals lets a project **create, upgrade, roll back, and retire its canisters** under a single
+coordinator — organized like an orchestra into **sections** and **desks**. *How* each change is
+approved (a community vote, a token vote, a committee, or nothing) is pluggable: Casals provides
+the structure and the flexibility, not a fixed governance model.
 
-> **Status:** early specification / design. This README is the source of truth for the
-> intended architecture. Nothing here is audited; do not use as a controller for value-bearing
-> canisters yet.
-
----
-
-## Why Casals exists
-
-On the Internet Computer, replacing a canister's WASM requires a **controller** to call
-`install_code`. That leaves a spectrum of trust models:
-
-| Controller | Trust | Limitation |
-|---|---|---|
-| Single developer key | Lowest | One person can change/delete anything ("controller risk") |
-| Multisig / Orbit | Medium | Token-free, but authority is a small set of **named** users (committee) |
-| SNS | High | Mass on-chain democracy, but **requires a token** + token-weighted voting |
-| Black-holed | Highest | Immutable — no upgrades at all |
-
-There is an **uncovered corner**: *token-free, one-member-one-vote governance of a
-multi-canister federation, with coordinated upgrades and rollback.* That is what Casals targets.
-
-The design goal: remove the off-chain/human controller, **without** forcing members through a
-token economy. Sybil resistance comes from a pluggable **membership** layer instead of token
-stake.
+> **Status:** early specification. This README is the source of truth for the intended design.
+> Nothing here is audited.
 
 ---
 
-## Core principles
+## The idea
 
-1. **Authority is a vote, not a key.** The only thing that can trigger a lifecycle change is an
-   approved on-chain proposal.
-2. **No controller risk.** The orchestrator (and ultimately the federation) is controlled only
-   by itself / its own governance — not by a developer or off-chain operator.
-3. **No mandatory token.** Voting is pluggable; the default is one-member-one-vote backed by a
-   membership/identity module. Token-weighted, NFT-gated, or reputation-based voting can be
-   swapped in without changing the core.
-4. **Multi-canister first.** A "federation" is a parent canister plus a dynamic set of child
-   canisters; upgrades are coordinated across the whole set with all-or-nothing rollback.
-5. **Trust the hash, not the builder.** WASMs are built off-chain (as on every IC project) but
-   pinned by a `sha256` that voters approve and the orchestrator verifies on-chain.
+An orchestra is organized into **sections** (strings, brass…), and each section is made of
+**desks** (the seats). Casals applies the same shape to a project's canisters:
+
+- **Section** — a logical group of canisters with a shared role.
+- **Desk** — a single managed canister (a "seat") inside a section.
+- **Conductor** — the Casals orchestrator: the sole controller that performs lifecycle
+  operations across the desks.
+- **Score** — an approved proposal describing a change (e.g. "upgrade these desks to version X").
+
+Example, for **Realms**:
+
+- **Infra section** — realm registry, global token canisters, file registry (codexes,
+  extensions, frontends), …
+- **Application section** — the actual realm canisters.
+
+The conductor coordinates changes across whole sections (or single desks), so a multi-canister
+upgrade happens as one orchestrated, all-or-nothing performance.
 
 ---
 
-## What stays off-chain (and why that's fine)
+## Why
 
-Only two things are irreducibly off-chain, and neither is a privileged controller:
+Replacing a canister's WASM requires a **controller** to call `install_code`. Casals becomes that
+controller so a project gets:
 
-- **Building the WASM** — every IC project compiles off-chain. Neutralized by reproducible
-  builds + the voted `sha256` + on-chain `module_hash` verification.
-- **One-time genesis** — *something* must create and install the very first orchestrator
-  canister; it cannot create itself from nothing. A single birth event, not an ongoing
-  dependency.
-
-Everything else — creating canisters, installing/upgrading WASM, snapshotting, verifying,
-rolling back — runs **on-chain** from the orchestrator via the management canister
-(`create_canister`, `upload_chunk`, `install_chunked_code`, `take_canister_snapshot`,
-`load_canister_snapshot`, …).
+- **One coordinator** for many canisters instead of ad-hoc scripts and scattered keys.
+- **No single-key controller risk** — changes only happen through an approved score.
+- **Coordinated multi-canister upgrades** with snapshots and all-or-nothing rollback.
+- **Approval flexibility** — wire the score's approval to whatever fits the project:
+  one-member-one-vote, token-weighted, NFT/role-gated, a committee, or auto-approve.
 
 ---
 
 ## Architecture
 
 ```
-                         ┌──────────────────────────────────────────┐
-                         │              C A S A L S                  │
-                         │                                           │
-   members ──vote──►  ┌──┴───────────────┐   tally   ┌────────────┐ │
-                      │  Authority module │◄──────────│  Identity/ │ │
-                      │ (pluggable voting)│           │  membership│ │
-                      └──┬───────────────┘            │  (sybil)   │ │
-                         │ approved proposal           └────────────┘ │
-                         ▼                                            │
-                      ┌──────────────────┐    reads     ┌──────────┐ │
-                      │   Orchestrator    │─────────────►│ Artifact │ │
-                      │ (lifecycle engine)│   WASM bytes │ registry │ │
-                      └──┬───────────────┘              └──────────┘ │
-                         │ management-canister calls                 │
-                         ▼                                           │
-         ┌───────────────┴───────────────┐                          │
-         ▼               ▼                ▼                          │
-   ┌──────────┐    ┌──────────┐    ┌──────────┐                     │
-   │  parent  │    │ quarter  │    │ quarter  │   … the federation   │
-   │ canister │    │ canister │    │ canister │                     │
-   └──────────┘    └──────────┘    └──────────┘                     │
-                         (Casals is the sole controller of all)     │
-                         └──────────────────────────────────────────┘
+   approvers ──► ┌────────────────┐  approved score   ┌──────────────┐
+                 │  Approval module │──────────────────►│  Conductor   │
+                 │   (pluggable)    │                   │ (orchestrator)│
+                 └────────────────┘                     └──────┬───────┘
+                                                                │ management-canister calls
+                            ┌───────────────────────────────────┴───────────────┐
+                            ▼                                                     ▼
+                  ┌────────────────────┐                          ┌────────────────────┐
+                  │   Infra section    │                          │ Application section │
+                  │ desk · desk · desk │                          │   desk · desk · …   │
+                  └────────────────────┘                          └────────────────────┘
+                       (Casals is the sole controller of every desk)
 ```
 
-### Components
-
-1. **Authority module (pluggable voting).** Receives a "proposal is open" notification, collects
-   votes under some scheme, and reports a final tally `(yes, no, abstain, total)` back to the
-   orchestrator. The default module is **one-member-one-vote**; the interface is generic enough
-   to drop in token / NFT / reputation voting. (Design inspired by NX-Governance's
-   vote-manager hook.)
-
-2. **Identity / membership (sybil resistance).** Proves "one vote per eligible member." This is
-   the piece that replaces a token's role as Sybil defense and is the main project-specific
-   surface (registration codes, verified identity, admin-gated membership, etc.).
-
-3. **Orchestrator (lifecycle engine).** The heart of Casals. Holds the proposal/job state,
-   is the **sole controller** of the federation's canisters, and performs the on-chain
-   lifecycle operations: create, install/upgrade (chunked), snapshot, verify, rollback,
-   and (phase 2) decommission.
-
-4. **Artifact registry.** A persistent, on-chain, hash-addressed store where approved WASMs
-   (and, for the broader platform, extension/codex/frontend bundles) live so they can be
-   referenced before a vote and pulled by the orchestrator at execution time — across subnets.
-   The IC's built-in chunk store is *transient install scratch* and cannot serve this role.
+- **Approval module (pluggable).** Decides whether a score is approved. Swap in token-free
+  voting, token voting, a committee, or auto-approve — the conductor only cares about the
+  yes/no result.
+- **Conductor (orchestrator).** Sole controller of every desk; runs create / upgrade /
+  snapshot / verify / rollback / retire via the management canister.
+- **Sections & desks.** The project's canisters, grouped for coordinated operations.
+- **Artifact store.** On-chain, hash-addressed place to publish WASMs (and other bundles) so a
+  score can reference them by `sha256` and the conductor can fetch them at execution time.
 
 ---
 
-## The upgrade flow (v1)
+## Lifecycle: how a change runs
 
 ```
-1. PROPOSE   member submits a proposal: target version + WASM sha256 (of the gzipped module),
-             targeting the federation (parent + quarters).
-
-2. VOTE      one-member-one-vote via the authority module; quorum + majority computed on-chain.
-             The approved vote is the ONLY trigger.
-
-3. STAGE     the approved WASM (already published to the artifact registry, pinned by hash) is
-             available on-chain for the orchestrator to read.
-
-4. ORCHESTRATE   for each canister in the federation, in a controlled order:
-                   a. take_canister_snapshot                (rollback point)
-                   b. upload_chunk → install_chunked_code   (mode = upgrade)
-                   c. verify: canister_status.module_hash == voted hash, AND a health check
-
-5. FINALIZE     all pass  → delete snapshots, mark succeeded
-                any fail  → load_canister_snapshot on every upgraded canister (rollback the
-                            whole federation), mark failed
+1. PROPOSE   submit a score: target desks (a section or specific desks) + WASM sha256.
+2. APPROVE   the approval module returns yes/no (vote, token vote, committee, auto…).
+3. PERFORM   for each desk, in order:
+               a. snapshot                         (rollback point)
+               b. install (chunked if large)       (create / upgrade)
+               c. verify module_hash == score hash + health check
+4. FINALIZE  all pass → drop snapshots, done.
+             any fail → roll back every touched desk from its snapshot.
 ```
 
-Key correctness notes:
-
-- `post_upgrade` runs **inside** `install_chunked_code` (step 4b), *before* verification — it is
-  not a separate parallel step. A trapping `post_upgrade` is auto-reverted by the IC; a
-  wrong-hash or behaviorally-broken-but-running upgrade is caught in 4c and rolled back from the
-  snapshot.
-- The `module_hash` from `canister_status` is the hash of the **exact installed bytes** (the
-  gzipped module). The published/voted `sha256` must be of that same artifact.
-- Verification only *constrains* an untrusted byte-supplier if that supplier is **not** an IC
-  controller. In Casals, the orchestrator is the sole controller; nobody else can call
-  `install_code` directly.
-
----
-
-## Controller / trust model
-
-- The federation's canisters are controlled **only by the Casals orchestrator**.
-- The orchestrator is controlled **by itself / its own governance** (self-controlling root, in
-  the spirit of NX-Governance's blackholed root or Orbit's Station↔Upgrader loop) so there is no
-  external upgrade key.
-- The off-chain build/deploy machinery, if present at all, is reduced to an **untrusted
-  byte-supplier** — it can never install code, only provide artifacts that must match a voted
-  hash.
+Notes:
+- The conductor builds nothing — WASMs are built off-chain (as on every IC project) but pinned
+  by a `sha256` that approvers see and the conductor verifies on-chain (`canister_status`).
+- Because the conductor is the **sole controller**, nobody can install code out-of-band.
 
 ---
 
 ## Scope
 
-### v1 (first version)
-- Pluggable authority module with a default **one-member-one-vote** implementation.
-- Membership/identity module (minimal sybil resistance).
-- Orchestrator: federation **create**, **upgrade** (on-chain chunked install), **snapshot**,
-  **hash + health verification**, **coordinated rollback**.
-- Artifact registry integration (read voted WASM on-chain).
-- Self-controlling orchestrator root.
+**v1** — sections & desks model; pluggable approval (default one-member-one-vote); conductor with
+create, chunked upgrade, snapshot, hash + health verification, coordinated rollback; on-chain
+artifact store; self-controlling conductor (no external upgrade key).
 
-### v2 (later — not a priority for v1)
-- **Canister decommissioning + cycle reclamation** (`stop` + `delete_canister` to recover
-  cycles) — important for quarter `MERGE`/dissolution.
-- **Cycles / solvency monitoring** of the federation.
-- **Operator audit/log surface** (human-readable history of proposals, jobs, outcomes).
-- **Quota / anti-spam** controls on proposals.
-- Additional voting modules (token-weighted, NFT/SBT, reputation, quadratic).
+**v2** — retire desks + reclaim cycles (`stop` / `delete_canister`); cycles/solvency monitoring;
+audit log of scores and outcomes; anti-spam quotas; more approval modules (token-weighted,
+NFT/SBT, reputation, quadratic).
 
 ---
 
-## Prior art / related work
+## Prior art
 
-- **SNS** (DFINITY) — mass on-chain democracy, but token-required and token-weighted.
-- **Orbit** (DFINITY) — token-free policy/approval engine that controls "external canisters"
-  with chunked WASM install, native snapshot/restore, and a Station↔Upgrader recovery loop;
-  but its authority model is committee/multisig over named users, not mass democracy.
-- **NX-Governance** — proposal-centric governance with a **swappable external voting canister**
-  and a blackholed self-upgrading root; closest match to Casals' pluggable-authority idea, but
-  WIP/unaudited and without built-in snapshots or federation rollback.
+- **SNS** — mass on-chain democracy, but token-required and token-weighted.
+- **Orbit** — token-free policy/approval engine over "external canisters" with chunked install
+  and snapshots, but authority is a committee of named users.
+- **NX-Governance** — proposal-centric governance with a swappable external voting canister and
+  a self-upgrading root.
 
-Casals' distinctive combination is **mass one-member-one-vote democracy + multi-canister
-federation + no token**, standing on proven IC primitives (management-canister chunk store and
-snapshots) rather than reinventing canister lifecycle.
+Casals' angle: a **section/desk orchestration layer** over a project's canisters with a
+**pluggable approval mechanism**, built on proven IC primitives (chunk store, snapshots).
 
 ---
 
