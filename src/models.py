@@ -46,6 +46,9 @@ class Section(Entity, TimestampedMixin):
     # decision. Empty string => only Casals controllers may command.
     commander_principal = String(max_length=64, default="")
     created_by = String(max_length=64, default="")
+    # Cycle policy (0 => inherit from Settings defaults). See util.resolve_cycle_policy.
+    min_cycles = Integer(default=0)
+    topup_cycles = Integer(default=0)
     desks = OneToMany("Desk", "section")
     wasms = OneToMany("AuthorizedWasm", "section")
 
@@ -60,6 +63,9 @@ class Desk(Entity, TimestampedMixin):
     # Optional per-desk commander; overrides the section commander when set.
     commander_principal = String(max_length=64, default="")
     created_by = String(max_length=64, default="")
+    # Cycle policy override (0 => inherit from the section, then Settings).
+    min_cycles = Integer(default=0)
+    topup_cycles = Integer(default=0)
     stands = OneToMany("Stand", "desk")
 
 
@@ -76,6 +82,9 @@ class Stand(Entity, TimestampedMixin):
     status = String(max_length=32, default=StandStatus.REGISTERED)
     snapshot_id = String(max_length=128, default="")  # last pre-upgrade snapshot
     created_by = String(max_length=64, default="")
+    # Cycle policy override (0 => inherit from the desk, then section, then Settings).
+    min_cycles = Integer(default=0)
+    topup_cycles = Integer(default=0)
 
 
 class AuthorizedWasm(Entity, TimestampedMixin):
@@ -109,9 +118,22 @@ class Settings(Entity):
     open_access = Integer(default=0)
     file_registry_canister_id = String(max_length=64, default="")
     # CycleOps: Casals keeps this principal informed of the canisters to
-    # monitor and adds it as a controller so it can auto-top-up.
+    # monitor and adds it as a controller so it can auto-top-up. Optional
+    # backstop alongside Casals' own native cycles management (below).
     cycleops_enabled = Integer(default=0)
     cycleops_principal = String(max_length=64, default="")
+    # ── Native cycles management (the conductor as the orchestra's paymaster) ──
+    # Platform-default cycle policy, used when a stand/desk/section sets no
+    # override. min_cycles: top up when a stand's balance (above its freezing
+    # threshold) dips below this. topup_cycles: how much to add per top-up.
+    default_min_cycles = Integer(default=500_000_000_000)      # 0.5T
+    default_topup_cycles = Integer(default=1_000_000_000_000)  # 1T
+    # Never spend the conductor's own balance below this reserve when topping up.
+    treasury_reserve = Integer(default=1_000_000_000_000)      # 1T
+    # Autopilot: when enabled, a re-arming timer periodically reconciles every
+    # stand's balance against its policy. Interval is in seconds.
+    cycles_autopilot = Integer(default=0)
+    cycles_check_interval_secs = Integer(default=21_600)       # 6h
     version = String(max_length=32, default="0.1.0")
 
 

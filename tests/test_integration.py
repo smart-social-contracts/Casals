@@ -127,6 +127,65 @@ class TestLifecycleValidation:
         assert res.get("ok") is False
 
 
+class TestCyclesManagement:
+    def test_metadata_exposes_cycle_settings(self, canister):
+        md = call_canister("casals_metadata")
+        for k in (
+            "default_min_cycles", "default_topup_cycles", "treasury_reserve",
+            "cycles_autopilot", "cycles_check_interval_secs",
+        ):
+            assert k in md, md
+        assert md["cycles_autopilot"] is False
+
+    def test_set_cycle_settings_roundtrip(self, canister):
+        _ok("set_settings", {
+            "default_min_cycles": 750_000_000_000,
+            "default_topup_cycles": 2_000_000_000_000,
+            "treasury_reserve": 3_000_000_000_000,
+            "cycles_autopilot": True,
+            "cycles_check_interval_secs": 3600,
+        })
+        md = call_canister("casals_metadata")
+        assert md["default_min_cycles"] == 750_000_000_000
+        assert md["treasury_reserve"] == 3_000_000_000_000
+        assert md["cycles_autopilot"] is True
+        assert md["cycles_check_interval_secs"] == 3600
+        # disable autopilot again so other tests / the replica stay quiet
+        _ok("set_settings", {"cycles_autopilot": False})
+
+    def test_set_cycle_policy_on_section_and_stand(self, canister):
+        _ok("create_section", {"name": "sec-cyc"})
+        _ok("set_cycle_policy", {"section": "sec-cyc", "min_cycles": 1_000, "topup_cycles": 5_000})
+        tree = call_canister("get_tree")
+        sec = next(s for s in tree["sections"] if s["name"] == "sec-cyc")
+        assert sec["min_cycles"] == 1_000 and sec["topup_cycles"] == 5_000
+
+    def test_set_cycle_policy_unknown_target(self, canister):
+        res = call_canister("set_cycle_policy", json.dumps({"stand": "ghost", "min_cycles": 1}))
+        assert res.get("ok") is False
+
+    def test_set_cycle_policy_requires_target(self, canister):
+        res = call_canister("set_cycle_policy", json.dumps({"min_cycles": 1}))
+        assert res.get("ok") is False
+        assert "section" in res.get("error", "")
+
+    def test_top_up_unknown_target(self, canister):
+        res = call_canister("top_up", json.dumps({"stand": "ghost"}))
+        assert res.get("ok") is False
+
+    def test_get_cycles_shape(self, canister):
+        rep = call_canister("get_cycles")
+        assert "treasury" in rep and "totals" in rep and "stands" in rep
+        assert "balance" in rep["treasury"]
+        assert isinstance(rep["stands"], list)
+
+    def test_reconcile_runs(self, canister):
+        # With no created stands, reconcile is a no-op but must succeed.
+        res = call_canister("reconcile")
+        assert res.get("ok") is True
+        assert res.get("topped_up") == 0
+
+
 class TestAuditLog:
     def test_events_recorded_and_chained(self, canister):
         _ok("create_section", {"name": "sec-audit"})

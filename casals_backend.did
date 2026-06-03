@@ -29,4 +29,10 @@ service : {
   revert_snapshot : (text) -> (text);
   stop_canister : (text) -> (text);
   start_canister : (text) -> (text);
+
+  // ── native cycles management ──
+  get_cycles : () -> (text);
+  top_up : (text) -> (text);
+  reconcile : () -> (text);
+  set_cycle_policy : (text) -> (text);
 }

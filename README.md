@@ -116,9 +116,16 @@ Notes:
 
 - Casals **creates** stands via the management canister (`create_canister`), funded by Casals'
   own cycles, and is their **controller**.
-- **CycleOps** is added as a monitoring controller and **auto-tops-up** the stands; Casals keeps
-  CycleOps informed of the set of canisters it manages (configured in Settings) — same pattern
-  used by realms today.
+- **Native cycles management (the conductor as paymaster).** Because Casals is the sole
+  controller of every stand, it both *observes* balances (`canister_status.cycles`) and *funds*
+  them (`deposit_cycles`) directly. A per-**Section/Desk/Stand** *cycle policy*
+  (`min_cycles` threshold + `topup_cycles` amount, inheriting down the tree like the commander)
+  drives top-ups, paid from Casals' own treasury and bounded by a `treasury_reserve`. An
+  **autopilot** timer periodically reconciles every stand (interval configurable in Settings;
+  default 6h), and `top_up` / `reconcile` are available for manual or external triggers. The
+  `Cycles` page shows treasury balance and per-stand solvency.
+- **CycleOps** remains an optional backstop: it can still be added as a monitoring controller
+  and Casals keeps it informed of the set of canisters it manages (`cycleops_monitored`).
 - A **pre-existing** canister can be registered as a stand, but the owner must first add the
   Casals conductor as a controller so it can be managed.
 
@@ -186,6 +193,7 @@ JSON-in / JSON-out `text` endpoints (keeps the Candid surface tiny). Update meth
 | update | `create_stand` | create canister + install authorized WASM + verify |
 | update | `upgrade_to` | desk/stand upgrade, snapshot → install → verify → all-or-nothing rollback |
 | update | `create_snapshot` / `revert_snapshot` / `stop_canister` / `start_canister` | per-stand lifecycle |
+| update | `get_cycles` / `top_up` / `reconcile` / `set_cycle_policy` | native cycles management (treasury, solvency, top-ups, per-target policy) |
 
 Authorization: platform/governance actions require a **Casals controller**; `create_section` /
 `create_desk` / `register_stand` are also allowed for any II principal when **open-access** is on;
@@ -218,9 +226,13 @@ create, chunked install/upgrade, snapshot, `module_hash` verification, coordinat
 rollback; authorized-WASM list backed by `file-registry`; append-only hash-chained audit log;
 SvelteKit + II frontend with tree view; CycleOps controller wiring; open-access toggle.
 
-**v2** — retire stands + reclaim cycles (`stop` / `delete_canister`); cycles/solvency dashboard;
-direct CycleOps registration call; anti-spam quotas; default hello_world templates seeded on
-deploy; Casals platform SNS hand-off; live-replica hardening of the orchestration ABI.
+**v1.1 (this PR)** — native cycles management: per-Section/Desk/Stand cycle policy (inherited),
+treasury with reserve, `get_cycles` solvency snapshot, manual `top_up`, `reconcile`, an autopilot
+reconcile timer, and a `Cycles` page.
+
+**v2** — retire stands + reclaim cycles (`stop` / `delete_canister`); direct CycleOps registration
+call; anti-spam quotas; default hello_world templates seeded on deploy; Casals platform SNS
+hand-off; live-replica hardening of the orchestration ABI.
 
 ---
 

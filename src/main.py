@@ -20,6 +20,7 @@ import traceback
 from basilisk import (
     Async,
     CallResult,
+    Duration,
     Principal,
     Service,
     StableBTreeMap,
@@ -47,7 +48,14 @@ from models import (
     StandKind,
     StandStatus,
 )
-from util import audit_block_hash, stand_url, to_hex as _to_hex
+from util import (
+    audit_block_hash,
+    cycles_status,
+    decide_topup,
+    resolve_cycle_policy,
+    stand_url,
+    to_hex as _to_hex,
+)
 
 _log = get_logger("casals")
 
@@ -58,6 +66,11 @@ CREATE_CYCLES = 2_000_000_000_000  # 2T
 # Per-chunk read size when pulling a WASM from the file-registry (matches the
 # registry's get_file_chunk cap).
 PULL_CHUNK_BYTES = 128 * 1024
+
+# Active autopilot timer id (within this instance's lifetime; IC timers — like
+# this module global — do not survive an upgrade, so they are re-armed in
+# post_upgrade). None when autopilot is off.
+_autopilot_timer_id = None
 
 # ── Storage ──────────────────────────────────────────────────────────────
 
@@ -130,6 +143,7 @@ def _settings() -> Settings:
 def _bootstrap() -> None:
     try:
         _settings()
+        _arm_autopilot()
     except Exception as e:  # pragma: no cover - defensive at install time
         _log.error(f"bootstrap error: {e}")
 
@@ -224,6 +238,8 @@ def _stand_view(st: Stand) -> dict:
         "wasm_hash": st.wasm_hash,
         "status": st.status,
         "snapshot_id": st.snapshot_id,
+        "min_cycles": int(st.min_cycles or 0),
+        "topup_cycles": int(st.topup_cycles or 0),
     }
 
 
@@ -232,6 +248,8 @@ def _desk_view(dk: Desk) -> dict:
         "name": dk.name,
         "description": dk.description,
         "commander_principal": dk.commander_principal,
+        "min_cycles": int(dk.min_cycles or 0),
+        "topup_cycles": int(dk.topup_cycles or 0),
         "stands": [_stand_view(s) for s in (dk.stands or [])],
     }
 
@@ -241,6 +259,8 @@ def _section_view(sec: Section) -> dict:
         "name": sec.name,
         "description": sec.description,
         "commander_principal": sec.commander_principal,
+        "min_cycles": int(sec.min_cycles or 0),
+        "topup_cycles": int(sec.topup_cycles or 0),
         "desks": [_desk_view(d) for d in (sec.desks or [])],
     }
 
@@ -273,6 +293,11 @@ def casals_metadata() -> text:
         "file_registry_canister_id": s.file_registry_canister_id,
         "cycleops_enabled": bool(s.cycleops_enabled),
         "cycleops_principal": s.cycleops_principal,
+        "default_min_cycles": int(s.default_min_cycles or 0),
+        "default_topup_cycles": int(s.default_topup_cycles or 0),
+        "treasury_reserve": int(s.treasury_reserve or 0),
+        "cycles_autopilot": bool(s.cycles_autopilot),
+        "cycles_check_interval_secs": int(s.cycles_check_interval_secs or 0),
         "canister_type": "orchestrator",
     })
 
@@ -380,7 +405,9 @@ def get_events(args: text) -> text:
 def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
     {open_access: bool, file_registry_canister_id: str,
-     cycleops_enabled: bool, cycleops_principal: str}."""
+     cycleops_enabled: bool, cycleops_principal: str,
+     default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
+     cycles_autopilot: bool, cycles_check_interval_secs: int}."""
     try:
         _require_admin()
         params = json.loads(args)
@@ -393,7 +420,23 @@ def set_settings(args: text) -> text:
             s.cycleops_enabled = 1 if params["cycleops_enabled"] else 0
         if "cycleops_principal" in params:
             s.cycleops_principal = (params["cycleops_principal"] or "").strip()
+        if "default_min_cycles" in params:
+            s.default_min_cycles = max(0, int(params["default_min_cycles"]))
+        if "default_topup_cycles" in params:
+            s.default_topup_cycles = max(0, int(params["default_topup_cycles"]))
+        if "treasury_reserve" in params:
+            s.treasury_reserve = max(0, int(params["treasury_reserve"]))
+        # Autopilot toggle / interval re-arms the reconcile timer immediately.
+        autopilot_touched = False
+        if "cycles_autopilot" in params:
+            s.cycles_autopilot = 1 if params["cycles_autopilot"] else 0
+            autopilot_touched = True
+        if "cycles_check_interval_secs" in params:
+            s.cycles_check_interval_secs = max(0, int(params["cycles_check_interval_secs"]))
+            autopilot_touched = True
         _append_event("settings_changed", "", {k: params[k] for k in params})
+        if autopilot_touched:
+            _arm_autopilot()
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -857,6 +900,302 @@ def start_canister(args: text) -> Async[text]:
         st.status = StandStatus.INSTALLED
         _append_event("start_canister", st.canister_id, {})
         return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+# ── Native cycles management (the conductor as the orchestra's paymaster) ─────
+#
+#  Casals is the sole controller of every stand, so it can both observe their
+#  balance (canister_status.cycles) and fund them (deposit_cycles) directly —
+#  no external monitor required. The decision primitives (resolve_cycle_policy,
+#  decide_topup, cycles_status) are pure and unit-tested in util.py; everything
+#  here is the on-chain plumbing around them.
+
+def _status_cycles(status) -> int:
+    c = status.get("cycles") if isinstance(status, dict) else getattr(status, "cycles", 0)
+    return int(c or 0)
+
+
+def _status_freezing(status) -> int:
+    settings = status.get("settings") if isinstance(status, dict) else getattr(status, "settings", None)
+    if settings is None:
+        return 0
+    fz = settings.get("freezing_threshold") if isinstance(settings, dict) else getattr(settings, "freezing_threshold", 0)
+    return int(fz or 0)
+
+
+def _policy_for(st: Stand, s: "Settings" = None):
+    """Effective (min_cycles, topup_cycles) for a stand, inheriting up the tree."""
+    s = s or _settings()
+    dk = st.desk
+    sec = dk.section if dk else None
+    return resolve_cycle_policy(
+        stand=(int(st.min_cycles or 0), int(st.topup_cycles or 0)),
+        desk=(int(dk.min_cycles or 0), int(dk.topup_cycles or 0)) if dk else (0, 0),
+        section=(int(sec.min_cycles or 0), int(sec.topup_cycles or 0)) if sec else (0, 0),
+        defaults=(int(s.default_min_cycles or 0), int(s.default_topup_cycles or 0)),
+    )
+
+
+def _resolve_stand_or_desk(params):
+    """Return (targets, desk) for a {"stand": ...} or {"desk": ...} request."""
+    if params.get("stand"):
+        list(Stand.instances())
+        st = Stand[params["stand"].strip()]
+        if st is None:
+            raise Exception(f"unknown stand '{params['stand']}'")
+        return [st], st.desk
+    if params.get("desk"):
+        list(Desk.instances())
+        dk = Desk[params["desk"].strip()]
+        if dk is None:
+            raise Exception(f"unknown desk '{params['desk']}'")
+        return list(dk.stands or []), dk
+    raise Exception("expected 'stand' or 'desk'")
+
+
+def _reconcile_all_gen():
+    """Generator: top up every stand below its policy threshold.
+
+    Returns a summary dict {treasury, topped_up, checked, results}. Used both by
+    the `reconcile` endpoint and by the autopilot timer.
+    """
+    list(Stand.instances())
+    s = _settings()
+    reserve = int(s.treasury_reserve or 0)
+    treasury = int(ic.canister_balance128())
+    results = []
+    topped = 0
+    for st in Stand.instances():
+        if not st.canister_id:
+            continue
+        try:
+            status_res = yield management_canister.canister_status(
+                {"canister_id": Principal.from_str(st.canister_id)}
+            )
+            status = unwrap_call_result(status_res)
+            bal = _status_cycles(status)
+            frz = _status_freezing(status)
+        except Exception as e:
+            results.append({"stand": st.name, "canister_id": st.canister_id, "error": str(e)})
+            continue
+        min_c, topup_c = _policy_for(st, s)
+        amount = decide_topup(bal, frz, min_c, topup_c, treasury, reserve)
+        if amount > 0:
+            try:
+                yield management_canister.deposit_cycles(
+                    {"canister_id": Principal.from_str(st.canister_id)}
+                ).with_cycles(amount)
+                treasury -= amount
+                topped += 1
+                _append_event("cycles_topup", st.canister_id,
+                              {"amount": amount, "balance_before": bal})
+                results.append({"stand": st.name, "topped_up": amount, "balance_before": bal})
+            except Exception as e:
+                results.append({"stand": st.name, "canister_id": st.canister_id, "error": str(e)})
+        else:
+            label = cycles_status(bal, frz, min_c)
+            # A wanted-but-unfunded top-up means the treasury is exhausted: flag it.
+            wanted = bool(min_c > 0 and topup_c > 0 and (bal - frz) < min_c)
+            if wanted:
+                _append_event("cycles_low", st.canister_id,
+                              {"balance": bal, "status": label, "reason": "treasury exhausted"})
+            results.append({"stand": st.name, "balance": bal, "status": label})
+    return {"treasury": treasury, "topped_up": topped, "checked": len(results), "results": results}
+
+
+def _reconcile_cb():
+    """Autopilot timer callback. A generator so the runtime drives the async
+    canister_status / deposit_cycles calls; never raises (a raise would trap and
+    roll back the whole timer execution)."""
+    try:
+        summary = yield from _reconcile_all_gen()
+        _log.info(f"autopilot reconcile: {summary.get('topped_up')} topped of {summary.get('checked')}")
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"autopilot reconcile failed: {e}")
+
+
+def _arm_autopilot() -> None:
+    """(Re)arm the recurring reconcile timer to match current settings.
+
+    IC timers do not survive upgrades, so this is also called from
+    init / post_upgrade. Clears any timer armed earlier in this instance's
+    lifetime before setting a new one, so toggling settings never stacks timers.
+    """
+    global _autopilot_timer_id
+    try:
+        if _autopilot_timer_id is not None:
+            try:
+                ic.clear_timer(_autopilot_timer_id)
+            except Exception:
+                pass
+            _autopilot_timer_id = None
+        s = _settings()
+        interval = int(s.cycles_check_interval_secs or 0)
+        if s.cycles_autopilot and interval > 0:
+            _autopilot_timer_id = ic.set_timer_interval(Duration(interval), _reconcile_cb)
+            _log.info(f"autopilot armed: every {interval}s")
+    except Exception as e:  # pragma: no cover - defensive at install time
+        _log.error(f"could not arm autopilot: {e}")
+
+
+@update
+def get_cycles() -> Async[text]:
+    """Live solvency snapshot of the whole orchestra.
+
+    Reads each stand's balance from the management canister (an update, hence
+    not a query) and reports the conductor's own treasury. Returns:
+    {treasury:{...}, totals:{...}, stands:[{section,desk,name,...,status}]}.
+    """
+    try:
+        list(Section.instances())
+        list(Desk.instances())
+        list(Stand.instances())
+        s = _settings()
+        treasury = int(ic.canister_balance128())
+        stands_out = []
+        counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
+        for st in Stand.instances():
+            if not st.canister_id:
+                continue
+            dk = st.desk
+            sec = dk.section if dk else None
+            min_c, topup_c = _policy_for(st, s)
+            row = {
+                "section": sec.name if sec else "",
+                "desk": dk.name if dk else "",
+                "name": st.name,
+                "canister_id": st.canister_id,
+                "kind": st.kind,
+                "min_cycles": min_c,
+                "topup_cycles": topup_c,
+            }
+            try:
+                status_res = yield management_canister.canister_status(
+                    {"canister_id": Principal.from_str(st.canister_id)}
+                )
+                status = unwrap_call_result(status_res)
+                bal = _status_cycles(status)
+                frz = _status_freezing(status)
+                label = cycles_status(bal, frz, min_c)
+                row.update({"cycles": bal, "freezing_threshold": frz,
+                            "headroom": bal - frz, "status": label})
+                counts[label] = counts.get(label, 0) + 1
+            except Exception as e:
+                row.update({"status": "error", "error": str(e)})
+                counts["error"] += 1
+            stands_out.append(row)
+        return json.dumps({
+            "treasury": {
+                "balance": treasury,
+                "reserve": int(s.treasury_reserve or 0),
+                "spendable": max(0, treasury - int(s.treasury_reserve or 0)),
+                "autopilot": bool(s.cycles_autopilot),
+                "interval_secs": int(s.cycles_check_interval_secs or 0),
+            },
+            "totals": {"stands": len(stands_out), **counts},
+            "stands": stands_out,
+        })
+    except Exception as e:
+        _log.error(f"get_cycles error: {e}")
+        return _err(str(e))
+
+
+@update
+def top_up(args: text) -> Async[text]:
+    """Manually deposit cycles into a stand or every stand in a desk.
+
+    Authorized by the desk/section commander (or a controller). Args (JSON):
+    {"stand": str}|{"desk": str}, optional {"amount": int}. Without `amount`,
+    the resolved policy top-up amount is used. The treasury reserve is enforced.
+    """
+    try:
+        params = json.loads(args)
+        targets, dk = _resolve_stand_or_desk(params)
+        _require_commander(dk)
+        s = _settings()
+        reserve = int(s.treasury_reserve or 0)
+        treasury = int(ic.canister_balance128())
+        explicit = params.get("amount")
+        explicit = int(explicit) if explicit is not None else None
+        out = []
+        for st in targets:
+            if not st.canister_id:
+                continue
+            if explicit is not None:
+                amount = explicit
+            else:
+                _, amount = _policy_for(st, s)
+            if amount <= 0:
+                out.append({"stand": st.name, "topped_up": 0, "reason": "no amount / policy top-up is zero"})
+                continue
+            if amount > (treasury - reserve):
+                return _err(
+                    f"insufficient treasury: need {amount}, spendable "
+                    f"{max(0, treasury - reserve)} (balance {treasury}, reserve {reserve})"
+                )
+            yield management_canister.deposit_cycles(
+                {"canister_id": Principal.from_str(st.canister_id)}
+            ).with_cycles(amount)
+            treasury -= amount
+            _append_event("cycles_topup", st.canister_id, {"amount": amount, "manual": True})
+            out.append({"stand": st.name, "topped_up": amount})
+        return _ok(topped_up=out, treasury=treasury)
+    except Exception as e:
+        _log.error(f"top_up error: {e}")
+        return _err(str(e))
+
+
+@update
+def reconcile() -> Async[text]:
+    """Sweep the whole orchestra once: top up every stand below its policy
+    threshold, respecting the treasury reserve. Controller only (this is the
+    same routine the autopilot runs; expose it for manual / external triggers).
+    Idempotent — safe to call repeatedly."""
+    try:
+        _require_admin()
+        summary = yield from _reconcile_all_gen()
+        return _ok(**summary)
+    except Exception as e:
+        _log.error(f"reconcile error: {e}")
+        return _err(str(e))
+
+
+@update
+def set_cycle_policy(args: text) -> text:
+    """Controller only. Set the cycle policy on a target. Args (JSON):
+    one of {"section": str}|{"desk": str}|{"stand": str}, plus any of
+    {"min_cycles": int, "topup_cycles": int} (0 => inherit)."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        if params.get("stand"):
+            list(Stand.instances())
+            target = Stand[params["stand"].strip()]
+            label = {"stand": params["stand"].strip()}
+        elif params.get("desk"):
+            list(Desk.instances())
+            target = Desk[params["desk"].strip()]
+            label = {"desk": params["desk"].strip()}
+        elif params.get("section"):
+            list(Section.instances())
+            target = Section[params["section"].strip()]
+            label = {"section": params["section"].strip()}
+        else:
+            return _err("expected 'section', 'desk' or 'stand'")
+        if target is None:
+            return _err(f"unknown target: {label}")
+        if "min_cycles" in params:
+            target.min_cycles = max(0, int(params["min_cycles"]))
+        if "topup_cycles" in params:
+            target.topup_cycles = max(0, int(params["topup_cycles"]))
+        _append_event("cycle_policy_set", "", {
+            **label,
+            "min_cycles": int(target.min_cycles or 0),
+            "topup_cycles": int(target.topup_cycles or 0),
+        })
+        return _ok(min_cycles=int(target.min_cycles or 0), topup_cycles=int(target.topup_cycles or 0))
     except Exception as e:
         return _err(str(e))
 

@@ -53,6 +53,11 @@ export interface Metadata {
   file_registry_canister_id: string;
   cycleops_enabled: boolean;
   cycleops_principal: string;
+  default_min_cycles: number;
+  default_topup_cycles: number;
+  treasury_reserve: number;
+  cycles_autopilot: boolean;
+  cycles_check_interval_secs: number;
   canister_type: string;
 }
 
@@ -87,6 +92,37 @@ export interface CycleOpsInfo {
   cycleops_enabled: boolean;
   cycleops_principal: string;
   canister_ids: string[];
+}
+
+export type CycleStatus = 'ok' | 'low' | 'critical' | 'frozen' | 'error';
+
+export interface StandCycles {
+  section: string;
+  desk: string;
+  name: string;
+  canister_id: string;
+  kind: StandKind;
+  min_cycles: number;
+  topup_cycles: number;
+  cycles?: number;
+  freezing_threshold?: number;
+  headroom?: number;
+  status: CycleStatus;
+  error?: string;
+}
+
+export interface Treasury {
+  balance: number;
+  reserve: number;
+  spendable: number;
+  autopilot: boolean;
+  interval_secs: number;
+}
+
+export interface CyclesReport {
+  treasury: Treasury;
+  totals: { stands: number; ok: number; low: number; critical: number; frozen: number; error: number };
+  stands: StandCycles[];
 }
 
 export interface UpdateResult {
@@ -202,6 +238,34 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 }
 
 // ---------------------------------------------------------------------------
+// Cycles management
+// ---------------------------------------------------------------------------
+
+// get_cycles reads each stand's balance from the management canister, so it is
+// an update call (not a query) even though it only reports state.
+export async function getCycles(): Promise<CyclesReport> {
+  return _parseQuery<CyclesReport>(await _actor(true).get_cycles());
+}
+
+export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).top_up(JSON.stringify(args)));
+}
+
+export async function reconcile(): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).reconcile());
+}
+
+export async function setCyclePolicy(args: {
+  section?: string;
+  desk?: string;
+  stand?: string;
+  min_cycles?: number;
+  topup_cycles?: number;
+}): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).set_cycle_policy(JSON.stringify(args)));
+}
+
+// ---------------------------------------------------------------------------
 // Governance / registration updates
 // ---------------------------------------------------------------------------
 
@@ -210,6 +274,11 @@ export interface SettingsPatch {
   file_registry_canister_id?: string;
   cycleops_enabled?: boolean;
   cycleops_principal?: string;
+  default_min_cycles?: number;
+  default_topup_cycles?: number;
+  treasury_reserve?: number;
+  cycles_autopilot?: boolean;
+  cycles_check_interval_secs?: number;
 }
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
@@ -315,6 +384,40 @@ export function shortHash(hash: string, len = 8): string {
 export function shortPrincipal(p: string): string {
   if (!p) return '';
   return p.length > 12 ? `${p.slice(0, 5)}…${p.slice(-5)}` : p;
+}
+
+// Render a raw cycles count as a compact T/B/M string (1T = 1e12).
+export function formatCycles(n: number | undefined | null): string {
+  if (n === undefined || n === null) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  return `${n}`;
+}
+
+// Parse a human cycles string ("1.5t", "500b", "1000000") into a raw count.
+export function parseCycles(s: string): number {
+  const m = String(s).trim().toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*([tbm])?$/);
+  if (!m) return NaN;
+  const value = parseFloat(m[1]);
+  const mult = m[2] === 't' ? 1e12 : m[2] === 'b' ? 1e9 : m[2] === 'm' ? 1e6 : 1;
+  return Math.round(value * mult);
+}
+
+export function cycleStatusBadge(status: CycleStatus): string {
+  switch (status) {
+    case 'ok':
+      return 'badge-frontend';
+    case 'low':
+      return 'badge-neutral';
+    case 'critical':
+    case 'frozen':
+    case 'error':
+      return 'badge-neutral';
+    default:
+      return 'badge-neutral';
+  }
 }
 
 // The Candid UI URL for a backend stand (so its API can be exercised directly).

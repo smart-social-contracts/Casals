@@ -9,6 +9,7 @@
 
   const navLinks = [
     { href: '/', label: 'Orchestra' },
+    { href: '/cycles', label: 'Cycles' },
     { href: '/wasms', label: 'Authorized WASMs' },
     { href: '/settings', label: 'Settings' },
   ];
