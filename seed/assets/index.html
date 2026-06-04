@@ -83,8 +83,14 @@
 
       const short = id => id ? id.slice(0, 12) + '…' : '';
 
+      // "Wired" = the placeholder was substituted. We must NOT compare against
+      // the placeholder literal here: Casals replaces every occurrence of it in
+      // this file, which would clobber the check. A canister principal never
+      // starts with "__", so test that instead.
+      const wired = BACKEND_ID && BACKEND_ID.slice(0, 2) !== '__';
+
       // ── Fallback: no backend wired ────────────────────────────────────
-      if (!BACKEND_ID || BACKEND_ID === '__BACKEND_CANISTER_ID__') {
+      if (!wired) {
         btn.textContent = 'Greet';
         btn.disabled = false;
         source.textContent = 'client-side only';
