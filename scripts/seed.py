@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Seed a Casals deployment with the catalog templates and a demo layout.
+"""Seed a Casals deployment with the default template catalog.
 
 What it does (idempotently):
   1. Point Casals at the deployed file-registry (set_settings).
-  2. For each template in seed/mainnet.json: gunzip the committed WASM, upload
+  2. For each template in seed/templates.json: gunzip the committed WASM, upload
      it to the file-registry (chunked), and authorize it on Casals.
-  3. Create the demo section(s) and desk(s).
+  3. With --deploy: also deploy the live sheet (the backend's default orchestra),
+     standing up its stands (reusing pooled canisters before creating new ones).
+
+The sheet itself is NOT created here — it lives ephemerally in the backend
+(loaded from src/default_sheet.py at canister start) and is deployed via the
+frontend Deploy button or `deploy_sheet`. Seeding only ensures the catalog of
+authorized WASMs that a sheet's stands reference.
 
 Re-running is safe: templates already authorized with a matching hash are
-skipped, and sections/desks that already exist are left untouched.
+skipped; deploy_sheet is itself idempotent.
 
 Both canisters (casals_backend, ic_file_registry) are tracked in icp.yaml, so
 they resolve by name on the target environment.
@@ -16,6 +22,7 @@ they resolve by name on the target environment.
 Usage:
     python3 scripts/seed.py -e local
     python3 scripts/seed.py -e ic --identity casals
+    python3 scripts/seed.py -e ic --identity casals --deploy
 """
 
 import argparse
@@ -32,7 +39,8 @@ import tempfile
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SEED_DIR = os.path.join(REPO_ROOT, "seed")
 TEMPLATES_DIR = os.path.join(SEED_DIR, "templates")
-MANIFEST = os.path.join(SEED_DIR, "mainnet.json")
+ASSETS_DIR = os.path.join(SEED_DIR, "assets")
+CATALOG = os.path.join(SEED_DIR, "templates.json")
 
 CASALS = "casals_backend"
 REGISTRY = "ic_file_registry"
@@ -140,6 +148,14 @@ def _read_template_bytes(file_name: str) -> bytes:
         return f.read()
 
 
+def _read_asset_bytes(file_name: str) -> bytes:
+    path = os.path.join(ASSETS_DIR, file_name)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"missing asset {path}")
+    with open(path, "rb") as f:
+        return f.read()
+
+
 def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> str:
     """Chunk-upload bytes into the file-registry; return the recorded sha256.
 
@@ -173,11 +189,13 @@ def main():
     ap = argparse.ArgumentParser(description="Seed a Casals deployment.")
     ap.add_argument("-e", "--env", default="local", help="icp environment (local|ic)")
     ap.add_argument("--identity", default=None, help="icp identity to call with")
+    ap.add_argument("--deploy", action="store_true",
+                    help="also deploy the live sheet (stand up the orchestra)")
     args = ap.parse_args()
 
-    with open(MANIFEST) as f:
-        manifest = json.load(f)
-    namespace = manifest["registry_namespace"]
+    with open(CATALOG) as f:
+        catalog = json.load(f)
+    namespace = catalog["registry_namespace"]
 
     casals_id = canister_id(CASALS, args)
     registry_id = canister_id(REGISTRY, args)
@@ -200,56 +218,70 @@ def main():
     if isinstance(listed, list):
         existing = {w["key"]: w.get("wasm_hash", "") for w in listed}
 
-    # 2. Templates: upload + authorize.
-    for tpl in manifest["templates"]:
+    # 2. Templates: upload WASM (+ any asset) and authorize.
+    for tpl in catalog["templates"]:
         key = tpl["key"]
         data = _read_template_bytes(tpl["file"])
         digest = hashlib.sha256(data).hexdigest()
-        if existing.get(key) == digest:
-            print(f"  = {key} already authorized ({digest[:12]}…), skipping")
+        asset = tpl.get("asset")
+        wasm_current = existing.get(key) == digest
+
+        # A frontend template may carry an asset (e.g. index.html). The asset's
+        # bytes can change independently of the WASM (you edit the served page),
+        # and the authorized record only stores a *pointer* (not the asset's
+        # content hash) — so always refresh the registry copy. Pushing the new
+        # bytes into already-live stands is a separate step (provision_assets).
+        if asset:
+            asset_bytes = _read_asset_bytes(asset["file"])
+            asset_digest = hashlib.sha256(asset_bytes).hexdigest()
+            print(f"    + uploading asset {asset['path']} ({len(asset_bytes)} bytes)…")
+            upload_wasm(args, namespace, asset["path"], asset_bytes, asset_digest)
+
+        if wasm_current:
+            print(f"  = {key} already authorized ({digest[:12]}…), wasm unchanged")
             continue
+
         print(f"  + uploading {key} ({len(data)} bytes)…")
         uploaded = upload_wasm(args, namespace, tpl["path"], data, digest)
         if uploaded != digest:
             sys.exit(f"hash mismatch for {key}: local {digest} != registry {uploaded}")
-        res = call(CASALS, "add_authorized_wasm", args, json.dumps({
+
+        authorize = {
             "key": key,
             "registry_namespace": namespace,
             "registry_path": tpl["path"],
             "wasm_hash": digest,
             "kind": tpl.get("kind", "backend"),
             "description": tpl.get("description", ""),
-        }))
+        }
+        if asset:
+            authorize["asset_namespace"] = namespace
+            authorize["asset_path"] = asset["path"]
+            authorize["asset_content_type"] = asset.get("content_type", "text/html")
+
+        res = call(CASALS, "add_authorized_wasm", args, json.dumps(authorize))
         if isinstance(res, dict) and res.get("ok"):
-            print(f"    authorized {key} -> {digest[:12]}…")
-        elif isinstance(res, dict) and "already exists" in str(res.get("error", "")):
-            print(f"    {key} already authorized, skipping")
+            verb = "re-authorized" if res.get("updated") else "authorized"
+            print(f"    {verb} {key} -> {digest[:12]}…")
         else:
             sys.exit(f"add_authorized_wasm failed for {key}: {res}")
 
-    # 3. Sections + desks.
-    for sec in manifest.get("sections", []):
-        res = call(CASALS, "create_section", args, json.dumps({
-            "name": sec["name"], "description": sec.get("description", ""),
-        }))
-        _report_create("section", sec["name"], res)
-    for desk in manifest.get("desks", []):
-        res = call(CASALS, "create_desk", args, json.dumps({
-            "section": desk["section"], "name": desk["name"],
-            "description": desk.get("description", ""),
-        }))
-        _report_create(f"desk {desk['section']}/", desk["name"], res)
+    # 3. Optionally deploy the live sheet (stand up the orchestra). The sheet is
+    #    the backend's default (loaded at canister start); deploy_sheet is
+    #    idempotent and reuses pooled canisters before creating new ones.
+    if args.deploy:
+        print("deploying live sheet (this creates/reuses stand canisters)…")
+        res = call(CASALS, "deploy_sheet", args, json.dumps({}))
+        if not (isinstance(res, dict) and res.get("ok")):
+            sys.exit(f"deploy_sheet failed: {res}")
+        for k in ("created_sections", "created_desks", "created_stands",
+                  "reused_stands", "reinstalled_stands", "retired_stands"):
+            if res.get(k):
+                print(f"  {k}: {', '.join(res[k])}")
+        if res.get("errors"):
+            sys.exit(f"deploy_sheet had errors: {res['errors']}")
 
     print("Seed complete.")
-
-
-def _report_create(label: str, name: str, res):
-    if isinstance(res, dict) and res.get("ok"):
-        print(f"  + created {label}{name}")
-    elif isinstance(res, dict) and "already exists" in str(res.get("error", "")):
-        print(f"  = {label}{name} already exists, skipping")
-    else:
-        sys.exit(f"create {label}{name} failed: {res}")
 
 
 if __name__ == "__main__":

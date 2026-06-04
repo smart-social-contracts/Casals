@@ -85,6 +85,48 @@ class Stand(Entity, TimestampedMixin):
     # Cycle policy override (0 => inherit from the desk, then section, then Settings).
     min_cycles = Integer(default=0)
     topup_cycles = Integer(default=0)
+    # Cumulative cycles Casals has deposited into this stand (top-ups). Paired
+    # with the balance samples (CycleSample) to derive true consumption (burn):
+    #   burn(t0,t1) = (deposited(t1) - deposited(t0)) - (balance(t1) - balance(t0))
+    cycles_deposited = Integer(default=0)
+
+
+class CycleSample(Entity, TimestampedMixin):
+    """A point-in-time reading of one stand's cycle balance.
+
+    Casals samples balances periodically (a timer) and opportunistically (on
+    reconcile / get_cycles) so the frontend can chart cycles over time and a
+    burn treemap. Section/desk/stand names are denormalized so a sample stays
+    meaningful even if the orchestra is later restructured, and so history can
+    be aggregated without re-walking the live tree. Old samples are pruned
+    (retention window + hard cap) to bound stable-memory growth.
+    """
+
+    canister_id = String(max_length=64, default="")
+    stand_name = String(max_length=128, default="")
+    desk_name = String(max_length=128, default="")
+    section_name = String(max_length=128, default="")
+    kind = String(max_length=16, default=StandKind.BACKEND)
+    ts = Integer(default=0)           # unix seconds
+    cycles = Integer(default=0)       # balance at ts
+    deposited = Integer(default=0)    # cumulative deposited into this stand at ts
+
+
+class PooledCanister(Entity, TimestampedMixin):
+    """A canister Casals has ever created, tracked for reuse.
+
+    Creating a canister is expensive, so Casals never throws one away: when a
+    stand is retired (e.g. removed from a sheet on the next deploy) its canister
+    is stopped and returned to the pool as ``free``. A later deploy that needs a
+    new stand reuses a free canister (reinstalling fresh code) before paying to
+    create another. The pool lives in stable memory, so it survives upgrades.
+    """
+
+    __alias__ = "canister_id"
+    canister_id = String(min_length=1, max_length=64)
+    # "free"  => parked, available for reuse; "in_use" => backing a live stand.
+    status = String(max_length=16, default="free")
+    stand_name = String(max_length=128, default="")  # current occupant (if in_use)
 
 
 class AuthorizedWasm(Entity, TimestampedMixin):
@@ -106,6 +148,13 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     kind = String(max_length=16, default=StandKind.BACKEND)
     description = String(max_length=512, default="")
     added_by = String(max_length=64, default="")
+    # Optional asset to upload into stands built from this WASM (for frontend
+    # certified-assets canisters, which install empty). The bytes live in the
+    # file-registry at (asset_namespace, asset_path); Casals uploads them via the
+    # asset canister's `store` after install so the stand serves a real page.
+    asset_namespace = String(max_length=256, default="")
+    asset_path = String(max_length=256, default="")
+    asset_content_type = String(max_length=128, default="text/html")
 
 
 class Settings(Entity):
@@ -130,10 +179,18 @@ class Settings(Entity):
     default_topup_cycles = Integer(default=1_000_000_000_000)  # 1T
     # Never spend the conductor's own balance below this reserve when topping up.
     treasury_reserve = Integer(default=1_000_000_000_000)      # 1T
+    # Cycles endowed into a freshly created stand canister. Tunable per
+    # deployment (e.g. lower for a cheap demo, higher for production stands).
+    # 0 => fall back to the CREATE_CYCLES code default.
+    create_cycles = Integer(default=2_000_000_000_000)         # 2T
     # Autopilot: when enabled, a re-arming timer periodically reconciles every
     # stand's balance against its policy. Interval is in seconds.
     cycles_autopilot = Integer(default=0)
     cycles_check_interval_secs = Integer(default=21_600)       # 6h
+    # Sampling: independent of autopilot, a timer records every stand's balance
+    # so the Cycles page can chart history. Default on, hourly.
+    cycles_sampling = Integer(default=1)
+    cycles_sample_interval_secs = Integer(default=3_600)       # 1h
     version = String(max_length=32, default="0.1.0")
 
 

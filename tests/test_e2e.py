@@ -19,13 +19,17 @@ just that Casals updated its own bookkeeping.
 The tests in TestLifecycle share a single stand and run in definition order.
 """
 
+import gzip
 import json
+import os
 
 import pytest
 
 from conftest import (
     EMPTY_WASM,
     EMPTY_WASM_V2,
+    REPO_ROOT,
+    _icp,
     call_canister,
     canister_module_hash,
 )
@@ -143,7 +147,12 @@ class TestFailurePaths:
         res = _err("create_stand", {
             "desk": "e2e-desk", "name": "bad-create", "kind": "backend", "wasm_key": "e2e-bad",
         })
-        assert "mismatch" in res["error"]
+        # A bad hash is now caught by install_chunked_code itself (it verifies the
+        # assembled module against the supplied hash and rejects), surfaced as a
+        # "Wasm module hash mismatch" rejection, rather than by the later
+        # post-install verify. Accept either phrasing.
+        err = res["error"].lower()
+        assert "hash" in err and ("mismatch" in err or "chunk store" in err)
         # No stand should have been recorded for the failed creation.
         tree = call_canister("get_tree")
         names = [
@@ -182,3 +191,171 @@ class TestIntrospection:
         ordered = sorted(events, key=lambda e: e["idx"])
         for prev, cur in zip(ordered, ordered[1:]):
             assert cur["parent_hash"] == prev["self_hash"]
+
+
+class TestCycleHistory:
+    """The conductor samples stand balances on chain so the frontend can chart
+    cycles over time + a burn/balance treemap. Runs before TestSheetDeploy so
+    the lifecycle stands are still live to be sampled."""
+
+    def test_history_records_samples(self, env):
+        # reconcile() sweeps every stand reading canister_status and records a
+        # sample per stand (no throttle), so history is populated deterministically.
+        rec = call_canister("reconcile")
+        assert isinstance(rec, dict) and rec.get("ok") is True, rec
+
+        hist = call_canister("get_cycle_history", json.dumps({}))
+        assert isinstance(hist, dict) and "samples" in hist and "now" in hist, hist
+        samples = hist["samples"]
+        assert len(samples) >= 1, hist
+
+        s = samples[-1]
+        for field in ("ts", "canister_id", "stand", "desk", "section", "kind", "cycles", "deposited"):
+            assert field in s, (field, s)
+        assert s["cycles"] > 0
+        assert s["deposited"] >= 0
+        # Samples are sorted ascending by time.
+        assert all(samples[i]["ts"] <= samples[i + 1]["ts"] for i in range(len(samples) - 1))
+        # A live lifecycle stand shows up in history.
+        assert any(x["stand"] == "life" for x in samples), [x["stand"] for x in samples]
+
+    def test_history_window_filter(self, env):
+        # A zero-length window keeps only samples at/after "now"; the full history
+        # is a superset.
+        all_h = call_canister("get_cycle_history", json.dumps({}))
+        recent = call_canister("get_cycle_history", json.dumps({"window_secs": 0}))
+        assert len(recent["samples"]) <= len(all_h["samples"])
+
+
+def _find_stand_in_tree(tree, name):
+    return next(
+        st for s in tree["sections"] for d in s["desks"]
+        for st in d["stands"] if st["name"] == name
+    )
+
+
+class TestSheetDeploy:
+    """Drive the sheet → deploy_sheet flow: idempotency, retire-to-pool, reuse.
+
+    Runs LAST in this module (after TestIntrospection, which relies on the
+    earlier stands): deploying a sheet retires every stand NOT in the sheet,
+    returning their canisters to the pool. We then exploit those freed canisters
+    to prove reuse-before-create.
+    """
+
+    @staticmethod
+    def _sheet(stands):
+        return {
+            "name": "sheet-test",
+            "sections": [
+                {"name": "orch", "description": "sheet-driven section",
+                 "desks": [{"name": "od", "description": "sheet desk", "stands": stands}]}
+            ],
+        }
+
+    def test_01_deploy_stands_up_orchestra(self, env):
+        res = _ok("deploy_sheet", {"sheet": self._sheet([
+            {"name": "s-a", "wasm_key": "e2e-v1", "kind": "backend"},
+            {"name": "s-b", "wasm_key": "e2e-v2", "kind": "backend"},
+        ])})
+        assert "orch" in res["created_sections"]
+        assert "od" in res["created_desks"]
+        # Both stands stood up (created outright or reused from the pool).
+        provisioned = set(res["created_stands"]) | set(res["reused_stands"])
+        assert {"s-a", "s-b"} <= provisioned, res
+        # On-chain proof the right modules are installed.
+        tree = call_canister("get_tree")
+        sa = _find_stand_in_tree(tree, "s-a")
+        sb = _find_stand_in_tree(tree, "s-b")
+        assert canister_module_hash(sa["canister_id"]) == env["h1"]
+        assert canister_module_hash(sb["canister_id"]) == env["h2"]
+
+    def test_02_deploy_is_idempotent(self, env):
+        res = _ok("deploy_sheet", {"sheet": self._sheet([
+            {"name": "s-a", "wasm_key": "e2e-v1", "kind": "backend"},
+            {"name": "s-b", "wasm_key": "e2e-v2", "kind": "backend"},
+        ])})
+        assert set(res["skipped_stands"]) == {"s-a", "s-b"}, res
+        assert res["created_stands"] == []
+        assert res["reused_stands"] == []
+        assert res["reinstalled_stands"] == []
+        assert res["retired_stands"] == []
+
+    def test_03_retire_frees_canister_and_next_deploy_reuses_it(self, env):
+        pool_before = call_canister("list_pool")
+        # Drop s-b and add s-c in the same deploy: s-b's canister is retired to
+        # the pool, then immediately reused for s-c — no new canister created.
+        res = _ok("deploy_sheet", {"sheet": self._sheet([
+            {"name": "s-a", "wasm_key": "e2e-v1", "kind": "backend"},
+            {"name": "s-c", "wasm_key": "e2e-v1", "kind": "backend"},
+        ])})
+        assert "s-b" in res["retired_stands"], res
+        assert "s-c" in res["reused_stands"], res
+        assert "s-c" not in res["created_stands"]
+        pool_after = call_canister("list_pool")
+        # Reuse means the pool didn't grow.
+        assert pool_after["total"] == pool_before["total"], (pool_before, pool_after)
+        tree = call_canister("get_tree")
+        sc = _find_stand_in_tree(tree, "s-c")
+        assert canister_module_hash(sc["canister_id"]) == env["h1"]
+
+    def test_04_pool_reuse_keeps_canister_count_minimal(self, env):
+        # Every canister Casals ever created is still tracked (never deleted),
+        # and reuse held the pool to the peak number of concurrent stands (2 —
+        # we never ran more than two stands at once across the whole suite).
+        pool = call_canister("list_pool")
+        assert pool["total"] == pool["in_use"] + pool["free"]
+        assert pool["total"] == 2, pool          # no canisters wasted
+        assert pool["in_use"] == 2               # s-a and s-c are live
+
+
+ASSET_WASM_GZ = os.path.join(REPO_ROOT, "seed", "templates", "hello-world-frontend.wasm.gz")
+ASSET_HTML = os.path.join(REPO_ROOT, "seed", "assets", "index.html")
+
+
+class TestFrontendAssetStand:
+    """Create a real certified-assets frontend stand and prove Casals provisions
+    its hello-world asset on chain (grant_permission + store), not just locally.
+    """
+
+    def test_frontend_stand_is_provisioned_with_assets(self, registry):
+        ns = "casals-templates"
+        with gzip.open(ASSET_WASM_GZ, "rb") as f:
+            wasm = f.read()
+        with open(ASSET_HTML, "rb") as f:
+            html = f.read()
+
+        whash = registry.store_chunked(ns, "hello-world-frontend.wasm", wasm)
+        registry.store_chunked(ns, "hello-world-frontend/index.html", html)
+
+        _ok("create_section", {"name": "web"})
+        _ok("create_desk", {"section": "web", "name": "web-desk"})
+        _ok("add_authorized_wasm", {
+            "key": "demo-frontend",
+            "registry_namespace": ns,
+            "registry_path": "hello-world-frontend.wasm",
+            "wasm_hash": whash,
+            "kind": "frontend",
+            "asset_namespace": ns,
+            "asset_path": "hello-world-frontend/index.html",
+            "asset_content_type": "text/html",
+        })
+
+        res = _ok("create_stand", {
+            "desk": "web-desk", "name": "web-fe", "kind": "frontend", "wasm_key": "demo-frontend",
+        })
+        cid = res["canister_id"]
+        # The real certified-assets canister is installed.
+        assert canister_module_hash(cid) == whash
+
+        # `assets_uploaded` is appended ONLY after grant_permission + store both
+        # succeed on chain (a trap is caught and recorded as `assets_failed`), so
+        # this proves the inter-canister provisioning really happened.
+        events = call_canister("get_events", json.dumps({"canister_id": cid, "take": 50}))
+        btypes = {e["btype"] for e in events}
+        assert "assets_failed" not in btypes, [e for e in events if e["btype"] == "assets_failed"]
+        assert "assets_uploaded" in btypes, btypes
+
+        # On-chain confirmation: the asset canister now lists the stored asset.
+        out = _icp(["canister", "call", cid, "list", "(record {})", "-n", "local"], check=False).stdout
+        assert "index.html" in out, out

@@ -15,12 +15,20 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     list_authorized_wasms: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_events:            IDL.Func([IDL.Text], [IDL.Text], ['query']),
     cycleops_monitored:    IDL.Func([], [IDL.Text], ['query']),
+    get_sheet:             IDL.Func([], [IDL.Text], ['query']),
+    list_pool:             IDL.Func([], [IDL.Text], ['query']),
 
     // ── cycles management ──
     get_cycles:            IDL.Func([], [IDL.Text], []),
+    get_cycle_history:     IDL.Func([IDL.Text], [IDL.Text], ['query']),
     top_up:                IDL.Func([IDL.Text], [IDL.Text], []),
     reconcile:             IDL.Func([], [IDL.Text], []),
     set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
+
+    // ── sheet (ephemeral desired-orchestra) ──
+    set_sheet:             IDL.Func([IDL.Text], [IDL.Text], []),
+    reset_sheet:           IDL.Func([], [IDL.Text], []),
+    deploy_sheet:          IDL.Func([IDL.Text], [IDL.Text], []),
 
     // ── governance / registration ──
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
