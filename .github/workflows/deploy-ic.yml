@@ -9,11 +9,10 @@
 #   - .icp/data (committed) holds the mainnet canister-ID mappings so each run
 #     targets the SAME canisters instead of creating new ones.
 #
-# Conductor principal: added as a controller of casals_backend and
-# casals_frontend after every deploy so the conductor can manage the instance
-# (e.g. set commanders, call admin endpoints) from the Casals UI without
-# needing the deploy PEM.
-CONDUCTOR_PRINCIPAL: nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae
+# Conductor principal (nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae):
+# added as a controller of casals_backend and casals_frontend after every deploy so the
+# conductor can manage the instance (set commanders, call admin endpoints) from the
+# Casals UI without needing the deploy PEM.
 name: Deploy to IC mainnet
 
 on:
