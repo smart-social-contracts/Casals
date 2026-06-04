@@ -179,6 +179,10 @@ class Settings(Entity):
     default_topup_cycles = Integer(default=1_000_000_000_000)  # 1T
     # Never spend the conductor's own balance below this reserve when topping up.
     treasury_reserve = Integer(default=1_000_000_000_000)      # 1T
+    # Cycles endowed into a freshly created stand canister. Tunable per
+    # deployment (e.g. lower for a cheap demo, higher for production stands).
+    # 0 => fall back to the CREATE_CYCLES code default.
+    create_cycles = Integer(default=2_000_000_000_000)         # 2T
     # Autopilot: when enabled, a re-arming timer periodically reconciles every
     # stand's balance against its policy. Interval is in seconds.
     cycles_autopilot = Integer(default=0)

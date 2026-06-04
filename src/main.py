@@ -419,6 +419,7 @@ def casals_metadata() -> text:
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
         "treasury_reserve": int(s.treasury_reserve or 0),
+        "create_cycles": int(s.create_cycles or 0),
         "cycles_autopilot": bool(s.cycles_autopilot),
         "cycles_check_interval_secs": int(s.cycles_check_interval_secs or 0),
         "cycles_sampling": bool(s.cycles_sampling),
@@ -601,6 +602,8 @@ def set_settings(args: text) -> text:
             s.default_topup_cycles = max(0, int(params["default_topup_cycles"]))
         if "treasury_reserve" in params:
             s.treasury_reserve = max(0, int(params["treasury_reserve"]))
+        if "create_cycles" in params:
+            s.create_cycles = max(0, int(params["create_cycles"]))
         # Autopilot toggle / interval re-arms the reconcile timer immediately.
         autopilot_touched = False
         if "cycles_autopilot" in params:
@@ -935,9 +938,10 @@ def _allocate_canister():
         _pool_mark_in_use(cid, "")
         return (cid, True)
     self_id = ic.id().to_str()
+    endow = int(_settings().create_cycles or 0) or CREATE_CYCLES
     create_res = yield management_canister.create_canister(
         {"settings": {"controllers": [Principal.from_str(self_id)]}}
-    ).with_cycles(CREATE_CYCLES)
+    ).with_cycles(endow)
     created = unwrap_call_result(create_res)
     new_id = created.get("canister_id") if isinstance(created, dict) else getattr(created, "canister_id", None)
     new_id_str = new_id.to_str() if hasattr(new_id, "to_str") else str(new_id)
@@ -1086,6 +1090,21 @@ def deploy_sheet(args: text) -> Async[text]:
         list(Section.instances())
         list(Desk.instances())
         list(Stand.instances())
+
+        # Pass 0: self-heal the pool. A canister marked `in_use` that backs no
+        # live stand is an orphan from a partial deploy (e.g. an out-of-cycles
+        # trap that rolled back mid-provision, skipping the normal cleanup). Free
+        # it so its cycles are reused instead of stranded.
+        live_cids = {st.canister_id for st in Stand.instances() if st.canister_id}
+        reclaimed = 0
+        list(PooledCanister.instances())
+        for p in PooledCanister.instances():
+            if p.canister_id and p.status == "in_use" and p.canister_id not in live_cids:
+                _pool_free(p.canister_id)
+                _append_event("pool_reclaimed", p.canister_id, {"was_stand": p.stand_name})
+                reclaimed += 1
+        if reclaimed:
+            result["reclaimed_orphans"] = reclaimed
 
         # Pass 1: ensure sections + desks exist; collect the desired stand set.
         desired = {}  # stand name -> {desk, kind, wasm_key}
@@ -1614,6 +1633,7 @@ def get_cycles() -> Async[text]:
         treasury = int(ic.canister_balance128())
         stands_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
+        bal_by_cid = {}  # canister_id -> balance, reused for the pool pass below
         # Opportunistically record a history sample from the balances we read
         # here, but throttle so frequent refreshes don't flood the history.
         batch_ts = _now_secs()
@@ -1646,6 +1666,7 @@ def get_cycles() -> Async[text]:
                 row.update({"cycles": bal, "freezing_threshold": frz,
                             "headroom": bal - frz, "status": label})
                 counts[label] = counts.get(label, 0) + 1
+                bal_by_cid[st.canister_id] = bal
                 if do_sample:
                     _record_cycle_sample(st, batch_ts, bal)
                     sampled = True
@@ -1656,6 +1677,42 @@ def get_cycles() -> Async[text]:
         if sampled:
             _prune_cycle_samples(batch_ts)
             _last_sample_ts = batch_ts
+
+        # Pool view: every canister Casals ever created, its status, and current
+        # balance. Reuses balances already read above; only fetches for pooled
+        # canisters not backing a live stand (e.g. orphans / freed canisters).
+        deposited_by_cid = {
+            st.canister_id: int(st.cycles_deposited or 0)
+            for st in Stand.instances() if st.canister_id
+        }
+        pool_out = []
+        pool_free = 0
+        list(PooledCanister.instances())
+        for p in PooledCanister.instances():
+            if not p.canister_id:
+                continue
+            prow = {
+                "canister_id": p.canister_id,
+                "status": p.status,
+                "stand_name": p.stand_name,
+                "deposited": deposited_by_cid.get(p.canister_id, 0),
+            }
+            if p.status == "free":
+                pool_free += 1
+            bal = bal_by_cid.get(p.canister_id)
+            if bal is None:
+                try:
+                    status_res = yield management_canister.canister_status(
+                        {"canister_id": Principal.from_str(p.canister_id)}
+                    )
+                    bal = _status_cycles(unwrap_call_result(status_res))
+                except Exception as e:
+                    prow["error"] = str(e)
+            if bal is not None:
+                prow["cycles"] = bal
+            pool_out.append(prow)
+        pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
+
         return json.dumps({
             "treasury": {
                 "balance": treasury,
@@ -1666,6 +1723,12 @@ def get_cycles() -> Async[text]:
             },
             "totals": {"stands": len(stands_out), **counts},
             "stands": stands_out,
+            "pool": {
+                "total": len(pool_out),
+                "free": pool_free,
+                "in_use": len(pool_out) - pool_free,
+                "canisters": pool_out,
+            },
         })
     except Exception as e:
         _log.error(f"get_cycles error: {e}")

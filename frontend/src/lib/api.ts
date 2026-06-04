@@ -122,10 +122,20 @@ export interface Treasury {
   interval_secs: number;
 }
 
+export interface PoolCanisterCycles {
+  canister_id: string;
+  status: string; // "free" | "in_use"
+  stand_name: string;
+  cycles?: number; // current balance
+  deposited?: number; // cumulative cycles Casals deposited (stands only)
+  error?: string;
+}
+
 export interface CyclesReport {
   treasury: Treasury;
   totals: { stands: number; ok: number; low: number; critical: number; frozen: number; error: number };
   stands: StandCycles[];
+  pool?: { total: number; free: number; in_use: number; canisters: PoolCanisterCycles[] };
 }
 
 export interface CycleSamplePoint {

@@ -9,7 +9,7 @@
     cycleStatusBadge,
     shortPrincipal,
   } from '$lib/api';
-  import type { CyclesReport, StandCycles, CycleHistory } from '$lib/api';
+  import type { CyclesReport, StandCycles, CycleHistory, PoolCanisterCycles } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import LineChart from '$lib/components/LineChart.svelte';
@@ -151,6 +151,13 @@
     } finally {
       busy = '';
     }
+  }
+
+  // Cycles consumed by a pooled stand = funded (deposited) − current balance.
+  // Only meaningful when we know how much Casals funded it (live stands).
+  function poolUsed(c: PoolCanisterCycles): string {
+    if (!c.deposited || c.cycles === undefined) return '—';
+    return formatCycles(Math.max(0, c.deposited - c.cycles));
   }
 
   function intervalLabel(secs: number): string {
@@ -335,6 +342,55 @@
         </table>
       {/if}
     </div>
+
+    <!-- Canister pool -->
+    {#if report.pool}
+      <div class="card p-0 overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
+          <div>
+            <h2 class="text-sm font-semibold text-primary-900">Canister pool</h2>
+            <p class="text-xs text-primary-400">Every canister Casals has created — reused across deploys rather than discarded.</p>
+          </div>
+          <div class="text-xs text-primary-500">
+            <span class="font-semibold text-primary-900">{report.pool.total}</span> total ·
+            {report.pool.in_use} in use · {report.pool.free} free
+          </div>
+        </div>
+        {#if report.pool.canisters.length === 0}
+          <p class="text-sm text-primary-400 p-5">No canisters created yet.</p>
+        {:else}
+          <table class="w-full text-sm">
+            <thead class="bg-primary-50 text-primary-500 text-xs">
+              <tr>
+                <th class="text-left font-medium px-4 py-2.5">Canister</th>
+                <th class="text-left font-medium px-4 py-2.5">Occupant</th>
+                <th class="text-right font-medium px-4 py-2.5">Balance</th>
+                <th class="text-right font-medium px-4 py-2.5 hidden sm:table-cell">Funded</th>
+                <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell">Used</th>
+                <th class="text-center font-medium px-4 py-2.5">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each report.pool.canisters as c (c.canister_id)}
+                <tr class="border-t border-[var(--color-border-primary)]">
+                  <td class="px-4 py-2.5 font-mono text-[12px] text-primary-700" title={c.canister_id}>{shortPrincipal(c.canister_id)}</td>
+                  <td class="px-4 py-2.5 text-primary-600">{c.stand_name || '—'}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-primary-900">
+                    {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
+                    {#if c.error}<div class="text-[11px] text-red-500" title={c.error}>error</div>{/if}
+                  </td>
+                  <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden sm:table-cell">{c.deposited ? formatCycles(c.deposited) : '—'}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden md:table-cell">{poolUsed(c)}</td>
+                  <td class="px-4 py-2.5 text-center">
+                    <span class="badge {c.status === 'free' ? 'badge-neutral' : 'badge-frontend'}">{c.status}</span>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </div>
+    {/if}
 
     {#if !$isAuthenticated}
       <p class="text-xs text-primary-400">Log in as a commander/controller to top up stands or reconcile.</p>
