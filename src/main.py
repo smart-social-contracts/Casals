@@ -737,15 +737,21 @@ def register_stand(args: text) -> text:
 def add_authorized_wasm(args: text) -> text:
     """Controller only — represents an approved decision to authorize a WASM.
     Args (JSON):
-    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, description?}."""
+    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, description?}.
+
+    Upsert: re-authorizing an existing key updates its registry pointer, hash and
+    metadata. This is essential for idempotent re-seeding after a template is
+    rebuilt (its bytes/hash change) — otherwise the authorized hash would drift
+    from the bytes actually stored in the file-registry and installs would be
+    rejected for a module-hash mismatch."""
     try:
         _require_admin()
         params = json.loads(args)
         key = params["key"].strip()
         list(AuthorizedWasm.instances())
-        if AuthorizedWasm[key] is not None:
-            return _err(f"authorized wasm '{key}' already exists")
-        w = AuthorizedWasm(key=key)
+        existing = AuthorizedWasm[key]
+        updated = existing is not None
+        w = existing if updated else AuthorizedWasm(key=key)
         if params.get("section"):
             list(Section.instances())
             sec = Section[params["section"].strip()]
@@ -762,8 +768,9 @@ def add_authorized_wasm(args: text) -> text:
         if params.get("asset_content_type"):
             w.asset_content_type = params["asset_content_type"].strip()
         w.added_by = _caller()
-        _append_event("wasm_authorized", "", {"key": key, "wasm_hash": w.wasm_hash})
-        return _ok(key=key)
+        _append_event("wasm_authorized", "",
+                      {"key": key, "wasm_hash": w.wasm_hash, "updated": updated})
+        return _ok(key=key, updated=updated)
     except Exception as e:
         return _err(str(e))
 
@@ -843,7 +850,9 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
         if chunk_json.get("eof"):
             break
 
-    yield management_canister.install_chunked_code({
+    if not chunk_hashes:
+        raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
+    install_res = yield management_canister.install_chunked_code({
         "mode": install_mode,
         "target_canister": target,
         "store_canister": target,
@@ -851,7 +860,13 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
         "wasm_module_hash": bytes.fromhex(expected_hash_hex),
         "arg": init_arg,
     })
-    yield management_canister.clear_chunk_store({"canister_id": target})
+    # Surface a rejected install (e.g. chunk-hash mismatch, oversized module)
+    # instead of silently proceeding to a confusing "hash mismatch" verify.
+    unwrap_call_result(install_res)
+    try:
+        yield management_canister.clear_chunk_store({"canister_id": target})
+    except Exception:
+        pass  # best-effort cleanup; never fail a good install on store cleanup
 
 
 def _pull_registry_bytes(namespace: str, path: str):

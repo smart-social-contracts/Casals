@@ -147,7 +147,12 @@ class TestFailurePaths:
         res = _err("create_stand", {
             "desk": "e2e-desk", "name": "bad-create", "kind": "backend", "wasm_key": "e2e-bad",
         })
-        assert "mismatch" in res["error"]
+        # A bad hash is now caught by install_chunked_code itself (it verifies the
+        # assembled module against the supplied hash and rejects), surfaced as a
+        # "Wasm module hash mismatch" rejection, rather than by the later
+        # post-install verify. Accept either phrasing.
+        err = res["error"].lower()
+        assert "hash" in err and ("mismatch" in err or "chunk store" in err)
         # No stand should have been recorded for the failed creation.
         tree = call_canister("get_tree")
         names = [

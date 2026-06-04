@@ -254,9 +254,8 @@ def main():
 
         res = call(CASALS, "add_authorized_wasm", args, json.dumps(authorize))
         if isinstance(res, dict) and res.get("ok"):
-            print(f"    authorized {key} -> {digest[:12]}…")
-        elif isinstance(res, dict) and "already exists" in str(res.get("error", "")):
-            print(f"    {key} already authorized, skipping")
+            verb = "re-authorized" if res.get("updated") else "authorized"
+            print(f"    {verb} {key} -> {digest[:12]}…")
         else:
             sys.exit(f"add_authorized_wasm failed for {key}: {res}")
 
