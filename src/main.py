@@ -1362,7 +1362,8 @@ def upgrade_to(args: text) -> Async[text]:
         failure = None
         for st in targets:
             try:
-                yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path, w.wasm_hash, {"upgrade": None})
+                yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
+                                             w.wasm_hash, {"upgrade": None}, _install_arg_for(w))
                 ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
                 if not ok:
                     failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
