@@ -86,7 +86,7 @@ export interface OrchestrationEvent {
   btype: string;
   canister_id: string;
   caller: string;
-  payload: string;
+  payload: Record<string, any>;
   self_hash: string;
   parent_hash: string;
 }
