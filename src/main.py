@@ -893,10 +893,42 @@ def _pull_registry_bytes(namespace: str, path: str):
     return buf
 
 
-def _provision_assets(canister_id: str, w: "AuthorizedWasm"):
+def _backend_cid_for_desk(frontend_cid: str, desk=None) -> str:
+    """Return the backend stand's canister ID in the same desk as `frontend_cid`.
+
+    Used to inject the paired backend's canister ID into a frontend asset page
+    so the browser can call e.g. `greet()` on the matching backend canister.
+    If `desk` is not supplied the stand is looked up by canister_id. Returns ""
+    when no backend is found (standalone frontend or desk not loaded).
+    """
+    dk = desk
+    if dk is None:
+        list(Stand.instances())
+        for st in Stand.instances():
+            if st.canister_id == frontend_cid and st.desk is not None:
+                dk = st.desk
+                break
+    if dk is None:
+        return ""
+    list(Stand.instances())
+    for peer in Stand.instances():
+        if (peer.kind == StandKind.BACKEND
+                and peer.canister_id
+                and peer.canister_id != frontend_cid
+                and peer.desk is not None
+                and peer.desk.name == dk.name):
+            return peer.canister_id
+    return ""
+
+
+def _provision_assets(canister_id: str, w: "AuthorizedWasm", desk=None):
     """Generator: upload the WASM's associated asset into a freshly installed
     certified-assets stand. Casals is the stand's controller, so it grants itself
-    Commit permission, then `store`s the asset at both `/` and `/index.html`.
+    Commit permission, then `store`s the asset at /index.html.
+
+    The placeholder `__BACKEND_CANISTER_ID__` in the asset is replaced with the
+    paired backend stand's canister ID (found from `desk` or by stand lookup),
+    so the page can call the backend canister directly from the browser.
     """
     asset_namespace = (w.asset_namespace or w.registry_namespace or "").strip()
     asset_path = (w.asset_path or "").strip()
@@ -909,6 +941,12 @@ def _provision_assets(canister_id: str, w: "AuthorizedWasm"):
     })
     unwrap_call_result(grant_res)
     content = yield from _pull_registry_bytes(asset_namespace, asset_path)
+    # Inject the paired backend canister ID so the page can call it directly.
+    _PLACEHOLDER = b"__BACKEND_CANISTER_ID__"
+    if _PLACEHOLDER in content:
+        backend_cid = _backend_cid_for_desk(canister_id, desk)
+        if backend_cid:
+            content = content.replace(_PLACEHOLDER, backend_cid.encode())
     content_type = (w.asset_content_type or "text/html").strip()
     # Store /index.html; the asset canister aliases "/" to it by default.
     store_res = yield asset.store({
@@ -995,7 +1033,7 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
 
     # Upload the template's asset (e.g. index.html) so a frontend stand serves a
     # real page. Best-effort: a failure here leaves the stand installed.
-    yield from _maybe_provision_assets(cid, w)
+    yield from _maybe_provision_assets(cid, w, dk)
 
     st = Stand(name=name)
     st.desk = dk
@@ -1011,13 +1049,13 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
     return st
 
 
-def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm"):
+def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm", desk=None):
     """Generator: provision a WASM's asset if it has one, swallowing errors so a
     failed upload never aborts stand creation (it is logged + audited instead)."""
     if not (w.asset_path or "").strip():
         return
     try:
-        yield from _provision_assets(canister_id, w)
+        yield from _provision_assets(canister_id, w, desk)
     except Exception as ae:
         _log.error(f"asset provisioning failed for {canister_id}: {ae}")
         _append_event("assets_failed", canister_id, {"wasm_key": w.key, "error": str(ae)[:300]})
@@ -1178,6 +1216,10 @@ def deploy_sheet(args: text) -> Async[text]:
                 if existing is not None:
                     if (existing.wasm_key == w.key and existing.wasm_hash == w.wasm_hash
                             and existing.status == StandStatus.INSTALLED):
+                        # Always repair the desk FK in case it points to a stale
+                        # entity from a prior deploy (the desk was deleted/recreated).
+                        if existing.desk is None or existing.desk.name != dk.name:
+                            existing.desk = dk
                         result["skipped_stands"].append(stname)
                         continue
                     # Present but wrong WASM/status: reinstall fresh code in place.
@@ -1188,7 +1230,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     if not ok:
                         result["errors"].append(f"{stname}: hash mismatch after reinstall")
                         continue
-                    yield from _maybe_provision_assets(existing.canister_id, w)
+                    yield from _maybe_provision_assets(existing.canister_id, w, dk)
                     existing.desk = dk
                     existing.kind = spec["kind"]
                     existing.wasm_key = w.key
@@ -1249,7 +1291,7 @@ def provision_assets(args: text) -> Async[text]:
                     errors.append(f"{st.name}: no asset to provision")
                 continue
             try:
-                yield from _provision_assets(st.canister_id, w)
+                yield from _provision_assets(st.canister_id, w, st.desk)
                 done.append(st.name)
             except Exception as inner:
                 errors.append(f"{st.name}: {inner}")

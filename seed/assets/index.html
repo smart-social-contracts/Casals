@@ -22,11 +22,13 @@
         background: rgba(148, 163, 184, 0.08);
         border: 1px solid rgba(148, 163, 184, 0.18);
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
-        max-width: 22rem;
+        max-width: 24rem;
       }
-      h1 { margin: 0 0 0.5rem; font-size: 2rem; min-height: 2.4rem; }
-      p { margin: 0.25rem 0; color: #94a3b8; }
-      code { color: #7dd3fc; }
+      h1 { margin: 0 0 0.25rem; font-size: 2rem; min-height: 2.4rem; transition: opacity .15s; }
+      h1.loading { opacity: 0.4; }
+      .meta { margin: 0 0 0.5rem; font-size: 0.8rem; color: #64748b; }
+      .info { margin: 0.25rem 0; color: #94a3b8; font-size: 0.9rem; }
+      code { color: #7dd3fc; word-break: break-all; }
       .row {
         display: flex;
         gap: 0.5rem;
@@ -51,33 +53,96 @@
         font-weight: 600;
         font-size: 1rem;
         cursor: pointer;
+        min-width: 5rem;
       }
-      button:hover { background: #7dd3fc; }
+      button:hover:not(:disabled) { background: #7dd3fc; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .status { font-size: 0.75rem; color: #475569; margin-top: 0.5rem; min-height: 1em; }
     </style>
   </head>
   <body>
     <div class="card">
       <h1 id="greeting">Hello, World 👋</h1>
-      <p>Served by a DFINITY certified assets canister.</p>
-      <p>Provisioned and managed by <code>Casals</code>.</p>
+      <p class="meta" id="source"></p>
+      <p class="info">Managed by <code>Casals</code></p>
       <div class="row">
         <input id="name" type="text" placeholder="Your name" autocomplete="off" />
-        <button id="go">Greet</button>
+        <button id="go" disabled>…</button>
       </div>
+      <div class="status" id="status"></div>
     </div>
-    <script>
-      (function () {
-        var input = document.getElementById("name");
-        var greeting = document.getElementById("greeting");
-        function greet() {
-          var name = (input.value || "").trim();
-          greeting.textContent = name ? "Hello, " + name + " 👋" : "Hello, World 👋";
-        }
-        document.getElementById("go").addEventListener("click", greet);
-        input.addEventListener("keydown", function (e) {
-          if (e.key === "Enter") greet();
+    <script type="module">
+      // Casals injects the paired backend canister ID at provision time.
+      const BACKEND_ID = '__BACKEND_CANISTER_ID__';
+
+      const btn      = document.getElementById('go');
+      const input    = document.getElementById('name');
+      const greeting = document.getElementById('greeting');
+      const source   = document.getElementById('source');
+      const status   = document.getElementById('status');
+
+      const short = id => id ? id.slice(0, 12) + '…' : '';
+
+      // ── Fallback: no backend wired ────────────────────────────────────
+      if (!BACKEND_ID || BACKEND_ID === '__BACKEND_CANISTER_ID__') {
+        btn.textContent = 'Greet';
+        btn.disabled = false;
+        source.textContent = 'client-side only';
+        btn.addEventListener('click', () => {
+          const n = input.value.trim();
+          greeting.textContent = (n ? 'Hello, ' + n : 'Hello, World') + ' 👋';
         });
-      })();
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+      } else {
+        // ── Call the backend greet() canister ─────────────────────────
+        source.innerHTML = 'backend: <code>' + BACKEND_ID + '</code>';
+        status.textContent = 'Loading agent…';
+
+        import('https://esm.sh/@dfinity/agent@2.1.3').then(({ HttpAgent, Actor }) => {
+          const idlFactory = ({ IDL }) => IDL.Service({
+            greet: IDL.Func([IDL.Text], [IDL.Text], ['query']),
+          });
+
+          const agent = new HttpAgent({ host: 'https://ic0.app' });
+          const actor = Actor.createActor(idlFactory, { agent, canisterId: BACKEND_ID });
+
+          btn.textContent = 'Greet';
+          btn.disabled = false;
+          status.textContent = '';
+
+          async function greet() {
+            const name = input.value.trim() || 'World';
+            btn.disabled = true;
+            btn.textContent = '…';
+            greeting.classList.add('loading');
+            status.textContent = 'Calling canister…';
+            try {
+              const reply = await actor.greet(name);
+              greeting.textContent = reply + ' 👋';
+              greeting.classList.remove('loading');
+              status.textContent = 'Response from ' + short(BACKEND_ID);
+            } catch (e) {
+              greeting.textContent = 'Hello, World 👋';
+              greeting.classList.remove('loading');
+              status.textContent = 'Error: ' + String(e.message || e).slice(0, 120);
+            } finally {
+              btn.disabled = false;
+              btn.textContent = 'Greet';
+            }
+          }
+
+          btn.addEventListener('click', greet);
+          input.addEventListener('keydown', e => { if (e.key === 'Enter') greet(); });
+        }).catch(e => {
+          status.textContent = 'Agent load failed: ' + e.message;
+          btn.textContent = 'Greet';
+          btn.disabled = false;
+          btn.addEventListener('click', () => {
+            const n = input.value.trim();
+            greeting.textContent = (n ? 'Hello, ' + n : 'Hello, World') + ' 👋';
+          });
+        });
+      }
     </script>
   </body>
 </html>
