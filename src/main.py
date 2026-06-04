@@ -1205,6 +1205,12 @@ def deploy_sheet(args: text) -> Async[text]:
                     dk.created_by = _caller()
                     _append_event("desk_created", "", {"section": sname, "name": dname})
                     result["created_desks"].append(dname)
+                elif dk.section is None or dk.section.name != sname:
+                    # Repair a stale/orphaned section FK: the desk exists but lost
+                    # its link to the section, which drops it (and its stands) from
+                    # get_tree even though the entities are still there.
+                    dk.section = sec
+                    _append_event("desk_relinked", "", {"section": sname, "name": dname})
                 for stand_spec in desk_spec.get("stands", []):
                     stname = (stand_spec.get("name") or "").strip()
                     if not stname:
