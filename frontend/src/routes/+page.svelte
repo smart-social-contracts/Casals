@@ -13,11 +13,17 @@
     revertSnapshot,
     stopCanister,
     startCanister,
+    setLogVisibility,
+    getEvents,
+    getCanisterLogs,
     shortHash,
     shortPrincipal,
     standLink,
   } from '$lib/api';
-  import type { Tree, Status, Section, Desk, Stand, UpdateResult } from '$lib/api';
+  import type {
+    Tree, Status, Section, Desk, Stand, UpdateResult,
+    OrchestrationEvent, CanisterLogRecord,
+  } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import FormModal from '$lib/components/FormModal.svelte';
@@ -40,6 +46,13 @@
 
   let expandedSections = $state<Record<string, boolean>>({});
   let expandedDesks = $state<Record<string, boolean>>({});
+
+  // Per-stand expandable detail panel (status + recent events + canister logs).
+  let expandedStands = $state<Record<string, boolean>>({});
+  let standEvents = $state<Record<string, OrchestrationEvent[]>>({});
+  let standLogs = $state<Record<string, CanisterLogRecord[]>>({});
+  let standLogErr = $state<Record<string, string>>({});
+  let standLoading = $state<Record<string, boolean>>({});
 
   let modal = $state<ModalConfig | null>(null);
   let modalBusy = $state(false);
@@ -69,6 +82,77 @@
   }
   function toggleDesk(key: string) {
     expandedDesks[key] = !deskOpen(key);
+  }
+
+  async function toggleStand(stand: Stand) {
+    const cid = stand.canister_id;
+    if (!cid) return;
+    const open = !expandedStands[cid];
+    expandedStands[cid] = open;
+    if (open) await loadStandDetails(cid);
+  }
+
+  async function loadStandDetails(cid: string) {
+    standLoading[cid] = true;
+    standLogErr[cid] = '';
+    try {
+      // The audit log lives in Casals; the runtime logs are fetched straight
+      // from the management canister (only works if log_visibility is public).
+      const [evs, logs] = await Promise.all([
+        getEvents({ canister_id: cid, take: 8 }),
+        getCanisterLogs(cid).catch((e: any) => {
+          standLogErr[cid] = e?.message ?? String(e);
+          return [] as CanisterLogRecord[];
+        }),
+      ]);
+      standEvents[cid] = evs;
+      standLogs[cid] = logs;
+    } catch (e: any) {
+      standLogErr[cid] = e?.message ?? String(e);
+    } finally {
+      standLoading[cid] = false;
+    }
+  }
+
+  async function makeLogsPublic(stand: Stand) {
+    try {
+      await setLogVisibility({ stand: stand.name, public: true });
+      toasts.success('Logs set to public');
+      await loadStandDetails(stand.canister_id);
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed to set log visibility');
+    }
+  }
+
+  function fmtTs(nanos: bigint): string {
+    try {
+      return new Date(Number(nanos / 1_000_000n)).toLocaleTimeString();
+    } catch {
+      return '';
+    }
+  }
+
+  function evBadge(btype: string): string {
+    if (btype.includes('failed')) return 'bg-red-50 text-red-700 border border-red-200';
+    if (btype === 'revert') return 'bg-amber-50 text-amber-700 border border-amber-200';
+    return 'badge-neutral';
+  }
+
+  function evSummary(e: OrchestrationEvent): string {
+    const p = e.payload ?? {};
+    switch (e.btype) {
+      case 'upgraded': return `→ ${p.wasm_key ?? ''}`;
+      case 'upgrade_failed': return p.reason ?? '';
+      case 'revert': return p.reason ? `rolled back: ${p.reason}` : `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
+      case 'revert_failed': return p.error ?? '';
+      case 'snapshot': return `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
+      case 'stand_created': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
+      case 'stand_reinstalled': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
+      case 'assets_uploaded': return `${p.bytes ?? 0} bytes`;
+      case 'cycles_topup': return `+${p.amount ?? ''}`;
+      case 'create_failed': return 'module hash mismatch';
+      default: { const k = Object.keys(p); return k.length ? JSON.stringify(p).slice(0, 80) : ''; }
+    }
   }
 
   async function copy(text: string) {
@@ -429,6 +513,15 @@
                               </div>
                             </div>
                             <div class="flex flex-wrap items-center sm:justify-end gap-1.5 shrink-0">
+                              <button class="btn-ghost btn-sm" onclick={() => toggleStand(stand)}>
+                                <svg
+                                  class="w-3.5 h-3.5 transition-transform {expandedStands[stand.canister_id] ? 'rotate-180' : ''}"
+                                  fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
+                                >
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                                </svg>
+                                Details
+                              </button>
                               <a
                                 href={standLink(stand)}
                                 target="_blank"
@@ -449,6 +542,61 @@
                               {/if}
                             </div>
                           </div>
+
+                          {#if expandedStands[stand.canister_id]}
+                            <div class="mt-3 pt-3 border-t border-[var(--color-border-primary)] space-y-3">
+                              <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary-500">
+                                <span>status: <span class="font-medium text-primary-800">{stand.status || '—'}</span></span>
+                                <span>wasm: <span class="font-mono">{stand.wasm_key || '—'}</span></span>
+                                {#if stand.wasm_hash}
+                                  <span class="font-mono" title={stand.wasm_hash}>hash {shortHash(stand.wasm_hash)}</span>
+                                {/if}
+                                {#if stand.snapshot_id}
+                                  <span class="font-mono" title={stand.snapshot_id}>snapshot {shortHash(stand.snapshot_id)}</span>
+                                {/if}
+                              </div>
+
+                              {#if standLoading[stand.canister_id]}
+                                <div class="skeleton h-4 w-48"></div>
+                              {:else}
+                                <div>
+                                  <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Recent events</div>
+                                  {#if (standEvents[stand.canister_id]?.length ?? 0) === 0}
+                                    <div class="text-xs text-primary-400">No events for this canister.</div>
+                                  {:else}
+                                    <ul class="space-y-1">
+                                      {#each standEvents[stand.canister_id] as e (e.idx)}
+                                        <li class="text-xs flex items-start gap-2">
+                                          <span class="badge {evBadge(e.btype)} shrink-0">{e.btype}</span>
+                                          <span class="text-primary-600 break-words min-w-0">{evSummary(e)}</span>
+                                        </li>
+                                      {/each}
+                                    </ul>
+                                  {/if}
+                                </div>
+
+                                <div>
+                                  <div class="flex items-center justify-between mb-1.5">
+                                    <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Canister logs</div>
+                                    <button class="text-xs text-primary-500 hover:text-primary-800" onclick={() => loadStandDetails(stand.canister_id)}>Reload</button>
+                                  </div>
+                                  {#if standLogErr[stand.canister_id]}
+                                    <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                                      Couldn't fetch logs: {standLogErr[stand.canister_id]}
+                                      {#if $isAuthenticated}
+                                        <button class="underline ml-1 font-medium" onclick={() => makeLogsPublic(stand)}>Make logs public</button>
+                                      {/if}
+                                    </div>
+                                  {:else if (standLogs[stand.canister_id]?.length ?? 0) === 0}
+                                    <div class="text-xs text-primary-400">No logs recorded yet.</div>
+                                  {:else}
+                                    <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{#each standLogs[stand.canister_id] as r (r.idx)}<span class="text-primary-400">{fmtTs(r.timestamp_nanos)}</span>  {r.content}
+{/each}</pre>
+                                  {/if}
+                                </div>
+                              {/if}
+                            </div>
+                          {/if}
                         </div>
                       {/each}
                     </div>

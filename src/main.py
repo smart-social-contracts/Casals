@@ -81,6 +81,9 @@ PULL_CHUNK_BYTES = 128 * 1024
 # against an opt parameter and the install would trap.
 CANDID_NULL_ARG = bytes([0x44, 0x49, 0x44, 0x4C, 0x00, 0x01, 0x7F])  # b"DIDL\x00\x01\x7f"
 
+# The management canister's principal (used for hand-encoded calls below).
+MANAGEMENT_CANISTER_ID = "aaaaa-aa"
+
 # Active autopilot timer id (within this instance's lifetime; IC timers — like
 # this module global — do not survive an upgrade, so they are re-armed in
 # post_upgrade). None when autopilot is off.
@@ -1039,6 +1042,14 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
     if s.cycleops_enabled and s.cycleops_principal:
         yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
 
+    # Make the stand's runtime logs publicly fetchable so the dashboard can show
+    # them (logs are read from the browser; canisters can't fetch them). Best
+    # effort — a failure here shouldn't abort an otherwise-successful install.
+    try:
+        yield from _set_log_visibility(cid, True)
+    except Exception as lv:
+        _log.error(f"could not set log_visibility for {cid}: {lv}")
+
     # Upload the template's asset (e.g. index.html) so a frontend stand serves a
     # real page. Best-effort: a failure here leaves the stand installed.
     yield from _maybe_provision_assets(cid, w, dk)
@@ -1400,6 +1411,9 @@ def upgrade_to(args: text) -> Async[text]:
                 pass
             st.status = StandStatus.INSTALLED
             st.snapshot_id = ""
+            # Per-stand event so the stand's own timeline shows the upgrade.
+            _append_event("upgraded", st.canister_id,
+                          {"wasm_key": wasm_key, "desk": dk.name if dk else "", "name": st.name})
         _append_event("upgrade_finished", dk.name if dk else "", {"wasm_key": wasm_key, "stands": [s.canister_id for s in targets]})
         return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
     except Exception as e:
@@ -1485,6 +1499,58 @@ def start_canister(args: text) -> Async[text]:
         return _ok()
     except Exception as e:
         return _err(str(e))
+
+
+def _set_log_visibility(canister_id: str, public: bool):
+    """Generator: set a canister's log_visibility via a hand-encoded management
+    call. The stock basilisk binding's settings record omits log_visibility, so
+    we encode the argument directly with candid_encode + call_raw rather than the
+    typed wrapper (which would silently drop the field)."""
+    variant = "public" if public else "controllers"
+    arg = ('(record { canister_id = principal "' + canister_id +
+           '"; settings = record { log_visibility = opt variant { ' + variant + ' } } })')
+    res = yield ic.call_raw(
+        Principal.from_str(MANAGEMENT_CANISTER_ID), "update_settings", ic.candid_encode(arg), 0)
+    unwrap_call_result(res)
+
+
+@update
+def set_log_visibility(args: text) -> Async[text]:
+    """Set a stand's canister log visibility (so the dashboard can show its logs).
+
+    `fetch_canister_logs` can only be called from the browser, not by Casals, so
+    making a stand's logs `public` is what lets the dashboard display them without
+    every viewer being a controller. New stands are made public on creation; this
+    backfills existing ones (and can revert to `controllers`).
+
+    Args (JSON, optional):
+      {"stand": "<name>"}      → just that stand   (default: all stands)
+      {"public": true|false}   → public vs controllers-only  (default: true)
+    """
+    try:
+        _require_admin()
+        params = json.loads(args) if args else {}
+        target = (params.get("stand") or "").strip()
+        pub = bool(params.get("public", True))
+        list(Stand.instances())
+        done, errors = [], []
+        for st in Stand.instances():
+            if target and st.name != target:
+                continue
+            if not st.canister_id:
+                continue
+            try:
+                yield from _set_log_visibility(st.canister_id, pub)
+                done.append(st.name)
+            except Exception as inner:
+                errors.append(f"{st.name}: {inner}")
+        if target and not done and not errors:
+            return _err(f"unknown stand '{target}'")
+        _append_event("log_visibility_set", "", {"public": pub, "stands": done})
+        return _ok(updated=done, errors=errors)
+    except Exception as e:
+        _log.error(f"set_log_visibility error: {e}")
+        return _err(f"{e} :: {traceback.format_exc()[-400:]}")
 
 
 # ── Native cycles management (the conductor as the orchestra's paymaster) ─────

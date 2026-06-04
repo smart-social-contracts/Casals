@@ -490,6 +490,45 @@ export async function startCanister(stand: string): Promise<UpdateResult> {
   return _parseUpdate(await _actor(true).start_canister(JSON.stringify({ stand })));
 }
 
+// Make a stand's logs publicly fetchable (or revert to controllers-only). New
+// stands are created public already; this backfills existing ones.
+export async function setLogVisibility(
+  args: { stand?: string; public?: boolean } = {},
+): Promise<UpdateResult> {
+  return _parseUpdate(await _actor(true).set_log_visibility(JSON.stringify(args)));
+}
+
+// ---------------------------------------------------------------------------
+// Canister logs (read straight from the IC management canister in the browser)
+// ---------------------------------------------------------------------------
+// `fetch_canister_logs` is a query-only management method that canisters cannot
+// call, so the dashboard fetches a stand's logs directly. It works anonymously
+// only when the stand's log_visibility is `public` (see setLogVisibility).
+
+export interface CanisterLogRecord {
+  idx: number;
+  timestamp_nanos: bigint;
+  content: string;
+}
+
+export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRecord[]> {
+  const [{ ICManagementCanister }, { Principal }] = await Promise.all([
+    import('@dfinity/ic-management'),
+    import('@dfinity/principal'),
+  ]);
+  const agent = new HttpAgent({ host: HOST });
+  if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
+  const mgmt = ICManagementCanister.create({ agent });
+  const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));
+  const recs: any[] = res?.canister_log_records ?? [];
+  const dec = new TextDecoder();
+  return recs.map((r) => ({
+    idx: Number(r.idx),
+    timestamp_nanos: r.timestamp_nanos as bigint,
+    content: dec.decode(r.content instanceof Uint8Array ? r.content : new Uint8Array(r.content ?? [])),
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

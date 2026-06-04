@@ -46,5 +46,6 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     revert_snapshot:       IDL.Func([IDL.Text], [IDL.Text], []),
     stop_canister:         IDL.Func([IDL.Text], [IDL.Text], []),
     start_canister:        IDL.Func([IDL.Text], [IDL.Text], []),
+    set_log_visibility:    IDL.Func([IDL.Text], [IDL.Text], []),
   });
 };

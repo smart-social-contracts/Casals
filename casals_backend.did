@@ -124,6 +124,7 @@ service : {
   "revert_snapshot" : (text) -> (text);
   "stop_canister" : (text) -> (text);
   "start_canister" : (text) -> (text);
+  "set_log_visibility" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycle_history" : (text) -> (text) query;
   "top_up" : (text) -> (text);
