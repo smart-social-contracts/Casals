@@ -314,7 +314,15 @@ def _require_commander(desk: Desk) -> None:
     if _is_controller():
         return
     commander = _commander_for(desk)
-    if commander and _caller() == commander:
+    if commander:
+        # A real commander (e.g. a project's governance canister) is set: only
+        # it may drive this desk/section's lifecycle, even under open access.
+        if _caller() == commander:
+            return
+        raise Exception("unauthorized: caller is not the commander for this desk/section")
+    # No commander assigned (e.g. the demo desks): in open-access mode any
+    # authenticated caller may drive the lifecycle, mirroring _require_can_add.
+    if _settings().open_access and _caller() != ANONYMOUS:
         return
     raise Exception("unauthorized: caller is not the commander for this desk/section")
 
