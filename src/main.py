@@ -1218,6 +1218,50 @@ def deploy_sheet(args: text) -> Async[text]:
 
 
 @update
+def provision_assets(args: text) -> Async[text]:
+    """(Re)upload the authorized WASM's asset (e.g. index.html) into frontend
+    stands, pulling the current bytes from the file-registry.
+
+    Lets you refresh the page a certified-assets stand serves *without*
+    reinstalling its WASM. Deploying a new sheet only provisions assets on
+    create/reinstall, so this is how you push an updated asset to stands that
+    are already live.
+
+    Args (JSON, optional):
+      {"stand": "<name>"}  → just that stand
+      {}                   → every frontend stand that has an asset
+    """
+    try:
+        _require_can_add()
+        params = json.loads(args) if args else {}
+        target = (params.get("stand") or "").strip()
+        list(Stand.instances())
+        list(AuthorizedWasm.instances())
+        done, errors = [], []
+        for st in Stand.instances():
+            if target and st.name != target:
+                continue
+            if not st.canister_id:
+                continue
+            w = AuthorizedWasm[st.wasm_key]
+            if w is None or not (w.asset_path or "").strip():
+                if target:
+                    errors.append(f"{st.name}: no asset to provision")
+                continue
+            try:
+                yield from _provision_assets(st.canister_id, w)
+                done.append(st.name)
+            except Exception as inner:
+                errors.append(f"{st.name}: {inner}")
+        if target and not done and not errors:
+            return _err(f"unknown stand '{target}'")
+        return _ok(provisioned=done, errors=errors)
+    except Exception as e:
+        _log.error(f"provision_assets error: {e}")
+        return _err(f"{e} :: {traceback.format_exc()[-600:]}")
+
+
+@update
 def upgrade_to(args: text) -> Async[text]:
     """Upgrade a desk (all its stands) or a single stand, all-or-nothing.
 

@@ -118,6 +118,7 @@ service : {
   "remove_authorized_wasm" : (text) -> (text);
   "create_stand" : (text) -> (text);
   "deploy_sheet" : (text) -> (text);
+  "provision_assets" : (text) -> (text);
   "upgrade_to" : (text) -> (text);
   "create_snapshot" : (text) -> (text);
   "revert_snapshot" : (text) -> (text);

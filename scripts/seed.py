@@ -223,9 +223,24 @@ def main():
         key = tpl["key"]
         data = _read_template_bytes(tpl["file"])
         digest = hashlib.sha256(data).hexdigest()
-        if existing.get(key) == digest:
-            print(f"  = {key} already authorized ({digest[:12]}…), skipping")
+        asset = tpl.get("asset")
+        wasm_current = existing.get(key) == digest
+
+        # A frontend template may carry an asset (e.g. index.html). The asset's
+        # bytes can change independently of the WASM (you edit the served page),
+        # and the authorized record only stores a *pointer* (not the asset's
+        # content hash) — so always refresh the registry copy. Pushing the new
+        # bytes into already-live stands is a separate step (provision_assets).
+        if asset:
+            asset_bytes = _read_asset_bytes(asset["file"])
+            asset_digest = hashlib.sha256(asset_bytes).hexdigest()
+            print(f"    + uploading asset {asset['path']} ({len(asset_bytes)} bytes)…")
+            upload_wasm(args, namespace, asset["path"], asset_bytes, asset_digest)
+
+        if wasm_current:
+            print(f"  = {key} already authorized ({digest[:12]}…), wasm unchanged")
             continue
+
         print(f"  + uploading {key} ({len(data)} bytes)…")
         uploaded = upload_wasm(args, namespace, tpl["path"], data, digest)
         if uploaded != digest:
@@ -239,15 +254,7 @@ def main():
             "kind": tpl.get("kind", "backend"),
             "description": tpl.get("description", ""),
         }
-        # A frontend template may carry an asset (e.g. index.html). Upload it to
-        # the registry and tell Casals where to find it so it can provision the
-        # asset into each stand built from this template after install.
-        asset = tpl.get("asset")
         if asset:
-            asset_bytes = _read_asset_bytes(asset["file"])
-            asset_digest = hashlib.sha256(asset_bytes).hexdigest()
-            print(f"    + uploading asset {asset['path']} ({len(asset_bytes)} bytes)…")
-            upload_wasm(args, namespace, asset["path"], asset_bytes, asset_digest)
             authorize["asset_namespace"] = namespace
             authorize["asset_path"] = asset["path"]
             authorize["asset_content_type"] = asset.get("content_type", "text/html")

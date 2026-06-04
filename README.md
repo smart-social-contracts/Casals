@@ -17,9 +17,13 @@ is fully pluggable. Casals provides the structure and executes; it never embeds 
 > orchestration paths (create / chunked-install / snapshot / rollback) are implemented but need a
 > live replica to validate the exact ABI shapes. Nothing here is audited.
 
-> **Live demo:** the Casals frontend runs on mainnet at
-> **https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io**
-> (backend `ip2wh-iyaaa-aaaao-bbaoq-cai`, file-registry `iby3p-tiaaa-aaaao-bbapq-cai`).
+> **Live demo** (mainnet — see `.icp/data/mappings/ic.ids.json`):
+>
+> | Canister | ID | URL |
+> |---|---|---|
+> | `casals_frontend` | `igz53-6qaaa-aaaao-bbapa-cai` | https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io |
+> | `casals_backend` | `ip2wh-iyaaa-aaaao-bbaoq-cai` | [Candid UI](https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=ip2wh-iyaaa-aaaao-bbaoq-cai) |
+> | `ic_file_registry` | `iby3p-tiaaa-aaaao-bbapq-cai` | https://iby3p-tiaaa-aaaao-bbapq-cai.icp0.io |
 
 ---
 
