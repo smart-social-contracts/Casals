@@ -323,8 +323,11 @@ async function _actor(authenticated = false): Promise<any> {
     const id = get(identity);
     if (!id) throw new Error('Not authenticated');
     // Authenticated calls need their own agent with the user identity.
+    // We must also fetch (and await) the root key into this agent on local
+    // networks — sharing the shared-agent's key promise is not enough because
+    // each HttpAgent instance manages its own root key buffer.
     const agent = new HttpAgent({ identity: id, host: icHost() });
-    await _rootKeyReady;
+    if (IS_LOCAL) await agent.fetchRootKey();
     return _makeActorWithAgent(agent);
   }
   // Anonymous reads share the single agent whose root key is already fetched.
