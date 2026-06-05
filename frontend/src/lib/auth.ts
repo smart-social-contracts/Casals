@@ -1,6 +1,7 @@
 import { AuthClient } from '@dfinity/auth-client';
 import { writable } from 'svelte/store';
 import type { Identity } from '@dfinity/agent';
+import { icHost, isLocalHost } from './ic-host';
 
 export const identity = writable<Identity | null>(null);
 export const isAuthenticated = writable(false);
@@ -8,10 +9,9 @@ export const principal = writable('');
 
 let _authClient: AuthClient | null = null;
 
-const II_URL =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? `http://localhost:4943?canisterId=rdmx6-jaaaa-aaaaa-aaadq-cai`
-    : 'https://identity.ic0.app';
+const II_URL = isLocalHost()
+  ? `${icHost()}?canisterId=rdmx6-jaaaa-aaaaa-aaadq-cai`
+  : 'https://identity.ic0.app';
 
 function _applyIdentity(id: Identity) {
   identity.set(id);

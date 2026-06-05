@@ -2,6 +2,7 @@ import { Actor, HttpAgent } from '@dfinity/agent';
 import { idlFactory } from './declarations';
 import { get } from 'svelte/store';
 import { identity } from './auth';
+import { icHost, isLocalHost } from './ic-host';
 
 // ---------------------------------------------------------------------------
 // Types (mirror the backend JSON payloads)
@@ -256,10 +257,33 @@ export interface DeployEstimate {
 // Actor setup
 // ---------------------------------------------------------------------------
 
-const IS_LOCAL =
-  typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname.endsWith('.localhost'));
-const HOST = IS_LOCAL ? 'http://localhost:4943' : 'https://icp-api.io';
+const IS_LOCAL = isLocalHost();
+export { icHost } from './ic-host';
+
+// ---------------------------------------------------------------------------
+// Shared agent — created once, root key fetched eagerly on local networks so
+// certificate verification never races with the first query.
+// ---------------------------------------------------------------------------
+let _sharedAgent: HttpAgent | null = null;
+let _rootKeyReady: Promise<void> | null = null;
+
+function _getAgent(): HttpAgent {
+  if (!_sharedAgent) {
+    _sharedAgent = new HttpAgent({ host: icHost() });
+    if (IS_LOCAL) {
+      _rootKeyReady = _sharedAgent.fetchRootKey().then(() => {});
+    } else {
+      _rootKeyReady = Promise.resolve();
+    }
+  }
+  return _sharedAgent;
+}
+
+async function _readyAgent(): Promise<HttpAgent> {
+  const agent = _getAgent();
+  await _rootKeyReady;
+  return agent;
+}
 
 // icp-cli injects all canister IDs (and the network root key) into the asset
 // canister and exposes them to the browser via the `ic_env` cookie. We read the
@@ -283,7 +307,7 @@ function _backendCanisterId(): string {
   return _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] ?? '';
 }
 
-function _makeActor(id: any = null) {
+function _makeActorWithAgent(agent: HttpAgent): any {
   const canisterId = _backendCanisterId();
   if (!canisterId) {
     throw new Error(
@@ -291,18 +315,21 @@ function _makeActor(id: any = null) {
         'asset canister on deploy) or VITE_CANISTER_ID for local dev.'
     );
   }
-  const agent = new HttpAgent({ identity: id ?? undefined, host: HOST });
-  if (IS_LOCAL) agent.fetchRootKey().catch(() => {});
   return Actor.createActor(idlFactory, { agent, canisterId });
 }
 
-function _actor(authenticated = false): any {
+async function _actor(authenticated = false): Promise<any> {
   if (authenticated) {
     const id = get(identity);
     if (!id) throw new Error('Not authenticated');
-    return _makeActor(id);
+    // Authenticated calls need their own agent with the user identity.
+    const agent = new HttpAgent({ identity: id, host: icHost() });
+    await _rootKeyReady;
+    return _makeActorWithAgent(agent);
   }
-  return _makeActor();
+  // Anonymous reads share the single agent whose root key is already fetched.
+  const agent = await _readyAgent();
+  return _makeActorWithAgent(agent);
 }
 
 function _parseQuery<T>(raw: string): T {
@@ -326,36 +353,36 @@ function _parseUpdate(raw: string): UpdateResult {
 // ---------------------------------------------------------------------------
 
 export async function getStatus(): Promise<Status> {
-  return _parseQuery<Status>(await _actor().get_status());
+  return _parseQuery<Status>(await (await _actor()).get_status());
 }
 
 export async function casalsMetadata(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await _actor().casals_metadata());
+  return _parseQuery<Metadata>(await (await _actor()).casals_metadata());
 }
 
 export async function getSettings(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await _actor().get_settings());
+  return _parseQuery<Metadata>(await (await _actor()).get_settings());
 }
 
 export async function getTree(): Promise<Tree> {
-  return _parseQuery<Tree>(await _actor().get_tree());
+  return _parseQuery<Tree>(await (await _actor()).get_tree());
 }
 
 export async function listSections(): Promise<SectionSummary[]> {
-  return _parseQuery<SectionSummary[]>(await _actor().list_sections());
+  return _parseQuery<SectionSummary[]>(await (await _actor()).list_sections());
 }
 
 export async function listAuthorizedWasms(section?: string): Promise<AuthorizedWasm[]> {
   const args = section ? { section } : {};
-  return _parseQuery<AuthorizedWasm[]>(await _actor().list_authorized_wasms(JSON.stringify(args)));
+  return _parseQuery<AuthorizedWasm[]>(await (await _actor()).list_authorized_wasms(JSON.stringify(args)));
 }
 
 export async function getEvents(opts: { canister_id?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
-  return _parseQuery<OrchestrationEvent[]>(await _actor().get_events(JSON.stringify(opts)));
+  return _parseQuery<OrchestrationEvent[]>(await (await _actor()).get_events(JSON.stringify(opts)));
 }
 
 export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
-  return _parseQuery<CycleOpsInfo>(await _actor().cycleops_monitored());
+  return _parseQuery<CycleOpsInfo>(await (await _actor()).cycleops_monitored());
 }
 
 // ---------------------------------------------------------------------------
@@ -365,31 +392,31 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 // The live sheet is public to read (it's just the desired layout); editing and
 // deploying require authentication.
 export async function getSheet(): Promise<Sheet> {
-  return _parseQuery<Sheet>(await _actor().get_sheet());
+  return _parseQuery<Sheet>(await (await _actor()).get_sheet());
 }
 
 export async function listPool(): Promise<PoolReport> {
-  return _parseQuery<PoolReport>(await _actor().list_pool());
+  return _parseQuery<PoolReport>(await (await _actor()).list_pool());
 }
 
 // Idempotent-aware estimate of the cycles needed to deploy the given (or live)
 // sheet, accounting for the conductor's balance and reusable free canisters.
 export async function estimateDeploy(sheet?: Sheet): Promise<DeployEstimate> {
   const arg = sheet ? JSON.stringify({ sheet }) : '';
-  return _parseQuery<DeployEstimate>(await _actor().estimate_deploy(arg));
+  return _parseQuery<DeployEstimate>(await (await _actor()).estimate_deploy(arg));
 }
 
 export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_sheet(JSON.stringify(sheet)));
+  return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify(sheet)));
 }
 
 export async function resetSheet(): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).reset_sheet());
+  return _parseUpdate(await (await _actor(true)).reset_sheet());
 }
 
 // Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
 export async function listSubnets(): Promise<string[]> {
-  const r = (await _parseUpdate(await _actor().list_subnets())) as UpdateResult & { subnets?: string[] };
+  const r = (await _parseUpdate(await (await _actor()).list_subnets())) as UpdateResult & { subnets?: string[] };
   return r.subnets ?? [];
 }
 
@@ -397,7 +424,7 @@ export async function listSubnets(): Promise<string[]> {
 // sheet is passed it is set live first, then deployed. Long-running.
 export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
   const args = sheet ? { sheet } : {};
-  return _parseUpdate(await _actor(true).deploy_sheet(JSON.stringify(args))) as DeployResult;
+  return _parseUpdate(await (await _actor(true)).deploy_sheet(JSON.stringify(args))) as DeployResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,22 +436,22 @@ export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
 // no special caller, so we call it anonymously — the solvency snapshot is
 // public (only top-up / reconcile / policy changes need authentication).
 export async function getCycles(): Promise<CyclesReport> {
-  return _parseQuery<CyclesReport>(await _actor().get_cycles());
+  return _parseQuery<CyclesReport>(await (await _actor()).get_cycles());
 }
 
 // Per-stand balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.
 export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
-  return _parseQuery<CycleHistory>(await _actor().get_cycle_history(JSON.stringify(opts)));
+  return _parseQuery<CycleHistory>(await (await _actor()).get_cycle_history(JSON.stringify(opts)));
 }
 
 export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).top_up(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
 }
 
 export async function reconcile(): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).reconcile());
+  return _parseUpdate(await (await _actor(true)).reconcile());
 }
 
 export async function setCyclePolicy(args: {
@@ -434,7 +461,7 @@ export async function setCyclePolicy(args: {
   min_cycles?: number;
   topup_cycles?: number;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_cycle_policy(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).set_cycle_policy(JSON.stringify(args)));
 }
 
 // ---------------------------------------------------------------------------
@@ -455,13 +482,13 @@ export interface SettingsPatch {
 }
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_settings(JSON.stringify(patch)));
+  return _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
 }
 
 // Refresh (and cache, server-side) the cycles→currency rate for the configured
 // display currency. Throttled on the backend; safe to call on page load.
 export async function refreshFx(): Promise<UpdateResult> {
-  return _parseUpdate(await _actor().refresh_fx());
+  return _parseUpdate(await (await _actor()).refresh_fx());
 }
 
 export async function createSection(args: {
@@ -469,7 +496,7 @@ export async function createSection(args: {
   description?: string;
   commander_principal?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_section(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_section(JSON.stringify(args)));
 }
 
 export async function createDesk(args: {
@@ -478,7 +505,7 @@ export async function createDesk(args: {
   description?: string;
   commander_principal?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_desk(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_desk(JSON.stringify(args)));
 }
 
 export async function setCommander(args: {
@@ -486,7 +513,7 @@ export async function setCommander(args: {
   desk?: string;
   commander_principal: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_commander(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).set_commander(JSON.stringify(args)));
 }
 
 export async function registerStand(args: {
@@ -495,7 +522,7 @@ export async function registerStand(args: {
   canister_id: string;
   kind: StandKind;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).register_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).register_stand(JSON.stringify(args)));
 }
 
 export async function addAuthorizedWasm(args: {
@@ -508,11 +535,11 @@ export async function addAuthorizedWasm(args: {
   kind?: string;
   description?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).add_authorized_wasm(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).add_authorized_wasm(JSON.stringify(args)));
 }
 
 export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).remove_authorized_wasm(JSON.stringify({ key })));
+  return _parseUpdate(await (await _actor(true)).remove_authorized_wasm(JSON.stringify({ key })));
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +552,7 @@ export async function createStand(args: {
   kind: StandKind;
   wasm_key: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_stand(JSON.stringify(args)));
 }
 
 export async function upgradeTo(args: {
@@ -534,23 +561,23 @@ export async function upgradeTo(args: {
   wasm_key: string;
   reinstall?: boolean;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).upgrade_to(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
 }
 
 export async function createSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_snapshot(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ stand })));
 }
 
 export async function revertSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).revert_snapshot(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).revert_snapshot(JSON.stringify({ stand })));
 }
 
 export async function stopCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).stop_canister(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).stop_canister(JSON.stringify({ stand })));
 }
 
 export async function startCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).start_canister(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).start_canister(JSON.stringify({ stand })));
 }
 
 // Make a stand's logs publicly fetchable (or revert to controllers-only). New
@@ -558,7 +585,7 @@ export async function startCanister(stand: string): Promise<UpdateResult> {
 export async function setLogVisibility(
   args: { stand?: string; public?: boolean } = {},
 ): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_log_visibility(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).set_log_visibility(JSON.stringify(args)));
 }
 
 // ---------------------------------------------------------------------------
@@ -584,12 +611,12 @@ export async function standBrowse(
 ): Promise<BrowseResult> {
   const args: Record<string, unknown> = { stand };
   if (query) args.query = query;
-  return _parseUpdate(await _actor().stand_browse(JSON.stringify(args))) as BrowseResult;
+  return _parseUpdate(await (await _actor()).stand_browse(JSON.stringify(args))) as BrowseResult;
 }
 
 // Run Python inside the stand (controller-gated). Requires auth.
 export async function standExec(stand: string, code: string): Promise<ExecResult> {
-  return _parseUpdate(await _actor(true).stand_exec(JSON.stringify({ stand, code }))) as ExecResult;
+  return _parseUpdate(await (await _actor(true)).stand_exec(JSON.stringify({ stand, code }))) as ExecResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +637,7 @@ export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRe
     import('@dfinity/ic-management'),
     import('@dfinity/principal'),
   ]);
-  const agent = new HttpAgent({ host: HOST });
+  const agent = new HttpAgent({ host: icHost() });
   if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
   const mgmt = ICManagementCanister.create({ agent });
   const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));
@@ -702,7 +729,7 @@ export function cycleStatusBadge(status: CycleStatus): string {
 export function candidUiUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
-    return `http://localhost:4943/?canisterId=${canisterId}`;
+    return `${icHost()}/?canisterId=${canisterId}`;
   }
   return `https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=${canisterId}`;
 }
@@ -712,7 +739,8 @@ export function candidUiUrl(canisterId: string): string {
 export function canisterUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
-    return `http://${canisterId}.localhost:4943`;
+    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
+    return `http://${canisterId}.localhost:${port}`;
   }
   return `https://${canisterId}.icp0.io`;
 }
