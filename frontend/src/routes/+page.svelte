@@ -426,11 +426,10 @@
   function openUpgradeDesk(desk: Desk) {
     const fams = deskFamilies(desk);
     const opts = fams.length === 1 ? versionOptions(fams[0]) : [];
-    // Family options list for the catalog-families select (fallback when no version info).
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
-      title: 'Upgrade desk',
-      description: `Upgrade all stands in desk "${desk.name}"`,
+      title: 'Deploy desk',
+      description: `Deploy all stands in desk "${desk.name}"`,
       fields: [
         opts.length > 0
           ? { name: 'wasm_key', label: 'Version', type: 'select', value: fams[0], options: opts }
@@ -438,9 +437,20 @@
             ? { name: 'wasm_key', label: 'WASM family', type: 'select',
                 value: fams[0] || familyOpts[0].value, options: familyOpts }
             : { name: 'wasm_key', label: 'WASM key', required: true, placeholder: 'hello-world-basilisk' },
+        {
+          name: 'reinstall',
+          type: 'checkbox',
+          label: 'Reinstall (wipes all stand state — data will be lost)',
+          value: false,
+          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
+        },
       ],
-      submitLabel: 'Upgrade',
-      onsubmit: (v) => upgradeTo({ desk: desk.name, wasm_key: String(v.wasm_key).trim() }),
+      submitLabel: 'Deploy',
+      onsubmit: (v) => upgradeTo({
+        desk: desk.name,
+        wasm_key: String(v.wasm_key).trim(),
+        reinstall: Boolean(v.reinstall),
+      }),
     });
   }
 
@@ -449,8 +459,8 @@
     const opts = versionOptions(family);
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
-      title: 'Upgrade stand',
-      description: `Upgrade stand "${stand.name}"${family ? ` · family ${family}` : ''}`,
+      title: 'Deploy stand',
+      description: `Deploy stand "${stand.name}"${family ? ` · family ${family}` : ''}`,
       fields: [
         opts.length > 0
           ? { name: 'wasm_key', label: 'Version', type: 'select', value: family, options: opts }
@@ -459,9 +469,20 @@
                 value: family || familyOpts[0].value, options: familyOpts }
             : { name: 'wasm_key', label: 'WASM key', required: true, value: stand.wasm_key ?? '',
                 placeholder: 'hello-world-basilisk' },
+        {
+          name: 'reinstall',
+          type: 'checkbox',
+          label: 'Reinstall (wipes stand state — data will be lost)',
+          value: false,
+          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
+        },
       ],
-      submitLabel: 'Upgrade',
-      onsubmit: (v) => upgradeTo({ stand: stand.name, wasm_key: String(v.wasm_key).trim() }),
+      submitLabel: 'Deploy',
+      onsubmit: (v) => upgradeTo({
+        stand: stand.name,
+        wasm_key: String(v.wasm_key).trim(),
+        reinstall: Boolean(v.reinstall),
+      }),
     });
   }
 </script>
@@ -613,7 +634,7 @@
                       <div class="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
                         <button class="btn-ghost btn-sm" onclick={() => openCreateStand(desk)}>+ Stand</button>
                         <button class="btn-ghost btn-sm" onclick={() => openRegisterStand(desk)}>Register</button>
-                        <button class="btn-ghost btn-sm" onclick={() => openUpgradeDesk(desk)}>Upgrade</button>
+                        <button class="btn-ghost btn-sm" onclick={() => openUpgradeDesk(desk)}>Deploy</button>
                         <button class="btn-ghost btn-sm" onclick={() => openSetCommander({ desk: desk.name }, desk.commander_principal)}>Commander</button>
                       </div>
                     {/if}
@@ -678,7 +699,7 @@
                                 </svg>
                               </a>
                               {#if $isAuthenticated}
-                                <button class="btn-ghost btn-sm" onclick={() => openUpgradeStand(stand)}>Upgrade</button>
+                                <button class="btn-ghost btn-sm" onclick={() => openUpgradeStand(stand)}>Deploy</button>
                                 <button class="btn-ghost btn-sm" onclick={() => runStandAction('Snapshot', () => createSnapshot(stand.name))}>Snapshot</button>
                                 <button class="btn-ghost btn-sm" onclick={() => runStandAction('Revert', () => revertSnapshot(stand.name))}>Revert</button>
                                 <button class="btn-ghost btn-sm" onclick={() => runStandAction('Stop', () => stopCanister(stand.name))}>Stop</button>

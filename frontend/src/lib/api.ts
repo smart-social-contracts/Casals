@@ -532,6 +532,7 @@ export async function upgradeTo(args: {
   desk?: string;
   stand?: string;
   wasm_key: string;
+  reinstall?: boolean;
 }): Promise<UpdateResult> {
   return _parseUpdate(await _actor(true).upgrade_to(JSON.stringify(args)));
 }

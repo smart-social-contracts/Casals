@@ -1887,16 +1887,22 @@ def provision_assets(args: text) -> Async[text]:
 
 @update
 def upgrade_to(args: text) -> Async[text]:
-    """Upgrade a desk (all its stands) or a single stand, all-or-nothing.
+    """Upgrade (or reinstall) a desk (all its stands) or a single stand,
+    all-or-nothing.
 
-    For each target stand: snapshot -> install (upgrade) -> verify module_hash.
+    For each target stand: snapshot -> install -> verify module_hash.
     If any stand fails, every touched stand is reverted from its snapshot.
 
     Args (JSON): {"desk": str} or {"stand": str}, plus {"wasm_key": str}.
+    Optional: {"reinstall": true} — uses `reinstall` mode instead of `upgrade`,
+    which WIPES all stand state.  Snapshot/rollback still protects against
+    failed installs.
     """
     try:
         params = json.loads(args)
         wasm_key = params["wasm_key"].strip()
+        do_reinstall = bool(params.get("reinstall", False))
+        install_mode = {"reinstall": None} if do_reinstall else {"upgrade": None}
 
         if params.get("stand"):
             list(Stand.instances())
@@ -1937,7 +1943,7 @@ def upgrade_to(args: text) -> Async[text]:
         for st in targets:
             try:
                 yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
-                                             w.wasm_hash, {"upgrade": None}, _install_arg_for(w))
+                                             w.wasm_hash, install_mode, _install_arg_for(w))
                 ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
                 if not ok:
                     failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
@@ -1960,8 +1966,9 @@ def upgrade_to(args: text) -> Async[text]:
                 except Exception as rb:
                     st.status = StandStatus.FAILED
                     _append_event("revert_failed", st.canister_id, {"error": str(rb)})
-            _append_event("upgrade_failed", dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
-            return _err(f"upgrade rolled back: {failure}")
+            fail_ev = "reinstall_failed" if do_reinstall else "upgrade_failed"
+            _append_event(fail_ev, dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
+            return _err(f"{'reinstall' if do_reinstall else 'upgrade'} rolled back: {failure}")
 
         # Success: drop snapshots.
         for st, snap_id in snapped:
@@ -1975,9 +1982,11 @@ def upgrade_to(args: text) -> Async[text]:
             st.status = StandStatus.INSTALLED
             st.snapshot_id = ""
             # Per-stand event so the stand's own timeline shows the upgrade.
-            _append_event("upgraded", st.canister_id,
+            ev = "reinstalled" if do_reinstall else "upgraded"
+            _append_event(ev, st.canister_id,
                           {"wasm_key": wasm_key, "desk": dk.name if dk else "", "name": st.name})
-        _append_event("upgrade_finished", dk.name if dk else "", {"wasm_key": wasm_key, "stands": [s.canister_id for s in targets]})
+        finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
+        _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "stands": [s.canister_id for s in targets]})
         return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
     except Exception as e:
         _log.error(f"upgrade_to error: {e}")
