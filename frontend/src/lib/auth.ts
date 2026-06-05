@@ -1,7 +1,6 @@
 import { AuthClient } from '@dfinity/auth-client';
 import { writable } from 'svelte/store';
 import type { Identity } from '@dfinity/agent';
-import { icHost, isLocalHost } from './ic-host';
 
 export const identity = writable<Identity | null>(null);
 export const isAuthenticated = writable(false);
@@ -9,9 +8,10 @@ export const principal = writable('');
 
 let _authClient: AuthClient | null = null;
 
-const II_URL = isLocalHost()
-  ? `${icHost()}?canisterId=rdmx6-jaaaa-aaaaa-aaadq-cai`
-  : 'https://identity.ic0.app';
+// Always use the production Internet Identity — it issues delegations that
+// work with any replica (local or mainnet). The delegation is scoped to the
+// current origin, so local and mainnet get separate identities automatically.
+const II_URL = 'https://identity.ic0.app';
 
 function _applyIdentity(id: Identity) {
   identity.set(id);
