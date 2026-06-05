@@ -18,12 +18,15 @@ export interface Stand {
   wasm_hash: string;
   status: string;
   snapshot_id: string;
+  subnet?: string;
 }
 
 export interface Desk {
   name: string;
   description: string;
   commander_principal: string;
+  subnet?: string;
+  subnet_type?: string;
   stands: Stand[];
 }
 
@@ -31,6 +34,8 @@ export interface Section {
   name: string;
   description: string;
   commander_principal: string;
+  subnet?: string;
+  subnet_type?: string;
   desks: Desk[];
 }
 
@@ -58,6 +63,14 @@ export interface Metadata {
   treasury_reserve: number;
   cycles_autopilot: boolean;
   cycles_check_interval_secs: number;
+  // Fiat display: the currency cycle counts are also shown in, and the cached
+  // conversion factor (millionths of currency per 1T cycles; 0 => not fetched).
+  display_currency?: string;
+  fx_micro_per_tcycle?: number;
+  fx_currency?: string;
+  fx_updated?: number;
+  fx_error?: string;
+  fx_currencies?: string[];
   canister_type: string;
 }
 
@@ -70,6 +83,9 @@ export interface SectionSummary {
 
 export interface AuthorizedWasm {
   key: string;
+  family: string;
+  version: string;
+  latest: boolean;
   section: string;
   registry_namespace: string;
   registry_path: string;
@@ -170,6 +186,8 @@ export interface SheetDesk {
   name: string;
   description?: string;
   commander_principal?: string;
+  subnet?: string;
+  subnet_type?: string;
   stands?: SheetStand[];
 }
 
@@ -177,6 +195,8 @@ export interface SheetSection {
   name: string;
   description?: string;
   commander_principal?: string;
+  subnet?: string;
+  subnet_type?: string;
   desks?: SheetDesk[];
 }
 
@@ -202,6 +222,8 @@ export interface PooledCanister {
   canister_id: string;
   status: 'free' | 'in_use';
   stand_name: string;
+  subnet?: string;
+  subnet_type?: string;
 }
 
 export interface PoolReport {
@@ -209,6 +231,25 @@ export interface PoolReport {
   free: number;
   in_use: number;
   canisters: PooledCanister[];
+}
+
+export interface DeployEstimate {
+  ok: boolean;
+  desired_stands: number;
+  matching_stands: number;
+  reinstall_stands: number;
+  unresolved_stands: number;
+  missing_stands: number;
+  free_pool: number;
+  reused_from_pool: number;
+  new_canisters: number;
+  per_canister_cycles: number;
+  create_cost_cycles: number;
+  balance_cycles: number;
+  reserve_cycles: number;
+  available_cycles: number;
+  shortfall_cycles: number;
+  ready: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +359,7 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 }
 
 // ---------------------------------------------------------------------------
-// Sheet (ephemeral desired-orchestra) + canister pool
+// Sheet (persistent desired-orchestra) + canister pool
 // ---------------------------------------------------------------------------
 
 // The live sheet is public to read (it's just the desired layout); editing and
@@ -331,12 +372,25 @@ export async function listPool(): Promise<PoolReport> {
   return _parseQuery<PoolReport>(await _actor().list_pool());
 }
 
+// Idempotent-aware estimate of the cycles needed to deploy the given (or live)
+// sheet, accounting for the conductor's balance and reusable free canisters.
+export async function estimateDeploy(sheet?: Sheet): Promise<DeployEstimate> {
+  const arg = sheet ? JSON.stringify({ sheet }) : '';
+  return _parseQuery<DeployEstimate>(await _actor().estimate_deploy(arg));
+}
+
 export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
   return _parseUpdate(await _actor(true).set_sheet(JSON.stringify(sheet)));
 }
 
 export async function resetSheet(): Promise<UpdateResult> {
   return _parseUpdate(await _actor(true).reset_sheet());
+}
+
+// Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
+export async function listSubnets(): Promise<string[]> {
+  const r = (await _parseUpdate(await _actor().list_subnets())) as UpdateResult & { subnets?: string[] };
+  return r.subnets ?? [];
 }
 
 // Idempotently stand up the whole orchestra described by the live sheet. If a
@@ -397,10 +451,17 @@ export interface SettingsPatch {
   treasury_reserve?: number;
   cycles_autopilot?: boolean;
   cycles_check_interval_secs?: number;
+  display_currency?: string;
 }
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
   return _parseUpdate(await _actor(true).set_settings(JSON.stringify(patch)));
+}
+
+// Refresh (and cache, server-side) the cycles→currency rate for the configured
+// display currency. Throttled on the backend; safe to call on page load.
+export async function refreshFx(): Promise<UpdateResult> {
+  return _parseUpdate(await _actor().refresh_fx());
 }
 
 export async function createSection(args: {
@@ -439,6 +500,7 @@ export async function registerStand(args: {
 
 export async function addAuthorizedWasm(args: {
   key: string;
+  version?: string;
   section?: string;
   registry_namespace?: string;
   registry_path: string;
@@ -499,6 +561,37 @@ export async function setLogVisibility(
 }
 
 // ---------------------------------------------------------------------------
+// Basilisk introspection (browse / shell) — relayed through Casals
+// ---------------------------------------------------------------------------
+// Only available for Basilisk stands built with
+// `__basilisk_features__ = ["shell", "browse"]`. Casals (the stand's
+// controller) relays the calls.
+
+export interface BrowseResult extends UpdateResult {
+  result?: unknown;
+}
+
+export interface ExecResult extends UpdateResult {
+  output?: string;
+}
+
+// Read-only data introspection. `query` defaults to {action:"schema"} on the
+// backend. Other actions: len / keys / get / items.
+export async function standBrowse(
+  stand: string,
+  query?: Record<string, unknown>,
+): Promise<BrowseResult> {
+  const args: Record<string, unknown> = { stand };
+  if (query) args.query = query;
+  return _parseUpdate(await _actor().stand_browse(JSON.stringify(args))) as BrowseResult;
+}
+
+// Run Python inside the stand (controller-gated). Requires auth.
+export async function standExec(stand: string, code: string): Promise<ExecResult> {
+  return _parseUpdate(await _actor(true).stand_exec(JSON.stringify({ stand, code }))) as ExecResult;
+}
+
+// ---------------------------------------------------------------------------
 // Canister logs (read straight from the IC management canister in the browser)
 // ---------------------------------------------------------------------------
 // `fetch_canister_logs` is a query-only management method that canisters cannot
@@ -551,6 +644,33 @@ export function formatCycles(n: number | undefined | null): string {
   if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   return `${n}`;
+}
+
+// Symbols for the currencies the backend offers (XRC FiatCurrency codes).
+export const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$', EUR: '€', GBP: '£', CHF: 'CHF ', JPY: '¥', CNY: '¥', CAD: 'CA$', AUD: 'A$',
+};
+
+// Convert a raw cycles count to its fiat value given the cached factor
+// (millionths of currency per 1T cycles). Returns null if no rate is available.
+export function cyclesToFiat(cycles: number | undefined | null, microPerTcycle: number | undefined | null): number | null {
+  if (cycles === undefined || cycles === null) return null;
+  if (!microPerTcycle || microPerTcycle <= 0) return null;
+  return (cycles / 1e12) * (microPerTcycle / 1e6);
+}
+
+// Render a fiat value compactly (more decimals for small amounts), prefixed
+// with the currency symbol. "" when there's nothing to show.
+export function formatFiat(value: number | null, currency: string | undefined): string {
+  if (value === null || !isFinite(value)) return '';
+  const cur = currency || 'USD';
+  const sym = CURRENCY_SYMBOLS[cur] ?? '';
+  const abs = Math.abs(value);
+  let digits = 2;
+  if (abs > 0 && abs < 0.01) digits = 4;
+  else if (abs < 1) digits = 3;
+  const num = value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return sym ? `${sym}${num}` : `${num} ${cur}`;
 }
 
 // Parse a human cycles string ("1.5t", "500b", "1000000") into a raw count.

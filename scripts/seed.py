@@ -8,10 +8,11 @@ What it does (idempotently):
   3. With --deploy: also deploy the live sheet (the backend's default orchestra),
      standing up its stands (reusing pooled canisters before creating new ones).
 
-The sheet itself is NOT created here — it lives ephemerally in the backend
-(loaded from src/default_sheet.py at canister start) and is deployed via the
-frontend Deploy button or `deploy_sheet`. Seeding only ensures the catalog of
-authorized WASMs that a sheet's stands reference.
+The sheet itself is NOT created here — it is persisted in the backend (seeded
+from src/default_sheet.py on first boot, then editable and saved across
+restarts) and is deployed via the frontend Deploy button or `deploy_sheet`.
+Seeding only ensures the catalog of authorized WASMs that a sheet's stands
+reference.
 
 Re-running is safe: templates already authorized with a matching hash are
 skipped; deploy_sheet is itself idempotent.
@@ -218,9 +219,14 @@ def main():
     if isinstance(listed, list):
         existing = {w["key"]: w.get("wasm_hash", "") for w in listed}
 
-    # 2. Templates: upload WASM (+ any asset) and authorize.
+    # 2. Templates: upload WASM (+ any asset) and authorize. Each catalog entry
+    #    is one version of a family; the authorized key is "<family>@<version>".
+    seeded_families = set()
     for tpl in catalog["templates"]:
-        key = tpl["key"]
+        family = tpl["key"]
+        version = (tpl.get("version") or "").strip()
+        key = f"{family}@{version}" if version else family
+        seeded_families.add(family)
         data = _read_template_bytes(tpl["file"])
         digest = hashlib.sha256(data).hexdigest()
         asset = tpl.get("asset")
@@ -247,7 +253,8 @@ def main():
             sys.exit(f"hash mismatch for {key}: local {digest} != registry {uploaded}")
 
         authorize = {
-            "key": key,
+            "key": family,
+            "version": version,
             "registry_namespace": namespace,
             "registry_path": tpl["path"],
             "wasm_hash": digest,
@@ -265,6 +272,14 @@ def main():
             print(f"    {verb} {key} -> {digest[:12]}…")
         else:
             sys.exit(f"add_authorized_wasm failed for {key}: {res}")
+
+    # 2b. Remove legacy unversioned entries (key == family) superseded by the
+    #     versioned ones we just authorized, so the catalog stays clean.
+    for family in sorted(seeded_families):
+        if family in existing:  # an old, unversioned "<family>" record exists
+            res = call(CASALS, "remove_authorized_wasm", args, json.dumps({"key": family}))
+            if isinstance(res, dict) and res.get("ok"):
+                print(f"    - removed legacy unversioned {family}")
 
     # 3. Optionally deploy the live sheet (stand up the orchestra). The sheet is
     #    the backend's default (loaded at canister start); deploy_sheet is

@@ -105,8 +105,10 @@
         status.textContent = 'Loading agent…';
 
         import('https://esm.sh/@dfinity/agent@2.1.3').then(({ HttpAgent, Actor }) => {
+          // greet is an update call (not a query): the backend logs the name to
+          // the canister log, and the IC only records logs in replicated mode.
           const idlFactory = ({ IDL }) => IDL.Service({
-            greet: IDL.Func([IDL.Text], [IDL.Text], ['query']),
+            greet: IDL.Func([IDL.Text], [IDL.Text], []),
           });
 
           const agent = new HttpAgent({ host: 'https://ic0.app' });

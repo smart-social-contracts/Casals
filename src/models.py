@@ -49,6 +49,12 @@ class Section(Entity, TimestampedMixin):
     # Cycle policy (0 => inherit from Settings defaults). See util.resolve_cycle_policy.
     min_cycles = Integer(default=0)
     topup_cycles = Integer(default=0)
+    # Desired subnet placement for canisters created under this section. `subnet`
+    # is an explicit subnet principal; `subnet_type` (e.g. "fiduciary") asks the
+    # CMC to pick one of that type. A desk may override both. Empty => the
+    # conductor's own subnet (default management-canister placement).
+    subnet = String(max_length=128, default="")
+    subnet_type = String(max_length=64, default="")
     desks = OneToMany("Desk", "section")
     wasms = OneToMany("AuthorizedWasm", "section")
 
@@ -66,6 +72,9 @@ class Desk(Entity, TimestampedMixin):
     # Cycle policy override (0 => inherit from the section, then Settings).
     min_cycles = Integer(default=0)
     topup_cycles = Integer(default=0)
+    # Desired subnet placement, overriding the section's when set (see Section).
+    subnet = String(max_length=128, default="")
+    subnet_type = String(max_length=64, default="")
     stands = OneToMany("Stand", "desk")
 
 
@@ -82,6 +91,9 @@ class Stand(Entity, TimestampedMixin):
     status = String(max_length=32, default=StandStatus.REGISTERED)
     snapshot_id = String(max_length=128, default="")  # last pre-upgrade snapshot
     created_by = String(max_length=64, default="")
+    # Subnet the canister actually lives on, when known (set when Casals creates
+    # it on a chosen subnet via the CMC). Empty => unknown / conductor's subnet.
+    subnet = String(max_length=128, default="")
     # Cycle policy override (0 => inherit from the desk, then section, then Settings).
     min_cycles = Integer(default=0)
     topup_cycles = Integer(default=0)
@@ -127,6 +139,11 @@ class PooledCanister(Entity, TimestampedMixin):
     # "free"  => parked, available for reuse; "in_use" => backing a live stand.
     status = String(max_length=16, default="free")
     stand_name = String(max_length=128, default="")  # current occupant (if in_use)
+    # Subnet placement this canister was created on, when known. Used to match a
+    # free canister to a stand that targets a specific subnet before creating a
+    # new one. Empty => created on the conductor's subnet (unknown id).
+    subnet = String(max_length=128, default="")
+    subnet_type = String(max_length=64, default="")
 
 
 class AuthorizedWasm(Entity, TimestampedMixin):
@@ -140,6 +157,13 @@ class AuthorizedWasm(Entity, TimestampedMixin):
 
     __alias__ = "key"
     key = String(min_length=1, max_length=256)        # e.g. "realm-gos@1.2.0"
+    # A `family` groups versions of the same template/release line (e.g.
+    # "realm-gos"); `version` is its release tag (e.g. "1.2.0"). The unique key
+    # is "<family>@<version>". A bare family name resolves to the latest version.
+    # Both are derived from `key` when omitted; legacy unversioned entries have
+    # family == key and version == "".
+    family = String(max_length=256, default="")
+    version = String(max_length=64, default="")
     # Empty section => global template (e.g. the default hello_world WASMs).
     section = ManyToOne("Section", "wasms")
     registry_namespace = String(max_length=256, default="wasm")
@@ -191,6 +215,21 @@ class Settings(Entity):
     # so the Cycles page can chart history. Default on, hourly.
     cycles_sampling = Integer(default=1)
     cycles_sample_interval_secs = Integer(default=3_600)       # 1h
+    # The desired orchestra ("sheet") as a JSON document, persisted across
+    # restarts/upgrades. Seeded from the bundled default the first time only;
+    # thereafter edits survive. Empty => not yet seeded (load the default).
+    sheet_json = String(max_length=65536, default="")
+    # ── Fiat display (cycles → currency equivalent, shown next to cycle counts) ──
+    # The currency every cycle count is also rendered in (small, gray). Cycles
+    # are pegged 1T = 1 XDR, so the equivalent is fetched as the currency value
+    # of one XDR (derived from the XRC's ICP/<currency> rate and the CMC's
+    # ICP/XDR rate). `fx_micro_per_tcycle` caches that value in millionths of the
+    # currency per 1T cycles (e.g. USD 1.33/Tc => 1_330_000); 0 => not fetched.
+    display_currency = String(max_length=8, default="USD")
+    fx_micro_per_tcycle = Integer(default=0)
+    fx_currency = String(max_length=8, default="")
+    fx_updated = Integer(default=0)
+    fx_error = String(max_length=256, default="")
     version = String(max_length=32, default="0.1.0")
 
 

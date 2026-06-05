@@ -49,13 +49,20 @@ emit() { # <name> <wasm-path>
     "$name" "$(stat -c%s "$wasm")" "$(stat -c%s "$out")" "$sha"
 }
 
-echo "==> Basilisk hello-world"
+# Basilisk hello-world is versioned: the artifact is named
+# hello-world-basilisk@<version>.wasm.gz where <version> is `__version__` in
+# main.py (defaults to 1.0.0). Older versions are kept as committed artifacts —
+# rebuild only bumps/refreshes the current one. List all versions in
+# seed/templates.json.
+BASILISK_VERSION="$(sed -n 's/^__version__ *= *["'\'']\([^"'\'']*\)["'\''].*/\1/p' "$REPO_ROOT/templates/hello-world-basilisk/main.py")"
+BASILISK_VERSION="${BASILISK_VERSION:-1.0.0}"
+echo "==> Basilisk hello-world (v$BASILISK_VERSION)"
 ( cd "$REPO_ROOT" && \
   CANISTER_CANDID_PATH=templates/hello-world-basilisk/hello_world_basilisk.did \
   python3 -m basilisk hello_world_basilisk templates/hello-world-basilisk/main.py >/dev/null )
 BASILISK_WASM="$REPO_ROOT/.basilisk/hello_world_basilisk/hello_world_basilisk.wasm"
 embed_candid "$BASILISK_WASM" "$REPO_ROOT/templates/hello-world-basilisk/hello_world_basilisk.did"
-emit "hello-world-basilisk" "$BASILISK_WASM"
+emit "hello-world-basilisk@$BASILISK_VERSION" "$BASILISK_WASM"
 
 echo "==> Rust hello-world"
 ( cd "$REPO_ROOT/templates/hello-world-rust" && \

@@ -16,13 +16,16 @@
     setLogVisibility,
     getEvents,
     getCanisterLogs,
+    listAuthorizedWasms,
+    standBrowse,
+    standExec,
     shortHash,
     shortPrincipal,
     standLink,
   } from '$lib/api';
   import type {
     Tree, Status, Section, Desk, Stand, UpdateResult,
-    OrchestrationEvent, CanisterLogRecord,
+    OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
@@ -43,6 +46,7 @@
   let status = $state<Status | null>(null);
   let loading = $state(true);
   let error = $state('');
+  let catalog = $state<AuthorizedWasm[]>([]);
 
   let expandedSections = $state<Record<string, boolean>>({});
   let expandedDesks = $state<Record<string, boolean>>({});
@@ -54,6 +58,15 @@
   let standLogErr = $state<Record<string, string>>({});
   let standLoading = $state<Record<string, boolean>>({});
 
+  // Basilisk introspection (only for stands built with __basilisk_features__).
+  let browseData = $state<Record<string, unknown>>({});
+  let browseErr = $state<Record<string, string>>({});
+  let browseBusy = $state<Record<string, boolean>>({});
+  let consoleCode = $state<Record<string, string>>({});
+  let consoleOut = $state<Record<string, string>>({});
+  let consoleErr = $state<Record<string, string>>({});
+  let consoleBusy = $state<Record<string, boolean>>({});
+
   let modal = $state<ModalConfig | null>(null);
   let modalBusy = $state(false);
 
@@ -61,12 +74,77 @@
     loading = true;
     error = '';
     try {
-      [tree, status] = await Promise.all([getTree(), getStatus()]);
+      [tree, status, catalog] = await Promise.all([
+        getTree(),
+        getStatus(),
+        listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
+      ]);
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
       loading = false;
     }
+  }
+
+  // Build the WASM-version <select> options for a family. The first option is
+  // the bare family name, which the backend resolves to the latest version; the
+  // rest pin a specific version. Falls back to key-prefix matching when the
+  // catalog entries don't include a `family` field (old backend).
+  function versionOptions(family: string): { value: string; label: string }[] {
+    if (!family || !catalog.length) return [];
+    const members = catalog
+      .filter((w) => (w.family || w.key.split('@')[0]) === family)
+      .sort((a, b) => verCmp(b.version || b.key.split('@')[1] || '', a.version || a.key.split('@')[1] || ''));
+    if (members.length === 0) return [];
+    const latest = members.find((m) => m.latest) ?? members[0];
+    const latestVer = latest.version || latest.key.split('@')[1] || '?';
+    const opts = [{ value: family, label: `Latest (v${latestVer})` }];
+    for (const m of members) {
+      const ver = m.version || m.key.split('@')[1] || '?';
+      opts.push({ value: m.key, label: `v${ver}${m.latest !== false && m === latest ? ' · latest' : ''}` });
+    }
+    return opts;
+  }
+
+  // All distinct families in the catalog (for free-text fallback datalist).
+  const allFamilies = $derived(
+    [...new Set(catalog.map((w) => w.family || w.key.split('@')[0]).filter(Boolean))].sort()
+  );
+
+  function verCmp(a: string, b: string): number {
+    const pa = (a || '0').split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = (b || '0').split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+      if (d !== 0) return d;
+    }
+    return 0;
+  }
+
+  function familyOf(wasmKey: string): string {
+    return (wasmKey || '').split('@')[0];
+  }
+
+  function shortId(id: string): string {
+    if (!id) return '';
+    return id.length > 13 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
+  }
+
+  // Desired-placement label for a section/desk (target for new canisters).
+  function placementLabel(o: { subnet?: string; subnet_type?: string }): string {
+    if (o.subnet) return `subnet ${shortId(o.subnet)}`;
+    if (o.subnet_type) return `subnet type: ${o.subnet_type}`;
+    return '';
+  }
+
+  // Families present in a desk (across its stands), for desk-wide upgrades.
+  function deskFamilies(desk: Desk): string[] {
+    const fams = new Set<string>();
+    for (const s of desk.stands) {
+      const f = familyOf(s.wasm_key);
+      if (f) fams.add(f);
+    }
+    return [...fams];
   }
 
   onMount(load);
@@ -121,6 +199,42 @@
       await loadStandDetails(stand.canister_id);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to set log visibility');
+    }
+  }
+
+  async function runBrowse(stand: Stand, query?: Record<string, unknown>) {
+    const cid = stand.canister_id;
+    browseBusy[cid] = true;
+    browseErr[cid] = '';
+    try {
+      const r = await standBrowse(stand.name, query);
+      browseData[cid] = r.result;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      browseErr[cid] = /__browse__|method|not found|no query method/i.test(msg)
+        ? 'This stand does not expose introspection (rebuild with __basilisk_features__).'
+        : msg;
+    } finally {
+      browseBusy[cid] = false;
+    }
+  }
+
+  async function runExec(stand: Stand) {
+    const cid = stand.canister_id;
+    const code = consoleCode[cid] ?? '';
+    if (!code.trim()) return;
+    consoleBusy[cid] = true;
+    consoleErr[cid] = '';
+    try {
+      const r = await standExec(stand.name, code);
+      consoleOut[cid] = r.output ?? '';
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      consoleErr[cid] = /__shell__|method|not found/i.test(msg)
+        ? 'This stand does not expose a Python shell (rebuild with __basilisk_features__).'
+        : msg;
+    } finally {
+      consoleBusy[cid] = false;
     }
   }
 
@@ -299,7 +413,10 @@
             { value: 'frontend', label: 'Frontend' },
           ],
         },
-        { name: 'wasm_key', label: 'WASM key', required: true, placeholder: 'hello_world_basilisk' },
+        allFamilies.length > 0
+          ? { name: 'wasm_key', label: 'WASM family', type: 'select', required: true,
+              value: allFamilies[0], options: allFamilies.map((f) => ({ value: f, label: f })) }
+          : { name: 'wasm_key', label: 'WASM family or key', required: true, placeholder: 'hello-world-basilisk' },
       ],
       submitLabel: 'Create stand',
       onsubmit: (v) => createStand({ ...(clean(v) as any), desk: desk.name }),
@@ -307,27 +424,41 @@
   }
 
   function openUpgradeDesk(desk: Desk) {
+    const fams = deskFamilies(desk);
+    const opts = fams.length === 1 ? versionOptions(fams[0]) : [];
+    // Family options list for the catalog-families select (fallback when no version info).
+    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
       title: 'Upgrade desk',
       description: `Upgrade all stands in desk "${desk.name}"`,
-      fields: [{ name: 'wasm_key', label: 'WASM key', required: true, placeholder: 'hello_world_basilisk' }],
+      fields: [
+        opts.length > 0
+          ? { name: 'wasm_key', label: 'Version', type: 'select', value: fams[0], options: opts }
+          : familyOpts.length > 0
+            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
+                value: fams[0] || familyOpts[0].value, options: familyOpts }
+            : { name: 'wasm_key', label: 'WASM key', required: true, placeholder: 'hello-world-basilisk' },
+      ],
       submitLabel: 'Upgrade',
       onsubmit: (v) => upgradeTo({ desk: desk.name, wasm_key: String(v.wasm_key).trim() }),
     });
   }
 
   function openUpgradeStand(stand: Stand) {
+    const family = familyOf(stand.wasm_key);
+    const opts = versionOptions(family);
+    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
       title: 'Upgrade stand',
-      description: `Upgrade stand "${stand.name}"`,
+      description: `Upgrade stand "${stand.name}"${family ? ` · family ${family}` : ''}`,
       fields: [
-        {
-          name: 'wasm_key',
-          label: 'WASM key',
-          required: true,
-          value: stand.wasm_key ?? '',
-          placeholder: 'hello_world_basilisk',
-        },
+        opts.length > 0
+          ? { name: 'wasm_key', label: 'Version', type: 'select', value: family, options: opts }
+          : familyOpts.length > 0
+            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
+                value: family || familyOpts[0].value, options: familyOpts }
+            : { name: 'wasm_key', label: 'WASM key', required: true, value: stand.wasm_key ?? '',
+                placeholder: 'hello-world-basilisk' },
       ],
       submitLabel: 'Upgrade',
       onsubmit: (v) => upgradeTo({ stand: stand.name, wasm_key: String(v.wasm_key).trim() }),
@@ -429,6 +560,11 @@
                     commander: {shortPrincipal(section.commander_principal)}
                   </div>
                 {/if}
+                {#if placementLabel(section)}
+                  <div class="text-xs text-primary-400 mt-1 font-mono" title={section.subnet || section.subnet_type}>
+                    ⬡ {placementLabel(section)}
+                  </div>
+                {/if}
               </div>
             </button>
             {#if $isAuthenticated}
@@ -466,6 +602,11 @@
                             commander: {shortPrincipal(desk.commander_principal)}
                           </div>
                         {/if}
+                        {#if placementLabel(desk)}
+                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={desk.subnet || desk.subnet_type}>
+                            ⬡ {placementLabel(desk)}
+                          </div>
+                        {/if}
                       </div>
                     </button>
                     {#if $isAuthenticated}
@@ -494,6 +635,9 @@
                                 </span>
                                 {#if stand.status}
                                   <span class="badge badge-neutral">{stand.status}</span>
+                                {/if}
+                                {#if stand.subnet}
+                                  <span class="badge badge-neutral font-mono" title="subnet {stand.subnet}">⬡ {shortId(stand.subnet)}</span>
                                 {/if}
                               </div>
                               <div class="flex items-center gap-2 text-xs">
@@ -554,6 +698,7 @@
                                 {#if stand.snapshot_id}
                                   <span class="font-mono" title={stand.snapshot_id}>snapshot {shortHash(stand.snapshot_id)}</span>
                                 {/if}
+                                <span class="font-mono" title={stand.subnet || 'default (conductor subnet)'}>subnet {stand.subnet ? shortId(stand.subnet) : '— default'}</span>
                               </div>
 
                               {#if standLoading[stand.canister_id]}
@@ -594,6 +739,47 @@
 {/each}</pre>
                                   {/if}
                                 </div>
+
+                                {#if stand.kind === 'backend'}
+                                  <div>
+                                    <div class="flex items-center justify-between mb-1.5">
+                                      <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Inspect (Basilisk)</div>
+                                      <button class="text-xs text-primary-500 hover:text-primary-800 disabled:opacity-40" disabled={browseBusy[stand.canister_id]} onclick={() => runBrowse(stand)}>
+                                        {browseBusy[stand.canister_id] ? 'Loading…' : 'Browse data'}
+                                      </button>
+                                    </div>
+                                    {#if browseErr[stand.canister_id]}
+                                      <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">{browseErr[stand.canister_id]}</div>
+                                    {:else if browseData[stand.canister_id] !== undefined}
+                                      <pre class="text-[11px] leading-relaxed font-mono bg-primary-50 text-primary-800 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(browseData[stand.canister_id], null, 2)}</pre>
+                                    {:else}
+                                      <div class="text-xs text-primary-400">Read-only view of the stand's stable data. Click “Browse data”.</div>
+                                    {/if}
+                                  </div>
+
+                                  {#if $isAuthenticated}
+                                    <div>
+                                      <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Python console (Basilisk)</div>
+                                      <textarea
+                                        class="input font-mono text-[11px] w-full min-h-[64px] resize-y"
+                                        placeholder={'print(1 + 1)\nimport sys; print(sys.version)'}
+                                        bind:value={consoleCode[stand.canister_id]}
+                                        onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(stand); } }}
+                                      ></textarea>
+                                      <div class="flex items-center justify-between mt-1.5">
+                                        <span class="text-[11px] text-primary-400">Runs server-side via <span class="font-mono">__shell__</span>. ⌘/Ctrl+Enter to run.</span>
+                                        <button class="btn-secondary btn-sm" disabled={consoleBusy[stand.canister_id]} onclick={() => runExec(stand)}>
+                                          {consoleBusy[stand.canister_id] ? 'Running…' : 'Run'}
+                                        </button>
+                                      </div>
+                                      {#if consoleErr[stand.canister_id]}
+                                        <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[stand.canister_id]}</div>
+                                      {:else if consoleOut[stand.canister_id] !== undefined}
+                                        <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[stand.canister_id] || '(no output)'}</pre>
+                                      {/if}
+                                    </div>
+                                  {/if}
+                                {/if}
                               {/if}
                             </div>
                           {/if}

@@ -1,9 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, cycleopsMonitored, setSettings, shortPrincipal, formatCycles, parseCycles } from '$lib/api';
+  import { casalsMetadata, cycleopsMonitored, setSettings, shortPrincipal, formatCycles, parseCycles, formatFiat } from '$lib/api';
   import type { Metadata, CycleOpsInfo, SettingsPatch } from '$lib/api';
-  import { isAuthenticated } from '$lib/auth';
+  import { isAuthenticated, principal } from '$lib/auth';
+  import { ensureFx } from '$lib/fx.svelte';
+
+  let copied = $state(false);
+  async function copyPrincipal() {
+    if (!$principal) return;
+    await navigator.clipboard.writeText($principal);
+    copied = true;
+    setTimeout(() => { copied = false; }, 1500);
+  }
   import { toasts } from '$lib/stores/toast';
+
+  const FALLBACK_CURRENCIES = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY', 'CAD', 'AUD'];
 
   let meta = $state<Metadata | null>(null);
   let cycleops = $state<CycleOpsInfo | null>(null);
@@ -23,6 +34,10 @@
   let defaultMinCycles = $state('');
   let defaultTopupCycles = $state('');
   let treasuryReserve = $state('');
+  // Fiat display
+  let displayCurrency = $state('USD');
+
+  const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
 
   async function load() {
     loading = true;
@@ -38,6 +53,7 @@
       defaultMinCycles = formatCycles(meta.default_min_cycles);
       defaultTopupCycles = formatCycles(meta.default_topup_cycles);
       treasuryReserve = formatCycles(meta.treasury_reserve);
+      displayCurrency = meta.display_currency || 'USD';
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -58,6 +74,7 @@
         cycleops_principal: cycleopsPrincipal.trim(),
         cycles_autopilot: cyclesAutopilot,
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
+        display_currency: displayCurrency,
       };
       const minC = parseCycles(defaultMinCycles);
       const topupC = parseCycles(defaultTopupCycles);
@@ -65,8 +82,11 @@
       if (!Number.isNaN(minC)) patch.default_min_cycles = minC;
       if (!Number.isNaN(topupC)) patch.default_topup_cycles = topupC;
       if (!Number.isNaN(reserveC)) patch.treasury_reserve = reserveC;
+      const currencyChanged = displayCurrency !== (meta?.display_currency || 'USD');
       await setSettings(patch);
       toasts.success('Settings saved');
+      // Re-fetch the rate when the currency changed so the new units take effect.
+      if (currencyChanged) await ensureFx();
       await load();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to save settings');
@@ -150,6 +170,29 @@
             {meta.file_registry_canister_id || '—'}
           </dd>
         </div>
+        {#if $principal}
+          <div class="flex justify-between gap-3 sm:col-span-2 pt-2 border-t border-[var(--color-border-primary)]">
+            <dt class="text-primary-500 shrink-0">Your principal</dt>
+            <dd class="flex items-center gap-2 min-w-0">
+              <span class="font-mono text-primary-900 truncate text-sm" title={$principal}>{$principal}</span>
+              <button
+                class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
+                onclick={copyPrincipal}
+                title="Copy principal"
+              >
+                {#if copied}
+                  <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                {:else}
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                  </svg>
+                {/if}
+              </button>
+            </dd>
+          </div>
+        {/if}
       </dl>
     </div>
 
@@ -227,6 +270,36 @@
                 <label class="label" for="defaultTopup">Default top-up amount</label>
                 <input id="defaultTopup" type="text" class="input font-mono" placeholder="1t" bind:value={defaultTopupCycles} />
               </div>
+            </div>
+          </div>
+
+          <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-3">
+            <div>
+              <h3 class="text-sm font-semibold text-primary-800">Fiat display</h3>
+              <p class="text-xs text-primary-400">
+                Show an approximate currency value next to every cycle count. Cycles are
+                pegged 1T = 1 XDR; the rate is fetched from the IC Exchange Rate Canister.
+              </p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+              <div>
+                <label class="label" for="displayCurrency">Display currency</label>
+                <select id="displayCurrency" class="input" bind:value={displayCurrency}>
+                  {#each currencies as c (c)}
+                    <option value={c}>{c}</option>
+                  {/each}
+                </select>
+              </div>
+              <p class="text-xs text-primary-400">
+                {#if meta.fx_micro_per_tcycle && meta.fx_currency}
+                  1T cycles ≈ <span class="font-mono text-primary-600">{formatFiat(meta.fx_micro_per_tcycle / 1e6, meta.fx_currency)}</span>
+                  <span class="text-primary-300">({meta.fx_currency})</span>
+                {:else if meta.fx_error}
+                  <span class="text-amber-600">rate unavailable: {meta.fx_error}</span>
+                {:else}
+                  rate not fetched yet
+                {/if}
+              </p>
             </div>
           </div>
 

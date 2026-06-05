@@ -25,7 +25,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     reconcile:             IDL.Func([], [IDL.Text], []),
     set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
 
-    // ── sheet (ephemeral desired-orchestra) ──
+    // ── sheet (persistent desired-orchestra) ──
     set_sheet:             IDL.Func([IDL.Text], [IDL.Text], []),
     reset_sheet:           IDL.Func([], [IDL.Text], []),
     deploy_sheet:          IDL.Func([IDL.Text], [IDL.Text], []),
@@ -47,5 +47,10 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     stop_canister:         IDL.Func([IDL.Text], [IDL.Text], []),
     start_canister:        IDL.Func([IDL.Text], [IDL.Text], []),
     set_log_visibility:    IDL.Func([IDL.Text], [IDL.Text], []),
+    stand_browse:          IDL.Func([IDL.Text], [IDL.Text], []),
+    stand_exec:            IDL.Func([IDL.Text], [IDL.Text], []),
+    list_subnets:          IDL.Func([], [IDL.Text], []),
+    estimate_deploy:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    refresh_fx:            IDL.Func([], [IDL.Text], []),
   });
 };

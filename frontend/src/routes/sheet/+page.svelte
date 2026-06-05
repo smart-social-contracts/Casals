@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSheet, setSheet, resetSheet, deploySheet, listPool } from '$lib/api';
-  import type { Sheet, DeployResult, PoolReport } from '$lib/api';
+  import { getSheet, setSheet, resetSheet, deploySheet, listPool, listSubnets, estimateDeploy, formatCycles } from '$lib/api';
+  import type { Sheet, DeployResult, PoolReport, DeployEstimate } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
 
@@ -11,6 +11,54 @@
   let busy = $state(false);
   let pool = $state<PoolReport | null>(null);
   let lastDeploy = $state<DeployResult | null>(null);
+  let subnets = $state<string[] | null>(null);
+  let subnetsBusy = $state(false);
+  let estimate = $state<DeployEstimate | null>(null);
+  let estimateErr = $state('');
+  let estTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function runEstimate(sheet: Sheet) {
+    estimateErr = '';
+    try {
+      estimate = await estimateDeploy(sheet);
+    } catch (e: any) {
+      estimateErr = e?.message ?? String(e);
+      estimate = null;
+    }
+  }
+
+  // Re-estimate the deploy cost whenever the (valid) sheet changes, debounced so
+  // we don't query the conductor on every keystroke.
+  $effect(() => {
+    const sheet = parsed.sheet;
+    clearTimeout(estTimer);
+    if (!sheet) {
+      estimate = null;
+      return;
+    }
+    estTimer = setTimeout(() => runEstimate(sheet), 400);
+    return () => clearTimeout(estTimer);
+  });
+
+  async function loadSubnets() {
+    subnetsBusy = true;
+    try {
+      subnets = await listSubnets();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed to list subnets');
+    } finally {
+      subnetsBusy = false;
+    }
+  }
+
+  async function copy(s: string) {
+    try {
+      await navigator.clipboard.writeText(s);
+      toasts.info('Copied');
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Parse the editor text into a Sheet, surfacing JSON errors inline.
   let parsed = $derived.by<{ sheet: Sheet | null; err: string }>(() => {
@@ -66,7 +114,7 @@
     busy = true;
     try {
       await setSheet(parsed.sheet);
-      toasts.success('Sheet saved (live, ephemeral)');
+      toasts.success('Sheet saved (persisted)');
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to save sheet');
     } finally {
@@ -98,6 +146,7 @@
       // Set + deploy in one call so the deployed orchestra matches the editor.
       lastDeploy = await deploySheet(parsed.sheet);
       pool = await listPool();
+      if (parsed.sheet) await runEstimate(parsed.sheet);
       if (lastDeploy.errors && lastDeploy.errors.length > 0) {
         toasts.error(`Deployed with ${lastDeploy.errors.length} error(s)`);
       } else {
@@ -128,10 +177,17 @@
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Sheet</h1>
       <p class="text-sm text-primary-500 mt-1 max-w-2xl">
-        The desired orchestra as a single editable document. It lives ephemerally in the
-        conductor (reloaded from the default on every restart). Editing changes nothing
-        on-chain until you <strong>Deploy</strong>, which idempotently reconciles real
-        canisters to the sheet — reusing pooled canisters before creating new ones.
+        The desired orchestra as a single editable document, persisted in the conductor
+        (the bundled default only seeds the first boot). Saving keeps your edits across
+        restarts; nothing changes on-chain until you <strong>Deploy</strong>, which
+        idempotently reconciles real canisters to the sheet — reusing pooled canisters
+        before creating new ones.
+      </p>
+      <p class="text-xs text-primary-400 mt-1 max-w-2xl">
+        A section or desk may set <code class="font-mono">"subnet": "&lt;subnet-id&gt;"</code>
+        (or <code class="font-mono">"subnet_type": "fiduciary"</code>) to place its new
+        canisters on a specific subnet (desk overrides section). Existing canisters are
+        never moved — placement applies to canisters created on the next deploy.
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0">
@@ -193,6 +249,57 @@
 
     <!-- Pool + deploy result -->
     <div class="space-y-6">
+      <!-- Deploy cost estimate -->
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-primary-900 mb-1">Deploy estimate</h2>
+        <p class="text-xs text-primary-400 mb-3">
+          Idempotent: only missing stands need a canister, and free pooled canisters are reused first.
+        </p>
+        {#if estimateErr}
+          <p class="text-xs text-red-600">⚠ {estimateErr}</p>
+        {:else if !estimate}
+          <div class="skeleton h-12 w-full"></div>
+        {:else if estimate.ready}
+          <div class="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+            <p class="text-sm font-semibold text-emerald-700">✓ Ready to deploy</p>
+            <p class="text-xs text-emerald-600 mt-0.5">
+              {#if estimate.new_canisters > 0}
+                The conductor has enough cycles to create {estimate.new_canisters} new canister(s).
+              {:else}
+                No new canisters needed — nothing to fund.
+              {/if}
+            </p>
+          </div>
+        {:else}
+          <div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+            <p class="text-sm font-semibold text-amber-700">Top up ~{formatCycles(estimate.shortfall_cycles)}</p>
+            <p class="text-xs text-amber-600 mt-0.5">
+              Needed to create {estimate.new_canisters} new canister(s) and keep the reserve.
+            </p>
+          </div>
+        {/if}
+
+        {#if estimate}
+          <dl class="mt-3 space-y-1.5 text-xs">
+            <div class="flex justify-between"><dt class="text-primary-500">New canisters to create</dt><dd class="font-mono text-primary-800">{estimate.new_canisters}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-400">· reused from pool</dt><dd class="font-mono text-primary-500">{estimate.reused_from_pool} / {estimate.free_pool} free</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-400">· already matching</dt><dd class="font-mono text-primary-500">{estimate.matching_stands}</dd></div>
+            {#if estimate.reinstall_stands > 0}
+              <div class="flex justify-between"><dt class="text-primary-400">· reinstalled in place</dt><dd class="font-mono text-primary-500">{estimate.reinstall_stands}</dd></div>
+            {/if}
+            {#if estimate.unresolved_stands > 0}
+              <div class="flex justify-between"><dt class="text-red-500">· unknown WASM (will error)</dt><dd class="font-mono text-red-500">{estimate.unresolved_stands}</dd></div>
+            {/if}
+            <div class="border-t border-[var(--color-border-primary)] my-1"></div>
+            <div class="flex justify-between"><dt class="text-primary-500">Endowment / canister</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.per_canister_cycles)}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-500">Total creation cost</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.create_cost_cycles)}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-500">Conductor balance</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.balance_cycles)}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-400">· reserve kept</dt><dd class="font-mono text-primary-500">{formatCycles(estimate.reserve_cycles)}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-400">· available to spend</dt><dd class="font-mono text-primary-500">{formatCycles(estimate.available_cycles)}</dd></div>
+          </dl>
+        {/if}
+      </div>
+
       <div class="card p-4">
         <h2 class="text-sm font-semibold text-primary-900 mb-3">Canister pool</h2>
         {#if pool}
@@ -207,10 +314,15 @@
           {#if pool.canisters.length > 0}
             <ul class="mt-3 space-y-1 max-h-48 overflow-y-auto">
               {#each pool.canisters as c (c.canister_id)}
-                <li class="flex items-center justify-between text-xs">
-                  <span class="font-mono text-primary-600">{c.canister_id}</span>
-                  <span class="badge {c.status === 'free' ? 'badge-frontend' : 'badge-backend'}">
-                    {c.status === 'free' ? 'free' : c.stand_name || 'in use'}
+                <li class="flex items-center justify-between gap-2 text-xs">
+                  <span class="font-mono text-primary-600 truncate">{c.canister_id}</span>
+                  <span class="flex items-center gap-1 shrink-0">
+                    {#if c.subnet}
+                      <span class="badge badge-neutral font-mono" title="subnet {c.subnet}">⬡ {c.subnet.slice(0, 5)}…</span>
+                    {/if}
+                    <span class="badge {c.status === 'free' ? 'badge-frontend' : 'badge-backend'}">
+                      {c.status === 'free' ? 'free' : c.stand_name || 'in use'}
+                    </span>
                   </span>
                 </li>
               {/each}
@@ -218,6 +330,29 @@
           {/if}
         {:else}
           <div class="skeleton h-12 w-full"></div>
+        {/if}
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-sm font-semibold text-primary-900">Available subnets</h2>
+          <button class="btn-secondary btn-sm" onclick={loadSubnets} disabled={subnetsBusy}>
+            {subnetsBusy ? 'Loading…' : subnets ? 'Refresh' : 'Load'}
+          </button>
+        </div>
+        <p class="text-xs text-primary-400">Default subnets the CMC will create on — usable as <code class="font-mono">subnet</code> targets.</p>
+        {#if subnets}
+          {#if subnets.length === 0}
+            <p class="text-xs text-primary-400 mt-2">None reported.</p>
+          {:else}
+            <ul class="mt-2 space-y-1 max-h-48 overflow-y-auto">
+              {#each subnets as s (s)}
+                <li>
+                  <button class="font-mono text-xs text-primary-600 hover:text-primary-900 truncate w-full text-left" title="Copy {s}" onclick={() => copy(s)}>{s}</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/if}
       </div>
 

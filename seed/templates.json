@@ -1,30 +1,50 @@
 {
-  "$comment": "Default template catalog for Casals. These WASMs are uploaded to the file-registry and authorized on the backend by scripts/seed.py. Sheets reference them by `key` (the authorized-WASM key). This is separate from any sheet on purpose: the catalog is the set of runnable artifacts; a sheet only wires existing artifacts into an orchestra. A `frontend`-kind template may carry an `asset` (a file uploaded to the registry); Casals uploads it into each stand built from that template after install, so the certified-assets canister actually serves a page.",
+  "$comment": "Default template catalog for Casals. These WASMs are uploaded to the file-registry and authorized on the backend by scripts/seed.py. Each entry is one *version* of a template family (`key`); the authorized-WASM key is `<key>@<version>` and a sheet/upgrade that references a bare family name resolves to the latest version. List multiple entries with the same `key` to publish several versions. A `frontend`-kind template may carry an `asset` (a file uploaded to the registry); Casals uploads it into each stand built from that template after install, so the certified-assets canister actually serves a page.",
   "registry_namespace": "casals-templates",
   "templates": [
     {
       "key": "hello-world-rust",
+      "version": "1.0.0",
       "file": "hello-world-rust.wasm.gz",
       "path": "hello-world-rust.wasm",
       "kind": "backend",
-      "description": "Rust hello-world canister (ic-cdk greet query)."
+      "description": "Rust hello-world canister (ic-cdk greet update; logs the name)."
     },
     {
       "key": "hello-world-motoko",
+      "version": "1.0.0",
       "file": "hello-world-motoko.wasm.gz",
       "path": "hello-world-motoko.wasm",
       "kind": "backend",
-      "description": "Motoko hello-world canister (greet query)."
+      "description": "Motoko hello-world canister (greet update; logs the name)."
     },
     {
       "key": "hello-world-basilisk",
-      "file": "hello-world-basilisk.wasm.gz",
-      "path": "hello-world-basilisk.wasm",
+      "version": "1.0.0",
+      "file": "hello-world-basilisk@1.0.0.wasm.gz",
+      "path": "hello-world-basilisk@1.0.0.wasm",
       "kind": "backend",
-      "description": "Basilisk (Python) hello-world canister (greet query)."
+      "description": "Basilisk (Python) hello-world canister (greet + introspection)."
+    },
+    {
+      "key": "hello-world-basilisk",
+      "version": "1.1.0",
+      "file": "hello-world-basilisk@1.1.0.wasm.gz",
+      "path": "hello-world-basilisk@1.1.0.wasm",
+      "kind": "backend",
+      "description": "Basilisk hello-world v1.1 — greeting tagged with the version."
+    },
+    {
+      "key": "hello-world-basilisk",
+      "version": "1.2.0",
+      "file": "hello-world-basilisk@1.2.0.wasm.gz",
+      "path": "hello-world-basilisk@1.2.0.wasm",
+      "kind": "backend",
+      "description": "Basilisk hello-world v1.2 — greet is an update that logs the name (ic-basilisk-toolkit logger)."
     },
     {
       "key": "hello-world-frontend",
+      "version": "1.0.0",
       "file": "hello-world-frontend.wasm.gz",
       "path": "hello-world-frontend.wasm",
       "kind": "frontend",
