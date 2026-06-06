@@ -6,9 +6,9 @@
   import { toasts } from '$lib/stores/toast';
 
   interface CommanderRow {
-    scope: 'section' | 'desk';
+    scope: 'section' | 'stand';
     section: string;
-    desk?: string;
+    stand?: string;
     principal: string;
     label: string;            // hierarchy path label
     permissions: string[];    // resolved granted keys
@@ -61,10 +61,10 @@
           label: sec.name, permissions: sec.permissions ?? [], allPermissions: sec.all_permissions ?? true,
         });
       }
-      for (const dk of sec.desks) {
+      for (const dk of sec.stands) {
         if (dk.commander_principal) {
           out.push({
-            scope: 'desk', section: sec.name, desk: dk.name, principal: dk.commander_principal,
+            scope: 'stand', section: sec.name, stand: dk.name, principal: dk.commander_principal,
             label: `${sec.name} / ${dk.name}`, permissions: dk.permissions ?? [], allPermissions: dk.all_permissions ?? true,
           });
         }
@@ -77,7 +77,7 @@
     const q = filterQuery.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.principal, r.label, r.section, r.desk ?? '', r.scope, ...r.permissions]
+      [r.principal, r.label, r.section, r.stand ?? '', r.scope, ...r.permissions]
         .some((v) => v.toLowerCase().includes(q))
     );
   });
@@ -98,23 +98,23 @@
 
   // ── Assign commander modal ──────────────────────────────────────────────────
   const sectionOptions = $derived((tree?.sections ?? []).map((s) => s.name));
-  function deskNames(sectionName: string) {
-    return (tree?.sections.find((s) => s.name === sectionName)?.desks ?? []).map((d) => d.name);
+  function standNames(sectionName: string) {
+    return (tree?.sections.find((s) => s.name === sectionName)?.stands ?? []).map((d) => d.name);
   }
 
   let busy = $state(false);
 
   let assignOpen = $state(false);
-  let assignScope = $state<'section' | 'desk'>('section');
+  let assignScope = $state<'section' | 'stand'>('section');
   let assignSection = $state('');
-  let assignDesk = $state('');
+  let assignStand = $state('');
   let assignPrincipal = $state('');
   let assignPerms = $state<Set<string>>(new Set());
 
   function openAssign() {
     assignScope = 'section';
     assignSection = sectionOptions[0] ?? '';
-    assignDesk = '';
+    assignStand = '';
     assignPrincipal = '';
     // Default a new commander to full access (all permissions checked).
     assignPerms = new Set(catalog.map((p) => p.key));
@@ -135,8 +135,8 @@
     if (!assignPrincipal.trim()) return;
     busy = true;
     try {
-      const target = assignScope === 'desk' && assignDesk
-        ? { desk: assignDesk }
+      const target = assignScope === 'stand' && assignStand
+        ? { stand: assignStand }
         : { section: assignSection };
       const permissions: string[] | '*' = assignAllChecked ? '*' : [...assignPerms];
       await setCommander({ ...target, commander_principal: assignPrincipal.trim(), permissions });
@@ -177,7 +177,7 @@
     if (!permsRow) return;
     busy = true;
     try {
-      const target = permsRow.scope === 'desk' ? { desk: permsRow.desk! } : { section: permsRow.section };
+      const target = permsRow.scope === 'stand' ? { stand: permsRow.stand! } : { section: permsRow.section };
       // Collapse a full set to "*" so it reads as full access.
       const permissions: string[] | '*' = allChecked ? '*' : [...permsSelected];
       await setPermissions({ ...target, permissions });
@@ -199,7 +199,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Commanders</h1>
-      <p class="text-sm text-primary-500 mt-1">Principals that govern sections and desks, and their permissions</p>
+      <p class="text-sm text-primary-500 mt-1">Principals that govern sections and stands, and their permissions</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -228,7 +228,7 @@
       <input
         type="text"
         class="input pl-9 {filterQuery ? 'pr-9' : ''} text-sm"
-        placeholder="Filter by principal, section, desk, permission…"
+        placeholder="Filter by principal, section, stand, permission…"
         bind:value={filterQuery}
       />
       {#if filterQuery}
@@ -298,8 +298,8 @@
                 <div class="flex items-center gap-3">
                   <span class="badge {row.scope === 'section' ? 'badge-primary' : 'badge-neutral'} shrink-0">{row.scope}</span>
                   <span class="text-sm text-primary-800 flex-1 truncate">
-                    {#if row.desk}
-                      <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.desk}</span>
+                    {#if row.stand}
+                      <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.stand}</span>
                     {:else}
                       <span class="font-medium">{row.section}</span>
                     {/if}
@@ -345,8 +345,8 @@
       <div>
         <span class="label">Scope</span>
         <div class="flex gap-2 mt-1">
-          <button class="btn-sm {assignScope === 'section' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'section'; assignDesk = ''; }}>Section</button>
-          <button class="btn-sm {assignScope === 'desk' ? 'btn-primary' : 'btn-secondary'}" onclick={() => (assignScope = 'desk')}>Desk</button>
+          <button class="btn-sm {assignScope === 'section' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'section'; assignStand = ''; }}>Section</button>
+          <button class="btn-sm {assignScope === 'stand' ? 'btn-primary' : 'btn-secondary'}" onclick={() => (assignScope = 'stand')}>Stand</button>
         </div>
       </div>
       <div>
@@ -355,12 +355,12 @@
           {#each sectionOptions as name (name)}<option value={name}>{name}</option>{/each}
         </select>
       </div>
-      {#if assignScope === 'desk'}
+      {#if assignScope === 'stand'}
         <div>
-          <label class="label" for="assign-desk">Desk</label>
-          <select id="assign-desk" class="input" bind:value={assignDesk}>
-            <option value="">— select a desk —</option>
-            {#each deskNames(assignSection) as name (name)}<option value={name}>{name}</option>{/each}
+          <label class="label" for="assign-stand">Stand</label>
+          <select id="assign-stand" class="input" bind:value={assignStand}>
+            <option value="">— select a stand —</option>
+            {#each standNames(assignSection) as name (name)}<option value={name}>{name}</option>{/each}
           </select>
         </div>
       {/if}
@@ -394,7 +394,7 @@
         <span class="text-xs text-primary-400">{assignPerms.size} of {catalog.length} permissions</span>
         <div class="flex gap-3">
           <button class="btn-secondary btn-sm" onclick={() => (assignOpen = false)} disabled={busy}>Cancel</button>
-          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'desk' && !assignDesk)} onclick={submitAssign}>
+          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'stand' && !assignStand)} onclick={submitAssign}>
             {busy ? 'Assigning…' : 'Assign'}
           </button>
         </div>
@@ -411,7 +411,7 @@
       <div>
         <h3 class="text-lg font-semibold text-primary-900">Permissions</h3>
         <p class="text-sm text-primary-500 mt-0.5">
-          {permsRow.scope === 'desk' ? `Desk "${permsRow.desk}"` : `Section "${permsRow.section}"`} ·
+          {permsRow.scope === 'stand' ? `Stand "${permsRow.stand}"` : `Section "${permsRow.section}"`} ·
           <span class="font-mono">{permsRow.principal.slice(0, 12)}…</span>
         </p>
       </div>

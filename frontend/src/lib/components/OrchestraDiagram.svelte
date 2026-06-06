@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Tree, Stand } from '$lib/api';
-  import { shortHash, standLink } from '$lib/api';
+  import type { Tree, Canister } from '$lib/api';
+  import { shortHash, canisterLink } from '$lib/api';
   import { colorAt } from '$lib/charts';
 
   interface Props {
@@ -9,12 +9,12 @@
 
   let { tree }: Props = $props();
 
-  type HoverTarget = { section: string; desk: string; stand: Stand };
+  type HoverTarget = { section: string; stand: string; canister: Canister };
 
   let hovered = $state<HoverTarget | null>(null);
 
-  const totalStands = $derived(
-    tree.sections.reduce((n, sec) => n + sec.desks.reduce((m, d) => m + d.stands.length, 0), 0),
+  const totalCanisters = $derived(
+    tree.sections.reduce((n, sec) => n + sec.stands.reduce((m, d) => m + d.canisters.length, 0), 0),
   );
 </script>
 
@@ -36,7 +36,7 @@
       </div>
       <div class="w-px h-5 bg-primary-200" aria-hidden="true"></div>
       <div class="text-[10px] font-semibold uppercase tracking-wider text-primary-400">
-        {tree.sections.length} section{tree.sections.length === 1 ? '' : 's'} · {totalStands} stand{totalStands === 1 ? '' : 's'}
+        {tree.sections.length} section{tree.sections.length === 1 ? '' : 's'} · {totalCanisters} canister{totalCanisters === 1 ? '' : 's'}
       </div>
     </div>
 
@@ -62,52 +62,52 @@
               </div>
             </div>
 
-            <!-- Desks -->
+            <!-- Stands -->
             <div class="p-3 space-y-3 flex-1">
-              {#if section.desks.length === 0}
-                <div class="text-xs text-primary-400 italic py-2 text-center">No desks</div>
+              {#if section.stands.length === 0}
+                <div class="text-xs text-primary-400 italic py-2 text-center">No stands</div>
               {/if}
-              {#each section.desks as desk (desk.name)}
+              {#each section.stands as stand (stand.name)}
                 <div class="rounded-lg border border-[var(--color-border-primary)] bg-primary-50/40 overflow-hidden">
                   <div class="px-2.5 py-2 border-b border-[var(--color-border-primary)] bg-white/80">
-                    <div class="text-xs font-semibold text-primary-800 truncate">{desk.name}</div>
-                    {#if desk.description}
-                      <div class="text-[10px] text-primary-400 mt-0.5 line-clamp-2">{desk.description}</div>
+                    <div class="text-xs font-semibold text-primary-800 truncate">{stand.name}</div>
+                    {#if stand.description}
+                      <div class="text-[10px] text-primary-400 mt-0.5 line-clamp-2">{stand.description}</div>
                     {/if}
                   </div>
 
                   <div class="p-2 flex flex-wrap gap-1.5 min-h-[2.5rem] items-start content-start">
-                    {#if desk.stands.length === 0}
-                      <span class="text-[10px] text-primary-400 italic px-1 py-1">No stands</span>
+                    {#if stand.canisters.length === 0}
+                      <span class="text-[10px] text-primary-400 italic px-1 py-1">No canisters</span>
                     {/if}
-                    {#each desk.stands as stand (stand.name)}
+                    {#each stand.canisters as canister (canister.name)}
                       <a
-                        href={standLink(stand)}
+                        href={canisterLink(canister)}
                         target="_blank"
                         rel="noopener noreferrer"
                         class="group inline-flex flex-col gap-0.5 max-w-full px-2 py-1.5 rounded-md border text-left transition-all duration-150
-                               {stand.kind === 'frontend'
+                               {canister.kind === 'frontend'
                           ? 'bg-blue-50/80 border-blue-200 hover:border-blue-300 hover:shadow-sm'
                           : 'bg-violet-50/80 border-violet-200 hover:border-violet-300 hover:shadow-sm'}
-                               {hovered?.stand.name === stand.name && hovered?.desk === desk.name && hovered?.section === section.name
+                               {hovered?.canister.name === canister.name && hovered?.stand === stand.name && hovered?.section === section.name
                           ? 'ring-2 ring-primary-400 ring-offset-1'
                           : ''}"
-                        title="{stand.canister_id || stand.name}"
-                        onmouseenter={() => (hovered = { section: section.name, desk: desk.name, stand })}
+                        title="{canister.canister_id || canister.name}"
+                        onmouseenter={() => (hovered = { section: section.name, stand: stand.name, canister })}
                         onmouseleave={() => (hovered = null)}
                       >
                         <span class="flex items-center gap-1 min-w-0">
                           <span
-                            class="w-1.5 h-1.5 rounded-full shrink-0 {stand.kind === 'frontend' ? 'bg-blue-500' : 'bg-violet-500'}"
+                            class="w-1.5 h-1.5 rounded-full shrink-0 {canister.kind === 'frontend' ? 'bg-blue-500' : 'bg-violet-500'}"
                           ></span>
-                          <span class="text-[11px] font-medium text-primary-900 truncate">{stand.name}</span>
+                          <span class="text-[11px] font-medium text-primary-900 truncate">{canister.name}</span>
                         </span>
                         <span class="flex items-center gap-1 flex-wrap">
-                          <span class="text-[9px] uppercase tracking-wide font-semibold {stand.kind === 'frontend' ? 'text-blue-700' : 'text-violet-700'}">
-                            {stand.kind}
+                          <span class="text-[9px] uppercase tracking-wide font-semibold {canister.kind === 'frontend' ? 'text-blue-700' : 'text-violet-700'}">
+                            {canister.kind}
                           </span>
-                          {#if stand.status}
-                            <span class="text-[9px] text-primary-500">· {stand.status}</span>
+                          {#if canister.status}
+                            <span class="text-[9px] text-primary-500">· {canister.status}</span>
                           {/if}
                         </span>
                       </a>
@@ -138,19 +138,19 @@
         <span class="flex items-center gap-1.5">
           <span class="w-2 h-2 rounded-full bg-blue-500"></span> frontend
         </span>
-        <span class="text-primary-400">· click a stand to open</span>
+        <span class="text-primary-400">· click a canister to open</span>
       </div>
       <div class="min-h-[1.25rem] font-mono text-[11px] text-primary-600 truncate">
         {#if hovered}
-          {hovered.section} / {hovered.desk} / {hovered.stand.name}
-          {#if hovered.stand.canister_id}
-            · {hovered.stand.canister_id}
+          {hovered.section} / {hovered.stand} / {hovered.canister.name}
+          {#if hovered.canister.canister_id}
+            · {hovered.canister.canister_id}
           {/if}
-          {#if hovered.stand.wasm_hash}
-            · {shortHash(hovered.stand.wasm_hash)}
+          {#if hovered.canister.wasm_hash}
+            · {shortHash(hovered.canister.wasm_hash)}
           {/if}
         {:else}
-          <span class="text-primary-400 font-sans">Hover a stand for path and canister details.</span>
+          <span class="text-primary-400 font-sans">Hover a canister for path and canister details.</span>
         {/if}
       </div>
     </div>

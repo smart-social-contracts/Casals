@@ -3,7 +3,7 @@ without a replica or the Basilisk CDK installed."""
 
 import hashlib
 
-# Mainnet Candid UI canister — used to build a human URL for backend stands.
+# Mainnet Candid UI canister — used to build a human URL for backend canisters.
 CANDID_UI = "a4gq6-oaaaa-aaaab-qaa4q-cai"
 
 
@@ -16,8 +16,8 @@ def to_hex(v) -> str:
     return str(v).replace("0x", "")
 
 
-def stand_url(kind: str, canister_id: str, candid_ui: str = CANDID_UI) -> str:
-    """Frontend stands link to their canister URL; backend stands to Candid UI."""
+def canister_url(kind: str, canister_id: str, candid_ui: str = CANDID_UI) -> str:
+    """Frontend canisters link to their canister URL; backend canisters to Candid UI."""
     if not canister_id:
         return ""
     if kind == "frontend":
@@ -44,16 +44,16 @@ CYCLES_CRITICAL = "critical"
 CYCLES_FROZEN = "frozen"
 
 
-def resolve_cycle_policy(stand=(0, 0), desk=(0, 0), section=(0, 0), defaults=(0, 0)):
-    """Resolve the effective (min_cycles, topup_cycles) for a stand.
+def resolve_cycle_policy(canister=(0, 0), stand=(0, 0), section=(0, 0), defaults=(0, 0)):
+    """Resolve the effective (min_cycles, topup_cycles) for a canister.
 
     Each argument is a ``(min_cycles, topup_cycles)`` pair. Resolution walks
-    Stand -> Desk -> Section -> Settings defaults, taking the first non-zero
-    value for each field independently (so a desk can override the threshold
+    Canister -> Stand -> Section -> Settings defaults, taking the first non-zero
+    value for each field independently (so a stand can override the threshold
     while still inheriting the section's top-up amount).
     """
     def pick(index):
-        for level in (stand, desk, section, defaults):
+        for level in (canister, stand, section, defaults):
             if level and level[index]:
                 return level[index]
         return 0
@@ -62,7 +62,7 @@ def resolve_cycle_policy(stand=(0, 0), desk=(0, 0), section=(0, 0), defaults=(0,
 
 
 def cycles_status(balance, freezing_threshold, min_cycles):
-    """Classify a stand's solvency.
+    """Classify a canister's solvency.
 
     ``balance`` is its current cycles, ``freezing_threshold`` the cycles it
     must keep to avoid freezing, and ``min_cycles`` the policy floor measured
@@ -78,7 +78,7 @@ def cycles_status(balance, freezing_threshold, min_cycles):
 
 def decide_topup(balance, freezing_threshold, min_cycles, topup_cycles,
                  treasury_balance, treasury_reserve):
-    """Decide how many cycles to deposit into a stand during reconciliation.
+    """Decide how many cycles to deposit into a canister during reconciliation.
 
     Returns the amount to deposit (0 = leave it alone). A top-up is triggered
     when the balance above the freezing threshold falls below ``min_cycles``;

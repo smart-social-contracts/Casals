@@ -1,7 +1,7 @@
 """Integration tests for the Casals conductor against a local replica.
 
 These cover the governance / registration / query layer end-to-end. The
-management-canister lifecycle paths (create_stand / upgrade_to) require a
+management-canister lifecycle paths (create_canister / upgrade_to) require a
 file-registry and inter-canister cycles; their *validation/authorization*
 branches are checked here, while a full create/upgrade is left to a deployed
 environment.
@@ -23,7 +23,7 @@ class TestStatusAndMetadata:
     def test_status_shape(self, canister):
         st = call_canister("get_status")
         assert "version" in st
-        for k in ("sections", "desks", "stands", "authorized_wasms", "events"):
+        for k in ("sections", "stands", "canisters", "authorized_wasms", "events"):
             assert k in st
 
     def test_metadata_defaults(self, canister):
@@ -50,29 +50,29 @@ class TestStructure:
         assert res.get("ok") is False
         assert "exists" in res.get("error", "")
 
-    def test_create_desk_and_tree(self, canister):
+    def test_create_stand_and_tree(self, canister):
         _ok("create_section", {"name": "sec-a"})
-        _ok("create_desk", {"section": "sec-a", "name": "agora", "commander_principal": "aaaaa-aa"})
+        _ok("create_stand", {"section": "sec-a", "name": "agora", "commander_principal": "aaaaa-aa"})
         tree = call_canister("get_tree")
         sec = next(s for s in tree["sections"] if s["name"] == "sec-a")
-        desk = next(d for d in sec["desks"] if d["name"] == "agora")
-        assert desk["commander_principal"] == "aaaaa-aa"
+        stand = next(d for d in sec["stands"] if d["name"] == "agora")
+        assert stand["commander_principal"] == "aaaaa-aa"
 
-    def test_create_desk_unknown_section(self, canister):
-        res = call_canister("create_desk", json.dumps({"section": "nope", "name": "d1"}))
+    def test_create_stand_unknown_section(self, canister):
+        res = call_canister("create_stand", json.dumps({"section": "nope", "name": "d1"}))
         assert res.get("ok") is False
 
-    def test_register_stand_url(self, canister):
+    def test_register_canister_url(self, canister):
         _ok("create_section", {"name": "sec-b"})
-        _ok("create_desk", {"section": "sec-b", "name": "desk-b"})
-        _ok("register_stand", {"desk": "desk-b", "name": "be-1", "canister_id": "aaaaa-aa", "kind": "backend"})
-        _ok("register_stand", {"desk": "desk-b", "name": "fe-1", "canister_id": "bbbbb-bb", "kind": "frontend"})
+        _ok("create_stand", {"section": "sec-b", "name": "stand-b"})
+        _ok("register_canister", {"stand": "stand-b", "name": "be-1", "canister_id": "aaaaa-aa", "kind": "backend"})
+        _ok("register_canister", {"stand": "stand-b", "name": "fe-1", "canister_id": "bbbbb-bb", "kind": "frontend"})
         tree = call_canister("get_tree")
         sec = next(s for s in tree["sections"] if s["name"] == "sec-b")
-        desk = next(d for d in sec["desks"] if d["name"] == "desk-b")
-        stands = {s["name"]: s for s in desk["stands"]}
-        assert stands["fe-1"]["url"] == "https://bbbbb-bb.icp0.io"
-        assert "id=aaaaa-aa" in stands["be-1"]["url"]
+        stand = next(d for d in sec["stands"] if d["name"] == "stand-b")
+        canisters = {s["name"]: s for s in stand["canisters"]}
+        assert canisters["fe-1"]["url"] == "https://bbbbb-bb.icp0.io"
+        assert "id=aaaaa-aa" in canisters["be-1"]["url"]
 
 
 class TestAuthorizedWasms:
@@ -118,12 +118,12 @@ class TestSettingsAndCommander:
 
 
 class TestLifecycleValidation:
-    def test_create_stand_unknown_desk(self, canister):
-        res = call_canister("create_stand", json.dumps({"desk": "ghost", "name": "x", "kind": "backend", "wasm_key": "k"}))
+    def test_create_canister_unknown_stand(self, canister):
+        res = call_canister("create_canister", json.dumps({"stand": "ghost", "name": "x", "kind": "backend", "wasm_key": "k"}))
         assert res.get("ok") is False
 
     def test_upgrade_to_unknown_target(self, canister):
-        res = call_canister("upgrade_to", json.dumps({"stand": "ghost", "wasm_key": "k"}))
+        res = call_canister("upgrade_to", json.dumps({"canister": "ghost", "wasm_key": "k"}))
         assert res.get("ok") is False
 
 
@@ -153,7 +153,7 @@ class TestCyclesManagement:
         # disable autopilot again so other tests / the replica stay quiet
         _ok("set_settings", {"cycles_autopilot": False})
 
-    def test_set_cycle_policy_on_section_and_stand(self, canister):
+    def test_set_cycle_policy_on_section_and_canister(self, canister):
         _ok("create_section", {"name": "sec-cyc"})
         _ok("set_cycle_policy", {"section": "sec-cyc", "min_cycles": 1_000, "topup_cycles": 5_000})
         tree = call_canister("get_tree")
@@ -161,7 +161,7 @@ class TestCyclesManagement:
         assert sec["min_cycles"] == 1_000 and sec["topup_cycles"] == 5_000
 
     def test_set_cycle_policy_unknown_target(self, canister):
-        res = call_canister("set_cycle_policy", json.dumps({"stand": "ghost", "min_cycles": 1}))
+        res = call_canister("set_cycle_policy", json.dumps({"canister": "ghost", "min_cycles": 1}))
         assert res.get("ok") is False
 
     def test_set_cycle_policy_requires_target(self, canister):
@@ -170,17 +170,17 @@ class TestCyclesManagement:
         assert "section" in res.get("error", "")
 
     def test_top_up_unknown_target(self, canister):
-        res = call_canister("top_up", json.dumps({"stand": "ghost"}))
+        res = call_canister("top_up", json.dumps({"canister": "ghost"}))
         assert res.get("ok") is False
 
     def test_get_cycles_shape(self, canister):
         rep = call_canister("get_cycles")
-        assert "treasury" in rep and "totals" in rep and "stands" in rep
+        assert "treasury" in rep and "totals" in rep and "canisters" in rep
         assert "balance" in rep["treasury"]
-        assert isinstance(rep["stands"], list)
+        assert isinstance(rep["canisters"], list)
 
     def test_reconcile_runs(self, canister):
-        # With no created stands, reconcile is a no-op but must succeed.
+        # With no created canisters, reconcile is a no-op but must succeed.
         res = call_canister("reconcile")
         assert res.get("ok") is True
         assert res.get("topped_up") == 0

@@ -129,7 +129,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Authorized WASMs</h1>
-      <p class="text-sm text-primary-500 mt-1">WASM modules stands are permitted to run, grouped by family · latest version shown by default</p>
+      <p class="text-sm text-primary-500 mt-1">WASM modules canisters are permitted to run, grouped by family · latest version shown by default</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -269,7 +269,7 @@
 {#if showAdd}
   <FormModal
     title="Authorize WASM"
-    description="Pin a WASM version (by sha256) that stands may run"
+    description="Pin a WASM version (by sha256) that canisters may run"
     fields={addFields}
     submitLabel="Authorize"
     busy={modalBusy}

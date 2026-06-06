@@ -46,8 +46,8 @@ local-conductor:
 deploy-ic: build
 	icp deploy -e ic
 
-# Seed the catalog (templates + demo section/desk). Wire Casals to the registry,
-# upload template WASMs, authorize them, create a demo section + playground desk.
+# Seed the catalog (templates + demo section/stand). Wire Casals to the registry,
+# upload template WASMs, authorize them, create a demo section + playground stand.
 seed:
 	python3 scripts/seed.py -e local
 

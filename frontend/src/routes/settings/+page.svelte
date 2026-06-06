@@ -210,7 +210,7 @@
           <label class="flex items-center gap-2.5 cursor-pointer">
             <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={openAccess} />
             <span class="text-sm font-medium text-primary-700">Open access</span>
-            <span class="text-xs text-primary-400">— let any logged-in principal add sections/desks</span>
+            <span class="text-xs text-primary-400">— let any logged-in principal add sections/stands</span>
           </label>
 
           <div>
@@ -244,7 +244,7 @@
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-5">
             <div>
               <h3 class="text-sm font-semibold text-primary-800">Native cycles management</h3>
-              <p class="text-xs text-primary-400">Casals tops up stands from its own treasury. Amounts accept suffixes (e.g. 1t, 500b).</p>
+              <p class="text-xs text-primary-400">Casals tops up canisters from its own treasury. Amounts accept suffixes (e.g. 1t, 500b).</p>
             </div>
 
             <label class="flex items-center gap-2.5 cursor-pointer">

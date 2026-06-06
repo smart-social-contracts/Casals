@@ -4,10 +4,10 @@
     getTree,
     getStatus,
     createSection,
-    createDesk,
-    registerStand,
-    setCommander,
     createStand,
+    registerCanister,
+    setCommander,
+    createCanister,
     upgradeTo,
     createSnapshot,
     revertSnapshot,
@@ -17,20 +17,20 @@
     getEvents,
     getCanisterLogs,
     listAuthorizedWasms,
-    standBrowse,
-    standExec,
+    canisterBrowse,
+    canisterExec,
     shortHash,
     shortPrincipal,
-    standLink,
+    canisterLink,
     renameSection,
-    renameDesk,
     renameStand,
+    renameCanister,
     deleteSection,
-    deleteDesk,
     deleteStand,
+    deleteCanister,
   } from '$lib/api';
   import type {
-    Tree, Status, Section, Desk, Stand, UpdateResult,
+    Tree, Status, Section, Stand, Canister, UpdateResult,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
@@ -58,16 +58,16 @@
   let catalog = $state<AuthorizedWasm[]>([]);
 
   let expandedSections = $state<Record<string, boolean>>({});
-  let expandedDesks = $state<Record<string, boolean>>({});
-
-  // Per-stand expandable detail panel (status + recent events + canister logs).
   let expandedStands = $state<Record<string, boolean>>({});
-  let standEvents = $state<Record<string, OrchestrationEvent[]>>({});
-  let standLogs = $state<Record<string, CanisterLogRecord[]>>({});
-  let standLogErr = $state<Record<string, string>>({});
-  let standLoading = $state<Record<string, boolean>>({});
 
-  // Basilisk introspection (only for stands built with __basilisk_features__).
+  // Per-canister expandable detail panel (status + recent events + canister logs).
+  let expandedCanisters = $state<Record<string, boolean>>({});
+  let canisterEvents = $state<Record<string, OrchestrationEvent[]>>({});
+  let canisterLogs = $state<Record<string, CanisterLogRecord[]>>({});
+  let canisterLogErr = $state<Record<string, string>>({});
+  let canisterLoading = $state<Record<string, boolean>>({});
+
+  // Basilisk introspection (only for canisters built with __basilisk_features__).
   let browseData = $state<Record<string, unknown>>({});
   let browseErr = $state<Record<string, string>>({});
   let browseBusy = $state<Record<string, boolean>>({});
@@ -80,18 +80,18 @@
   let orchestraView = $state<OrchestraView>('tree');
   let filterQuery = $state('');
 
-  // Filtered view of the tree. A section is kept when any of its desks match,
-  // a desk is kept when any of its stands match or the desk itself matches.
+  // Filtered view of the tree. A section is kept when any of its stands match,
+  // a stand is kept when any of its canisters match or the stand itself matches.
   // Matching is case-insensitive substring against name, canister ID, WASM key,
   // status, description, commander, subnet.
   const filteredTree = $derived.by(() => {
     if (!tree) return null;
     const q = filterQuery.trim().toLowerCase();
     if (!q) return tree;
-    const matchStand = (s: Stand) =>
+    const matchCanister = (s: Canister) =>
       [s.name, s.canister_id, s.wasm_key, s.wasm_hash, s.status, s.kind, s.subnet]
         .some((v) => (v ?? '').toLowerCase().includes(q));
-    const matchDesk = (d: Desk) =>
+    const matchStand = (d: Stand) =>
       [d.name, d.description, d.commander_principal, d.subnet, d.subnet_type]
         .some((v) => (v ?? '').toLowerCase().includes(q));
     const matchSection = (sec: Section) =>
@@ -99,14 +99,14 @@
         .some((v) => (v ?? '').toLowerCase().includes(q));
     const sections = tree.sections
       .map((sec) => {
-        const desks = sec.desks
+        const stands = sec.stands
           .map((dk) => {
-            const stands = dk.stands.filter(matchStand);
-            if (stands.length || matchDesk(dk)) return { ...dk, stands };
+            const canisters = dk.canisters.filter(matchCanister);
+            if (canisters.length || matchStand(dk)) return { ...dk, canisters };
             return null;
           })
-          .filter(Boolean) as Desk[];
-        if (desks.length || matchSection(sec)) return { ...sec, desks };
+          .filter(Boolean) as Stand[];
+        if (stands.length || matchSection(sec)) return { ...sec, stands };
         return null;
       })
       .filter(Boolean) as Section[];
@@ -126,7 +126,7 @@
     const tid = ev.canister_id ? ` [${ev.canister_id.slice(0, 8)}…]` : '';
     const payload = ev.payload && typeof ev.payload === 'object'
       ? Object.entries(ev.payload as Record<string, unknown>)
-          .filter(([k]) => k !== 'desk')
+          .filter(([k]) => k !== 'stand')
           .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
           .join(' ')
       : '';
@@ -212,17 +212,17 @@
     return id.length > 13 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
   }
 
-  // Desired-placement label for a section/desk (target for new canisters).
+  // Desired-placement label for a section/stand (target for new canisters).
   function placementLabel(o: { subnet?: string; subnet_type?: string }): string {
     if (o.subnet) return `subnet ${shortId(o.subnet)}`;
     if (o.subnet_type) return `subnet type: ${o.subnet_type}`;
     return '';
   }
 
-  // Families present in a desk (across its stands), for desk-wide upgrades.
-  function deskFamilies(desk: Desk): string[] {
+  // Families present in a stand (across its canisters), for stand-wide upgrades.
+  function standFamilies(stand: Stand): string[] {
     const fams = new Set<string>();
-    for (const s of desk.stands) {
+    for (const s of stand.canisters) {
       const f = familyOf(s.wasm_key);
       if (f) fams.add(f);
     }
@@ -236,87 +236,87 @@
     if (filterQuery.trim()) return true;
     return expandedSections[name] !== false;
   }
-  function deskOpen(key: string): boolean {
+  function standOpen(key: string): boolean {
     if (filterQuery.trim()) return true;
-    return expandedDesks[key] !== false;
+    return expandedStands[key] !== false;
   }
   function toggleSection(name: string) {
     expandedSections[name] = !sectionOpen(name);
   }
-  function toggleDesk(key: string) {
-    expandedDesks[key] = !deskOpen(key);
+  function toggleStand(key: string) {
+    expandedStands[key] = !standOpen(key);
   }
 
-  async function toggleStand(stand: Stand) {
-    const cid = stand.canister_id;
+  async function toggleCanister(canister: Canister) {
+    const cid = canister.canister_id;
     if (!cid) return;
-    const open = !expandedStands[cid];
-    expandedStands[cid] = open;
-    if (open) await loadStandDetails(cid);
+    const open = !expandedCanisters[cid];
+    expandedCanisters[cid] = open;
+    if (open) await loadCanisterDetails(cid);
   }
 
-  async function loadStandDetails(cid: string) {
-    standLoading[cid] = true;
-    standLogErr[cid] = '';
+  async function loadCanisterDetails(cid: string) {
+    canisterLoading[cid] = true;
+    canisterLogErr[cid] = '';
     try {
       // The audit log lives in Casals; the runtime logs are fetched straight
       // from the management canister (only works if log_visibility is public).
       const [evs, logs] = await Promise.all([
         getEvents({ canister_id: cid, take: 8 }),
         getCanisterLogs(cid).catch((e: any) => {
-          standLogErr[cid] = e?.message ?? String(e);
+          canisterLogErr[cid] = e?.message ?? String(e);
           return [] as CanisterLogRecord[];
         }),
       ]);
-      standEvents[cid] = evs;
-      standLogs[cid] = logs;
+      canisterEvents[cid] = evs;
+      canisterLogs[cid] = logs;
     } catch (e: any) {
-      standLogErr[cid] = e?.message ?? String(e);
+      canisterLogErr[cid] = e?.message ?? String(e);
     } finally {
-      standLoading[cid] = false;
+      canisterLoading[cid] = false;
     }
   }
 
-  async function makeLogsPublic(stand: Stand) {
+  async function makeLogsPublic(canister: Canister) {
     try {
-      await setLogVisibility({ stand: stand.name, public: true });
+      await setLogVisibility({ canister: canister.name, public: true });
       toasts.success('Logs set to public');
-      await loadStandDetails(stand.canister_id);
+      await loadCanisterDetails(canister.canister_id);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to set log visibility');
     }
   }
 
-  async function runBrowse(stand: Stand, query?: Record<string, unknown>) {
-    const cid = stand.canister_id;
+  async function runBrowse(canister: Canister, query?: Record<string, unknown>) {
+    const cid = canister.canister_id;
     browseBusy[cid] = true;
     browseErr[cid] = '';
     try {
-      const r = await standBrowse(stand.name, query);
+      const r = await canisterBrowse(canister.name, query);
       browseData[cid] = r.result;
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       browseErr[cid] = /__browse__|method|not found|no query method/i.test(msg)
-        ? 'This stand does not expose introspection (rebuild with __basilisk_features__).'
+        ? 'This canister does not expose introspection (rebuild with __basilisk_features__).'
         : msg;
     } finally {
       browseBusy[cid] = false;
     }
   }
 
-  async function runExec(stand: Stand) {
-    const cid = stand.canister_id;
+  async function runExec(canister: Canister) {
+    const cid = canister.canister_id;
     const code = consoleCode[cid] ?? '';
     if (!code.trim()) return;
     consoleBusy[cid] = true;
     consoleErr[cid] = '';
     try {
-      const r = await standExec(stand.name, code);
+      const r = await canisterExec(canister.name, code);
       consoleOut[cid] = r.output ?? '';
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       consoleErr[cid] = /__shell__|method|not found/i.test(msg)
-        ? 'This stand does not expose a Python shell (rebuild with __basilisk_features__).'
+        ? 'This canister does not expose a Python shell (rebuild with __basilisk_features__).'
         : msg;
     } finally {
       consoleBusy[cid] = false;
@@ -345,8 +345,8 @@
       case 'revert': return p.reason ? `rolled back: ${p.reason}` : `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
       case 'revert_failed': return p.error ?? '';
       case 'snapshot': return `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
-      case 'stand_created': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
-      case 'stand_reinstalled': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
+      case 'canister_created': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
+      case 'canister_reinstalled': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
       case 'assets_uploaded': return `${p.bytes ?? 0} bytes`;
       case 'cycles_topup': return `+${p.amount ?? ''}`;
       case 'create_failed': return 'module hash mismatch';
@@ -402,8 +402,8 @@
     }
   }
 
-  // Direct (no extra fields) per-stand lifecycle action.
-  async function runStandAction(label: string, fn: () => Promise<UpdateResult>) {
+  // Direct (no extra fields) per-canister lifecycle action.
+  async function runCanisterAction(label: string, fn: () => Promise<UpdateResult>) {
     try {
       await fn();
       toasts.success(`${label} succeeded`);
@@ -428,24 +428,24 @@
     });
   }
 
-  function openCreateDesk(section: Section) {
+  function openCreateStand(section: Section) {
     openModal({
-      title: 'Create desk',
+      title: 'Create stand',
       description: `In section "${section.name}"`,
       fields: [
         { name: 'name', label: 'Name', required: true, placeholder: 'Agora' },
         { name: 'description', label: 'Description', type: 'textarea' },
         { name: 'commander_principal', label: 'Commander principal', placeholder: 'aaaaa-aa' },
       ],
-      submitLabel: 'Create desk',
-      onsubmit: (v) => createDesk({ ...(clean(v) as any), section: section.name }),
+      submitLabel: 'Create stand',
+      onsubmit: (v) => createStand({ ...(clean(v) as any), section: section.name }),
     });
   }
 
-  function openRegisterStand(desk: Desk) {
+  function openRegisterCanister(stand: Stand) {
     openModal({
-      title: 'Register stand',
-      description: `In desk "${desk.name}" — registers an existing canister`,
+      title: 'Register canister',
+      description: `In stand "${stand.name}" — registers an existing canister`,
       fields: [
         { name: 'name', label: 'Name', required: true, placeholder: 'realm_frontend' },
         { name: 'canister_id', label: 'Canister id', required: true, placeholder: 'aaaaa-aa' },
@@ -460,8 +460,8 @@
           ],
         },
       ],
-      submitLabel: 'Register stand',
-      onsubmit: (v) => registerStand({ ...(clean(v) as any), desk: desk.name }),
+      submitLabel: 'Register canister',
+      onsubmit: (v) => registerCanister({ ...(clean(v) as any), stand: stand.name }),
     });
   }
 
@@ -478,31 +478,31 @@
     });
   }
 
-  function openRenameDesk(desk: Desk) {
-    openModal({
-      title: `Rename desk`,
-      fields: [
-        { name: 'new_name', label: 'New name', required: true, value: desk.name },
-        { name: 'description', label: 'Description', value: desk.description ?? '' },
-      ],
-      submitLabel: 'Rename',
-      onsubmit: (v) => renameDesk({ desk: desk.name, new_name: String(v.new_name).trim(), description: String(v.description) }),
-    });
-  }
-
   function openRenameStand(stand: Stand) {
     openModal({
       title: `Rename stand`,
-      fields: [{ name: 'new_name', label: 'New name', required: true, value: stand.name }],
+      fields: [
+        { name: 'new_name', label: 'New name', required: true, value: stand.name },
+        { name: 'description', label: 'Description', value: stand.description ?? '' },
+      ],
       submitLabel: 'Rename',
-      onsubmit: (v) => renameStand({ stand: stand.name, new_name: String(v.new_name).trim() }),
+      onsubmit: (v) => renameStand({ stand: stand.name, new_name: String(v.new_name).trim(), description: String(v.description) }),
+    });
+  }
+
+  function openRenameCanister(canister: Canister) {
+    openModal({
+      title: `Rename canister`,
+      fields: [{ name: 'new_name', label: 'New name', required: true, value: canister.name }],
+      submitLabel: 'Rename',
+      onsubmit: (v) => renameCanister({ canister: canister.name, new_name: String(v.new_name).trim() }),
     });
   }
 
   function openDeleteSection(section: Section) {
     openModal({
       title: `Delete section "${section.name}"`,
-      description: 'All desks and stands will be removed. Canisters are returned to the pool (not deleted).',
+      description: 'All stands and canisters will be removed. Canisters are returned to the pool (not deleted).',
       fields: [
         { name: 'confirm', label: `Type "${section.name}" to confirm`, required: true },
       ],
@@ -514,25 +514,10 @@
     });
   }
 
-  function openDeleteDesk(desk: Desk) {
-    openModal({
-      title: `Delete desk "${desk.name}"`,
-      description: 'All stands will be removed. Canisters are returned to the pool (not deleted).',
-      fields: [
-        { name: 'confirm', label: `Type "${desk.name}" to confirm`, required: true },
-      ],
-      submitLabel: 'Delete desk',
-      onsubmit: async (v) => {
-        if (String(v.confirm).trim() !== desk.name) throw new Error('Name does not match');
-        return deleteDesk({ desk: desk.name });
-      },
-    });
-  }
-
   function openDeleteStand(stand: Stand) {
     openModal({
       title: `Delete stand "${stand.name}"`,
-      description: 'The stand record is removed and its canister returned to the pool (not deleted).',
+      description: 'All canisters will be removed. Canisters are returned to the pool (not deleted).',
       fields: [
         { name: 'confirm', label: `Type "${stand.name}" to confirm`, required: true },
       ],
@@ -544,8 +529,23 @@
     });
   }
 
-  function openSetCommander(target: { section?: string; desk?: string }, current: string) {
-    const label = target.section ? `section "${target.section}"` : `desk "${target.desk}"`;
+  function openDeleteCanister(canister: Canister) {
+    openModal({
+      title: `Delete canister "${canister.name}"`,
+      description: 'The canister record is removed and its canister returned to the pool (not deleted).',
+      fields: [
+        { name: 'confirm', label: `Type "${canister.name}" to confirm`, required: true },
+      ],
+      submitLabel: 'Delete canister',
+      onsubmit: async (v) => {
+        if (String(v.confirm).trim() !== canister.name) throw new Error('Name does not match');
+        return deleteCanister({ canister: canister.name });
+      },
+    });
+  }
+
+  function openSetCommander(target: { section?: string; stand?: string }, current: string) {
+    const label = target.section ? `section "${target.section}"` : `stand "${target.stand}"`;
     openModal({
       title: 'Set commander',
       description: `Authorized commander for ${label}`,
@@ -563,10 +563,10 @@
     });
   }
 
-  function openCreateStand(desk: Desk) {
+  function openCreateCanister(stand: Stand) {
     openModal({
-      title: 'Create stand',
-      description: `In desk "${desk.name}" — creates a canister + installs an authorized WASM`,
+      title: 'Create canister',
+      description: `In stand "${stand.name}" — creates a canister + installs an authorized WASM`,
       fields: [
         { name: 'name', label: 'Name', required: true, placeholder: 'realm_backend' },
         {
@@ -584,18 +584,18 @@
               value: allFamilies[0], options: allFamilies.map((f) => ({ value: f, label: f })) }
           : { name: 'wasm_key', label: 'WASM family or key', required: true, placeholder: 'hello-world-basilisk' },
       ],
-      submitLabel: 'Create stand',
-      onsubmit: (v) => createStand({ ...(clean(v) as any), desk: desk.name }),
+      submitLabel: 'Create canister',
+      onsubmit: (v) => createCanister({ ...(clean(v) as any), stand: stand.name }),
     });
   }
 
-  function openUpgradeDesk(desk: Desk) {
-    const fams = deskFamilies(desk);
+  function openUpgradeStand(stand: Stand) {
+    const fams = standFamilies(stand);
     const opts = fams.length === 1 ? versionOptions(fams[0]) : [];
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
-      title: 'Deploy desk',
-      description: `Deploy all stands in desk "${desk.name}"`,
+      title: 'Deploy stand',
+      description: `Deploy all canisters in stand "${stand.name}"`,
       fields: [
         opts.length > 0
           ? { name: 'wasm_key', label: 'Version', type: 'select', value: fams[0], options: opts }
@@ -606,39 +606,7 @@
         {
           name: 'reinstall',
           type: 'checkbox',
-          label: 'Reinstall (wipes all stand state — data will be lost)',
-          value: false,
-          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
-        },
-      ],
-      submitLabel: 'Deploy',
-      onsubmit: (v) => upgradeTo({
-        desk: desk.name,
-        wasm_key: String(v.wasm_key).trim(),
-        reinstall: Boolean(v.reinstall),
-      }),
-    });
-  }
-
-  function openUpgradeStand(stand: Stand) {
-    const family = familyOf(stand.wasm_key);
-    const opts = versionOptions(family);
-    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
-    openModal({
-      title: 'Deploy stand',
-      description: `Deploy stand "${stand.name}"${family ? ` · family ${family}` : ''}`,
-      fields: [
-        opts.length > 0
-          ? { name: 'wasm_key', label: 'Version', type: 'select', value: family, options: opts }
-          : familyOpts.length > 0
-            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
-                value: family || familyOpts[0].value, options: familyOpts }
-            : { name: 'wasm_key', label: 'WASM key', required: true, value: stand.wasm_key ?? '',
-                placeholder: 'hello-world-basilisk' },
-        {
-          name: 'reinstall',
-          type: 'checkbox',
-          label: 'Reinstall (wipes stand state — data will be lost)',
+          label: 'Reinstall (wipes all canister state — data will be lost)',
           value: false,
           help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
         },
@@ -646,6 +614,38 @@
       submitLabel: 'Deploy',
       onsubmit: (v) => upgradeTo({
         stand: stand.name,
+        wasm_key: String(v.wasm_key).trim(),
+        reinstall: Boolean(v.reinstall),
+      }),
+    });
+  }
+
+  function openUpgradeCanister(canister: Canister) {
+    const family = familyOf(canister.wasm_key);
+    const opts = versionOptions(family);
+    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
+    openModal({
+      title: 'Deploy canister',
+      description: `Deploy canister "${canister.name}"${family ? ` · family ${family}` : ''}`,
+      fields: [
+        opts.length > 0
+          ? { name: 'wasm_key', label: 'Version', type: 'select', value: family, options: opts }
+          : familyOpts.length > 0
+            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
+                value: family || familyOpts[0].value, options: familyOpts }
+            : { name: 'wasm_key', label: 'WASM key', required: true, value: canister.wasm_key ?? '',
+                placeholder: 'hello-world-basilisk' },
+        {
+          name: 'reinstall',
+          type: 'checkbox',
+          label: 'Reinstall (wipes canister state — data will be lost)',
+          value: false,
+          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
+        },
+      ],
+      submitLabel: 'Deploy',
+      onsubmit: (v) => upgradeTo({
+        canister: canister.name,
         wasm_key: String(v.wasm_key).trim(),
         reinstall: Boolean(v.reinstall),
       }),
@@ -660,7 +660,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Orchestra</h1>
-      <p class="text-sm text-primary-500 mt-1">Section → Desk → Stand lifecycle orchestration</p>
+      <p class="text-sm text-primary-500 mt-1">Section → Stand → Canister lifecycle orchestration</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -763,12 +763,12 @@
             <span class="font-semibold text-primary-900">{status.sections}</span>
           </div>
           <div class="flex flex-col gap-0.5">
-            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Desks</span>
-            <span class="font-semibold text-primary-900">{status.desks}</span>
-          </div>
-          <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Stands</span>
             <span class="font-semibold text-primary-900">{status.stands}</span>
+          </div>
+          <div class="flex flex-col gap-0.5">
+            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Canisters</span>
+            <span class="font-semibold text-primary-900">{status.canisters}</span>
           </div>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">WASMs</span>
@@ -812,7 +812,7 @@
       {#if $isAuthenticated}
         <p class="text-primary-400 text-xs mt-1">Create the first section to start orchestrating.</p>
       {:else}
-        <p class="text-primary-400 text-xs mt-1">Log in to create sections, desks and stands.</p>
+        <p class="text-primary-400 text-xs mt-1">Log in to create sections, stands and canisters.</p>
       {/if}
     </div>
   {:else if filteredTree}
@@ -855,7 +855,7 @@
             </button>
             {#if $isAuthenticated}
               <div class="flex items-center gap-0.5 shrink-0">
-                <button class="icon-btn" title="Add desk" onclick={() => openCreateDesk(section)}>
+                <button class="icon-btn" title="Add stand" onclick={() => openCreateStand(section)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                 </button>
                 <button class="icon-btn" title="Set commander" onclick={() => openSetCommander({ section: section.name }, section.commander_principal)}>
@@ -873,113 +873,113 @@
 
           {#if sectionOpen(section.name)}
             <div class="divide-y divide-[var(--color-border-primary)]">
-              {#if section.desks.length === 0}
-                <div class="px-4 py-3 text-xs text-primary-400">No desks in this section.</div>
+              {#if section.stands.length === 0}
+                <div class="px-4 py-3 text-xs text-primary-400">No stands in this section.</div>
               {/if}
-              {#each section.desks as desk (desk.name)}
-                {@const deskKey = `${section.name}/${desk.name}`}
+              {#each section.stands as stand (stand.name)}
+                {@const standKey = `${section.name}/${stand.name}`}
                 <div>
-                  <!-- Desk header -->
+                  <!-- Stand header -->
                   <div class="flex items-start justify-between gap-3 px-4 py-3 pl-6">
-                    <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleDesk(deskKey)}>
+                    <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleStand(standKey)}>
                       <svg
-                        class="w-3.5 h-3.5 mt-1 text-primary-400 transition-transform shrink-0 {deskOpen(deskKey) ? 'rotate-90' : ''}"
+                        class="w-3.5 h-3.5 mt-1 text-primary-400 transition-transform shrink-0 {standOpen(standKey) ? 'rotate-90' : ''}"
                         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
                       >
                         <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
                       </svg>
                       <div class="min-w-0">
-                        <div class="text-sm font-medium text-primary-800 truncate">{desk.name}</div>
-                        {#if desk.description}
-                          <div class="text-xs text-primary-400 mt-0.5">{desk.description}</div>
+                        <div class="text-sm font-medium text-primary-800 truncate">{stand.name}</div>
+                        {#if stand.description}
+                          <div class="text-xs text-primary-400 mt-0.5">{stand.description}</div>
                         {/if}
-                        {#if desk.commander_principal}
-                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={desk.commander_principal}>
-                            commander: {shortPrincipal(desk.commander_principal)}
+                        {#if stand.commander_principal}
+                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={stand.commander_principal}>
+                            commander: {shortPrincipal(stand.commander_principal)}
                           </div>
                         {/if}
-                        {#if placementLabel(desk)}
-                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={desk.subnet || desk.subnet_type}>
-                            ⬡ {placementLabel(desk)}
+                        {#if placementLabel(stand)}
+                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
+                            ⬡ {placementLabel(stand)}
                           </div>
                         {/if}
                       </div>
                     </button>
                     {#if $isAuthenticated}
                       <div class="flex items-center gap-0.5 shrink-0">
-                        <button class="icon-btn" title="Add stand" onclick={() => openCreateStand(desk)}>
+                        <button class="icon-btn" title="Add canister" onclick={() => openCreateCanister(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                         </button>
-                        <button class="icon-btn" title="Register existing canister" onclick={() => openRegisterStand(desk)}>
+                        <button class="icon-btn" title="Register existing canister" onclick={() => openRegisterCanister(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/></svg>
                         </button>
-                        <button class="icon-btn" title="Deploy all stands in desk" onclick={() => openUpgradeDesk(desk)}>
+                        <button class="icon-btn" title="Deploy all canisters in stand" onclick={() => openUpgradeStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                         </button>
-                        <button class="icon-btn" title="Set commander" onclick={() => openSetCommander({ desk: desk.name }, desk.commander_principal)}>
+                        <button class="icon-btn" title="Set commander" onclick={() => openSetCommander({ stand: stand.name }, stand.commander_principal)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                         </button>
-                        <button class="icon-btn" title="Rename desk" onclick={() => openRenameDesk(desk)}>
+                        <button class="icon-btn" title="Rename stand" onclick={() => openRenameStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                         </button>
-                        <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete desk" onclick={() => openDeleteDesk(desk)}>
+                        <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete stand" onclick={() => openDeleteStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                         </button>
                       </div>
                     {/if}
                   </div>
 
-                  {#if deskOpen(deskKey)}
+                  {#if standOpen(standKey)}
                     <div class="px-4 pb-3 pl-12 space-y-2">
-                      {#if desk.stands.length === 0}
-                        <div class="text-xs text-primary-400 py-1">No stands in this desk.</div>
+                      {#if stand.canisters.length === 0}
+                        <div class="text-xs text-primary-400 py-1">No canisters in this stand.</div>
                       {/if}
-                      {#each desk.stands as stand (stand.name)}
+                      {#each stand.canisters as canister (canister.name)}
                         <div class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3">
                           <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                             <div class="min-w-0 space-y-1.5">
                               <div class="flex items-center gap-2 flex-wrap">
-                                <span class="text-sm font-medium text-primary-900">{stand.name}</span>
-                                <span class="badge {stand.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
-                                  {stand.kind}
+                                <span class="text-sm font-medium text-primary-900">{canister.name}</span>
+                                <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
+                                  {canister.kind}
                                 </span>
-                                {#if stand.status}
-                                  <span class="badge badge-neutral">{stand.status}</span>
+                                {#if canister.status}
+                                  <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
-                                {#if stand.subnet}
-                                  <span class="badge badge-neutral font-mono" title="subnet {stand.subnet}">⬡ {shortId(stand.subnet)}</span>
+                                {#if canister.subnet}
+                                  <span class="badge badge-neutral font-mono" title="subnet {canister.subnet}">⬡ {shortId(canister.subnet)}</span>
                                 {/if}
                               </div>
                               <div class="flex items-center gap-2 text-xs">
                                 <button
                                   class="font-mono text-primary-600 hover:text-primary-900 transition-colors inline-flex items-center gap-1"
                                   title="Copy canister id"
-                                  onclick={() => copy(stand.canister_id)}
+                                  onclick={() => copy(canister.canister_id)}
                                 >
                                   <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m11.25 2.625v-3.375a1.125 1.125 0 00-1.125-1.125H15.75m4.5 0H18a1.125 1.125 0 01-1.125-1.125V3" />
                                   </svg>
-                                  {stand.canister_id || '—'}
+                                  {canister.canister_id || '—'}
                                 </button>
-                                {#if stand.wasm_hash}
-                                  <span class="text-primary-400 font-mono" title={stand.wasm_hash}>· {shortHash(stand.wasm_hash)}</span>
+                                {#if canister.wasm_hash}
+                                  <span class="text-primary-400 font-mono" title={canister.wasm_hash}>· {shortHash(canister.wasm_hash)}</span>
                                 {/if}
                               </div>
                             </div>
                             <div class="flex items-center gap-0.5 shrink-0">
                               <!-- Details toggle -->
-                              <button class="icon-btn" title="Toggle details" onclick={() => toggleStand(stand)}>
-                                <svg class="w-4 h-4 transition-transform {expandedStands[stand.canister_id] ? 'rotate-180' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                              <button class="icon-btn" title="Toggle details" onclick={() => toggleCanister(canister)}>
+                                <svg class="w-4 h-4 transition-transform {expandedCanisters[canister.canister_id] ? 'rotate-180' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/>
                                 </svg>
                               </button>
                               <!-- Open / Candid UI -->
                               <a
-                                href={standLink(stand)}
+                                href={canisterLink(canister)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 class="icon-btn"
-                                title={stand.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
+                                title={canister.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
                               >
                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
@@ -987,61 +987,61 @@
                               </a>
                               {#if $isAuthenticated}
                                 <!-- Deploy -->
-                                <button class="icon-btn" title="Deploy (upgrade WASM)" onclick={() => openUpgradeStand(stand)}>
+                                <button class="icon-btn" title="Deploy (upgrade WASM)" onclick={() => openUpgradeCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                                 </button>
                                 <!-- Snapshot -->
-                                <button class="icon-btn" title="Create snapshot" onclick={() => runStandAction('Snapshot', () => createSnapshot(stand.name))}>
+                                <button class="icon-btn" title="Create snapshot" onclick={() => runCanisterAction('Snapshot', () => createSnapshot(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.776 48.776 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"/></svg>
                                 </button>
                                 <!-- Revert -->
-                                <button class="icon-btn" title="Revert to snapshot" onclick={() => runStandAction('Revert', () => revertSnapshot(stand.name))}>
+                                <button class="icon-btn" title="Revert to snapshot" onclick={() => runCanisterAction('Revert', () => revertSnapshot(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"/></svg>
                                 </button>
                                 <!-- Stop -->
-                                <button class="icon-btn" title="Stop canister" onclick={() => runStandAction('Stop', () => stopCanister(stand.name))}>
+                                <button class="icon-btn" title="Stop canister" onclick={() => runCanisterAction('Stop', () => stopCanister(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 </button>
                                 <!-- Start -->
-                                <button class="icon-btn" title="Start canister" onclick={() => runStandAction('Start', () => startCanister(stand.name))}>
+                                <button class="icon-btn" title="Start canister" onclick={() => runCanisterAction('Start', () => startCanister(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"/></svg>
                                 </button>
                                 <!-- Rename -->
-                                <button class="icon-btn" title="Rename stand" onclick={() => openRenameStand(stand)}>
+                                <button class="icon-btn" title="Rename canister" onclick={() => openRenameCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                                 </button>
                                 <!-- Delete -->
-                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete stand" onclick={() => openDeleteStand(stand)}>
+                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete canister" onclick={() => openDeleteCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                                 </button>
                               {/if}
                             </div>
                           </div>
 
-                          {#if expandedStands[stand.canister_id]}
+                          {#if expandedCanisters[canister.canister_id]}
                             <div class="mt-3 pt-3 border-t border-[var(--color-border-primary)] space-y-3">
                               <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary-500">
-                                <span>status: <span class="font-medium text-primary-800">{stand.status || '—'}</span></span>
-                                <span>wasm: <span class="font-mono">{stand.wasm_key || '—'}</span></span>
-                                {#if stand.wasm_hash}
-                                  <span class="font-mono" title={stand.wasm_hash}>hash {shortHash(stand.wasm_hash)}</span>
+                                <span>status: <span class="font-medium text-primary-800">{canister.status || '—'}</span></span>
+                                <span>wasm: <span class="font-mono">{canister.wasm_key || '—'}</span></span>
+                                {#if canister.wasm_hash}
+                                  <span class="font-mono" title={canister.wasm_hash}>hash {shortHash(canister.wasm_hash)}</span>
                                 {/if}
-                                {#if stand.snapshot_id}
-                                  <span class="font-mono" title={stand.snapshot_id}>snapshot {shortHash(stand.snapshot_id)}</span>
+                                {#if canister.snapshot_id}
+                                  <span class="font-mono" title={canister.snapshot_id}>snapshot {shortHash(canister.snapshot_id)}</span>
                                 {/if}
-                                <span class="font-mono" title={stand.subnet || 'default (conductor subnet)'}>subnet {stand.subnet ? shortId(stand.subnet) : '— default'}</span>
+                                <span class="font-mono" title={canister.subnet || 'default (conductor subnet)'}>subnet {canister.subnet ? shortId(canister.subnet) : '— default'}</span>
                               </div>
 
-                              {#if standLoading[stand.canister_id]}
+                              {#if canisterLoading[canister.canister_id]}
                                 <div class="skeleton h-4 w-48"></div>
                               {:else}
                                 <div>
                                   <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Recent events</div>
-                                  {#if (standEvents[stand.canister_id]?.length ?? 0) === 0}
+                                  {#if (canisterEvents[canister.canister_id]?.length ?? 0) === 0}
                                     <div class="text-xs text-primary-400">No events for this canister.</div>
                                   {:else}
                                     <ul class="space-y-1">
-                                      {#each standEvents[stand.canister_id] as e (e.idx)}
+                                      {#each canisterEvents[canister.canister_id] as e (e.idx)}
                                         <li class="text-xs flex items-start gap-2">
                                           <span class="badge {evBadge(e.btype)} shrink-0">{e.btype}</span>
                                           <span class="text-primary-600 break-words min-w-0">{evSummary(e)}</span>
@@ -1054,37 +1054,37 @@
                                 <div>
                                   <div class="flex items-center justify-between mb-1.5">
                                     <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Canister logs</div>
-                                    <button class="text-xs text-primary-500 hover:text-primary-800" onclick={() => loadStandDetails(stand.canister_id)}>Reload</button>
+                                    <button class="text-xs text-primary-500 hover:text-primary-800" onclick={() => loadCanisterDetails(canister.canister_id)}>Reload</button>
                                   </div>
-                                  {#if standLogErr[stand.canister_id]}
+                                  {#if canisterLogErr[canister.canister_id]}
                                     <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
-                                      Couldn't fetch logs: {standLogErr[stand.canister_id]}
+                                      Couldn't fetch logs: {canisterLogErr[canister.canister_id]}
                                       {#if $isAuthenticated}
-                                        <button class="underline ml-1 font-medium" onclick={() => makeLogsPublic(stand)}>Make logs public</button>
+                                        <button class="underline ml-1 font-medium" onclick={() => makeLogsPublic(canister)}>Make logs public</button>
                                       {/if}
                                     </div>
-                                  {:else if (standLogs[stand.canister_id]?.length ?? 0) === 0}
+                                  {:else if (canisterLogs[canister.canister_id]?.length ?? 0) === 0}
                                     <div class="text-xs text-primary-400">No logs recorded yet.</div>
                                   {:else}
-                                    <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{#each standLogs[stand.canister_id] as r (r.idx)}<span class="text-primary-400">{fmtTs(r.timestamp_nanos)}</span>  {r.content}
+                                    <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{#each canisterLogs[canister.canister_id] as r (r.idx)}<span class="text-primary-400">{fmtTs(r.timestamp_nanos)}</span>  {r.content}
 {/each}</pre>
                                   {/if}
                                 </div>
 
-                                {#if stand.kind === 'backend'}
+                                {#if canister.kind === 'backend'}
                                   <div>
                                     <div class="flex items-center justify-between mb-1.5">
                                       <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Inspect (Basilisk)</div>
-                                      <button class="text-xs text-primary-500 hover:text-primary-800 disabled:opacity-40" disabled={browseBusy[stand.canister_id]} onclick={() => runBrowse(stand)}>
-                                        {browseBusy[stand.canister_id] ? 'Loading…' : 'Browse data'}
+                                      <button class="text-xs text-primary-500 hover:text-primary-800 disabled:opacity-40" disabled={browseBusy[canister.canister_id]} onclick={() => runBrowse(canister)}>
+                                        {browseBusy[canister.canister_id] ? 'Loading…' : 'Browse data'}
                                       </button>
                                     </div>
-                                    {#if browseErr[stand.canister_id]}
-                                      <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">{browseErr[stand.canister_id]}</div>
-                                    {:else if browseData[stand.canister_id] !== undefined}
-                                      <pre class="text-[11px] leading-relaxed font-mono bg-primary-50 text-primary-800 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(browseData[stand.canister_id], null, 2)}</pre>
+                                    {#if browseErr[canister.canister_id]}
+                                      <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">{browseErr[canister.canister_id]}</div>
+                                    {:else if browseData[canister.canister_id] !== undefined}
+                                      <pre class="text-[11px] leading-relaxed font-mono bg-primary-50 text-primary-800 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(browseData[canister.canister_id], null, 2)}</pre>
                                     {:else}
-                                      <div class="text-xs text-primary-400">Read-only view of the stand's stable data. Click “Browse data”.</div>
+                                      <div class="text-xs text-primary-400">Read-only view of the canister's stable data. Click “Browse data”.</div>
                                     {/if}
                                   </div>
 
@@ -1094,19 +1094,19 @@
                                       <textarea
                                         class="input font-mono text-[11px] w-full min-h-[64px] resize-y"
                                         placeholder={'print(1 + 1)\nimport sys; print(sys.version)'}
-                                        bind:value={consoleCode[stand.canister_id]}
-                                        onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(stand); } }}
+                                        bind:value={consoleCode[canister.canister_id]}
+                                        onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(canister); } }}
                                       ></textarea>
                                       <div class="flex items-center justify-between mt-1.5">
                                         <span class="text-[11px] text-primary-400">Runs server-side via <span class="font-mono">__shell__</span>. ⌘/Ctrl+Enter to run.</span>
-                                        <button class="btn-secondary btn-sm" disabled={consoleBusy[stand.canister_id]} onclick={() => runExec(stand)}>
-                                          {consoleBusy[stand.canister_id] ? 'Running…' : 'Run'}
+                                        <button class="btn-secondary btn-sm" disabled={consoleBusy[canister.canister_id]} onclick={() => runExec(canister)}>
+                                          {consoleBusy[canister.canister_id] ? 'Running…' : 'Run'}
                                         </button>
                                       </div>
-                                      {#if consoleErr[stand.canister_id]}
-                                        <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[stand.canister_id]}</div>
-                                      {:else if consoleOut[stand.canister_id] !== undefined}
-                                        <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[stand.canister_id] || '(no output)'}</pre>
+                                      {#if consoleErr[canister.canister_id]}
+                                        <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[canister.canister_id]}</div>
+                                      {:else if consoleOut[canister.canister_id] !== undefined}
+                                        <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[canister.canister_id] || '(no output)'}</pre>
                                       {/if}
                                     </div>
                                   {/if}

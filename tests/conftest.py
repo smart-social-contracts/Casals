@@ -30,7 +30,7 @@ CANISTER_NAME = "casals_backend"
 FILE_REGISTRY_CANISTER = "ic_file_registry"
 FILE_REGISTRY_ENTRY = "file_registry/src/main.py"
 FILE_REGISTRY_DID = "file_registry/ic_file_registry.did"
-# Cycles topped into casals_backend so it can fund freshly created stands.
+# Cycles topped into casals_backend so it can fund freshly created canisters.
 CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
 
 
@@ -211,7 +211,7 @@ def registry_store_chunked(fr_id: str, namespace: str, path: str, data: bytes,
 def canister_module_hash(canister_id: str) -> str:
     """Return the installed module hash (hex) per the management canister, or ''.
 
-    The deployer identity is not a controller of the stands Casals creates, but
+    The deployer identity is not a controller of the canisters Casals creates, but
     the management canister still reports their module hash — enough to prove a
     real install / upgrade / rollback happened on chain.
     """
@@ -257,7 +257,7 @@ def registry(canister):
     fr_id = _create_detached()
     _icp(["canister", "install", fr_id, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"], timeout=300)
 
-    # Fund Casals so create_stand can provision new canisters with cycles.
+    # Fund Casals so create_canister can provision new canisters with cycles.
     _icp(["canister", "top-up", CANISTER_NAME, "--amount", CASALS_TOPUP])
 
     # Point Casals at the registry (caller is the controller deployer).

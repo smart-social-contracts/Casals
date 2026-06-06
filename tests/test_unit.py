@@ -12,12 +12,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import util  # noqa: E402
 
 
-def test_stand_url_frontend_vs_backend():
+def test_canister_url_frontend_vs_backend():
     cid = "aaaaa-aa"
-    assert util.stand_url("frontend", cid) == f"https://{cid}.icp0.io"
-    assert f"id={cid}" in util.stand_url("backend", cid)
-    assert util.CANDID_UI in util.stand_url("backend", cid)
-    assert util.stand_url("backend", "") == ""
+    assert util.canister_url("frontend", cid) == f"https://{cid}.icp0.io"
+    assert f"id={cid}" in util.canister_url("backend", cid)
+    assert util.CANDID_UI in util.canister_url("backend", cid)
+    assert util.canister_url("backend", "") == ""
 
 
 def test_to_hex_handles_bytes_list_str():
@@ -39,9 +39,9 @@ def test_audit_block_hash_is_deterministic_and_chains():
 # ── Cycles management helpers ────────────────────────────────────────────────
 
 def test_resolve_cycle_policy_inherits_per_field():
-    # Stand overrides min; topup falls through to the section.
+    # Canister overrides min; topup falls through to the section.
     min_c, topup_c = util.resolve_cycle_policy(
-        stand=(100, 0), desk=(0, 0), section=(0, 500), defaults=(50, 50)
+        canister=(100, 0), stand=(0, 0), section=(0, 500), defaults=(50, 50)
     )
     assert min_c == 100 and topup_c == 500
 

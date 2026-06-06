@@ -9,7 +9,7 @@
     cycleStatusBadge,
     shortPrincipal,
   } from '$lib/api';
-  import type { CyclesReport, StandCycles, CycleHistory, PoolCanisterCycles } from '$lib/api';
+  import type { CyclesReport, CanisterCycles, CycleHistory, PoolCanisterCycles } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
@@ -25,7 +25,7 @@
   let busy = $state('');
 
   // ── chart controls ──
-  type Scope = 'total' | 'section' | 'desk' | 'canister';
+  type Scope = 'total' | 'section' | 'stand' | 'canister';
   type WindowKey = '1h' | '1d' | '1w' | '1month';
   type Metric = 'burn' | 'balance';
   const WINDOWS: Record<WindowKey, number> = { '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000 };
@@ -65,7 +65,7 @@
       const byCan = new Map<string, { name: string; points: { t: number; v: number }[] }>();
       for (const s of ss) {
         let e = byCan.get(s.canister_id);
-        if (!e) { e = { name: s.stand || s.canister_id, points: [] }; byCan.set(s.canister_id, e); }
+        if (!e) { e = { name: s.canister || s.canister_id, points: [] }; byCan.set(s.canister_id, e); }
         e.points.push({ t: s.ts, v: s.cycles });
       }
       return [...byCan.values()].map((e, i) => ({ name: e.name, color: colorAt(i), points: e.points }));
@@ -75,7 +75,7 @@
       for (const s of ss) byTs.set(s.ts, (byTs.get(s.ts) ?? 0) + s.cycles);
       return [{ name: 'Total', color: colorAt(0), points: [...byTs.entries()].map(([t, v]) => ({ t, v })) }];
     }
-    const keyOf = scope === 'section' ? (s: typeof ss[number]) => s.section : (s: typeof ss[number]) => s.desk;
+    const keyOf = scope === 'section' ? (s: typeof ss[number]) => s.section : (s: typeof ss[number]) => s.stand;
     const byKey = new Map<string, Map<number, number>>();
     for (const s of ss) {
       const k = keyOf(s) || '(none)';
@@ -90,14 +90,14 @@
     }));
   });
 
-  // Section ⊃ desk ⊃ canister tree sized by balance (latest) or burn (window).
+  // Section ⊃ stand ⊃ canister tree sized by balance (latest) or burn (window).
   const treemapRoot = $derived.by<TreemapInput>(() => {
-    const byCan = new Map<string, { section: string; desk: string; stand: string; canister_id: string; pts: typeof samples }>();
+    const byCan = new Map<string, { section: string; stand: string; canister: string; canister_id: string; pts: typeof samples }>();
     for (const s of samples) {
       let e = byCan.get(s.canister_id);
-      if (!e) { e = { section: s.section, desk: s.desk, stand: s.stand, canister_id: s.canister_id, pts: [] }; byCan.set(s.canister_id, e); }
+      if (!e) { e = { section: s.section, stand: s.stand, canister: s.canister, canister_id: s.canister_id, pts: [] }; byCan.set(s.canister_id, e); }
       e.pts.push(s);
-      e.section = s.section; e.desk = s.desk; e.stand = s.stand;
+      e.section = s.section; e.stand = s.stand; e.canister = s.canister;
     }
     const sections = new Map<string, Map<string, TreemapInput[]>>();
     for (const e of byCan.values()) {
@@ -111,19 +111,19 @@
         value = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
       }
       const secName = e.section || '(none)';
-      const deskName = e.desk || '(none)';
+      const standName = e.stand || '(none)';
       if (!sections.has(secName)) sections.set(secName, new Map());
-      const desks = sections.get(secName)!;
-      if (!desks.has(deskName)) desks.set(deskName, []);
-      desks.get(deskName)!.push({ name: e.stand || e.canister_id, value, section: secName, desk: deskName, canister_id: e.canister_id });
+      const stands = sections.get(secName)!;
+      if (!stands.has(standName)) stands.set(standName, []);
+      stands.get(standName)!.push({ name: e.canister || e.canister_id, value, section: secName, stand: standName, canister_id: e.canister_id });
     }
     const children: TreemapInput[] = [];
-    for (const [secName, desks] of sections) {
-      const deskNodes: TreemapInput[] = [];
-      for (const [deskName, cans] of desks) {
-        deskNodes.push({ name: deskName, section: secName, desk: deskName, value: cans.reduce((a, c) => a + c.value, 0), children: cans });
+    for (const [secName, stands] of sections) {
+      const standNodes: TreemapInput[] = [];
+      for (const [standName, cans] of stands) {
+        standNodes.push({ name: standName, section: secName, stand: standName, value: cans.reduce((a, c) => a + c.value, 0), children: cans });
       }
-      children.push({ name: secName, section: secName, value: deskNodes.reduce((a, d) => a + d.value, 0), children: deskNodes });
+      children.push({ name: secName, section: secName, value: standNodes.reduce((a, d) => a + d.value, 0), children: standNodes });
     }
     return { name: 'root', value: 0, children };
   });
@@ -143,11 +143,11 @@
     }
   }
 
-  async function runTopUp(stand: StandCycles) {
-    busy = stand.canister_id;
+  async function runTopUp(canister: CanisterCycles) {
+    busy = canister.canister_id;
     try {
-      await topUp({ stand: stand.name });
-      toasts.success(`Topped up ${stand.name}`);
+      await topUp({ canister: canister.name });
+      toasts.success(`Topped up ${canister.name}`);
       await load();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Top-up failed');
@@ -156,8 +156,8 @@
     }
   }
 
-  // Cycles consumed by a pooled stand = funded (deposited) − current balance.
-  // Only meaningful when we know how much Casals funded it (live stands).
+  // Cycles consumed by a pooled canister = funded (deposited) − current balance.
+  // Only meaningful when we know how much Casals funded it (live canisters).
   function poolUsed(c: PoolCanisterCycles): string {
     if (!c.deposited || c.cycles === undefined) return '—';
     return formatCycles(Math.max(0, c.deposited - c.cycles));
@@ -178,7 +178,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Cycles</h1>
-      <p class="text-sm text-primary-500 mt-1">Treasury & per-stand solvency across the orchestra</p>
+      <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       <button class="btn-secondary btn-sm" onclick={load}>
@@ -234,8 +234,8 @@
         <p class="text-[11px] text-primary-400">every {intervalLabel(report.treasury.interval_secs)}</p>
       </div>
       <div class="card p-4">
-        <p class="text-xs text-primary-500">Stands</p>
-        <p class="text-lg font-semibold text-primary-900">{report.totals.stands}</p>
+        <p class="text-xs text-primary-500">Canisters</p>
+        <p class="text-lg font-semibold text-primary-900">{report.totals.canisters}</p>
         <p class="text-[11px] text-primary-400">
           {report.totals.low + report.totals.critical} low · {report.totals.frozen} frozen · {report.totals.error} err
         </p>
@@ -266,7 +266,7 @@
           <p class="text-xs text-primary-400">Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scope}.</p>
         </div>
         <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
-          {#each [['total', 'Total'], ['section', 'Section'], ['desk', 'Desk'], ['canister', 'Canister']] as opt (opt[0])}
+          {#each [['total', 'Total'], ['section', 'Section'], ['stand', 'Stand'], ['canister', 'Canister']] as opt (opt[0])}
             <button
               class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
               onclick={() => (scope = opt[0] as Scope)}
@@ -281,9 +281,9 @@
     <div class="card p-5">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
         <div>
-          <h2 class="text-sm font-semibold text-primary-900">Cycles by section / desk / canister</h2>
+          <h2 class="text-sm font-semibold text-primary-900">Cycles by section / stand / canister</h2>
           <p class="text-xs text-primary-400">
-            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[windowKey]}` : 'Current balance'}, tiled by section ⊃ desk ⊃ canister.
+            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[windowKey]}` : 'Current balance'}, tiled by section ⊃ stand ⊃ canister.
           </p>
         </div>
         <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
@@ -298,16 +298,16 @@
       <Treemap root={treemapRoot} format={formatCycles} />
     </div>
 
-    <!-- Per-stand table -->
+    <!-- Per-canister table -->
     <div class="card p-0 overflow-hidden">
-      {#if report.stands.length === 0}
-        <p class="text-sm text-primary-400 p-5">No stands to monitor yet.</p>
+      {#if report.canisters.length === 0}
+        <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
       {:else}
         <table class="w-full text-sm">
           <thead class="bg-primary-50 text-primary-500 text-xs">
             <tr>
-              <th class="text-left font-medium px-4 py-2.5">Stand</th>
-              <th class="text-left font-medium px-4 py-2.5 hidden sm:table-cell">Section / Desk</th>
+              <th class="text-left font-medium px-4 py-2.5">Canister</th>
+              <th class="text-left font-medium px-4 py-2.5 hidden sm:table-cell">Section / Stand</th>
               <th class="text-right font-medium px-4 py-2.5">Cycles</th>
               <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell">Min policy</th>
               <th class="text-center font-medium px-4 py-2.5">Status</th>
@@ -315,13 +315,13 @@
             </tr>
           </thead>
           <tbody>
-            {#each report.stands as s (s.canister_id)}
+            {#each report.canisters as s (s.canister_id)}
               <tr class="border-t border-[var(--color-border-primary)]">
                 <td class="px-4 py-2.5">
                   <div class="font-medium text-primary-900">{s.name}</div>
                   <div class="font-mono text-[11px] text-primary-400" title={s.canister_id}>{shortPrincipal(s.canister_id)}</div>
                 </td>
-                <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.desk}</td>
+                <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.stand}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-primary-900">
                   {formatCycles(s.cycles)}
                   <Fiat value={s.cycles} block class="text-right" />
@@ -380,7 +380,7 @@
               {#each report.pool.canisters as c (c.canister_id)}
                 <tr class="border-t border-[var(--color-border-primary)]">
                   <td class="px-4 py-2.5 font-mono text-[12px] text-primary-700" title={c.canister_id}>{shortPrincipal(c.canister_id)}</td>
-                  <td class="px-4 py-2.5 text-primary-600">{c.stand_name || '—'}</td>
+                  <td class="px-4 py-2.5 text-primary-600">{c.canister_name || '—'}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-900">
                     {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
                     {#if c.cycles !== undefined}<Fiat value={c.cycles} block class="text-right" />{/if}
@@ -400,7 +400,7 @@
     {/if}
 
     {#if !$isAuthenticated}
-      <p class="text-xs text-primary-400">Log in as a commander/controller to top up stands or reconcile.</p>
+      <p class="text-xs text-primary-400">Log in as a commander/controller to top up canisters or reconcile.</p>
     {/if}
   {/if}
 </div>

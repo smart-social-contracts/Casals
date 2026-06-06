@@ -6,12 +6,12 @@ What it does (idempotently):
   2. For each template in seed/templates.json: gunzip the committed WASM, upload
      it to the file-registry (chunked), and authorize it on Casals.
   3. With --deploy: also deploy the live sheet (the backend's default orchestra),
-     standing up its stands (reusing pooled canisters before creating new ones).
+     standing up its canisters (reusing pooled canisters before creating new ones).
 
 The sheet itself is NOT created here — it is persisted in the backend (seeded
 from src/default_sheet.py on first boot, then editable and saved across
 restarts) and is deployed via the frontend Deploy button or `deploy_sheet`.
-Seeding only ensures the catalog of authorized WASMs that a sheet's stands
+Seeding only ensures the catalog of authorized WASMs that a sheet's canisters
 reference.
 
 Re-running is safe: templates already authorized with a matching hash are
@@ -236,7 +236,7 @@ def main():
         # bytes can change independently of the WASM (you edit the served page),
         # and the authorized record only stores a *pointer* (not the asset's
         # content hash) — so always refresh the registry copy. Pushing the new
-        # bytes into already-live stands is a separate step (provision_assets).
+        # bytes into already-live canisters is a separate step (provision_assets).
         if asset:
             asset_bytes = _read_asset_bytes(asset["file"])
             asset_digest = hashlib.sha256(asset_bytes).hexdigest()
@@ -285,12 +285,12 @@ def main():
     #    the backend's default (loaded at canister start); deploy_sheet is
     #    idempotent and reuses pooled canisters before creating new ones.
     if args.deploy:
-        print("deploying live sheet (this creates/reuses stand canisters)…")
+        print("deploying live sheet (this creates/reuses canisters)…")
         res = call(CASALS, "deploy_sheet", args, json.dumps({}))
         if not (isinstance(res, dict) and res.get("ok")):
             sys.exit(f"deploy_sheet failed: {res}")
-        for k in ("created_sections", "created_desks", "created_stands",
-                  "reused_stands", "reinstalled_stands", "retired_stands"):
+        for k in ("created_sections", "created_stands", "created_canisters",
+                  "reused_canisters", "reinstalled_canisters", "retired_canisters"):
             if res.get(k):
                 print(f"  {k}: {', '.join(res[k])}")
         if res.get("errors"):

@@ -1,8 +1,8 @@
 """Casals — canister lifecycle orchestrator (the Conductor).
 
-Organizes a project's canisters into Sections ⊃ Desks ⊃ Stands and performs
+Organizes a project's canisters into Sections ⊃ Stands ⊃ Canisters and performs
 their lifecycle (create / upgrade / snapshot / rollback / start / stop) via the
-IC management canister. Approval is delegated: each Section/Desk registers a
+IC management canister. Approval is delegated: each Section/Stand registers a
 *commander* principal (the project's own governance canister) whose decisions
 Casals trusts and executes — Casals never embeds voting logic.
 
@@ -48,21 +48,21 @@ from default_sheet import DEFAULT_SHEET
 from models import (
     AuthorizedWasm,
     CycleSample,
-    Desk,
+    Stand,
     OrchestrationEvent,
     PooledCanister,
     Section,
     Settings,
-    Stand,
-    StandKind,
-    StandStatus,
+    Canister,
+    CanisterKind,
+    CanisterStatus,
 )
 from util import (
     audit_block_hash,
     cycles_status,
     decide_topup,
     resolve_cycle_policy,
-    stand_url,
+    canister_url,
     to_hex as _to_hex,
 )
 
@@ -70,7 +70,7 @@ _log = get_logger("casals")
 
 VERSION = "0.1.0"
 ANONYMOUS = "2vxsx-fae"
-# Cycles provisioned into a freshly created stand. Tune per deployment.
+# Cycles provisioned into a freshly created canister. Tune per deployment.
 CREATE_CYCLES = 2_000_000_000_000  # 2T
 # Per-chunk read size when pulling a WASM from the file-registry (matches the
 # registry's get_file_chunk cap).
@@ -200,8 +200,8 @@ def _file_registry() -> FileRegistryService:
 
 # ── Inter-canister: certified assets canister ──────────────────────────────
 #
-#  A `frontend` stand can run the DFINITY certified-assets canister, which
-#  installs empty. After install Casals (the stand's controller) grants itself
+#  A `frontend` canister can run the DFINITY certified-assets canister, which
+#  installs empty. After install Casals (the canister's controller) grants itself
 #  Commit permission and uploads the template's asset (e.g. index.html) via
 #  `store`, so the canister actually serves a page. Records mirror the asset
 #  canister's Candid.
@@ -235,9 +235,9 @@ class AssetCanisterService(Service):
 
 # ── Inter-canister: Basilisk introspection (shell / browse) ────────────────
 #
-#  A Basilisk stand built with `__basilisk_features__ = ["shell", "browse"]`
-#  exposes two extra methods. Casals (the stand's controller) relays calls to
-#  them so the dashboard can inspect / drive a stand without the operator being
+#  A Basilisk canister built with `__basilisk_features__ = ["shell", "browse"]`
+#  exposes two extra methods. Casals (the canister's controller) relays calls to
+#  them so the dashboard can inspect / drive a canister without the operator being
 #  a direct controller of that canister:
 #    __browse__(query)  read-only data introspection — public @query
 #    __shell__(code)    runs Python in the canister  — controller-only @update
@@ -252,8 +252,8 @@ class BasiliskIntrospectionService(Service):
     def __shell__(self, code: text) -> text: ...
 
 
-def _stand_call(canister_id: str, method: str, arg: str):
-    """Generator: relay a single text-in/text-out call to a stand's
+def _canister_call(canister_id: str, method: str, arg: str):
+    """Generator: relay a single text-in/text-out call to a canister's
     introspection endpoint and return the decoded text reply."""
     svc = BasiliskIntrospectionService(Principal.from_str(canister_id))
     res = yield getattr(svc, method)(arg)
@@ -410,48 +410,48 @@ def _pool_register(canister_id: str, subnet: str = "", subnet_type: str = "") ->
     return p
 
 
-def _pool_mark_in_use(canister_id: str, stand_name: str) -> None:
+def _pool_mark_in_use(canister_id: str, canister_name: str) -> None:
     p = _pool_register(canister_id)
     p.status = "in_use"
-    p.stand_name = stand_name
+    p.canister_name = canister_name
 
 
 def _pool_free(canister_id: str) -> None:
     # Preserve the recorded subnet placement; only clear the occupancy.
     p = _pool_register(canister_id)
     p.status = "free"
-    p.stand_name = ""
+    p.canister_name = ""
 
 
 # ── Authorization ────────────────────────────────────────────────────────────
 #
 #  - platform admin actions (settings, sections, authorized-WASM list) require
 #    a Casals controller;
-#  - adding sections/desks is also allowed for any authenticated principal when
+#  - adding sections/stands is also allowed for any authenticated principal when
 #    open_access is enabled (deployer flips this for dev/demo);
-#  - lifecycle commands on a section/desk require the registered *commander*
+#  - lifecycle commands on a section/stand require the registered *commander*
 #    principal for that target (or a controller).
 
 # ── Commander permissions ────────────────────────────────────────────────────
 #
-# A commander (a principal appointed over a section or desk) may be granted a
+# A commander (a principal appointed over a section or stand) may be granted a
 # subset of these capabilities. The permission set is stored as a comma-separated
-# string on the Section/Desk; empty string or "*" means "all" (full control),
+# string on the Section/Stand; empty string or "*" means "all" (full control),
 # which keeps every pre-existing commander working exactly as before.
 #
 # Each entry is (key, human label, group) — the label/group drive the UI.
 PERMISSIONS = [
-    ("stand.create",    "Create stands",          "Stands"),
-    ("stand.deploy",    "Deploy / upgrade stands", "Stands"),
-    ("stand.delete",    "Delete stands",          "Stands"),
-    ("stand.rename",    "Rename stands",          "Stands"),
-    ("stand.snapshot",  "Create snapshots",       "Stands"),
-    ("stand.revert",    "Revert to snapshot",     "Stands"),
-    ("stand.lifecycle", "Start / stop canisters", "Stands"),
-    ("stand.topup",     "Top up cycles",          "Stands"),
-    ("stand.shell",     "Run shell / exec code",  "Stands"),
-    ("desk.rename",     "Rename desk",            "Desk"),
-    ("desk.delete",     "Delete desk",            "Desk"),
+    ("canister.create",    "Create canisters",          "Canisters"),
+    ("canister.deploy",    "Deploy / upgrade canisters", "Canisters"),
+    ("canister.delete",    "Delete canisters",          "Canisters"),
+    ("canister.rename",    "Rename canisters",          "Canisters"),
+    ("canister.snapshot",  "Create snapshots",       "Canisters"),
+    ("canister.revert",    "Revert to snapshot",     "Canisters"),
+    ("canister.lifecycle", "Start / stop canisters", "Canisters"),
+    ("canister.topup",     "Top up cycles",          "Canisters"),
+    ("canister.shell",     "Run shell / exec code",  "Canisters"),
+    ("stand.rename",     "Rename stand",            "Stand"),
+    ("stand.delete",     "Delete stand",            "Stand"),
     ("commander.assign","Appoint sub-commanders", "Governance"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
@@ -507,58 +507,58 @@ def _require_can_add() -> None:
     raise Exception("unauthorized: open access is disabled; caller is not a controller")
 
 
-def _commander_for(desk: Desk) -> str:
-    if desk.commander_principal:
-        return desk.commander_principal
-    section = desk.section
+def _commander_for(stand: Stand) -> str:
+    if stand.commander_principal:
+        return stand.commander_principal
+    section = stand.section
     return section.commander_principal if section else ""
 
 
-def _require_commander(desk: Desk, permission: str = "") -> None:
-    """Authorize a desk/section lifecycle action, optionally requiring a
+def _require_commander(stand: Stand, permission: str = "") -> None:
+    """Authorize a stand/section lifecycle action, optionally requiring a
     specific permission of the matching commander.
 
     Resolution order:
       - Casals controllers may do anything.
-      - The desk's own commander (if set) is matched against the desk's
+      - The stand's own commander (if set) is matched against the stand's
         permission grant.
       - Otherwise the parent section's commander is matched against the
         section's permission grant.
       - With no commander assigned, open-access mode grants any authenticated
-        caller full control (demo desks), mirroring _require_can_add.
+        caller full control (demo stands), mirroring _require_can_add.
     """
     if _is_controller():
         return
     caller = _caller()
-    # Prefer the desk-level commander; its permission grant governs.
-    desk_commander = (desk.commander_principal or "").strip() if desk else ""
-    if desk_commander:
-        if caller != desk_commander:
-            # A section commander may still act on the desk via the section grant.
-            section = desk.section if desk else None
+    # Prefer the stand-level commander; its permission grant governs.
+    stand_commander = (stand.commander_principal or "").strip() if stand else ""
+    if stand_commander:
+        if caller != stand_commander:
+            # A section commander may still act on the stand via the section grant.
+            section = stand.section if stand else None
             sec_commander = (section.commander_principal or "").strip() if section else ""
             if sec_commander and caller == sec_commander:
                 if not _has_permission(section.permissions, permission):
                     raise Exception(f"unauthorized: commander lacks permission '{permission}'")
                 return
-            raise Exception("unauthorized: caller is not the commander for this desk/section")
-        if not _has_permission(desk.permissions, permission):
+            raise Exception("unauthorized: caller is not the commander for this stand/section")
+        if not _has_permission(stand.permissions, permission):
             raise Exception(f"unauthorized: commander lacks permission '{permission}'")
         return
-    # No desk commander: fall back to the section commander.
-    section = desk.section if desk else None
+    # No stand commander: fall back to the section commander.
+    section = stand.section if stand else None
     sec_commander = (section.commander_principal or "").strip() if section else ""
     if sec_commander:
         if caller != sec_commander:
-            raise Exception("unauthorized: caller is not the commander for this desk/section")
+            raise Exception("unauthorized: caller is not the commander for this stand/section")
         if not _has_permission(section.permissions, permission):
             raise Exception(f"unauthorized: commander lacks permission '{permission}'")
         return
-    # No commander assigned (e.g. the demo desks): in open-access mode any
+    # No commander assigned (e.g. the demo stands): in open-access mode any
     # authenticated caller may drive the lifecycle, mirroring _require_can_add.
     if _settings().open_access and caller != ANONYMOUS:
         return
-    raise Exception("unauthorized: caller is not the commander for this desk/section")
+    raise Exception("unauthorized: caller is not the commander for this stand/section")
 
 
 # ── Audit log (ICRC-3 / ICRC-121-style append-only chain) ─────────────────────
@@ -594,12 +594,12 @@ def _append_event(btype: str, canister_id: str, payload: dict) -> "Orchestration
 
 # ── Serialization ────────────────────────────────────────────────────────────
 
-def _stand_view(st: Stand) -> dict:
+def _canister_view(st: Canister) -> dict:
     return {
         "name": st.name,
         "canister_id": st.canister_id,
         "kind": st.kind,
-        "url": stand_url(st.kind, st.canister_id),
+        "url": canister_url(st.kind, st.canister_id),
         "wasm_key": st.wasm_key,
         "wasm_hash": st.wasm_hash,
         "status": st.status,
@@ -610,7 +610,7 @@ def _stand_view(st: Stand) -> dict:
     }
 
 
-def _desk_view(dk: Desk) -> dict:
+def _stand_view(dk: Stand) -> dict:
     return {
         "name": dk.name,
         "description": dk.description,
@@ -621,7 +621,7 @@ def _desk_view(dk: Desk) -> dict:
         "topup_cycles": int(dk.topup_cycles or 0),
         "subnet": dk.subnet or "",
         "subnet_type": dk.subnet_type or "",
-        "stands": [_stand_view(s) for s in (dk.stands or [])],
+        "canisters": [_canister_view(s) for s in (dk.canisters or [])],
     }
 
 
@@ -636,7 +636,7 @@ def _section_view(sec: Section) -> dict:
         "topup_cycles": int(sec.topup_cycles or 0),
         "subnet": sec.subnet or "",
         "subnet_type": sec.subnet_type or "",
-        "desks": [_desk_view(d) for d in (sec.desks or [])],
+        "stands": [_stand_view(d) for d in (sec.stands or [])],
     }
 
 
@@ -645,15 +645,15 @@ def _section_view(sec: Section) -> dict:
 @query
 def get_status() -> text:
     list(Section.instances())
-    list(Desk.instances())
     list(Stand.instances())
+    list(Canister.instances())
     list(AuthorizedWasm.instances())
     list(OrchestrationEvent.instances())
     return json.dumps({
         "version": VERSION,
         "sections": len(list(Section.instances())),
-        "desks": len(list(Desk.instances())),
         "stands": len(list(Stand.instances())),
+        "canisters": len(list(Canister.instances())),
         "authorized_wasms": len(list(AuthorizedWasm.instances())),
         "events": len(list(OrchestrationEvent.instances())),
     })
@@ -701,8 +701,8 @@ def icrc10_supported_standards() -> text:
 @query
 def get_tree() -> text:
     list(Section.instances())
-    list(Desk.instances())
     list(Stand.instances())
+    list(Canister.instances())
     sections = [_section_view(s) for s in Section.instances()]
     sections.sort(key=lambda x: x["name"])
     return json.dumps({"sections": sections})
@@ -716,7 +716,7 @@ def list_sections() -> text:
             "name": s.name,
             "description": s.description,
             "commander_principal": s.commander_principal,
-            "desk_count": len(list(s.desks or [])),
+            "stand_count": len(list(s.stands or [])),
         }
         for s in Section.instances()
     ]
@@ -816,7 +816,7 @@ def list_pool() -> text:
     """Return every canister Casals has ever created and its pool status."""
     list(PooledCanister.instances())
     out = [
-        {"canister_id": p.canister_id, "status": p.status, "stand_name": p.stand_name,
+        {"canister_id": p.canister_id, "status": p.status, "canister_name": p.canister_name,
          "subnet": p.subnet or "", "subnet_type": p.subnet_type or ""}
         for p in PooledCanister.instances() if p.canister_id
     ]
@@ -936,7 +936,7 @@ def create_section(args: text) -> text:
 
 
 @update
-def create_desk(args: text) -> text:
+def create_stand(args: text) -> text:
     """Args (JSON): {section, name, description?, commander_principal?}."""
     try:
         _require_can_add()
@@ -947,17 +947,17 @@ def create_desk(args: text) -> text:
         sec = Section[section_name]
         if sec is None:
             return _err(f"unknown section '{section_name}'")
-        list(Desk.instances())
-        if Desk[name] is not None:
-            return _err(f"desk '{name}' already exists")
-        dk = Desk(name=name)
+        list(Stand.instances())
+        if Stand[name] is not None:
+            return _err(f"stand '{name}' already exists")
+        dk = Stand(name=name)
         dk.section = sec
         dk.description = (params.get("description") or "")[:512]
         dk.commander_principal = (params.get("commander_principal") or "").strip()
         dk.subnet = (params.get("subnet") or "").strip()
         dk.subnet_type = (params.get("subnet_type") or "").strip()
         dk.created_by = _caller()
-        _append_event("desk_created", "", {"section": section_name, "name": name})
+        _append_event("stand_created", "", {"section": section_name, "name": name})
         return _ok(name=name)
     except Exception as e:
         return _err(str(e))
@@ -988,49 +988,49 @@ def rename_section(args: text) -> text:
 
 
 @update
-def rename_desk(args: text) -> text:
-    """Args (JSON): {desk, new_name, description?}."""
+def rename_stand(args: text) -> text:
+    """Args (JSON): {stand, new_name, description?}."""
     try:
         params = json.loads(args)
-        old_name = params["desk"].strip()
+        old_name = params["stand"].strip()
         new_name = params["new_name"].strip()
         desc = params.get("description")
         list(Section.instances())
-        desks = list(Desk.instances())
-        dk = Desk[old_name] or next((d for d in desks if d.name == old_name), None)
+        stands = list(Stand.instances())
+        dk = Stand[old_name] or next((d for d in stands if d.name == old_name), None)
         if dk is None:
-            return _err(f"unknown desk '{old_name}'")
-        _require_commander(dk, "desk.rename")
-        if new_name != old_name and Desk[new_name] is not None:
-            return _err(f"desk '{new_name}' already exists")
+            return _err(f"unknown stand '{old_name}'")
+        _require_commander(dk, "stand.rename")
+        if new_name != old_name and Stand[new_name] is not None:
+            return _err(f"stand '{new_name}' already exists")
         dk.name = new_name
         if desc is not None:
             dk.description = desc[:512]
-        _append_event("desk_renamed", "", {"old": old_name, "new": new_name})
+        _append_event("stand_renamed", "", {"old": old_name, "new": new_name})
         return _ok()
     except Exception as e:
         return _err(str(e))
 
 
 @update
-def rename_stand(args: text) -> text:
-    """Args (JSON): {stand, new_name}. `stand` is the current stand name."""
+def rename_canister(args: text) -> text:
+    """Args (JSON): {canister, new_name}. `canister` is the current canister name."""
     try:
         params = json.loads(args)
-        old_name = params["stand"].strip()
+        old_name = params["canister"].strip()
         new_name = params["new_name"].strip()
         list(Section.instances())
-        list(Desk.instances())
-        stands = list(Stand.instances())
-        st = Stand[old_name] or next((s for s in stands if s.name == old_name), None)
+        list(Stand.instances())
+        canisters = list(Canister.instances())
+        st = Canister[old_name] or next((s for s in canisters if s.name == old_name), None)
         if st is None:
-            return _err(f"unknown stand '{old_name}'")
-        _require_commander(st.desk, "stand.rename")
-        if new_name != old_name and Stand[new_name] is not None:
-            return _err(f"stand '{new_name}' already exists")
+            return _err(f"unknown canister '{old_name}'")
+        _require_commander(st.stand, "canister.rename")
+        if new_name != old_name and Canister[new_name] is not None:
+            return _err(f"canister '{new_name}' already exists")
         st.name = new_name
         _pool_mark_in_use(st.canister_id, new_name)
-        _append_event("stand_renamed", st.canister_id, {"old": old_name, "new": new_name})
+        _append_event("canister_renamed", st.canister_id, {"old": old_name, "new": new_name})
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -1038,20 +1038,20 @@ def rename_stand(args: text) -> text:
 
 @update
 def delete_section(args: text) -> text:
-    """Delete a section and all its desks (stands are returned to the pool).
+    """Delete a section and all its stands (canisters are returned to the pool).
     Args (JSON): {section}."""
     try:
         _require_admin()
         params = json.loads(args)
         sec_name = params["section"].strip()
         list(Section.instances())
-        list(Desk.instances())
         list(Stand.instances())
+        list(Canister.instances())
         sec = Section[sec_name]
         if sec is None:
             return _err(f"unknown section '{sec_name}'")
-        for dk in list(sec.desks or []):
-            for st in list(dk.stands or []):
+        for dk in list(sec.stands or []):
+            for st in list(dk.canisters or []):
                 _pool_free(st.canister_id)
                 st.delete()
             dk.delete()
@@ -1063,47 +1063,47 @@ def delete_section(args: text) -> text:
 
 
 @update
-def delete_desk(args: text) -> text:
-    """Delete a desk (stands are returned to the pool).
-    Args (JSON): {desk}."""
+def delete_stand(args: text) -> text:
+    """Delete a stand (canisters are returned to the pool).
+    Args (JSON): {stand}."""
     try:
         params = json.loads(args)
-        desk_name = params["desk"].strip()
+        stand_name = params["stand"].strip()
         list(Section.instances())
-        desks = list(Desk.instances())
-        list(Stand.instances())
-        dk = Desk[desk_name] or next((d for d in desks if d.name == desk_name), None)
+        stands = list(Stand.instances())
+        list(Canister.instances())
+        dk = Stand[stand_name] or next((d for d in stands if d.name == stand_name), None)
         if dk is None:
-            return _err(f"unknown desk '{desk_name}'")
-        _require_commander(dk, "desk.delete")
-        for st in list(dk.stands or []):
+            return _err(f"unknown stand '{stand_name}'")
+        _require_commander(dk, "stand.delete")
+        for st in list(dk.canisters or []):
             _pool_free(st.canister_id)
             st.delete()
         dk.delete()
-        _append_event("desk_deleted", "", {"name": desk_name})
+        _append_event("stand_deleted", "", {"name": stand_name})
         return _ok()
     except Exception as e:
         return _err(str(e))
 
 
 @update
-def delete_stand(args: text) -> text:
-    """Retire a stand and return its canister to the pool.
-    Args (JSON): {stand}."""
+def delete_canister(args: text) -> text:
+    """Retire a canister and return its canister to the pool.
+    Args (JSON): {canister}."""
     try:
         params = json.loads(args)
-        stand_name = params["stand"].strip()
+        canister_name = params["canister"].strip()
         list(Section.instances())
-        list(Desk.instances())
-        stands = list(Stand.instances())
-        st = Stand[stand_name] or next((s for s in stands if s.name == stand_name), None)
+        list(Stand.instances())
+        canisters = list(Canister.instances())
+        st = Canister[canister_name] or next((s for s in canisters if s.name == canister_name), None)
         if st is None:
-            return _err(f"unknown stand '{stand_name}'")
-        _require_commander(st.desk, "stand.delete")
+            return _err(f"unknown canister '{canister_name}'")
+        _require_commander(st.stand, "canister.delete")
         cid = st.canister_id
         _pool_free(cid)
         st.delete()
-        _append_event("stand_deleted", cid, {"name": stand_name})
+        _append_event("canister_deleted", cid, {"name": canister_name})
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -1111,14 +1111,14 @@ def delete_stand(args: text) -> text:
 
 @update
 def set_commander(args: text) -> text:
-    """Set the commander principal for a section or desk.
+    """Set the commander principal for a section or stand.
 
     Authorization:
-      - Casals controllers may set any section or desk commander.
-      - A section's own commander may appoint commanders for desks within
+      - Casals controllers may set any section or stand commander.
+      - A section's own commander may appoint commanders for stands within
         that section (delegation downward, not self-escalation).
 
-    Args (JSON): {"section": str} or {"desk": str} + {"commander_principal": str}.
+    Args (JSON): {"section": str} or {"stand": str} + {"commander_principal": str}.
     """
     try:
         params = json.loads(args)
@@ -1127,13 +1127,13 @@ def set_commander(args: text) -> text:
         # leave at the default (full access) unless already set.
         perms = params.get("permissions", None)
         caller = _caller()
-        if params.get("desk"):
-            list(Desk.instances())
+        if params.get("stand"):
+            list(Stand.instances())
             list(Section.instances())
-            dk = Desk[params["desk"].strip()]
+            dk = Stand[params["stand"].strip()]
             if dk is None:
-                return _err(f"unknown desk '{params['desk']}'")
-            # Allow: Casals controller, or the commander of the desk's parent
+                return _err(f"unknown stand '{params['stand']}'")
+            # Allow: Casals controller, or the commander of the stand's parent
             # section holding the `commander.assign` permission.
             if not _is_controller():
                 sec = dk.section
@@ -1141,17 +1141,17 @@ def set_commander(args: text) -> text:
                 if not sec_commander or caller != sec_commander:
                     raise Exception(
                         "unauthorized: must be a Casals controller or the section commander "
-                        f"to set a desk commander (section commander: {sec_commander or '—'})"
+                        f"to set a stand commander (section commander: {sec_commander or '—'})"
                     )
                 if not _has_permission(sec.permissions, "commander.assign"):
                     raise Exception("unauthorized: section commander lacks 'commander.assign'")
             dk.commander_principal = commander
             if perms is not None:
                 dk.permissions = _normalize_permissions(perms)
-            _append_event("commander_set", "", {"desk": dk.name, "commander": commander})
+            _append_event("commander_set", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
             # Section commanders are top-level governance — only Casals controllers
-            # may assign them (prevents privilege escalation via open-access desks).
+            # may assign them (prevents privilege escalation via open-access stands).
             _require_admin()
             list(Section.instances())
             sec = Section[params["section"].strip()]
@@ -1162,7 +1162,7 @@ def set_commander(args: text) -> text:
                 sec.permissions = _normalize_permissions(perms)
             _append_event("commander_set", "", {"section": sec.name, "commander": commander})
         else:
-            return _err("expected 'section' or 'desk'")
+            return _err("expected 'section' or 'stand'")
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -1170,26 +1170,26 @@ def set_commander(args: text) -> text:
 
 @update
 def set_permissions(args: text) -> text:
-    """Update the permission grant of an existing section/desk commander
+    """Update the permission grant of an existing section/stand commander
     without changing who the commander is.
 
     Authorization mirrors set_commander:
       - section permissions: Casals controllers only;
-      - desk permissions: controller, or the parent section's commander holding
+      - stand permissions: controller, or the parent section's commander holding
         `commander.assign`.
 
-    Args (JSON): {"section": str} or {"desk": str} + {"permissions": [str]|"*"}.
+    Args (JSON): {"section": str} or {"stand": str} + {"permissions": [str]|"*"}.
     """
     try:
         params = json.loads(args)
         perms = params.get("permissions", [])
         caller = _caller()
-        if params.get("desk"):
-            list(Desk.instances())
+        if params.get("stand"):
+            list(Stand.instances())
             list(Section.instances())
-            dk = Desk[params["desk"].strip()]
+            dk = Stand[params["stand"].strip()]
             if dk is None:
-                return _err(f"unknown desk '{params['desk']}'")
+                return _err(f"unknown stand '{params['stand']}'")
             if not _is_controller():
                 sec = dk.section
                 sec_commander = (sec.commander_principal or "").strip() if sec else ""
@@ -1198,7 +1198,7 @@ def set_permissions(args: text) -> text:
                 if not _has_permission(sec.permissions, "commander.assign"):
                     raise Exception("unauthorized: section commander lacks 'commander.assign'")
             dk.permissions = _normalize_permissions(perms)
-            _append_event("permissions_set", "", {"desk": dk.name, "permissions": _parse_permissions(dk.permissions)})
+            _append_event("permissions_set", "", {"stand": dk.name, "permissions": _parse_permissions(dk.permissions)})
         elif params.get("section"):
             _require_admin()
             list(Section.instances())
@@ -1208,7 +1208,7 @@ def set_permissions(args: text) -> text:
             sec.permissions = _normalize_permissions(perms)
             _append_event("permissions_set", "", {"section": sec.name, "permissions": _parse_permissions(sec.permissions)})
         else:
-            return _err("expected 'section' or 'desk'")
+            return _err("expected 'section' or 'stand'")
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -1222,28 +1222,28 @@ def list_permissions() -> text:
 
 
 @update
-def register_stand(args: text) -> text:
-    """Register an existing canister as a stand (Casals must be a controller of
+def register_canister(args: text) -> text:
+    """Register an existing canister as a canister (Casals must be a controller of
     it to manage it later). Args (JSON):
-    {desk, name, canister_id, kind}."""
+    {stand, name, canister_id, kind}."""
     try:
         _require_can_add()
         params = json.loads(args)
-        list(Desk.instances())
-        dk = Desk[params["desk"].strip()]
-        if dk is None:
-            return _err(f"unknown desk '{params['desk']}'")
-        name = params["name"].strip()
         list(Stand.instances())
-        if Stand[name] is not None:
-            return _err(f"stand '{name}' already exists")
-        st = Stand(name=name)
-        st.desk = dk
+        dk = Stand[params["stand"].strip()]
+        if dk is None:
+            return _err(f"unknown stand '{params['stand']}'")
+        name = params["name"].strip()
+        list(Canister.instances())
+        if Canister[name] is not None:
+            return _err(f"canister '{name}' already exists")
+        st = Canister(name=name)
+        st.stand = dk
         st.canister_id = (params.get("canister_id") or "").strip()
-        st.kind = params.get("kind") or StandKind.BACKEND
-        st.status = StandStatus.REGISTERED
+        st.kind = params.get("kind") or CanisterKind.BACKEND
+        st.status = CanisterStatus.REGISTERED
         st.created_by = _caller()
-        _append_event("stand_registered", st.canister_id, {"desk": dk.name, "name": name})
+        _append_event("canister_registered", st.canister_id, {"stand": dk.name, "name": name})
         return _ok(name=name)
     except Exception as e:
         return _err(str(e))
@@ -1286,7 +1286,7 @@ def add_authorized_wasm(args: text) -> text:
         w.registry_namespace = (params.get("registry_namespace") or "wasm").strip()
         w.registry_path = (params.get("registry_path") or "").strip()
         w.wasm_hash = (params.get("wasm_hash") or "").strip().lower()
-        w.kind = params.get("kind") or StandKind.BACKEND
+        w.kind = params.get("kind") or CanisterKind.BACKEND
         w.description = (params.get("description") or "")[:512]
         w.asset_namespace = (params.get("asset_namespace") or "").strip()
         w.asset_path = (params.get("asset_path") or "").strip()
@@ -1379,7 +1379,7 @@ def _resolve_authorized_wasm(wasm_key: str, section: "Section"):
 def _install_arg_for(w: "AuthorizedWasm") -> bytes:
     """The install/init argument for a WASM. The certified-assets canister needs
     `(null)` (its init is `opt AssetCanisterArgs`); everything else takes `()`."""
-    if w.kind == StandKind.FRONTEND or (w.asset_path or "").strip():
+    if w.kind == CanisterKind.FRONTEND or (w.asset_path or "").strip():
         return CANDID_NULL_ARG
     return b""
 
@@ -1470,41 +1470,41 @@ def _pull_registry_bytes(namespace: str, path: str):
     return buf
 
 
-def _backend_cid_for_desk(frontend_cid: str, desk=None) -> str:
-    """Return the backend stand's canister ID in the same desk as `frontend_cid`.
+def _backend_cid_for_stand(frontend_cid: str, stand=None) -> str:
+    """Return the backend canister's ID in the same stand as `frontend_cid`.
 
     Used to inject the paired backend's canister ID into a frontend asset page
     so the browser can call e.g. `greet()` on the matching backend canister.
-    If `desk` is not supplied the stand is looked up by canister_id. Returns ""
-    when no backend is found (standalone frontend or desk not loaded).
+    If `stand` is not supplied the canister is looked up by canister_id. Returns ""
+    when no backend is found (standalone frontend or stand not loaded).
     """
-    dk = desk
+    dk = stand
     if dk is None:
-        list(Stand.instances())
-        for st in Stand.instances():
-            if st.canister_id == frontend_cid and st.desk is not None:
-                dk = st.desk
+        list(Canister.instances())
+        for st in Canister.instances():
+            if st.canister_id == frontend_cid and st.stand is not None:
+                dk = st.stand
                 break
     if dk is None:
         return ""
-    list(Stand.instances())
-    for peer in Stand.instances():
-        if (peer.kind == StandKind.BACKEND
+    list(Canister.instances())
+    for peer in Canister.instances():
+        if (peer.kind == CanisterKind.BACKEND
                 and peer.canister_id
                 and peer.canister_id != frontend_cid
-                and peer.desk is not None
-                and peer.desk.name == dk.name):
+                and peer.stand is not None
+                and peer.stand.name == dk.name):
             return peer.canister_id
     return ""
 
 
-def _provision_assets(canister_id: str, w: "AuthorizedWasm", desk=None):
+def _provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
     """Generator: upload the WASM's associated asset into a freshly installed
-    certified-assets stand. Casals is the stand's controller, so it grants itself
+    certified-assets canister. Casals is the canister's controller, so it grants itself
     Commit permission, then `store`s the asset at /index.html.
 
     The placeholder `__BACKEND_CANISTER_ID__` in the asset is replaced with the
-    paired backend stand's canister ID (found from `desk` or by stand lookup),
+    paired backend canister's ID (found from `stand` or by canister lookup),
     so the page can call the backend canister directly from the browser.
     """
     asset_namespace = (w.asset_namespace or w.registry_namespace or "").strip()
@@ -1521,7 +1521,7 @@ def _provision_assets(canister_id: str, w: "AuthorizedWasm", desk=None):
     # Inject the paired backend canister ID so the page can call it directly.
     _PLACEHOLDER = b"__BACKEND_CANISTER_ID__"
     if _PLACEHOLDER in content:
-        backend_cid = _backend_cid_for_desk(canister_id, desk)
+        backend_cid = _backend_cid_for_stand(canister_id, stand)
         if backend_cid:
             content = content.replace(_PLACEHOLDER, backend_cid.encode())
     content_type = (w.asset_content_type or "text/html").strip()
@@ -1555,8 +1555,8 @@ def _add_controllers(canister_id: str, controllers: list):
     })
 
 
-def _target_subnet(dk: "Desk"):
-    """Resolve a desk's desired placement: (subnet, subnet_type). A desk's own
+def _target_subnet(dk: "Stand"):
+    """Resolve a stand's desired placement: (subnet, subnet_type). A stand's own
     setting wins; otherwise it inherits its section's. Empty strings => default
     (the conductor's subnet)."""
     if dk is not None:
@@ -1598,7 +1598,7 @@ def _create_canister_via_cmc(self_id: str, endow: int, subnet: str, subnet_type:
 
 
 def _allocate_canister(subnet: str = "", subnet_type: str = ""):
-    """Generator: hand back a canister to back a stand, preferring reuse.
+    """Generator: hand back a canister to back a canister, preferring reuse.
 
     Returns (canister_id, reused). Reuses a free pooled canister matching the
     desired subnet placement when one exists (the caller must then `reinstall`
@@ -1629,17 +1629,17 @@ def _allocate_canister(subnet: str = "", subnet_type: str = ""):
     return (new_id_str, False)
 
 
-def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
+def _provision_canister(dk: "Stand", name: str, kind: str, w: "AuthorizedWasm"):
     """Generator: allocate a canister (reuse or create), install `w`, verify the
-    module hash, wire CycleOps, and create+return the Stand. On failure the
+    module hash, wire CycleOps, and create+return the Canister. On failure the
     canister is returned to the pool and the exception propagates.
     """
     subnet, subnet_type = _target_subnet(dk)
-    _append_event("allocating_canister", "", {"desk": dk.name, "name": name,
+    _append_event("allocating_canister", "", {"stand": dk.name, "name": name,
                                               "wasm_key": w.key, "subnet": subnet or "default"})
     cid, reused = yield from _allocate_canister(subnet, subnet_type)
     mode = {"reinstall": None} if reused else {"install": None}
-    _append_event("installing_wasm", cid, {"desk": dk.name, "name": name,
+    _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
                                            "wasm_key": w.key, "reused": reused})
     try:
         yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
@@ -1663,7 +1663,7 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
     if s.cycleops_enabled and s.cycleops_principal:
         yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
 
-    # Make the stand's runtime logs publicly fetchable so the dashboard can show
+    # Make the canister's runtime logs publicly fetchable so the dashboard can show
     # them (logs are read from the browser; canisters can't fetch them). Best
     # effort — a failure here shouldn't abort an otherwise-successful install.
     try:
@@ -1671,44 +1671,44 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
     except Exception as lv:
         _log.error(f"could not set log_visibility for {cid}: {lv}")
 
-    # Upload the template's asset (e.g. index.html) so a frontend stand serves a
-    # real page. Best-effort: a failure here leaves the stand installed.
+    # Upload the template's asset (e.g. index.html) so a frontend canister serves a
+    # real page. Best-effort: a failure here leaves the canister installed.
     _append_event("verifying_hash", cid, {"wasm_key": w.key})
     yield from _maybe_provision_assets(cid, w, dk)
 
-    st = Stand(name=name)
-    st.desk = dk
+    st = Canister(name=name)
+    st.stand = dk
     st.canister_id = cid
     st.kind = kind
     st.wasm_key = w.key
     st.wasm_hash = actual
-    st.status = StandStatus.INSTALLED
+    st.status = CanisterStatus.INSTALLED
     st.created_by = _caller()
     # Record the canister's known subnet from the pool (set when we placed it on
     # a chosen subnet, or carried over from a reused canister).
     pooled = PooledCanister[cid]
     st.subnet = pooled.subnet if pooled is not None else ""
     _pool_mark_in_use(cid, name)
-    _append_event("stand_created", cid,
-                  {"desk": dk.name, "name": name, "wasm_key": w.key, "hash": actual, "reused": reused})
+    _append_event("canister_created", cid,
+                  {"stand": dk.name, "name": name, "wasm_key": w.key, "hash": actual, "reused": reused})
     return st
 
 
-def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm", desk=None):
+def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
     """Generator: provision a WASM's asset if it has one, swallowing errors so a
-    failed upload never aborts stand creation (it is logged + audited instead)."""
+    failed upload never aborts canister creation (it is logged + audited instead)."""
     if not (w.asset_path or "").strip():
         return
     try:
-        yield from _provision_assets(canister_id, w, desk)
+        yield from _provision_assets(canister_id, w, stand)
     except Exception as ae:
         _log.error(f"asset provisioning failed for {canister_id}: {ae}")
         _append_event("assets_failed", canister_id, {"wasm_key": w.key, "error": str(ae)[:300]})
 
 
-def _retire_stand(st: "Stand"):
-    """Generator: stop a stand's canister, return it to the pool (never deleted),
-    and remove the Stand record."""
+def _retire_canister(st: "Canister"):
+    """Generator: stop a canister, return it to the pool (never deleted),
+    and remove the Canister record."""
     cid = st.canister_id
     name = st.name
     if cid:
@@ -1717,41 +1717,41 @@ def _retire_stand(st: "Stand"):
         except Exception:
             pass
         _pool_free(cid)
-    _append_event("stand_retired", cid, {"name": name})
+    _append_event("canister_retired", cid, {"name": name})
     st.delete()
 
 
 # ── Lifecycle update endpoints ────────────────────────────────────────────────
 
 @update
-def create_stand(args: text) -> Async[text]:
+def create_canister(args: text) -> Async[text]:
     """Create a new canister, install an authorized WASM, verify, and record it
-    as a stand. Authorized by the desk/section commander (or a controller).
+    as a canister. Authorized by the stand/section commander (or a controller).
 
-    Args (JSON): {desk, name, kind, wasm_key}.
+    Args (JSON): {stand, name, kind, wasm_key}.
     """
     try:
         params = json.loads(args)
-        list(Desk.instances())
-        dk = Desk[params["desk"].strip()]
+        list(Stand.instances())
+        dk = Stand[params["stand"].strip()]
         if dk is None:
-            return _err(f"unknown desk '{params['desk']}'")
-        _require_commander(dk, "stand.create")
+            return _err(f"unknown stand '{params['stand']}'")
+        _require_commander(dk, "canister.create")
 
         name = params["name"].strip()
-        kind = params.get("kind") or StandKind.BACKEND
-        list(Stand.instances())
-        if Stand[name] is not None:
-            return _err(f"stand '{name}' already exists")
+        kind = params.get("kind") or CanisterKind.BACKEND
+        list(Canister.instances())
+        if Canister[name] is not None:
+            return _err(f"canister '{name}' already exists")
 
         w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
 
         # Allocate (reuse a pooled canister or create one), install + verify,
-        # wire CycleOps, and record the stand.
-        st = yield from _provision_stand(dk, name, kind, w)
+        # wire CycleOps, and record the canister.
+        st = yield from _provision_canister(dk, name, kind, w)
         return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash)
     except Exception as e:
-        _log.error(f"create_stand error: {e}")
+        _log.error(f"create_canister error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
 
 
@@ -1759,12 +1759,12 @@ def create_stand(args: text) -> Async[text]:
 def deploy_sheet(args: text) -> Async[text]:
     """Idempotently reconcile the whole orchestra to the live sheet.
 
-    For the sheet's Sections ⊃ Desks ⊃ Stands:
-      - create any missing section/desk;
-      - create any missing stand, reusing a pooled (free) canister before
+    For the sheet's Sections ⊃ Stands ⊃ Canisters:
+      - create any missing section/stand;
+      - create any missing canister, reusing a pooled (free) canister before
         paying to create a new one;
-      - reinstall a stand whose authorized WASM no longer matches the sheet;
-      - retire any stand not in the sheet — its canister is stopped and returned
+      - reinstall a canister whose authorized WASM no longer matches the sheet;
+      - retire any canister not in the sheet — its canister is stopped and returned
         to the pool (never deleted), so a later deploy can reuse it.
 
     Safe to re-run (idempotent). Controller or open-access caller. Args (JSON,
@@ -1780,32 +1780,32 @@ def deploy_sheet(args: text) -> Async[text]:
             return _err("no sheet loaded")
 
         result = {
-            "created_sections": [], "created_desks": [], "created_stands": [],
-            "reused_stands": [], "reinstalled_stands": [], "retired_stands": [],
-            "skipped_stands": [], "errors": [],
+            "created_sections": [], "created_stands": [], "created_canisters": [],
+            "reused_canisters": [], "reinstalled_canisters": [], "retired_canisters": [],
+            "skipped_canisters": [], "errors": [],
         }
 
         list(Section.instances())
-        list(Desk.instances())
         list(Stand.instances())
+        list(Canister.instances())
 
         # Pass 0: self-heal the pool. A canister marked `in_use` that backs no
-        # live stand is an orphan from a partial deploy (e.g. an out-of-cycles
+        # live canister is an orphan from a partial deploy (e.g. an out-of-cycles
         # trap that rolled back mid-provision, skipping the normal cleanup). Free
         # it so its cycles are reused instead of stranded.
-        live_cids = {st.canister_id for st in Stand.instances() if st.canister_id}
+        live_cids = {st.canister_id for st in Canister.instances() if st.canister_id}
         reclaimed = 0
         list(PooledCanister.instances())
         for p in PooledCanister.instances():
             if p.canister_id and p.status == "in_use" and p.canister_id not in live_cids:
                 _pool_free(p.canister_id)
-                _append_event("pool_reclaimed", p.canister_id, {"was_stand": p.stand_name})
+                _append_event("pool_reclaimed", p.canister_id, {"was_canister": p.canister_name})
                 reclaimed += 1
         if reclaimed:
             result["reclaimed_orphans"] = reclaimed
 
-        # Pass 1: ensure sections + desks exist; collect the desired stand set.
-        desired = {}  # stand name -> {desk, kind, wasm_key}
+        # Pass 1: ensure sections + stands exist; collect the desired canister set.
+        desired = {}  # canister name -> {stand, kind, wasm_key}
         for sec_spec in sheet.get("sections", []):
             sname = (sec_spec.get("name") or "").strip()
             if not sname:
@@ -1819,67 +1819,67 @@ def deploy_sheet(args: text) -> Async[text]:
                 _append_event("section_created", "", {"name": sname})
                 result["created_sections"].append(sname)
             # Keep the section's desired subnet placement in sync with the sheet.
-            # (Existing canisters aren't moved; this only affects new stands.)
+            # (Existing canisters aren't moved; this only affects new canisters.)
             sec.subnet = (sec_spec.get("subnet") or "").strip()
             sec.subnet_type = (sec_spec.get("subnet_type") or "").strip()
-            for desk_spec in sec_spec.get("desks", []):
-                dname = (desk_spec.get("name") or "").strip()
+            for stand_spec in sec_spec.get("stands", []):
+                dname = (stand_spec.get("name") or "").strip()
                 if not dname:
                     continue
-                dk = Desk[dname]
+                dk = Stand[dname]
                 if dk is None:
-                    dk = Desk(name=dname)
+                    dk = Stand(name=dname)
                     dk.section = sec
-                    dk.description = (desk_spec.get("description") or "")[:512]
-                    dk.commander_principal = (desk_spec.get("commander_principal") or "").strip()
+                    dk.description = (stand_spec.get("description") or "")[:512]
+                    dk.commander_principal = (stand_spec.get("commander_principal") or "").strip()
                     dk.created_by = _caller()
-                    _append_event("desk_created", "", {"section": sname, "name": dname})
-                    result["created_desks"].append(dname)
+                    _append_event("stand_created", "", {"section": sname, "name": dname})
+                    result["created_stands"].append(dname)
                 elif dk.section is None or dk.section.name != sname:
-                    # Repair a stale/orphaned section FK: the desk exists but lost
-                    # its link to the section, which drops it (and its stands) from
+                    # Repair a stale/orphaned section FK: the stand exists but lost
+                    # its link to the section, which drops it (and its canisters) from
                     # get_tree even though the entities are still there.
                     dk.section = sec
-                    _append_event("desk_relinked", "", {"section": sname, "name": dname})
-                # Sync the desk's desired subnet placement with the sheet (only
-                # affects newly created stands; existing canisters aren't moved).
-                dk.subnet = (desk_spec.get("subnet") or "").strip()
-                dk.subnet_type = (desk_spec.get("subnet_type") or "").strip()
-                for stand_spec in desk_spec.get("stands", []):
-                    stname = (stand_spec.get("name") or "").strip()
+                    _append_event("stand_relinked", "", {"section": sname, "name": dname})
+                # Sync the stand's desired subnet placement with the sheet (only
+                # affects newly created canisters; existing canisters aren't moved).
+                dk.subnet = (stand_spec.get("subnet") or "").strip()
+                dk.subnet_type = (stand_spec.get("subnet_type") or "").strip()
+                for canister_spec in stand_spec.get("canisters", []):
+                    stname = (canister_spec.get("name") or "").strip()
                     if not stname:
                         continue
                     desired[stname] = {
-                        "desk": dname,
-                        "kind": stand_spec.get("kind") or StandKind.BACKEND,
-                        "wasm_key": (stand_spec.get("wasm_key") or "").strip(),
+                        "stand": dname,
+                        "kind": canister_spec.get("kind") or CanisterKind.BACKEND,
+                        "wasm_key": (canister_spec.get("wasm_key") or "").strip(),
                     }
 
-        # Pass 2: retire stands no longer in the sheet (canisters -> pool).
-        for st in list(Stand.instances()):
+        # Pass 2: retire canisters no longer in the sheet (canisters -> pool).
+        for st in list(Canister.instances()):
             if st.name not in desired:
-                yield from _retire_stand(st)
-                result["retired_stands"].append(st.name)
+                yield from _retire_canister(st)
+                result["retired_canisters"].append(st.name)
 
-        # Pass 3: create / fix the desired stands.
+        # Pass 3: create / fix the desired canisters.
         for stname, spec in desired.items():
             try:
-                list(Desk.instances())
-                dk = Desk[spec["desk"]]
+                list(Stand.instances())
+                dk = Stand[spec["stand"]]
                 if dk is None:
-                    result["errors"].append(f"{stname}: desk '{spec['desk']}' missing")
+                    result["errors"].append(f"{stname}: stand '{spec['stand']}' missing")
                     continue
                 w = _resolve_authorized_wasm(spec["wasm_key"], dk.section)
-                list(Stand.instances())
-                existing = Stand[stname]
+                list(Canister.instances())
+                existing = Canister[stname]
                 if existing is not None:
                     if (existing.wasm_key == w.key and existing.wasm_hash == w.wasm_hash
-                            and existing.status == StandStatus.INSTALLED):
-                        # Always repair the desk FK in case it points to a stale
-                        # entity from a prior deploy (the desk was deleted/recreated).
-                        if existing.desk is None or existing.desk.name != dk.name:
-                            existing.desk = dk
-                        result["skipped_stands"].append(stname)
+                            and existing.status == CanisterStatus.INSTALLED):
+                        # Always repair the stand FK in case it points to a stale
+                        # entity from a prior deploy (the stand was deleted/recreated).
+                        if existing.stand is None or existing.stand.name != dk.name:
+                            existing.stand = dk
+                        result["skipped_canisters"].append(stname)
                         continue
                     # Present but wrong WASM/status: reinstall fresh code in place.
                     yield from _pull_and_install(existing.canister_id, w.registry_namespace,
@@ -1890,28 +1890,28 @@ def deploy_sheet(args: text) -> Async[text]:
                         result["errors"].append(f"{stname}: hash mismatch after reinstall")
                         continue
                     yield from _maybe_provision_assets(existing.canister_id, w, dk)
-                    existing.desk = dk
+                    existing.stand = dk
                     existing.kind = spec["kind"]
                     existing.wasm_key = w.key
                     existing.wasm_hash = actual
-                    existing.status = StandStatus.INSTALLED
-                    _append_event("stand_reinstalled", existing.canister_id,
+                    existing.status = CanisterStatus.INSTALLED
+                    _append_event("canister_reinstalled", existing.canister_id,
                                   {"name": stname, "wasm_key": w.key})
-                    result["reinstalled_stands"].append(stname)
+                    result["reinstalled_canisters"].append(stname)
                     continue
                 # Missing: provision from the pool (reuse) or create.
                 free_before = _pool_take_free() != ""
-                st = yield from _provision_stand(dk, stname, spec["kind"], w)
+                st = yield from _provision_canister(dk, stname, spec["kind"], w)
                 if free_before:
-                    result["reused_stands"].append(st.name)
+                    result["reused_canisters"].append(st.name)
                 else:
-                    result["created_stands"].append(st.name)
+                    result["created_canisters"].append(st.name)
             except Exception as inner:
                 result["errors"].append(f"{stname}: {inner}")
 
         _append_event("sheet_deployed", "", {k: result[k] for k in (
-            "created_sections", "created_desks", "created_stands",
-            "reused_stands", "reinstalled_stands", "retired_stands")})
+            "created_sections", "created_stands", "created_canisters",
+            "reused_canisters", "reinstalled_canisters", "retired_canisters")})
         return _ok(**result)
     except Exception as e:
         _log.error(f"deploy_sheet error: {e}")
@@ -2023,12 +2023,12 @@ def refresh_fx() -> Async[text]:
         return _err(str(e))
 
 
-def _spec_target_subnet(sec_spec: dict, desk_spec: dict):
+def _spec_target_subnet(sec_spec: dict, stand_spec: dict):
     """Resolve a (subnet, subnet_type) target from raw sheet specs, mirroring
-    _target_subnet's precedence: desk.subnet > desk.subnet_type > section.subnet
+    _target_subnet's precedence: stand.subnet > stand.subnet_type > section.subnet
     > section.subnet_type."""
-    dsub = (desk_spec.get("subnet") or "").strip()
-    dtype = (desk_spec.get("subnet_type") or "").strip()
+    dsub = (stand_spec.get("subnet") or "").strip()
+    dtype = (stand_spec.get("subnet_type") or "").strip()
     if dsub:
         return (dsub, "")
     if dtype:
@@ -2046,9 +2046,9 @@ def _spec_target_subnet(sec_spec: dict, desk_spec: dict):
 def estimate_deploy(args: text) -> text:
     """Estimate the cycles needed to deploy the (live or supplied) sheet.
 
-    Idempotent-aware: a stand already matching the sheet costs nothing; a stand
+    Idempotent-aware: a canister already matching the sheet costs nothing; a canister
     present but on the wrong WASM is reinstalled in place (no new canister);
-    only a *missing* stand needs a canister — and a free pooled canister
+    only a *missing* canister needs a canister — and a free pooled canister
     matching its target subnet is reused before paying to create a new one.
 
     The conductor pays the full endowment per *new* canister it creates, so the
@@ -2064,7 +2064,7 @@ def estimate_deploy(args: text) -> text:
         sheet = params.get("sheet") or _live_sheet or {"sections": []}
 
         list(Section.instances())
-        list(Stand.instances())
+        list(Canister.instances())
         list(AuthorizedWasm.instances())
         list(PooledCanister.instances())
 
@@ -2072,27 +2072,27 @@ def estimate_deploy(args: text) -> text:
         matching = 0
         reinstalls = 0
         unresolved = 0
-        missing = []  # (subnet, subnet_type) per missing stand
+        missing = []  # (subnet, subnet_type) per missing canister
         for sec_spec in sheet.get("sections", []) or []:
             sname = (sec_spec.get("name") or "").strip()
             sec = Section[sname] if sname else None
-            for desk_spec in sec_spec.get("desks", []) or []:
-                target = _spec_target_subnet(sec_spec, desk_spec)
-                for stand_spec in desk_spec.get("stands", []) or []:
-                    stname = (stand_spec.get("name") or "").strip()
+            for stand_spec in sec_spec.get("stands", []) or []:
+                target = _spec_target_subnet(sec_spec, stand_spec)
+                for canister_spec in stand_spec.get("canisters", []) or []:
+                    stname = (canister_spec.get("name") or "").strip()
                     if not stname:
                         continue
                     desired += 1
-                    wasm_key = (stand_spec.get("wasm_key") or "").strip()
+                    wasm_key = (canister_spec.get("wasm_key") or "").strip()
                     try:
                         w = _resolve_authorized_wasm(wasm_key, sec)
                     except Exception:
                         w = None
-                    existing = Stand[stname]
+                    existing = Canister[stname]
                     if existing is not None:
                         if (w is not None and existing.wasm_key == w.key
                                 and existing.wasm_hash == w.wasm_hash
-                                and existing.status == StandStatus.INSTALLED):
+                                and existing.status == CanisterStatus.INSTALLED):
                             matching += 1
                         else:
                             reinstalls += 1  # reused in place, no new canister
@@ -2107,8 +2107,8 @@ def estimate_deploy(args: text) -> text:
                 for p in PooledCanister.instances() if p.status == "free" and p.canister_id]
         free_total = len(free)
 
-        # Match missing stands to free canisters, satisfying the most-constrained
-        # targets first so we don't strand a subnet-specific stand. This yields
+        # Match missing canisters to free canisters, satisfying the most-constrained
+        # targets first so we don't strand a subnet-specific canister. This yields
         # the minimum number of new canisters (best case).
         remaining = list(free)
 
@@ -2141,11 +2141,11 @@ def estimate_deploy(args: text) -> text:
         shortfall = max(0, create_cost - available)
         return json.dumps({
             "ok": True,
-            "desired_stands": desired,
-            "matching_stands": matching,
-            "reinstall_stands": reinstalls,
-            "unresolved_stands": unresolved,
-            "missing_stands": len(missing),
+            "desired_canisters": desired,
+            "matching_canisters": matching,
+            "reinstall_canisters": reinstalls,
+            "unresolved_canisters": unresolved,
+            "missing_canisters": len(missing),
             "free_pool": free_total,
             "reused_from_pool": reused,
             "new_canisters": new_canisters,
@@ -2164,25 +2164,25 @@ def estimate_deploy(args: text) -> text:
 @update
 def provision_assets(args: text) -> Async[text]:
     """(Re)upload the authorized WASM's asset (e.g. index.html) into frontend
-    stands, pulling the current bytes from the file-registry.
+    canisters, pulling the current bytes from the file-registry.
 
-    Lets you refresh the page a certified-assets stand serves *without*
+    Lets you refresh the page a certified-assets canister serves *without*
     reinstalling its WASM. Deploying a new sheet only provisions assets on
-    create/reinstall, so this is how you push an updated asset to stands that
+    create/reinstall, so this is how you push an updated asset to canisters that
     are already live.
 
     Args (JSON, optional):
-      {"stand": "<name>"}  → just that stand
-      {}                   → every frontend stand that has an asset
+      {"canister": "<name>"}  → just that canister
+      {}                   → every frontend canister that has an asset
     """
     try:
         _require_can_add()
         params = json.loads(args) if args else {}
-        target = (params.get("stand") or "").strip()
-        list(Stand.instances())
+        target = (params.get("canister") or "").strip()
+        list(Canister.instances())
         list(AuthorizedWasm.instances())
         done, errors = [], []
-        for st in Stand.instances():
+        for st in Canister.instances():
             if target and st.name != target:
                 continue
             if not st.canister_id:
@@ -2193,12 +2193,12 @@ def provision_assets(args: text) -> Async[text]:
                     errors.append(f"{st.name}: no asset to provision")
                 continue
             try:
-                yield from _provision_assets(st.canister_id, w, st.desk)
+                yield from _provision_assets(st.canister_id, w, st.stand)
                 done.append(st.name)
             except Exception as inner:
                 errors.append(f"{st.name}: {inner}")
         if target and not done and not errors:
-            return _err(f"unknown stand '{target}'")
+            return _err(f"unknown canister '{target}'")
         return _ok(provisioned=done, errors=errors)
     except Exception as e:
         _log.error(f"provision_assets error: {e}")
@@ -2207,15 +2207,15 @@ def provision_assets(args: text) -> Async[text]:
 
 @update
 def upgrade_to(args: text) -> Async[text]:
-    """Upgrade (or reinstall) a desk (all its stands) or a single stand,
+    """Upgrade (or reinstall) a stand (all its canisters) or a single canister,
     all-or-nothing.
 
-    For each target stand: snapshot -> install -> verify module_hash.
-    If any stand fails, every touched stand is reverted from its snapshot.
+    For each target canister: snapshot -> install -> verify module_hash.
+    If any canister fails, every touched canister is reverted from its snapshot.
 
-    Args (JSON): {"desk": str} or {"stand": str}, plus {"wasm_key": str}.
+    Args (JSON): {"stand": str} or {"canister": str}, plus {"wasm_key": str}.
     Optional: {"reinstall": true} — uses `reinstall` mode instead of `upgrade`,
-    which WIPES all stand state.  Snapshot/rollback still protects against
+    which WIPES all canister state.  Snapshot/rollback still protects against
     failed installs.
     """
     try:
@@ -2224,32 +2224,32 @@ def upgrade_to(args: text) -> Async[text]:
         do_reinstall = bool(params.get("reinstall", False))
         install_mode = {"reinstall": None} if do_reinstall else {"upgrade": None}
 
-        if params.get("stand"):
-            list(Stand.instances())
-            st = Stand[params["stand"].strip()]
+        if params.get("canister"):
+            list(Canister.instances())
+            st = Canister[params["canister"].strip()]
             if st is None:
-                return _err(f"unknown stand '{params['stand']}'")
+                return _err(f"unknown canister '{params['canister']}'")
             targets = [st]
-            dk = st.desk
-        elif params.get("desk"):
-            list(Desk.instances())
-            dk = Desk[params["desk"].strip()]
+            dk = st.stand
+        elif params.get("stand"):
+            list(Stand.instances())
+            dk = Stand[params["stand"].strip()]
             if dk is None:
-                return _err(f"unknown desk '{params['desk']}'")
-            targets = list(dk.stands or [])
+                return _err(f"unknown stand '{params['stand']}'")
+            targets = list(dk.canisters or [])
         else:
-            return _err("expected 'desk' or 'stand'")
+            return _err("expected 'stand' or 'canister'")
 
-        _require_commander(dk, "stand.deploy")
+        _require_commander(dk, "canister.deploy")
         if not targets:
-            return _err("no stands to upgrade")
+            return _err("no canisters to upgrade")
 
         w = _resolve_authorized_wasm(wasm_key, dk.section if dk else None)
 
         # Phase 1: snapshot every target.
-        snapped = []  # (stand, snapshot_id)
+        snapped = []  # (canister, snapshot_id)
         for st in targets:
-            st.status = StandStatus.UPGRADING
+            st.status = CanisterStatus.UPGRADING
             snap_res = yield management_canister.take_canister_snapshot({"canister_id": Principal.from_str(st.canister_id)})
             snap = unwrap_call_result(snap_res)
             snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
@@ -2281,10 +2281,10 @@ def upgrade_to(args: text) -> Async[text]:
                         "canister_id": Principal.from_str(st.canister_id),
                         "snapshot_id": snap_id,
                     })
-                    st.status = StandStatus.INSTALLED
+                    st.status = CanisterStatus.INSTALLED
                     _append_event("revert", st.canister_id, {"reason": failure})
                 except Exception as rb:
-                    st.status = StandStatus.FAILED
+                    st.status = CanisterStatus.FAILED
                     _append_event("revert_failed", st.canister_id, {"error": str(rb)})
             fail_ev = "reinstall_failed" if do_reinstall else "upgrade_failed"
             _append_event(fail_ev, dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
@@ -2299,14 +2299,14 @@ def upgrade_to(args: text) -> Async[text]:
                 })
             except Exception:
                 pass
-            st.status = StandStatus.INSTALLED
+            st.status = CanisterStatus.INSTALLED
             st.snapshot_id = ""
-            # Per-stand event so the stand's own timeline shows the upgrade.
+            # Per-canister event so the canister's own timeline shows the upgrade.
             ev = "reinstalled" if do_reinstall else "upgraded"
             _append_event(ev, st.canister_id,
-                          {"wasm_key": wasm_key, "desk": dk.name if dk else "", "name": st.name})
+                          {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name})
         finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
-        _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "stands": [s.canister_id for s in targets]})
+        _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "canisters": [s.canister_id for s in targets]})
         return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
     except Exception as e:
         _log.error(f"upgrade_to error: {e}")
@@ -2315,14 +2315,14 @@ def upgrade_to(args: text) -> Async[text]:
 
 @update
 def create_snapshot(args: text) -> Async[text]:
-    """Args (JSON): {stand}."""
+    """Args (JSON): {canister}."""
     try:
         params = json.loads(args)
-        list(Stand.instances())
-        st = Stand[params["stand"].strip()]
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
         if st is None:
-            return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk, "stand.snapshot")
+            return _err(f"unknown canister '{params['canister']}'")
+        _require_commander(st.stand, "canister.snapshot")
         snap_res = yield management_canister.take_canister_snapshot({"canister_id": Principal.from_str(st.canister_id)})
         snap = unwrap_call_result(snap_res)
         snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
@@ -2335,14 +2335,14 @@ def create_snapshot(args: text) -> Async[text]:
 
 @update
 def revert_snapshot(args: text) -> Async[text]:
-    """Args (JSON): {stand, snapshot_id?}. Uses the stand's last snapshot if omitted."""
+    """Args (JSON): {canister, snapshot_id?}. Uses the canister's last snapshot if omitted."""
     try:
         params = json.loads(args)
-        list(Stand.instances())
-        st = Stand[params["stand"].strip()]
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
         if st is None:
-            return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk, "stand.revert")
+            return _err(f"unknown canister '{params['canister']}'")
+        _require_commander(st.stand, "canister.revert")
         snap_hex = (params.get("snapshot_id") or st.snapshot_id or "").strip()
         if not snap_hex:
             return _err("no snapshot to revert to")
@@ -2350,7 +2350,7 @@ def revert_snapshot(args: text) -> Async[text]:
             "canister_id": Principal.from_str(st.canister_id),
             "snapshot_id": bytes.fromhex(snap_hex),
         })
-        st.status = StandStatus.INSTALLED
+        st.status = CanisterStatus.INSTALLED
         _append_event("revert", st.canister_id, {"snapshot_id": snap_hex})
         return _ok(snapshot_id=snap_hex)
     except Exception as e:
@@ -2359,16 +2359,16 @@ def revert_snapshot(args: text) -> Async[text]:
 
 @update
 def stop_canister(args: text) -> Async[text]:
-    """Args (JSON): {stand}."""
+    """Args (JSON): {canister}."""
     try:
         params = json.loads(args)
-        list(Stand.instances())
-        st = Stand[params["stand"].strip()]
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
         if st is None:
-            return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk, "stand.lifecycle")
+            return _err(f"unknown canister '{params['canister']}'")
+        _require_commander(st.stand, "canister.lifecycle")
         yield management_canister.stop_canister({"canister_id": Principal.from_str(st.canister_id)})
-        st.status = StandStatus.STOPPED
+        st.status = CanisterStatus.STOPPED
         _append_event("stop_canister", st.canister_id, {})
         return _ok()
     except Exception as e:
@@ -2377,16 +2377,16 @@ def stop_canister(args: text) -> Async[text]:
 
 @update
 def start_canister(args: text) -> Async[text]:
-    """Args (JSON): {stand}."""
+    """Args (JSON): {canister}."""
     try:
         params = json.loads(args)
-        list(Stand.instances())
-        st = Stand[params["stand"].strip()]
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
         if st is None:
-            return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk, "stand.lifecycle")
+            return _err(f"unknown canister '{params['canister']}'")
+        _require_commander(st.stand, "canister.lifecycle")
         yield management_canister.start_canister({"canister_id": Principal.from_str(st.canister_id)})
-        st.status = StandStatus.INSTALLED
+        st.status = CanisterStatus.INSTALLED
         _append_event("start_canister", st.canister_id, {})
         return _ok()
     except Exception as e:
@@ -2408,25 +2408,25 @@ def _set_log_visibility(canister_id: str, public: bool):
 
 @update
 def set_log_visibility(args: text) -> Async[text]:
-    """Set a stand's canister log visibility (so the dashboard can show its logs).
+    """Set a canister's log visibility (so the dashboard can show its logs).
 
     `fetch_canister_logs` can only be called from the browser, not by Casals, so
-    making a stand's logs `public` is what lets the dashboard display them without
-    every viewer being a controller. New stands are made public on creation; this
+    making a canister's logs `public` is what lets the dashboard display them without
+    every viewer being a controller. New canisters are made public on creation; this
     backfills existing ones (and can revert to `controllers`).
 
     Args (JSON, optional):
-      {"stand": "<name>"}      → just that stand   (default: all stands)
+      {"canister": "<name>"}      → just that canister   (default: all canisters)
       {"public": true|false}   → public vs controllers-only  (default: true)
     """
     try:
         _require_admin()
         params = json.loads(args) if args else {}
-        target = (params.get("stand") or "").strip()
+        target = (params.get("canister") or "").strip()
         pub = bool(params.get("public", True))
-        list(Stand.instances())
+        list(Canister.instances())
         done, errors = [], []
-        for st in Stand.instances():
+        for st in Canister.instances():
             if target and st.name != target:
                 continue
             if not st.canister_id:
@@ -2437,8 +2437,8 @@ def set_log_visibility(args: text) -> Async[text]:
             except Exception as inner:
                 errors.append(f"{st.name}: {inner}")
         if target and not done and not errors:
-            return _err(f"unknown stand '{target}'")
-        _append_event("log_visibility_set", "", {"public": pub, "stands": done})
+            return _err(f"unknown canister '{target}'")
+        _append_event("log_visibility_set", "", {"public": pub, "canisters": done})
         return _ok(updated=done, errors=errors)
     except Exception as e:
         _log.error(f"set_log_visibility error: {e}")
@@ -2448,25 +2448,25 @@ def set_log_visibility(args: text) -> Async[text]:
 # ── Basilisk introspection relay (browse / shell) ──────────────────────────
 
 @update
-def stand_browse(args: text) -> Async[text]:
-    """Read-only introspection of a Basilisk stand's stable data.
+def canister_browse(args: text) -> Async[text]:
+    """Read-only introspection of a Basilisk canister's stable data.
 
-    Relays to the stand's public `__browse__` query (only present when the stand
+    Relays to the canister's public `__browse__` query (only present when the canister
     was built with `__basilisk_features__` including "browse"). Read-only, so no
-    privileged caller is required — the same data is already public on the stand.
+    privileged caller is required — the same data is already public on the canister.
 
-    Args (JSON): {"stand": "<name>", "query": {<browse query>}}
+    Args (JSON): {"canister": "<name>", "query": {<browse query>}}
       query defaults to {"action": "schema"}. Other actions: len / keys / get /
       items, each with a target ("map"/"set"/"vec") plus optional key/limit/offset.
     """
     try:
         params = json.loads(args) if args else {}
-        list(Stand.instances())
-        st = Stand[(params.get("stand") or "").strip()]
+        list(Canister.instances())
+        st = Canister[(params.get("canister") or "").strip()]
         if st is None or not st.canister_id:
-            return _err(f"unknown stand '{params.get('stand')}'")
+            return _err(f"unknown canister '{params.get('canister')}'")
         q = params.get("query") or {"action": "schema"}
-        reply = yield from _stand_call(st.canister_id, "__browse__", json.dumps(q))
+        reply = yield from _canister_call(st.canister_id, "__browse__", json.dumps(q))
         try:
             return _ok(result=json.loads(reply))
         except Exception:
@@ -2476,26 +2476,26 @@ def stand_browse(args: text) -> Async[text]:
 
 
 @update
-def stand_exec(args: text) -> Async[text]:
-    """Run Python inside a Basilisk stand via its controller-only `__shell__`.
+def canister_exec(args: text) -> Async[text]:
+    """Run Python inside a Basilisk canister via its controller-only `__shell__`.
 
-    Casals is the stand's controller, so the relay clears the canister's guard.
+    Casals is the canister's controller, so the relay clears the canister's guard.
     Because this is arbitrary code execution it is gated like other lifecycle
     actions (`_require_commander`): a configured commander, or — under open
-    access — any authenticated caller for commander-less demo desks.
+    access — any authenticated caller for commander-less demo stands.
 
-    Args (JSON): {"stand": "<name>", "code": "<python>"}
+    Args (JSON): {"canister": "<name>", "code": "<python>"}
     """
     try:
         params = json.loads(args)
-        list(Stand.instances())
-        st = Stand[(params.get("stand") or "").strip()]
+        list(Canister.instances())
+        st = Canister[(params.get("canister") or "").strip()]
         if st is None or not st.canister_id:
-            return _err(f"unknown stand '{params.get('stand')}'")
-        _require_commander(st.desk, "stand.shell")
+            return _err(f"unknown canister '{params.get('canister')}'")
+        _require_commander(st.stand, "canister.shell")
         code = params.get("code") or ""
-        output = yield from _stand_call(st.canister_id, "__shell__", code)
-        _append_event("stand_exec", st.canister_id, {"name": st.name, "bytes": len(code)})
+        output = yield from _canister_call(st.canister_id, "__shell__", code)
+        _append_event("canister_exec", st.canister_id, {"name": st.name, "bytes": len(code)})
         return _ok(output=output)
     except Exception as e:
         return _err(f"{e}")
@@ -2503,7 +2503,7 @@ def stand_exec(args: text) -> Async[text]:
 
 # ── Native cycles management (the conductor as the orchestra's paymaster) ─────
 #
-#  Casals is the sole controller of every stand, so it can both observe their
+#  Casals is the sole controller of every canister, so it can both observe their
 #  balance (canister_status.cycles) and fund them (deposit_cycles) directly —
 #  no external monitor required. The decision primitives (resolve_cycle_policy,
 #  decide_topup, cycles_status) are pure and unit-tested in util.py; everything
@@ -2522,49 +2522,49 @@ def _status_freezing(status) -> int:
     return int(fz or 0)
 
 
-def _policy_for(st: Stand, s: "Settings" = None):
-    """Effective (min_cycles, topup_cycles) for a stand, inheriting up the tree."""
+def _policy_for(st: Canister, s: "Settings" = None):
+    """Effective (min_cycles, topup_cycles) for a canister, inheriting up the tree."""
     s = s or _settings()
-    dk = st.desk
+    dk = st.stand
     sec = dk.section if dk else None
     return resolve_cycle_policy(
-        stand=(int(st.min_cycles or 0), int(st.topup_cycles or 0)),
-        desk=(int(dk.min_cycles or 0), int(dk.topup_cycles or 0)) if dk else (0, 0),
+        canister=(int(st.min_cycles or 0), int(st.topup_cycles or 0)),
+        stand=(int(dk.min_cycles or 0), int(dk.topup_cycles or 0)) if dk else (0, 0),
         section=(int(sec.min_cycles or 0), int(sec.topup_cycles or 0)) if sec else (0, 0),
         defaults=(int(s.default_min_cycles or 0), int(s.default_topup_cycles or 0)),
     )
 
 
-def _resolve_stand_or_desk(params):
-    """Return (targets, desk) for a {"stand": ...} or {"desk": ...} request."""
+def _resolve_canister_or_stand(params):
+    """Return (targets, stand) for a {"canister": ...} or {"stand": ...} request."""
+    if params.get("canister"):
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
+        if st is None:
+            raise Exception(f"unknown canister '{params['canister']}'")
+        return [st], st.stand
     if params.get("stand"):
         list(Stand.instances())
-        st = Stand[params["stand"].strip()]
-        if st is None:
-            raise Exception(f"unknown stand '{params['stand']}'")
-        return [st], st.desk
-    if params.get("desk"):
-        list(Desk.instances())
-        dk = Desk[params["desk"].strip()]
+        dk = Stand[params["stand"].strip()]
         if dk is None:
-            raise Exception(f"unknown desk '{params['desk']}'")
-        return list(dk.stands or []), dk
-    raise Exception("expected 'stand' or 'desk'")
+            raise Exception(f"unknown stand '{params['stand']}'")
+        return list(dk.canisters or []), dk
+    raise Exception("expected 'canister' or 'stand'")
 
 
 def _now_secs() -> int:
     return int(ic.time() // 1_000_000_000)
 
 
-def _record_cycle_sample(st: Stand, ts: int, cycles: int) -> None:
-    """Append one balance reading for a stand (denormalized with its position in
+def _record_cycle_sample(st: Canister, ts: int, cycles: int) -> None:
+    """Append one balance reading for a canister (denormalized with its position in
     the tree so history survives restructuring)."""
-    dk = st.desk
+    dk = st.stand
     sec = dk.section if dk else None
     smp = CycleSample(
         canister_id=st.canister_id,
-        stand_name=st.name,
-        desk_name=dk.name if dk else "",
+        canister_name=st.name,
+        stand_name=dk.name if dk else "",
         section_name=sec.name if sec else "",
         kind=st.kind,
     )
@@ -2593,10 +2593,10 @@ def _prune_cycle_samples(now: int) -> None:
 
 
 def _sample_all_gen(ts: int):
-    """Generator: read every stand's balance and record a sample (no top-ups)."""
-    list(Stand.instances())
+    """Generator: read every canister's balance and record a sample (no top-ups)."""
+    list(Canister.instances())
     n = 0
-    for st in Stand.instances():
+    for st in Canister.instances():
         if not st.canister_id:
             continue
         try:
@@ -2606,7 +2606,7 @@ def _sample_all_gen(ts: int):
             status = unwrap_call_result(status_res)
             _record_cycle_sample(st, ts, _status_cycles(status))
             n += 1
-        except Exception as e:  # pragma: no cover - per-stand, keep going
+        except Exception as e:  # pragma: no cover - per-canister, keep going
             _log.error(f"sample {st.name} failed: {e}")
     if n:
         _prune_cycle_samples(ts)
@@ -2652,12 +2652,12 @@ def _arm_cycle_sampler() -> None:
 
 
 def _reconcile_all_gen():
-    """Generator: top up every stand below its policy threshold.
+    """Generator: top up every canister below its policy threshold.
 
     Returns a summary dict {treasury, topped_up, checked, results}. Used both by
     the `reconcile` endpoint and by the autopilot timer.
     """
-    list(Stand.instances())
+    list(Canister.instances())
     s = _settings()
     reserve = int(s.treasury_reserve or 0)
     treasury = int(ic.canister_balance128())
@@ -2665,7 +2665,7 @@ def _reconcile_all_gen():
     results = []
     topped = 0
     sampled = False
-    for st in Stand.instances():
+    for st in Canister.instances():
         if not st.canister_id:
             continue
         try:
@@ -2676,7 +2676,7 @@ def _reconcile_all_gen():
             bal = _status_cycles(status)
             frz = _status_freezing(status)
         except Exception as e:
-            results.append({"stand": st.name, "canister_id": st.canister_id, "error": str(e)})
+            results.append({"canister": st.name, "canister_id": st.canister_id, "error": str(e)})
             continue
         min_c, topup_c = _policy_for(st, s)
         amount = decide_topup(bal, frz, min_c, topup_c, treasury, reserve)
@@ -2690,11 +2690,11 @@ def _reconcile_all_gen():
                 st.cycles_deposited = int(st.cycles_deposited or 0) + amount
                 _append_event("cycles_topup", st.canister_id,
                               {"amount": amount, "balance_before": bal})
-                results.append({"stand": st.name, "topped_up": amount, "balance_before": bal})
+                results.append({"canister": st.name, "topped_up": amount, "balance_before": bal})
                 # Sample the post-top-up balance so history reflects the deposit.
                 bal = bal + amount
             except Exception as e:
-                results.append({"stand": st.name, "canister_id": st.canister_id, "error": str(e)})
+                results.append({"canister": st.name, "canister_id": st.canister_id, "error": str(e)})
         else:
             label = cycles_status(bal, frz, min_c)
             # A wanted-but-unfunded top-up means the treasury is exhausted: flag it.
@@ -2702,7 +2702,7 @@ def _reconcile_all_gen():
             if wanted:
                 _append_event("cycles_low", st.canister_id,
                               {"balance": bal, "status": label, "reason": "treasury exhausted"})
-            results.append({"stand": st.name, "balance": bal, "status": label})
+            results.append({"canister": st.name, "balance": bal, "status": label})
         _record_cycle_sample(st, batch_ts, bal)
         sampled = True
     if sampled:
@@ -2751,17 +2751,17 @@ def _arm_autopilot() -> None:
 def get_cycles() -> Async[text]:
     """Live solvency snapshot of the whole orchestra.
 
-    Reads each stand's balance from the management canister (an update, hence
+    Reads each canister's balance from the management canister (an update, hence
     not a query) and reports the conductor's own treasury. Returns:
-    {treasury:{...}, totals:{...}, stands:[{section,desk,name,...,status}]}.
+    {treasury:{...}, totals:{...}, canisters:[{section,stand,name,...,status}]}.
     """
     try:
         list(Section.instances())
-        list(Desk.instances())
         list(Stand.instances())
+        list(Canister.instances())
         s = _settings()
         treasury = int(ic.canister_balance128())
-        stands_out = []
+        canisters_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
         bal_by_cid = {}  # canister_id -> balance, reused for the pool pass below
         # Opportunistically record a history sample from the balances we read
@@ -2770,15 +2770,15 @@ def get_cycles() -> Async[text]:
         global _last_sample_ts
         do_sample = bool(s.cycles_sampling) and (batch_ts - int(_last_sample_ts or 0) >= SAMPLE_MIN_GAP_SECS)
         sampled = False
-        for st in Stand.instances():
+        for st in Canister.instances():
             if not st.canister_id:
                 continue
-            dk = st.desk
+            dk = st.stand
             sec = dk.section if dk else None
             min_c, topup_c = _policy_for(st, s)
             row = {
                 "section": sec.name if sec else "",
-                "desk": dk.name if dk else "",
+                "stand": dk.name if dk else "",
                 "name": st.name,
                 "canister_id": st.canister_id,
                 "kind": st.kind,
@@ -2803,17 +2803,17 @@ def get_cycles() -> Async[text]:
             except Exception as e:
                 row.update({"status": "error", "error": str(e)})
                 counts["error"] += 1
-            stands_out.append(row)
+            canisters_out.append(row)
         if sampled:
             _prune_cycle_samples(batch_ts)
             _last_sample_ts = batch_ts
 
         # Pool view: every canister Casals ever created, its status, and current
         # balance. Reuses balances already read above; only fetches for pooled
-        # canisters not backing a live stand (e.g. orphans / freed canisters).
+        # canisters not backing a live canister (e.g. orphans / freed canisters).
         deposited_by_cid = {
             st.canister_id: int(st.cycles_deposited or 0)
-            for st in Stand.instances() if st.canister_id
+            for st in Canister.instances() if st.canister_id
         }
         pool_out = []
         pool_free = 0
@@ -2824,7 +2824,7 @@ def get_cycles() -> Async[text]:
             prow = {
                 "canister_id": p.canister_id,
                 "status": p.status,
-                "stand_name": p.stand_name,
+                "canister_name": p.canister_name,
                 "deposited": deposited_by_cid.get(p.canister_id, 0),
             }
             if p.status == "free":
@@ -2851,8 +2851,8 @@ def get_cycles() -> Async[text]:
                 "autopilot": bool(s.cycles_autopilot),
                 "interval_secs": int(s.cycles_check_interval_secs or 0),
             },
-            "totals": {"stands": len(stands_out), **counts},
-            "stands": stands_out,
+            "totals": {"canisters": len(canisters_out), **counts},
+            "canisters": canisters_out,
             "pool": {
                 "total": len(pool_out),
                 "free": pool_free,
@@ -2867,14 +2867,14 @@ def get_cycles() -> Async[text]:
 
 @query
 def get_cycle_history(args: text) -> text:
-    """Per-stand cycle-balance samples over time, for charting.
+    """Per-canister cycle-balance samples over time, for charting.
 
     Args (JSON, optional): {"since": int (unix secs), "window_secs": int}. Either
     bounds how far back to return; omit both for the full retained history.
 
-    Returns {"now": int, "samples": [{ts, canister_id, stand, desk, section,
+    Returns {"now": int, "samples": [{ts, canister_id, canister, stand, section,
     kind, cycles, deposited}]}. The frontend aggregates these into the
-    over-time chart (sum by total / section / desk / canister) and the treemap
+    over-time chart (sum by total / section / stand / canister) and the treemap
     (balance = latest cycles; burn over a window = Δdeposited − Δcycles).
     """
     try:
@@ -2895,8 +2895,8 @@ def get_cycle_history(args: text) -> text:
         rows.append({
             "ts": int(s.ts or 0),
             "canister_id": s.canister_id,
+            "canister": s.canister_name,
             "stand": s.stand_name,
-            "desk": s.desk_name,
             "section": s.section_name,
             "kind": s.kind,
             "cycles": int(s.cycles or 0),
@@ -2908,16 +2908,16 @@ def get_cycle_history(args: text) -> text:
 
 @update
 def top_up(args: text) -> Async[text]:
-    """Manually deposit cycles into a stand or every stand in a desk.
+    """Manually deposit cycles into a canister or every canister in a stand.
 
-    Authorized by the desk/section commander (or a controller). Args (JSON):
-    {"stand": str}|{"desk": str}, optional {"amount": int}. Without `amount`,
+    Authorized by the stand/section commander (or a controller). Args (JSON):
+    {"canister": str}|{"stand": str}, optional {"amount": int}. Without `amount`,
     the resolved policy top-up amount is used. The treasury reserve is enforced.
     """
     try:
         params = json.loads(args)
-        targets, dk = _resolve_stand_or_desk(params)
-        _require_commander(dk, "stand.topup")
+        targets, dk = _resolve_canister_or_stand(params)
+        _require_commander(dk, "canister.topup")
         s = _settings()
         reserve = int(s.treasury_reserve or 0)
         treasury = int(ic.canister_balance128())
@@ -2932,7 +2932,7 @@ def top_up(args: text) -> Async[text]:
             else:
                 _, amount = _policy_for(st, s)
             if amount <= 0:
-                out.append({"stand": st.name, "topped_up": 0, "reason": "no amount / policy top-up is zero"})
+                out.append({"canister": st.name, "topped_up": 0, "reason": "no amount / policy top-up is zero"})
                 continue
             if amount > (treasury - reserve):
                 return _err(
@@ -2945,7 +2945,7 @@ def top_up(args: text) -> Async[text]:
             treasury -= amount
             st.cycles_deposited = int(st.cycles_deposited or 0) + amount
             _append_event("cycles_topup", st.canister_id, {"amount": amount, "manual": True})
-            out.append({"stand": st.name, "topped_up": amount})
+            out.append({"canister": st.name, "topped_up": amount})
         return _ok(topped_up=out, treasury=treasury)
     except Exception as e:
         _log.error(f"top_up error: {e}")
@@ -2954,7 +2954,7 @@ def top_up(args: text) -> Async[text]:
 
 @update
 def reconcile() -> Async[text]:
-    """Sweep the whole orchestra once: top up every stand below its policy
+    """Sweep the whole orchestra once: top up every canister below its policy
     threshold, respecting the treasury reserve. Controller only (this is the
     same routine the autopilot runs; expose it for manual / external triggers).
     Idempotent — safe to call repeatedly."""
@@ -2970,25 +2970,25 @@ def reconcile() -> Async[text]:
 @update
 def set_cycle_policy(args: text) -> text:
     """Controller only. Set the cycle policy on a target. Args (JSON):
-    one of {"section": str}|{"desk": str}|{"stand": str}, plus any of
+    one of {"section": str}|{"stand": str}|{"canister": str}, plus any of
     {"min_cycles": int, "topup_cycles": int} (0 => inherit)."""
     try:
         _require_admin()
         params = json.loads(args)
-        if params.get("stand"):
+        if params.get("canister"):
+            list(Canister.instances())
+            target = Canister[params["canister"].strip()]
+            label = {"canister": params["canister"].strip()}
+        elif params.get("stand"):
             list(Stand.instances())
             target = Stand[params["stand"].strip()]
             label = {"stand": params["stand"].strip()}
-        elif params.get("desk"):
-            list(Desk.instances())
-            target = Desk[params["desk"].strip()]
-            label = {"desk": params["desk"].strip()}
         elif params.get("section"):
             list(Section.instances())
             target = Section[params["section"].strip()]
             label = {"section": params["section"].strip()}
         else:
-            return _err("expected 'section', 'desk' or 'stand'")
+            return _err("expected 'section', 'stand' or 'canister'")
         if target is None:
             return _err(f"unknown target: {label}")
         if "min_cycles" in params:
@@ -3008,8 +3008,8 @@ def set_cycle_policy(args: text) -> text:
 @query
 def cycleops_monitored() -> text:
     """Return the list of canister ids Casals manages, for CycleOps monitoring."""
-    list(Stand.instances())
-    ids = [s.canister_id for s in Stand.instances() if s.canister_id]
+    list(Canister.instances())
+    ids = [s.canister_id for s in Canister.instances() if s.canister_id]
     s = _settings()
     return json.dumps({
         "cycleops_enabled": bool(s.cycleops_enabled),

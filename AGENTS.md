@@ -2,8 +2,8 @@
 
 Casals is a canister lifecycle orchestrator for the Internet Computer. It lets
 projects manage their canisters (create / upgrade / snapshot / rollback / stop /
-start) in a structured hierarchy: **Section → Desk → Stand** (a Stand is one
-deployed canister). Approval is delegated — each Section or Desk registers a
+start) in a structured hierarchy: **Section → Stand → Canister** (a Canister is one
+deployed canister). Approval is delegated — each Section or Stand registers a
 *commander* principal (the project's own governance canister) whose decisions
 Casals executes. Casals never embeds voting logic.
 
@@ -11,9 +11,9 @@ Casals executes. Casals never embeds voting logic.
 
 ```
 src/main.py          — Basilisk (Python) conductor canister
-src/models.py        — ic_python_db entities (Section, Desk, Stand, CycleSample, PooledCanister, …)
+src/models.py        — ic_python_db entities (Section, Stand, Canister, CycleSample, PooledCanister, …)
 src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
-src/util.py          — pure helpers (audit hash, stand URL)
+src/util.py          — pure helpers (audit hash, canister URL)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
 icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
 Makefile             — build / deploy / seed / test targets
@@ -23,7 +23,7 @@ templates/           — hello-world template sources (basilisk / rust / motoko)
 seed/templates.json  — default template catalog (what to upload + authorize)
 seed/templates/      — committed, gzipped template WASMs
 seed/sheets/         — sheets (desired orchestras), e.g. demo.json
-seed/assets/         — frontend asset files (index.html) uploaded into asset-canister stands
+seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
 scripts/             — build_templates.sh, seed.py
 tests/               — pytest unit + integration + e2e suites
 .icp/data/           — committed mainnet canister-ID mappings (do NOT delete)
@@ -81,9 +81,9 @@ repo-root `dist` (`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), a
 `icp.yaml` uses `dir: dist`. Do not change `dir` to `frontend/dist`.
 
 **`deploy_sheet` needs a well-funded treasury.**
-`casals_backend` acts as the cycles treasury — it creates stand canisters and sends
+`casals_backend` acts as the cycles treasury — it creates canisters and sends
 them cycles. A fresh local replica seeds each canister with ~1.4T cycles, which is not
-enough to create 6 stand canisters. Before calling `deploy_sheet` (or
+enough to create 6 canisters. Before calling `deploy_sheet` (or
 `seed.py --deploy`) top up the backend with at least 100T:
 
 ```bash
@@ -100,7 +100,7 @@ prefix (`...77775-`) confirms it is the **local** canister, not mainnet
 **Frontend shows local data, not mainnet.**
 The `ic_env` cookie served by the asset canister contains the local canister IDs.
 The frontend reads from it, so it always talks to the local backend. Symptoms that
-confirm you are on local: **Stands: 0** (fresh deploy), treasury ~1–3T cycles,
+confirm you are on local: **Canisters: 0** (fresh deploy), treasury ~1–3T cycles,
 "No samples in this range yet" on the Cycles page.
 
 ### Run tests
@@ -145,7 +145,7 @@ mainnet canisters.
 
 ## Open access
 
-By default only the controller can create sections and desks. To allow any
+By default only the controller can create sections and stands. To allow any
 authenticated user (e.g. for demos):
 
 ```bash
@@ -166,19 +166,19 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | Method | Kind | Purpose |
 |--------|------|---------|
 | `get_status` | query | version + object counts |
-| `get_tree` | query | full Section → Desk → Stand tree |
+| `get_tree` | query | full Section → Stand → Canister tree |
 | `casals_metadata` | query | settings snapshot |
 | `get_events` | query | append-only audit log |
 | `create_section` | update | add a Section |
-| `create_desk` | update | add a Desk to a Section |
-| `register_stand` | update | register an existing canister as a Stand |
+| `create_stand` | update | add a Stand to a Section |
+| `register_canister` | update | register an existing canister as a Canister |
 | `add_authorized_wasm` | update | authorize a WASM from the file-registry |
-| `create_stand` | update | create/reuse canister + install WASM + verify hash |
+| `create_canister` | update | create/reuse canister + install WASM + verify hash |
 | `upgrade_to` | update | snapshot → upgrade → verify (all-or-nothing) |
-| `create_snapshot` | update | snapshot a Stand |
-| `revert_snapshot` | update | roll a Stand back to its snapshot |
-| `stop_canister` | update | stop a Stand |
-| `start_canister` | update | start a Stand |
+| `create_snapshot` | update | snapshot a Canister |
+| `revert_snapshot` | update | roll a Canister back to its snapshot |
+| `stop_canister` | update | stop a Canister |
+| `start_canister` | update | start a Canister |
 | `get_sheet` | query | the live (persisted) sheet |
 | `set_sheet` | update | replace + persist the live sheet (nothing on-chain yet) |
 | `reset_sheet` | update | reset the live sheet to the bundled default (persisted) |
@@ -187,30 +187,30 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `refresh_fx` | update | refresh + cache the cycles→`display_currency` rate (throttled) |
 | `deploy_sheet` | update | idempotently reconcile the orchestra to the live sheet |
 | `list_pool` | query | every canister Casals ever created + its pool status |
-| `get_cycles` | update | live treasury + per-stand solvency (reads canister_status) |
+| `get_cycles` | update | live treasury + per-canister solvency (reads canister_status) |
 | `reconcile` / `top_up` / `set_cycle_policy` | update | native cycles management |
-| `get_cycle_history` | query | per-stand balance samples over time (Cycles charts) |
+| `get_cycle_history` | query | per-canister balance samples over time (Cycles charts) |
 
 ## Sheets & the canister pool
 
 A **sheet** is a single declarative document describing the desired orchestra —
-`Sections ⊃ Desks ⊃ Stands`, where each stand references an authorized WASM by
+`Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM by
 `wasm_key`. Sheets hold **no** template/WASM definitions; those are the catalog
 (see below). The default sheet is bundled in `src/default_sheet.py` and its
 on-disk twin is `seed/sheets/demo.json` (keep them in sync): a **Demo** section
-with one desk per language (**Motoko**, **Rust**, **Python**), each holding a
-backend stand and a certified-assets **frontend** stand.
+with one stand per language (**Motoko**, **Rust**, **Python**), each holding a
+backend canister and a certified-assets **frontend** canister.
 
 The live sheet is **persistent**: it is stored in stable storage (the bundled
 default only seeds the first boot) and survives restarts/upgrades. `set_sheet`
 edits + persists it; nothing changes on-chain until `deploy_sheet`, which
 **idempotently** reconciles real canisters to the sheet:
 
-- create any missing section / desk;
-- create any missing stand — **reusing a free pooled canister** before paying to
+- create any missing section / stand;
+- create any missing canister — **reusing a free pooled canister** before paying to
   create a new one;
-- reinstall a stand whose authorized WASM no longer matches the sheet;
-- **retire** any stand not in the sheet: its canister is stopped and returned to
+- reinstall a canister whose authorized WASM no longer matches the sheet;
+- **retire** any canister not in the sheet: its canister is stopped and returned to
   the pool (never deleted), ready to be reused.
 
 The pool (`PooledCanister` entity, stable memory) is the list of every canister
@@ -220,15 +220,15 @@ JSON box with **Save** / **Reset** / **Deploy** and shows the pool.
 
 ## Cycle history & charts
 
-The IC keeps no balance history, so Casals samples each stand's balance itself —
-a `CycleSample` (denormalized with section/desk/stand) written by a sampler timer
+The IC keeps no balance history, so Casals samples each canister's balance itself —
+a `CycleSample` (denormalized with section/stand/canister) written by a sampler timer
 (`cycles_sampling` / `cycles_sample_interval_secs`, default on/hourly), plus
 opportunistically on `reconcile` and (throttled) on `get_cycles`. Old samples are
-pruned (retention window + hard cap). Each top-up also bumps `Stand.cycles_deposited`
+pruned (retention window + hard cap). Each top-up also bumps `Canister.cycles_deposited`
 so true consumption can be derived: `burn = Δdeposited − Δbalance`. `get_cycle_history`
 returns the raw samples; the frontend **Cycles** page aggregates them into a
-cycles-over-time line chart (total / section / desk / canister) and a
-section⊃desk⊃canister treemap sized by burn-over-window or current balance.
+cycles-over-time line chart (total / section / stand / canister) and a
+section⊃stand⊃canister treemap sized by burn-over-window or current balance.
 
 ## Catalog templates & seeding
 
@@ -246,12 +246,12 @@ in `seed/templates/`:
 A `frontend` template carries an `asset` in `templates.json` (a file under
 `seed/assets/`). `seed.py` uploads both the WASM and the asset to the registry
 and records the asset's location on the authorized WASM; when Casals provisions a
-stand from it, it installs the assets canister with `(null)`, grants itself
-`Commit`, and `store`s the asset at `/index.html` so the stand serves a page.
+canister from it, it installs the assets canister with `(null)`, grants itself
+`Commit`, and `store`s the asset at `/index.html` so the canister serves a page.
 
 The WASMs are **committed** so the seed step needs no Rust/Motoko toolchains.
 The build embeds each template's Candid as public `candid:service` metadata
-(via `ic-wasm`) so the Candid UI can introspect a deployed stand. Rebuild only
+(via `ic-wasm`) so the Candid UI can introspect a deployed canister. Rebuild only
 when changing a template (needs cargo + `wasm32-unknown-unknown`, `ic-mops` for
 Motoko, and `ic-wasm`):
 

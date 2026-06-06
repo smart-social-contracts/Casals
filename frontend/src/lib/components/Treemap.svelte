@@ -69,7 +69,7 @@
         {/if}
       {/each}
 
-      <!-- desk frames -->
+      <!-- stand frames -->
       {#each rects.filter((r) => r.depth === 2) as r, i (r.data.section + '/' + r.name + i)}
         <rect
           x={r.x} y={r.y} width={Math.max(0, r.w)} height={Math.max(0, r.h)}
@@ -80,11 +80,11 @@
 
     <div class="h-6 mt-1 px-1 text-xs text-primary-500">
       {#if hovered}
-        <span class="font-medium text-primary-700">{hovered.data.section} / {hovered.data.desk} / {hovered.name}</span>
+        <span class="font-medium text-primary-700">{hovered.data.section} / {hovered.data.stand} / {hovered.name}</span>
         · <span class="font-mono">{format(hovered.value)}</span>
         {#if hovered.data.canister_id}· <span class="font-mono text-primary-400">{hovered.data.canister_id}</span>{/if}
       {:else}
-        <span class="text-primary-400">Hover a tile for section / desk / canister detail.</span>
+        <span class="text-primary-400">Hover a tile for section / stand / canister detail.</span>
       {/if}
     </div>
   {/if}

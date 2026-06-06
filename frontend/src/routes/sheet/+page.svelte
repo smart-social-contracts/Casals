@@ -81,13 +81,13 @@
   let summary = $derived.by(() => {
     const s = parsed.sheet;
     if (!s) return null;
-    let desks = 0;
     let stands = 0;
+    let canisters = 0;
     for (const sec of s.sections ?? []) {
-      desks += (sec.desks ?? []).length;
-      for (const d of sec.desks ?? []) stands += (d.stands ?? []).length;
+      stands += (sec.stands ?? []).length;
+      for (const d of sec.stands ?? []) canisters += (d.canisters ?? []).length;
     }
-    return { sections: (s.sections ?? []).length, desks, stands };
+    return { sections: (s.sections ?? []).length, stands, canisters };
   });
 
   async function load() {
@@ -161,12 +161,12 @@
 
   const deployBuckets: { key: keyof DeployResult; label: string }[] = [
     { key: 'created_sections', label: 'Sections created' },
-    { key: 'created_desks', label: 'Desks created' },
     { key: 'created_stands', label: 'Stands created' },
-    { key: 'reused_stands', label: 'Stands reused' },
-    { key: 'reinstalled_stands', label: 'Stands reinstalled' },
-    { key: 'retired_stands', label: 'Stands retired' },
-    { key: 'skipped_stands', label: 'Stands unchanged' },
+    { key: 'created_canisters', label: 'Canisters created' },
+    { key: 'reused_canisters', label: 'Canisters reused' },
+    { key: 'reinstalled_canisters', label: 'Canisters reinstalled' },
+    { key: 'retired_canisters', label: 'Canisters retired' },
+    { key: 'skipped_canisters', label: 'Canisters unchanged' },
   ];
 </script>
 
@@ -184,9 +184,9 @@
         before creating new ones.
       </p>
       <p class="text-xs text-primary-400 mt-1 max-w-2xl">
-        A section or desk may set <code class="font-mono">"subnet": "&lt;subnet-id&gt;"</code>
+        A section or stand may set <code class="font-mono">"subnet": "&lt;subnet-id&gt;"</code>
         (or <code class="font-mono">"subnet_type": "fiduciary"</code>) to place its new
-        canisters on a specific subnet (desk overrides section). Existing canisters are
+        canisters on a specific subnet (stand overrides section). Existing canisters are
         never moved — placement applies to canisters created on the next deploy.
       </p>
     </div>
@@ -226,7 +226,7 @@
         <span class="text-xs font-semibold text-primary-500 uppercase tracking-wider">Sheet (JSON)</span>
         {#if summary}
           <span class="text-xs text-primary-400">
-            {summary.sections} section(s) · {summary.desks} desk(s) · {summary.stands} stand(s)
+            {summary.sections} section(s) · {summary.stands} stand(s) · {summary.canisters} canister(s)
           </span>
         {/if}
       </div>
@@ -253,7 +253,7 @@
       <div class="card p-4">
         <h2 class="text-sm font-semibold text-primary-900 mb-1">Deploy estimate</h2>
         <p class="text-xs text-primary-400 mb-3">
-          Idempotent: only missing stands need a canister, and free pooled canisters are reused first.
+          Idempotent: only missing canisters need a canister, and free pooled canisters are reused first.
         </p>
         {#if estimateErr}
           <p class="text-xs text-red-600">⚠ {estimateErr}</p>
@@ -283,12 +283,12 @@
           <dl class="mt-3 space-y-1.5 text-xs">
             <div class="flex justify-between"><dt class="text-primary-500">New canisters to create</dt><dd class="font-mono text-primary-800">{estimate.new_canisters}</dd></div>
             <div class="flex justify-between"><dt class="text-primary-400">· reused from pool</dt><dd class="font-mono text-primary-500">{estimate.reused_from_pool} / {estimate.free_pool} free</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-400">· already matching</dt><dd class="font-mono text-primary-500">{estimate.matching_stands}</dd></div>
-            {#if estimate.reinstall_stands > 0}
-              <div class="flex justify-between"><dt class="text-primary-400">· reinstalled in place</dt><dd class="font-mono text-primary-500">{estimate.reinstall_stands}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-400">· already matching</dt><dd class="font-mono text-primary-500">{estimate.matching_canisters}</dd></div>
+            {#if estimate.reinstall_canisters > 0}
+              <div class="flex justify-between"><dt class="text-primary-400">· reinstalled in place</dt><dd class="font-mono text-primary-500">{estimate.reinstall_canisters}</dd></div>
             {/if}
-            {#if estimate.unresolved_stands > 0}
-              <div class="flex justify-between"><dt class="text-red-500">· unknown WASM (will error)</dt><dd class="font-mono text-red-500">{estimate.unresolved_stands}</dd></div>
+            {#if estimate.unresolved_canisters > 0}
+              <div class="flex justify-between"><dt class="text-red-500">· unknown WASM (will error)</dt><dd class="font-mono text-red-500">{estimate.unresolved_canisters}</dd></div>
             {/if}
             <div class="border-t border-[var(--color-border-primary)] my-1"></div>
             <div class="flex justify-between"><dt class="text-primary-500">Endowment / canister</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.per_canister_cycles)}</dd></div>
@@ -309,7 +309,7 @@
             <div><span class="text-2xl font-bold text-primary-600">{pool.in_use}</span><span class="text-xs text-primary-400 ml-1">in use</span></div>
           </div>
           <p class="text-xs text-primary-400 mt-2">
-            Retired stands return their canister here for reuse — Casals never deletes a canister it created.
+            Retired canisters return their canister here for reuse — Casals never deletes a canister it created.
           </p>
           {#if pool.canisters.length > 0}
             <ul class="mt-3 space-y-1 max-h-48 overflow-y-auto">
@@ -321,7 +321,7 @@
                       <span class="badge badge-neutral font-mono" title="subnet {c.subnet}">⬡ {c.subnet.slice(0, 5)}…</span>
                     {/if}
                     <span class="badge {c.status === 'free' ? 'badge-frontend' : 'badge-backend'}">
-                      {c.status === 'free' ? 'free' : c.stand_name || 'in use'}
+                      {c.status === 'free' ? 'free' : c.canister_name || 'in use'}
                     </span>
                   </span>
                 </li>

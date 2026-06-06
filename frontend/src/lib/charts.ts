@@ -36,7 +36,7 @@ export interface TreemapInput {
   name: string;
   value: number;
   section?: string;
-  desk?: string;
+  stand?: string;
   canister_id?: string;
   children?: TreemapInput[];
 }
@@ -48,7 +48,7 @@ export interface TreemapRect {
   y: number;
   w: number;
   h: number;
-  depth: number; // 1 = section, 2 = desk, 3 = canister
+  depth: number; // 1 = section, 2 = stand, 3 = canister
   data: TreemapInput;
 }
 
@@ -126,7 +126,7 @@ function layoutChildren(
 
 // Recursively lay out a nested treemap. The root itself is not emitted; its
 // descendants are, each tagged with a depth so the renderer can draw section
-// frames, desk frames and canister tiles. `pad`/`header` inset each level so
+// frames, stand frames and canister tiles. `pad`/`header` inset each level so
 // nesting is visible.
 export function treemapLayout(root: TreemapInput, width: number, height: number): TreemapRect[] {
   const out: TreemapRect[] = [];

@@ -8,12 +8,12 @@ import { icHost, isLocalHost } from './ic-host';
 // Types (mirror the backend JSON payloads)
 // ---------------------------------------------------------------------------
 
-export type StandKind = 'frontend' | 'backend';
+export type CanisterKind = 'frontend' | 'backend';
 
-export interface Stand {
+export interface Canister {
   name: string;
   canister_id: string;
-  kind: StandKind;
+  kind: CanisterKind;
   url: string;
   wasm_key: string;
   wasm_hash: string;
@@ -22,7 +22,7 @@ export interface Stand {
   subnet?: string;
 }
 
-export interface Desk {
+export interface Stand {
   name: string;
   description: string;
   commander_principal: string;
@@ -30,7 +30,7 @@ export interface Desk {
   all_permissions?: boolean;
   subnet?: string;
   subnet_type?: string;
-  stands: Stand[];
+  canisters: Canister[];
 }
 
 export interface Section {
@@ -41,7 +41,7 @@ export interface Section {
   all_permissions?: boolean;
   subnet?: string;
   subnet_type?: string;
-  desks: Desk[];
+  stands: Stand[];
 }
 
 export interface Permission {
@@ -57,8 +57,8 @@ export interface Tree {
 export interface Status {
   version: string;
   sections: number;
-  desks: number;
   stands: number;
+  canisters: number;
   authorized_wasms: number;
   events: number;
 }
@@ -89,7 +89,7 @@ export interface SectionSummary {
   name: string;
   description: string;
   commander_principal: string;
-  desk_count: number;
+  stand_count: number;
 }
 
 export interface AuthorizedWasm {
@@ -128,12 +128,12 @@ export interface CycleOpsInfo {
 
 export type CycleStatus = 'ok' | 'low' | 'critical' | 'frozen' | 'error';
 
-export interface StandCycles {
+export interface CanisterCycles {
   section: string;
-  desk: string;
+  stand: string;
   name: string;
   canister_id: string;
-  kind: StandKind;
+  kind: CanisterKind;
   min_cycles: number;
   topup_cycles: number;
   cycles?: number;
@@ -154,28 +154,28 @@ export interface Treasury {
 export interface PoolCanisterCycles {
   canister_id: string;
   status: string; // "free" | "in_use"
-  stand_name: string;
+  canister_name: string;
   cycles?: number; // current balance
-  deposited?: number; // cumulative cycles Casals deposited (stands only)
+  deposited?: number; // cumulative cycles Casals deposited (canisters only)
   error?: string;
 }
 
 export interface CyclesReport {
   treasury: Treasury;
-  totals: { stands: number; ok: number; low: number; critical: number; frozen: number; error: number };
-  stands: StandCycles[];
+  totals: { canisters: number; ok: number; low: number; critical: number; frozen: number; error: number };
+  canisters: CanisterCycles[];
   pool?: { total: number; free: number; in_use: number; canisters: PoolCanisterCycles[] };
 }
 
 export interface CycleSamplePoint {
   ts: number; // unix seconds
   canister_id: string;
+  canister: string;
   stand: string;
-  desk: string;
   section: string;
-  kind: StandKind;
+  kind: CanisterKind;
   cycles: number; // balance at ts
-  deposited: number; // cumulative deposited into this stand at ts
+  deposited: number; // cumulative deposited into this canister at ts
 }
 
 export interface CycleHistory {
@@ -189,19 +189,19 @@ export interface UpdateResult {
   [key: string]: unknown;
 }
 
-export interface SheetStand {
+export interface SheetCanister {
   name: string;
   wasm_key: string;
-  kind?: StandKind;
+  kind?: CanisterKind;
 }
 
-export interface SheetDesk {
+export interface SheetStand {
   name: string;
   description?: string;
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
-  stands?: SheetStand[];
+  canisters?: SheetCanister[];
 }
 
 export interface SheetSection {
@@ -210,7 +210,7 @@ export interface SheetSection {
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
-  desks?: SheetDesk[];
+  stands?: SheetStand[];
 }
 
 export interface Sheet {
@@ -222,19 +222,19 @@ export interface Sheet {
 
 export interface DeployResult extends UpdateResult {
   created_sections?: string[];
-  created_desks?: string[];
   created_stands?: string[];
-  reused_stands?: string[];
-  reinstalled_stands?: string[];
-  retired_stands?: string[];
-  skipped_stands?: string[];
+  created_canisters?: string[];
+  reused_canisters?: string[];
+  reinstalled_canisters?: string[];
+  retired_canisters?: string[];
+  skipped_canisters?: string[];
   errors?: string[];
 }
 
 export interface PooledCanister {
   canister_id: string;
   status: 'free' | 'in_use';
-  stand_name: string;
+  canister_name: string;
   subnet?: string;
   subnet_type?: string;
 }
@@ -248,11 +248,11 @@ export interface PoolReport {
 
 export interface DeployEstimate {
   ok: boolean;
-  desired_stands: number;
-  matching_stands: number;
-  reinstall_stands: number;
-  unresolved_stands: number;
-  missing_stands: number;
+  desired_canisters: number;
+  matching_canisters: number;
+  reinstall_canisters: number;
+  unresolved_canisters: number;
+  missing_canisters: number;
   free_pool: number;
   reused_from_pool: number;
   new_canisters: number;
@@ -446,7 +446,7 @@ export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
 // Cycles management
 // ---------------------------------------------------------------------------
 
-// get_cycles reads each stand's balance from the management canister, so it is
+// get_cycles reads each canister's balance from the management canister, so it is
 // an update call (not a query) even though it only reports state. It requires
 // no special caller, so we call it anonymously — the solvency snapshot is
 // public (only top-up / reconcile / policy changes need authentication).
@@ -454,14 +454,14 @@ export async function getCycles(): Promise<CyclesReport> {
   return _parseQuery<CyclesReport>(await (await _actor()).get_cycles());
 }
 
-// Per-stand balance samples over time (public; recorded on-chain by a sampler
+// Per-canister balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.
 export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
   return _parseQuery<CycleHistory>(await (await _actor()).get_cycle_history(JSON.stringify(opts)));
 }
 
-export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {
+export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
 }
 
@@ -471,8 +471,8 @@ export async function reconcile(): Promise<UpdateResult> {
 
 export async function setCyclePolicy(args: {
   section?: string;
-  desk?: string;
   stand?: string;
+  canister?: string;
   min_cycles?: number;
   topup_cycles?: number;
 }): Promise<UpdateResult> {
@@ -514,42 +514,42 @@ export async function createSection(args: {
   return _parseUpdate(await (await _actor(true)).create_section(JSON.stringify(args)));
 }
 
-export async function createDesk(args: {
+export async function createStand(args: {
   section: string;
   name: string;
   description?: string;
   commander_principal?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_desk(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_stand(JSON.stringify(args)));
 }
 
 export async function renameSection(args: { section: string; new_name: string; description?: string }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).rename_section(JSON.stringify(args)));
 }
 
-export async function renameDesk(args: { desk: string; new_name: string; description?: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).rename_desk(JSON.stringify(args)));
+export async function renameStand(args: { stand: string; new_name: string; description?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_stand(JSON.stringify(args)));
 }
 
-export async function renameStand(args: { stand: string; new_name: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).rename_stand(JSON.stringify(args)));
+export async function renameCanister(args: { canister: string; new_name: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_canister(JSON.stringify(args)));
 }
 
 export async function deleteSection(args: { section: string }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).delete_section(JSON.stringify(args)));
 }
 
-export async function deleteDesk(args: { desk: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).delete_desk(JSON.stringify(args)));
-}
-
 export async function deleteStand(args: { stand: string }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).delete_stand(JSON.stringify(args)));
 }
 
+export async function deleteCanister(args: { canister: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_canister(JSON.stringify(args)));
+}
+
 export async function setCommander(args: {
   section?: string;
-  desk?: string;
+  stand?: string;
   commander_principal: string;
   permissions?: string[] | '*';
 }): Promise<UpdateResult> {
@@ -558,7 +558,7 @@ export async function setCommander(args: {
 
 export async function setPermissions(args: {
   section?: string;
-  desk?: string;
+  stand?: string;
   permissions: string[] | '*';
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
@@ -568,13 +568,13 @@ export async function listPermissions(): Promise<Permission[]> {
   return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
 }
 
-export async function registerStand(args: {
-  desk: string;
+export async function registerCanister(args: {
+  stand: string;
   name: string;
   canister_id: string;
-  kind: StandKind;
+  kind: CanisterKind;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).register_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).register_canister(JSON.stringify(args)));
 }
 
 export async function addAuthorizedWasm(args: {
@@ -598,44 +598,44 @@ export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
 // Lifecycle updates (long-running)
 // ---------------------------------------------------------------------------
 
-export async function createStand(args: {
-  desk: string;
+export async function createCanister(args: {
+  stand: string;
   name: string;
-  kind: StandKind;
+  kind: CanisterKind;
   wasm_key: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_canister(JSON.stringify(args)));
 }
 
 export async function upgradeTo(args: {
-  desk?: string;
   stand?: string;
+  canister?: string;
   wasm_key: string;
   reinstall?: boolean;
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
 }
 
-export async function createSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ stand })));
+export async function createSnapshot(canister: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ canister })));
 }
 
-export async function revertSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).revert_snapshot(JSON.stringify({ stand })));
+export async function revertSnapshot(canister: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).revert_snapshot(JSON.stringify({ canister })));
 }
 
-export async function stopCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).stop_canister(JSON.stringify({ stand })));
+export async function stopCanister(canister: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).stop_canister(JSON.stringify({ canister })));
 }
 
-export async function startCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).start_canister(JSON.stringify({ stand })));
+export async function startCanister(canister: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).start_canister(JSON.stringify({ canister })));
 }
 
-// Make a stand's logs publicly fetchable (or revert to controllers-only). New
-// stands are created public already; this backfills existing ones.
+// Make a canister's logs publicly fetchable (or revert to controllers-only). New
+// canisters are created public already; this backfills existing ones.
 export async function setLogVisibility(
-  args: { stand?: string; public?: boolean } = {},
+  args: { canister?: string; public?: boolean } = {},
 ): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_log_visibility(JSON.stringify(args)));
 }
@@ -643,8 +643,8 @@ export async function setLogVisibility(
 // ---------------------------------------------------------------------------
 // Basilisk introspection (browse / shell) — relayed through Casals
 // ---------------------------------------------------------------------------
-// Only available for Basilisk stands built with
-// `__basilisk_features__ = ["shell", "browse"]`. Casals (the stand's
+// Only available for Basilisk canisters built with
+// `__basilisk_features__ = ["shell", "browse"]`. Casals (the canister's
 // controller) relays the calls.
 
 export interface BrowseResult extends UpdateResult {
@@ -657,26 +657,26 @@ export interface ExecResult extends UpdateResult {
 
 // Read-only data introspection. `query` defaults to {action:"schema"} on the
 // backend. Other actions: len / keys / get / items.
-export async function standBrowse(
-  stand: string,
+export async function canisterBrowse(
+  canister: string,
   query?: Record<string, unknown>,
 ): Promise<BrowseResult> {
-  const args: Record<string, unknown> = { stand };
+  const args: Record<string, unknown> = { canister };
   if (query) args.query = query;
-  return _parseUpdate(await (await _actor()).stand_browse(JSON.stringify(args))) as BrowseResult;
+  return _parseUpdate(await (await _actor()).canister_browse(JSON.stringify(args))) as BrowseResult;
 }
 
-// Run Python inside the stand (controller-gated). Requires auth.
-export async function standExec(stand: string, code: string): Promise<ExecResult> {
-  return _parseUpdate(await (await _actor(true)).stand_exec(JSON.stringify({ stand, code }))) as ExecResult;
+// Run Python inside the canister (controller-gated). Requires auth.
+export async function canisterExec(canister: string, code: string): Promise<ExecResult> {
+  return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify({ canister, code }))) as ExecResult;
 }
 
 // ---------------------------------------------------------------------------
 // Canister logs (read straight from the IC management canister in the browser)
 // ---------------------------------------------------------------------------
 // `fetch_canister_logs` is a query-only management method that canisters cannot
-// call, so the dashboard fetches a stand's logs directly. It works anonymously
-// only when the stand's log_visibility is `public` (see setLogVisibility).
+// call, so the dashboard fetches a canister's logs directly. It works anonymously
+// only when the canister's log_visibility is `public` (see setLogVisibility).
 
 export interface CanisterLogRecord {
   idx: number;
@@ -777,7 +777,7 @@ export function cycleStatusBadge(status: CycleStatus): string {
   }
 }
 
-// The Candid UI URL for a backend stand (so its API can be exercised directly).
+// The Candid UI URL for a backend canister (so its API can be exercised directly).
 export function candidUiUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
@@ -786,7 +786,7 @@ export function candidUiUrl(canisterId: string): string {
   return `https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=${canisterId}`;
 }
 
-// The default served URL for a frontend stand, used as a fallback when the
+// The default served URL for a frontend canister, used as a fallback when the
 // backend does not supply one.
 export function canisterUrl(canisterId: string): string {
   if (!canisterId) return '#';
@@ -797,15 +797,15 @@ export function canisterUrl(canisterId: string): string {
   return `https://${canisterId}.icp0.io`;
 }
 
-export function standLink(stand: { kind: StandKind; url: string; canister_id: string }): string {
-  // On local replica the backend bakes mainnet icp0.io URLs into every stand
+export function canisterLink(canister: { kind: CanisterKind; url: string; canister_id: string }): string {
+  // On local replica the backend bakes mainnet icp0.io URLs into every canister
   // view (it has no knowledge of the frontend's host). Override with the
   // correct local URL whenever we detect we are running locally.
   if (IS_LOCAL) {
-    return stand.kind === 'backend'
-      ? candidUiUrl(stand.canister_id)
-      : canisterUrl(stand.canister_id);
+    return canister.kind === 'backend'
+      ? candidUiUrl(canister.canister_id)
+      : canisterUrl(canister.canister_id);
   }
-  if (stand.url) return stand.url;
-  return stand.kind === 'backend' ? candidUiUrl(stand.canister_id) : canisterUrl(stand.canister_id);
+  if (canister.url) return canister.url;
+  return canister.kind === 'backend' ? candidUiUrl(canister.canister_id) : canisterUrl(canister.canister_id);
 }

@@ -4,7 +4,7 @@
   import type { OrchestrationEvent, Tree } from '$lib/api';
 
   let events = $state<OrchestrationEvent[]>([]);
-  let standNames = $state<Record<string, string>>({});
+  let canisterNames = $state<Record<string, string>>({});
   let loading = $state(true);
   let error = $state('');
   let take = $state(100);
@@ -23,10 +23,10 @@
       const map: Record<string, string> = {};
       if (tree) {
         for (const s of tree.sections)
-          for (const d of s.desks)
-            for (const st of d.stands) if (st.canister_id) map[st.canister_id] = st.name;
+          for (const d of s.stands)
+            for (const st of d.canisters) if (st.canister_id) map[st.canister_id] = st.name;
       }
-      standNames = map;
+      canisterNames = map;
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -67,35 +67,35 @@
   function targetLabel(e: OrchestrationEvent): string {
     const v = e.canister_id;
     if (!v) return '';
-    return standNames[v] ?? v;
+    return canisterNames[v] ?? v;
   }
 
   function describe(e: OrchestrationEvent): string {
     const p = e.payload ?? {};
     switch (e.btype) {
-      case 'upgrade_finished': return `Upgraded ${p.stands?.length ?? 0} stand(s) → ${p.wasm_key ?? ''}`;
+      case 'upgrade_finished': return `Upgraded ${p.canisters?.length ?? 0} canister(s) → ${p.wasm_key ?? ''}`;
       case 'upgrade_failed': return `Upgrade failed: ${p.reason ?? ''}`;
       case 'revert': return p.reason ? `Rolled back: ${p.reason}` : `Reverted to snapshot ${shortHash(p.snapshot_id)}`;
       case 'revert_failed': return `Rollback failed: ${p.error ?? ''}`;
       case 'snapshot': return `Snapshot ${shortHash(p.snapshot_id)}`;
-      case 'stand_created': return `Created ${p.name ?? ''} (${p.wasm_key ?? ''})${p.reused ? ' · reused canister' : ''}`;
-      case 'stand_reinstalled': return `Reinstalled ${p.name ?? ''} (${p.wasm_key ?? ''})`;
-      case 'stand_retired': return `Retired ${p.name ?? ''}`;
-      case 'stand_registered': return `Registered ${p.name ?? ''} on ${p.desk ?? ''}`;
+      case 'canister_created': return `Created ${p.name ?? ''} (${p.wasm_key ?? ''})${p.reused ? ' · reused canister' : ''}`;
+      case 'canister_reinstalled': return `Reinstalled ${p.name ?? ''} (${p.wasm_key ?? ''})`;
+      case 'canister_retired': return `Retired ${p.name ?? ''}`;
+      case 'canister_registered': return `Registered ${p.name ?? ''} on ${p.stand ?? ''}`;
       case 'assets_uploaded': return `Assets uploaded (${p.bytes ?? 0} bytes)`;
       case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
       case 'create_failed': return 'Create failed: module hash mismatch';
       case 'cycles_topup': return `Topped up ${fmt(p.amount)} cycles${p.manual ? ' (manual)' : ''}`;
       case 'cycles_low': return 'Low cycles balance';
       case 'section_created': return `Created section ${p.name ?? ''}`;
-      case 'desk_created': return `Created desk ${p.name ?? ''} in ${p.section ?? ''}`;
+      case 'stand_created': return `Created stand ${p.name ?? ''} in ${p.section ?? ''}`;
       case 'commander_set': return 'Commander updated';
       case 'wasm_authorized': return `Authorized WASM ${p.key ?? ''}`;
       case 'wasm_deauthorized': return `Removed WASM ${p.key ?? ''}`;
       case 'settings_changed': return `Settings changed: ${Object.keys(p).join(', ')}`;
       case 'sheet_deployed': return 'Sheet deployed';
       case 'sheet_edited': return `Sheet edited (${p.sections ?? 0} sections)`;
-      case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_stand ? ` (was ${p.was_stand})` : ''}`;
+      case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_canister ? ` (was ${p.was_canister})` : ''}`;
       default: return Object.keys(p).length ? JSON.stringify(p) : '';
     }
   }
@@ -141,7 +141,7 @@
     <select class="text-sm rounded-lg border border-[var(--color-border-primary)] px-2 py-1.5 bg-white" bind:value={filter}>
       <option value="">All targets</option>
       {#each targets as t (t)}
-        <option value={t}>{standNames[t] ?? t}</option>
+        <option value={t}>{canisterNames[t] ?? t}</option>
       {/each}
     </select>
     <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">

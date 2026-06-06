@@ -1,16 +1,16 @@
 {
-  "$comment": "A sheet: the desired orchestra (Sections > Desks > Stands), where each stand references an authorized WASM by `wasm_key`. Sheets hold no template definitions (see seed/templates.json). Deploying a sheet is idempotent: missing sections/desks/stands are created (reusing pooled canisters), stands no longer listed are retired back to the pool. Mirror of src/default_sheet.py.",
+  "$comment": "A sheet: the desired orchestra (Sections > Stands > Canisters), where each canister references an authorized WASM by `wasm_key`. Sheets hold no template definitions (see seed/templates.json). Deploying a sheet is idempotent: missing sections/stands/canisters are created (reusing pooled canisters), canisters no longer listed are retired back to the pool. Mirror of src/default_sheet.py.",
   "name": "demo",
-  "description": "Default Casals demo orchestra: a Demo section with one desk per language (Motoko, Rust, Python), each running a backend stand plus a certified-assets frontend stand.",
+  "description": "Default Casals demo orchestra: a Demo section with one stand per language (Motoko, Rust, Python), each running a backend canister plus a certified-assets frontend canister.",
   "sections": [
     {
       "name": "Demo",
-      "description": "Neutral demo section: one full-stack desk per supported backend language.",
-      "desks": [
+      "description": "Neutral demo section: one full-stack stand per supported backend language.",
+      "stands": [
         {
           "name": "Motoko",
           "description": "Motoko hello-world backend + a certified-assets frontend.",
-          "stands": [
+          "canisters": [
             { "name": "motoko-backend", "wasm_key": "hello-world-motoko", "kind": "backend" },
             { "name": "motoko-frontend", "wasm_key": "hello-world-frontend", "kind": "frontend" }
           ]
@@ -18,7 +18,7 @@
         {
           "name": "Rust",
           "description": "Rust hello-world backend + a certified-assets frontend.",
-          "stands": [
+          "canisters": [
             { "name": "rust-backend", "wasm_key": "hello-world-rust", "kind": "backend" },
             { "name": "rust-frontend", "wasm_key": "hello-world-frontend", "kind": "frontend" }
           ]
@@ -26,7 +26,7 @@
         {
           "name": "Python",
           "description": "Basilisk (Python) hello-world backend + a certified-assets frontend.",
-          "stands": [
+          "canisters": [
             { "name": "python-backend", "wasm_key": "hello-world-basilisk", "kind": "backend" },
             { "name": "python-frontend", "wasm_key": "hello-world-frontend", "kind": "frontend" }
           ]
