@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-registry build-templates deploy deploy-ic seed seed-ic test clean local-conductor
+.PHONY: build build-backend build-registry build-templates deploy deploy-ic seed seed-ic test clean local-conductor local-network-json
 
 # Local "master conductor": added as a controller of the local canisters after
 # a local deploy so this principal can run admin endpoints (set commanders,
@@ -32,8 +32,20 @@ build-templates:
 # asset-canister recipe (see icp.yaml). After installing, the local conductor
 # is added as a controller so it can drive admin endpoints from the UI.
 deploy: build
+	$(MAKE) local-network-json
 	icp deploy
 	$(MAKE) local-conductor
+
+# Write the local replica's Candid UI canister id for the frontend (backend
+# canister links on local need it; the asset canister ic_env cookie does not
+# include manually-added env vars).
+local-network-json:
+	@CANDID_UI=$$(icp network status -e local 2>&1 | sed -n 's/Candid UI Principal: //p'); \
+	if [ -n "$$CANDID_UI" ]; then \
+		mkdir -p frontend/static; \
+		printf '{"candid_ui":"%s"}\n' "$$CANDID_UI" > frontend/static/local-network.json; \
+		echo "Wrote frontend/static/local-network.json (candid_ui=$$CANDID_UI)"; \
+	fi
 
 # Add the local master conductor as a controller of the local canisters. Safe
 # to re-run (idempotent). Skips silently if a canister isn't deployed yet.
@@ -41,6 +53,12 @@ local-conductor:
 	@echo "Adding local conductor $(LOCAL_CONDUCTOR) as controller of casals_backend + casals_frontend"
 	@icp canister settings update casals_backend  --add-controller $(LOCAL_CONDUCTOR) -e local -f || true
 	@icp canister settings update casals_frontend --add-controller $(LOCAL_CONDUCTOR) -e local -f || true
+	@CANDID_UI=$$(icp network status -e local 2>&1 | sed -n 's/Candid UI Principal: //p'); \
+	if [ -n "$$CANDID_UI" ]; then \
+		echo "Injecting local Candid UI ($$CANDID_UI) into casals_frontend ic_env"; \
+		icp canister settings update casals_frontend \
+			--add-environment-variable "PUBLIC_CANISTER_ID:candid_ui=$$CANDID_UI" -e local -f || true; \
+	fi
 
 # Mainnet deploy.
 deploy-ic: build

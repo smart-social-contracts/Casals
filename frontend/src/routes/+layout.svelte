@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal } from '$lib/auth';
+  import { initLocalNetworkHints } from '$lib/api';
   import Toast from '$lib/components/Toast.svelte';
 
   let { children } = $props();
@@ -21,6 +22,7 @@
 
   onMount(() => {
     initAuth();
+    void initLocalNetworkHints();
   });
 </script>
 

@@ -103,6 +103,13 @@ The frontend reads from it, so it always talks to the local backend. Symptoms th
 confirm you are on local: **Canisters: 0** (fresh deploy), treasury ~1–3T cycles,
 "No samples in this range yet" on the Cycles page.
 
+**Local backend canister links use the Candid UI canister.**
+Backend canisters have no `http_request`; opening `http://localhost:8000/?canisterId=…`
+returns 503. On local, links must go through the replica's Candid UI:
+`http://<candid-ui>.localhost:8000/?id=<target>`. `make deploy` writes
+`frontend/static/local-network.json` (from `icp network status`) and the frontend loads
+it on startup. Do not skip `make local-network-json` before deploy.
+
 ### Run tests
 
 ```bash

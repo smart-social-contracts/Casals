@@ -24,6 +24,30 @@
       Nothing to diagram yet.
     </div>
   {:else}
+    <!-- Legend -->
+    <div class="mb-4 rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5">
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-primary-500 mb-2">Legend</div>
+      <div class="flex flex-wrap gap-x-5 gap-y-2 text-xs text-primary-600">
+        <span class="flex items-center gap-1.5" title="Top-level grouping">
+          <span class="w-3 h-3 rounded border border-primary-300 bg-white shrink-0"></span>
+          Section
+        </span>
+        <span class="flex items-center gap-1.5" title="Application instance inside a section">
+          <span class="w-3 h-3 rounded border border-[var(--color-border-primary)] bg-primary-50/80 shrink-0"></span>
+          Stand
+        </span>
+        <span class="flex items-center gap-1.5" title="Deployed canister (click to open)">
+          <span class="w-3 h-2 rounded border border-violet-200 bg-violet-50 shrink-0"></span>
+          backend canister
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-3 h-2 rounded border border-blue-200 bg-blue-50 shrink-0"></span>
+          frontend canister
+        </span>
+        <span class="text-primary-400">· click a canister to open</span>
+      </div>
+    </div>
+
     <!-- Root -->
     <div class="flex flex-col items-center mb-6">
       <div
@@ -129,17 +153,8 @@
       </div>
     </div>
 
-    <!-- Legend + hover detail -->
-    <div class="mt-4 pt-3 border-t border-[var(--color-border-primary)] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-primary-500">
-      <div class="flex flex-wrap items-center gap-3">
-        <span class="flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-violet-500"></span> backend
-        </span>
-        <span class="flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-blue-500"></span> frontend
-        </span>
-        <span class="text-primary-400">· click a canister to open</span>
-      </div>
+    <!-- Hover detail -->
+    <div class="mt-4 pt-3 border-t border-[var(--color-border-primary)] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-primary-500">
       <div class="min-h-[1.25rem] font-mono text-[11px] text-primary-600 truncate">
         {#if hovered}
           {hovered.section} / {hovered.stand} / {hovered.canister.name}
