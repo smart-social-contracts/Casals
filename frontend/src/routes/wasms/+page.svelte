@@ -14,18 +14,26 @@
 
   type Values = Record<string, string | boolean>;
 
+  interface Family {
+    family: string;
+    latest: AuthorizedWasm;
+    versions: AuthorizedWasm[]; // newest first, includes latest
+  }
+
   let wasms = $state<AuthorizedWasm[]>([]);
   let loading = $state(true);
   let error = $state('');
+  let expanded = $state<Record<string, boolean>>({});
 
   let showAdd = $state(false);
   let modalBusy = $state(false);
 
   const addFields: Field[] = [
-    { name: 'key', label: 'Key', required: true, placeholder: 'hello_world_basilisk' },
+    { name: 'key', label: 'Family', required: true, placeholder: 'hello-world-basilisk' },
+    { name: 'version', label: 'Version', placeholder: '1.0.0' },
     { name: 'section', label: 'Section', placeholder: '(optional) restrict to a section' },
     { name: 'registry_namespace', label: 'Registry namespace', placeholder: 'casals-templates' },
-    { name: 'registry_path', label: 'Registry path', required: true, placeholder: 'hello_world/basilisk.wasm' },
+    { name: 'registry_path', label: 'Registry path', required: true, placeholder: 'hello-world-basilisk@1.0.0.wasm' },
     { name: 'wasm_hash', label: 'WASM sha256', required: true, placeholder: 'a1b2c3…' },
     {
       name: 'kind',
@@ -40,6 +48,25 @@
     { name: 'description', label: 'Description', type: 'textarea' },
   ];
 
+  // Group the flat (family-sorted, newest-first) list into families. The
+  // backend flags the latest version per family; we surface it as the default
+  // row and tuck older versions behind a toggle.
+  const families = $derived.by<Family[]>(() => {
+    const map = new Map<string, AuthorizedWasm[]>();
+    for (const w of wasms) {
+      const arr = map.get(w.family) ?? [];
+      arr.push(w);
+      map.set(w.family, arr);
+    }
+    const out: Family[] = [];
+    for (const [family, versions] of map) {
+      const latest = versions.find((v) => v.latest) ?? versions[0];
+      out.push({ family, latest, versions });
+    }
+    out.sort((a, b) => a.family.localeCompare(b.family));
+    return out;
+  });
+
   async function load() {
     loading = true;
     error = '';
@@ -53,6 +80,10 @@
   }
 
   onMount(load);
+
+  function toggle(family: string) {
+    expanded[family] = !expanded[family];
+  }
 
   function clean(values: Values): Record<string, any> {
     const out: Record<string, any> = {};
@@ -98,7 +129,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Authorized WASMs</h1>
-      <p class="text-sm text-primary-500 mt-1">WASM modules stands are permitted to run, pinned by sha256</p>
+      <p class="text-sm text-primary-500 mt-1">WASM modules stands are permitted to run, grouped by family · latest version shown by default</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -133,7 +164,7 @@
         <div class="skeleton h-5 w-full"></div>
       {/each}
     </div>
-  {:else if wasms.length === 0}
+  {:else if families.length === 0}
     <div class="text-center py-16">
       <svg class="w-12 h-12 mx-auto text-primary-200 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0 0h4.5m-4.5 0L9 3.75M20.25 20.25v-4.5m0 0h-4.5m4.5 0L15 20.25" />
@@ -149,7 +180,8 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="text-left text-xs font-semibold text-primary-500 uppercase tracking-wider bg-primary-50/60">
-              <th class="px-4 py-3">Key</th>
+              <th class="px-4 py-3">Family</th>
+              <th class="px-4 py-3">Version</th>
               <th class="px-4 py-3">Section</th>
               <th class="px-4 py-3">Namespace / path</th>
               <th class="px-4 py-3">Hash</th>
@@ -159,9 +191,31 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-[var(--color-border-primary)]">
-            {#each wasms as w (w.key)}
+            {#each families as fam (fam.family)}
+              {@const w = fam.latest}
+              {@const more = fam.versions.length - 1}
               <tr class="hover:bg-primary-50/40 transition-colors">
-                <td class="px-4 py-3 font-mono font-medium text-primary-900">{w.key}</td>
+                <td class="px-4 py-3 font-mono font-medium text-primary-900">
+                  <div class="flex items-center gap-1.5">
+                    {#if more > 0}
+                      <button class="text-primary-400 hover:text-primary-700" title="Show all versions" onclick={() => toggle(fam.family)}>
+                        <svg class="w-3.5 h-3.5 transition-transform {expanded[fam.family] ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                        </svg>
+                      </button>
+                    {:else}
+                      <span class="inline-block w-3.5"></span>
+                    {/if}
+                    {fam.family}
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="badge badge-neutral font-mono">{w.version || '—'}</span>
+                  <span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200 ml-1">latest</span>
+                  {#if more > 0 && !expanded[fam.family]}
+                    <button class="text-xs text-primary-400 hover:text-primary-700 ml-1.5" onclick={() => toggle(fam.family)}>+{more} more</button>
+                  {/if}
+                </td>
                 <td class="px-4 py-3 text-primary-600">{w.section || '—'}</td>
                 <td class="px-4 py-3 font-mono text-xs text-primary-600">
                   {#if w.registry_namespace}{w.registry_namespace} / {/if}{w.registry_path || '—'}
@@ -177,6 +231,33 @@
                   </td>
                 {/if}
               </tr>
+
+              {#if expanded[fam.family]}
+                {#each fam.versions as v (v.key)}
+                  {#if !v.latest}
+                    <tr class="bg-primary-50/30 text-primary-600">
+                      <td class="px-4 py-2.5"></td>
+                      <td class="px-4 py-2.5">
+                        <span class="badge badge-neutral font-mono">{v.version || '—'}</span>
+                      </td>
+                      <td class="px-4 py-2.5">{v.section || '—'}</td>
+                      <td class="px-4 py-2.5 font-mono text-xs">
+                        {#if v.registry_namespace}{v.registry_namespace} / {/if}{v.registry_path || '—'}
+                      </td>
+                      <td class="px-4 py-2.5 font-mono text-xs text-primary-400" title={v.wasm_hash}>{shortHash(v.wasm_hash)}</td>
+                      <td class="px-4 py-2.5">
+                        <span class="badge {v.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{v.kind || '—'}</span>
+                      </td>
+                      <td class="px-4 py-2.5 max-w-xs truncate" title={v.description}>{v.description || '—'}</td>
+                      {#if $isAuthenticated}
+                        <td class="px-4 py-2.5 text-right">
+                          <button class="btn-danger btn-sm" onclick={() => remove(v.key)}>Remove</button>
+                        </td>
+                      {/if}
+                    </tr>
+                  {/if}
+                {/each}
+              {/if}
             {/each}
           </tbody>
         </table>
@@ -188,7 +269,7 @@
 {#if showAdd}
   <FormModal
     title="Authorize WASM"
-    description="Pin a WASM (by sha256) that stands may run"
+    description="Pin a WASM version (by sha256) that stands may run"
     fields={addFields}
     submitLabel="Authorize"
     busy={modalBusy}

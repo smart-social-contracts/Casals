@@ -8,6 +8,11 @@
 #     (principal kem77-…-xqe). The identity must hold cycles on mainnet.
 #   - .icp/data (committed) holds the mainnet canister-ID mappings so each run
 #     targets the SAME canisters instead of creating new ones.
+#
+# Conductor principal (nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae):
+# added as a controller of casals_backend and casals_frontend after every deploy so the
+# conductor can manage the instance (set commanders, call admin endpoints) from the
+# Casals UI without needing the deploy PEM.
 name: Deploy to IC mainnet
 
 on:
@@ -89,7 +94,22 @@ jobs:
         run: make build
 
       - name: Deploy to IC mainnet
-        run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} -y
+        # --force ensures every canister is (re)installed even if the WASM hash
+        # hasn't changed (e.g. only Python source embedded in the WASM changed).
+        run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} --force -y
+
+      - name: Add conductor as controller
+        env:
+          CONDUCTOR: nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae
+        run: |
+          echo "Adding conductor $CONDUCTOR as controller of casals_backend and casals_frontend"
+          icp canister settings update casals_backend \
+            --add-controller "$CONDUCTOR" \
+            -e ic --identity casals -f
+          icp canister settings update casals_frontend \
+            --add-controller "$CONDUCTOR" \
+            -e ic --identity casals -f
+          echo "Conductor added successfully"
 
       - name: Seed catalog (upload + authorize template WASMs)
         if: ${{ inputs.seed || inputs.deploy_sheet }}

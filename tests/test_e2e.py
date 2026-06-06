@@ -359,3 +359,13 @@ class TestFrontendAssetStand:
         # On-chain confirmation: the asset canister now lists the stored asset.
         out = _icp(["canister", "call", cid, "list", "(record {})", "-n", "local"], check=False).stdout
         assert "index.html" in out, out
+
+        # Upgrading a certified-assets stand must pass the `(null)` install arg
+        # (its post_upgrade decodes `opt AssetCanisterArgs`); an empty `()` arg
+        # makes the canister trap on candid decode. Regression guard for that.
+        up = _ok("upgrade_to", {"stand": "web-fe", "wasm_key": "demo-frontend"})
+        assert cid in up["upgraded"], up
+        assert canister_module_hash(cid) == whash
+        # Assets survive the upgrade (stable state preserved).
+        out2 = _icp(["canister", "call", cid, "list", "(record {})", "-n", "local"], check=False).stdout
+        assert "index.html" in out2, out2

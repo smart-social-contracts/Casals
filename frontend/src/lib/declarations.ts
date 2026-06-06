@@ -25,7 +25,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     reconcile:             IDL.Func([], [IDL.Text], []),
     set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
 
-    // ── sheet (ephemeral desired-orchestra) ──
+    // ── sheet (persistent desired-orchestra) ──
     set_sheet:             IDL.Func([IDL.Text], [IDL.Text], []),
     reset_sheet:           IDL.Func([], [IDL.Text], []),
     deploy_sheet:          IDL.Func([IDL.Text], [IDL.Text], []),
@@ -35,6 +35,14 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     create_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     create_desk:           IDL.Func([IDL.Text], [IDL.Text], []),
     set_commander:         IDL.Func([IDL.Text], [IDL.Text], []),
+    set_permissions:       IDL.Func([IDL.Text], [IDL.Text], []),
+    list_permissions:      IDL.Func([], [IDL.Text], ['query']),
+    rename_section:        IDL.Func([IDL.Text], [IDL.Text], []),
+    rename_desk:           IDL.Func([IDL.Text], [IDL.Text], []),
+    rename_stand:          IDL.Func([IDL.Text], [IDL.Text], []),
+    delete_section:        IDL.Func([IDL.Text], [IDL.Text], []),
+    delete_desk:           IDL.Func([IDL.Text], [IDL.Text], []),
+    delete_stand:          IDL.Func([IDL.Text], [IDL.Text], []),
     register_stand:        IDL.Func([IDL.Text], [IDL.Text], []),
     add_authorized_wasm:   IDL.Func([IDL.Text], [IDL.Text], []),
     remove_authorized_wasm: IDL.Func([IDL.Text], [IDL.Text], []),
@@ -46,5 +54,11 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     revert_snapshot:       IDL.Func([IDL.Text], [IDL.Text], []),
     stop_canister:         IDL.Func([IDL.Text], [IDL.Text], []),
     start_canister:        IDL.Func([IDL.Text], [IDL.Text], []),
+    set_log_visibility:    IDL.Func([IDL.Text], [IDL.Text], []),
+    stand_browse:          IDL.Func([IDL.Text], [IDL.Text], []),
+    stand_exec:            IDL.Func([IDL.Text], [IDL.Text], []),
+    list_subnets:          IDL.Func([], [IDL.Text], []),
+    estimate_deploy:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    refresh_fx:            IDL.Func([], [IDL.Text], []),
   });
 };

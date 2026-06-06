@@ -1,5 +1,6 @@
-"""The default Casals sheet, loaded into the ephemeral live sheet at canister
-start (see main.py `_load_default_sheet`).
+"""The default Casals sheet. It only *seeds* the live sheet on the very first
+boot (see main.py `_load_sheet`); thereafter the live sheet is persisted in
+stable storage and edits survive restarts/upgrades.
 
 A *sheet* is a declarative description of the desired orchestra — Sections ⊃
 Desks ⊃ Stands — where each stand references an authorized WASM by `wasm_key`.

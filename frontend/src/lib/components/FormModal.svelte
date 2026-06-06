@@ -25,6 +25,7 @@
     fields?: Field[];
     submitLabel?: string;
     busy?: boolean;
+    logLines?: string[];
     onsubmit?: (values: Values) => void;
     oncancel?: () => void;
   }
@@ -35,9 +36,19 @@
     fields = [],
     submitLabel = 'Submit',
     busy = false,
+    logLines = [],
     onsubmit,
     oncancel,
   }: Props = $props();
+
+  let logEl = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    // Auto-scroll to bottom whenever new log lines arrive.
+    if (logLines.length && logEl) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  });
 
   // Initialized once at mount. The parent mounts a fresh modal each time it is
   // opened, so the form always starts from the supplied field defaults.
@@ -87,14 +98,19 @@
       {#each fields as field (field.name)}
         <div>
           {#if field.type === 'checkbox'}
-            <label class="flex items-center gap-2.5 cursor-pointer">
+            <label class="flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
-                class="w-4 h-4 rounded border-primary-300"
+                class="mt-0.5 w-4 h-4 rounded border-primary-300 accent-red-600"
                 bind:checked={values[field.name] as boolean}
               />
-              <span class="text-sm font-medium text-primary-700">{field.label}</span>
+              <span class="text-sm font-medium {values[field.name] ? 'text-red-700' : 'text-primary-700'}">{field.label}</span>
             </label>
+            {#if field.help && values[field.name]}
+              <div class="mt-1.5 flex items-start gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                {field.help}
+              </div>
+            {/if}
           {:else}
             <label class="label" for={`field-${field.name}`}>
               {field.label}{#if field.required}<span class="text-red-500"> *</span>{/if}
@@ -129,9 +145,41 @@
         </div>
       {/each}
 
+      {#if busy}
+        <div class="rounded-lg bg-gray-950 border border-gray-800 overflow-hidden">
+          {#if logLines.length > 0}
+            <div
+              bind:this={logEl}
+              class="p-3 h-40 overflow-y-auto font-mono text-xs text-green-400 space-y-0.5"
+            >
+              {#each logLines as line}
+                <div class="leading-snug whitespace-pre-wrap break-all">{line}</div>
+              {/each}
+              <div class="animate-pulse text-gray-500">▌</div>
+            </div>
+          {:else}
+            <div class="p-3 flex items-center gap-2 font-mono text-xs text-green-400">
+              <svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+              </svg>
+              Waiting for first event…
+            </div>
+          {/if}
+          <div class="border-t border-gray-800 px-3 py-1.5 text-[10px] text-gray-500">
+            Running on-chain · you can close this window safely
+          </div>
+        </div>
+      {/if}
+
       <div class="flex items-center justify-end gap-3 pt-2">
-        <button type="button" class="btn-secondary btn-sm" onclick={cancel} disabled={busy}>Cancel</button>
-        <button type="submit" class="btn-primary btn-sm" disabled={busy}>
+        <button type="button" class="btn-secondary btn-sm" onclick={cancel}>
+          {busy ? 'Close' : 'Cancel'}
+        </button>
+        <button
+          type="submit"
+          class="{(values['reinstall'] ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500' : '') + ' btn-primary btn-sm'}"
+          disabled={busy}
+        >
           {#if busy}
             <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />

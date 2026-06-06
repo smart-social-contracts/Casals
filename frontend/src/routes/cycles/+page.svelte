@@ -11,6 +11,8 @@
   } from '$lib/api';
   import type { CyclesReport, StandCycles, CycleHistory, PoolCanisterCycles } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
+  import { loadFx } from '$lib/fx.svelte';
+  import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
   import LineChart from '$lib/components/LineChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
@@ -39,6 +41,7 @@
       const [r, h] = await Promise.all([getCycles(), getCycleHistory()]);
       report = r;
       history = h;
+      loadFx();
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -213,10 +216,12 @@
       <div class="card p-4">
         <p class="text-xs text-primary-500">Treasury balance</p>
         <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.balance)}</p>
+        <Fiat value={report.treasury.balance} block />
       </div>
       <div class="card p-4">
         <p class="text-xs text-primary-500">Spendable</p>
         <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.spendable)}</p>
+        <Fiat value={report.treasury.spendable} block />
         <p class="text-[11px] text-primary-400">reserve {formatCycles(report.treasury.reserve)}</p>
       </div>
       <div class="card p-4">
@@ -319,6 +324,7 @@
                 <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.desk}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-primary-900">
                   {formatCycles(s.cycles)}
+                  <Fiat value={s.cycles} block class="text-right" />
                   {#if s.error}<div class="text-[11px] text-red-500" title={s.error}>error</div>{/if}
                 </td>
                 <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden md:table-cell">{formatCycles(s.min_cycles)}</td>
@@ -377,6 +383,7 @@
                   <td class="px-4 py-2.5 text-primary-600">{c.stand_name || '—'}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-900">
                     {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
+                    {#if c.cycles !== undefined}<Fiat value={c.cycles} block class="text-right" />{/if}
                     {#if c.error}<div class="text-[11px] text-red-500" title={c.error}>error</div>{/if}
                   </td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden sm:table-cell">{c.deposited ? formatCycles(c.deposited) : '—'}</td>

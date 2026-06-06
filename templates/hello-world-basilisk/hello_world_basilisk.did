@@ -92,6 +92,8 @@ type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
 
 service : {
-  "greet" : (text) -> (text) query;
+  "greet" : (text) -> (text);
+  "__shell__" : (text) -> (text);
+  "__browse__" : (text) -> (text) query;
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

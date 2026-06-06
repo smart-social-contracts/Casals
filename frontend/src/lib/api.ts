@@ -2,6 +2,7 @@ import { Actor, HttpAgent } from '@dfinity/agent';
 import { idlFactory } from './declarations';
 import { get } from 'svelte/store';
 import { identity } from './auth';
+import { icHost, isLocalHost } from './ic-host';
 
 // ---------------------------------------------------------------------------
 // Types (mirror the backend JSON payloads)
@@ -18,12 +19,17 @@ export interface Stand {
   wasm_hash: string;
   status: string;
   snapshot_id: string;
+  subnet?: string;
 }
 
 export interface Desk {
   name: string;
   description: string;
   commander_principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
+  subnet?: string;
+  subnet_type?: string;
   stands: Stand[];
 }
 
@@ -31,7 +37,17 @@ export interface Section {
   name: string;
   description: string;
   commander_principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
+  subnet?: string;
+  subnet_type?: string;
   desks: Desk[];
+}
+
+export interface Permission {
+  key: string;
+  label: string;
+  group: string;
 }
 
 export interface Tree {
@@ -58,6 +74,14 @@ export interface Metadata {
   treasury_reserve: number;
   cycles_autopilot: boolean;
   cycles_check_interval_secs: number;
+  // Fiat display: the currency cycle counts are also shown in, and the cached
+  // conversion factor (millionths of currency per 1T cycles; 0 => not fetched).
+  display_currency?: string;
+  fx_micro_per_tcycle?: number;
+  fx_currency?: string;
+  fx_updated?: number;
+  fx_error?: string;
+  fx_currencies?: string[];
   canister_type: string;
 }
 
@@ -70,6 +94,9 @@ export interface SectionSummary {
 
 export interface AuthorizedWasm {
   key: string;
+  family: string;
+  version: string;
+  latest: boolean;
   section: string;
   registry_namespace: string;
   registry_path: string;
@@ -84,9 +111,11 @@ export interface AuthorizedWasm {
 export interface OrchestrationEvent {
   idx: number;
   btype: string;
+  kind: string;          // alias for btype, set by backend
+  timestamp_secs: number;
   canister_id: string;
   caller: string;
-  payload: string;
+  payload: Record<string, any>;
   self_hash: string;
   parent_hash: string;
 }
@@ -170,6 +199,8 @@ export interface SheetDesk {
   name: string;
   description?: string;
   commander_principal?: string;
+  subnet?: string;
+  subnet_type?: string;
   stands?: SheetStand[];
 }
 
@@ -177,6 +208,8 @@ export interface SheetSection {
   name: string;
   description?: string;
   commander_principal?: string;
+  subnet?: string;
+  subnet_type?: string;
   desks?: SheetDesk[];
 }
 
@@ -202,6 +235,8 @@ export interface PooledCanister {
   canister_id: string;
   status: 'free' | 'in_use';
   stand_name: string;
+  subnet?: string;
+  subnet_type?: string;
 }
 
 export interface PoolReport {
@@ -211,14 +246,56 @@ export interface PoolReport {
   canisters: PooledCanister[];
 }
 
+export interface DeployEstimate {
+  ok: boolean;
+  desired_stands: number;
+  matching_stands: number;
+  reinstall_stands: number;
+  unresolved_stands: number;
+  missing_stands: number;
+  free_pool: number;
+  reused_from_pool: number;
+  new_canisters: number;
+  per_canister_cycles: number;
+  create_cost_cycles: number;
+  balance_cycles: number;
+  reserve_cycles: number;
+  available_cycles: number;
+  shortfall_cycles: number;
+  ready: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Actor setup
 // ---------------------------------------------------------------------------
 
-const IS_LOCAL =
-  typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' || window.location.hostname.endsWith('.localhost'));
-const HOST = IS_LOCAL ? 'http://localhost:4943' : 'https://icp-api.io';
+const IS_LOCAL = isLocalHost();
+export { icHost } from './ic-host';
+
+// ---------------------------------------------------------------------------
+// Shared agent — created once, root key fetched eagerly on local networks so
+// certificate verification never races with the first query.
+// ---------------------------------------------------------------------------
+let _sharedAgent: HttpAgent | null = null;
+let _rootKeyReady: Promise<void> | null = null;
+
+function _getAgent(): HttpAgent {
+  if (!_sharedAgent) {
+    _sharedAgent = new HttpAgent({ host: icHost() });
+    if (IS_LOCAL) {
+      _rootKeyReady = _sharedAgent.fetchRootKey().then(() => {});
+    } else {
+      _rootKeyReady = Promise.resolve();
+    }
+  }
+  return _sharedAgent;
+}
+
+async function _readyAgent(): Promise<HttpAgent> {
+  const agent = _getAgent();
+  await _rootKeyReady;
+  return agent;
+}
 
 // icp-cli injects all canister IDs (and the network root key) into the asset
 // canister and exposes them to the browser via the `ic_env` cookie. We read the
@@ -242,7 +319,7 @@ function _backendCanisterId(): string {
   return _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] ?? '';
 }
 
-function _makeActor(id: any = null) {
+function _makeActorWithAgent(agent: HttpAgent): any {
   const canisterId = _backendCanisterId();
   if (!canisterId) {
     throw new Error(
@@ -250,18 +327,24 @@ function _makeActor(id: any = null) {
         'asset canister on deploy) or VITE_CANISTER_ID for local dev.'
     );
   }
-  const agent = new HttpAgent({ identity: id ?? undefined, host: HOST });
-  if (IS_LOCAL) agent.fetchRootKey().catch(() => {});
   return Actor.createActor(idlFactory, { agent, canisterId });
 }
 
-function _actor(authenticated = false): any {
+async function _actor(authenticated = false): Promise<any> {
   if (authenticated) {
     const id = get(identity);
     if (!id) throw new Error('Not authenticated');
-    return _makeActor(id);
+    // Authenticated calls need their own agent with the user identity.
+    // We must also fetch (and await) the root key into this agent on local
+    // networks — sharing the shared-agent's key promise is not enough because
+    // each HttpAgent instance manages its own root key buffer.
+    const agent = new HttpAgent({ identity: id, host: icHost() });
+    if (IS_LOCAL) await agent.fetchRootKey();
+    return _makeActorWithAgent(agent);
   }
-  return _makeActor();
+  // Anonymous reads share the single agent whose root key is already fetched.
+  const agent = await _readyAgent();
+  return _makeActorWithAgent(agent);
 }
 
 function _parseQuery<T>(raw: string): T {
@@ -285,65 +368,78 @@ function _parseUpdate(raw: string): UpdateResult {
 // ---------------------------------------------------------------------------
 
 export async function getStatus(): Promise<Status> {
-  return _parseQuery<Status>(await _actor().get_status());
+  return _parseQuery<Status>(await (await _actor()).get_status());
 }
 
 export async function casalsMetadata(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await _actor().casals_metadata());
+  return _parseQuery<Metadata>(await (await _actor()).casals_metadata());
 }
 
 export async function getSettings(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await _actor().get_settings());
+  return _parseQuery<Metadata>(await (await _actor()).get_settings());
 }
 
 export async function getTree(): Promise<Tree> {
-  return _parseQuery<Tree>(await _actor().get_tree());
+  return _parseQuery<Tree>(await (await _actor()).get_tree());
 }
 
 export async function listSections(): Promise<SectionSummary[]> {
-  return _parseQuery<SectionSummary[]>(await _actor().list_sections());
+  return _parseQuery<SectionSummary[]>(await (await _actor()).list_sections());
 }
 
 export async function listAuthorizedWasms(section?: string): Promise<AuthorizedWasm[]> {
   const args = section ? { section } : {};
-  return _parseQuery<AuthorizedWasm[]>(await _actor().list_authorized_wasms(JSON.stringify(args)));
+  return _parseQuery<AuthorizedWasm[]>(await (await _actor()).list_authorized_wasms(JSON.stringify(args)));
 }
 
 export async function getEvents(opts: { canister_id?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
-  return _parseQuery<OrchestrationEvent[]>(await _actor().get_events(JSON.stringify(opts)));
+  return _parseQuery<OrchestrationEvent[]>(await (await _actor()).get_events(JSON.stringify(opts)));
 }
 
 export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
-  return _parseQuery<CycleOpsInfo>(await _actor().cycleops_monitored());
+  return _parseQuery<CycleOpsInfo>(await (await _actor()).cycleops_monitored());
 }
 
 // ---------------------------------------------------------------------------
-// Sheet (ephemeral desired-orchestra) + canister pool
+// Sheet (persistent desired-orchestra) + canister pool
 // ---------------------------------------------------------------------------
 
 // The live sheet is public to read (it's just the desired layout); editing and
 // deploying require authentication.
 export async function getSheet(): Promise<Sheet> {
-  return _parseQuery<Sheet>(await _actor().get_sheet());
+  return _parseQuery<Sheet>(await (await _actor()).get_sheet());
 }
 
 export async function listPool(): Promise<PoolReport> {
-  return _parseQuery<PoolReport>(await _actor().list_pool());
+  return _parseQuery<PoolReport>(await (await _actor()).list_pool());
+}
+
+// Idempotent-aware estimate of the cycles needed to deploy the given (or live)
+// sheet, accounting for the conductor's balance and reusable free canisters.
+export async function estimateDeploy(sheet?: Sheet): Promise<DeployEstimate> {
+  const arg = sheet ? JSON.stringify({ sheet }) : '';
+  return _parseQuery<DeployEstimate>(await (await _actor()).estimate_deploy(arg));
 }
 
 export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_sheet(JSON.stringify(sheet)));
+  return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify(sheet)));
 }
 
 export async function resetSheet(): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).reset_sheet());
+  return _parseUpdate(await (await _actor(true)).reset_sheet());
+}
+
+// Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
+export async function listSubnets(): Promise<string[]> {
+  const r = (await _parseUpdate(await (await _actor()).list_subnets())) as UpdateResult & { subnets?: string[] };
+  return r.subnets ?? [];
 }
 
 // Idempotently stand up the whole orchestra described by the live sheet. If a
 // sheet is passed it is set live first, then deployed. Long-running.
 export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
   const args = sheet ? { sheet } : {};
-  return _parseUpdate(await _actor(true).deploy_sheet(JSON.stringify(args))) as DeployResult;
+  return _parseUpdate(await (await _actor(true)).deploy_sheet(JSON.stringify(args))) as DeployResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,22 +451,22 @@ export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
 // no special caller, so we call it anonymously — the solvency snapshot is
 // public (only top-up / reconcile / policy changes need authentication).
 export async function getCycles(): Promise<CyclesReport> {
-  return _parseQuery<CyclesReport>(await _actor().get_cycles());
+  return _parseQuery<CyclesReport>(await (await _actor()).get_cycles());
 }
 
 // Per-stand balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.
 export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
-  return _parseQuery<CycleHistory>(await _actor().get_cycle_history(JSON.stringify(opts)));
+  return _parseQuery<CycleHistory>(await (await _actor()).get_cycle_history(JSON.stringify(opts)));
 }
 
 export async function topUp(args: { stand?: string; desk?: string; amount?: number }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).top_up(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
 }
 
 export async function reconcile(): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).reconcile());
+  return _parseUpdate(await (await _actor(true)).reconcile());
 }
 
 export async function setCyclePolicy(args: {
@@ -380,7 +476,7 @@ export async function setCyclePolicy(args: {
   min_cycles?: number;
   topup_cycles?: number;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_cycle_policy(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).set_cycle_policy(JSON.stringify(args)));
 }
 
 // ---------------------------------------------------------------------------
@@ -397,10 +493,17 @@ export interface SettingsPatch {
   treasury_reserve?: number;
   cycles_autopilot?: boolean;
   cycles_check_interval_secs?: number;
+  display_currency?: string;
 }
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_settings(JSON.stringify(patch)));
+  return _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
+}
+
+// Refresh (and cache, server-side) the cycles→currency rate for the configured
+// display currency. Throttled on the backend; safe to call on page load.
+export async function refreshFx(): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor()).refresh_fx());
 }
 
 export async function createSection(args: {
@@ -408,7 +511,7 @@ export async function createSection(args: {
   description?: string;
   commander_principal?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_section(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_section(JSON.stringify(args)));
 }
 
 export async function createDesk(args: {
@@ -417,15 +520,52 @@ export async function createDesk(args: {
   description?: string;
   commander_principal?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_desk(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_desk(JSON.stringify(args)));
+}
+
+export async function renameSection(args: { section: string; new_name: string; description?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_section(JSON.stringify(args)));
+}
+
+export async function renameDesk(args: { desk: string; new_name: string; description?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_desk(JSON.stringify(args)));
+}
+
+export async function renameStand(args: { stand: string; new_name: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_stand(JSON.stringify(args)));
+}
+
+export async function deleteSection(args: { section: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_section(JSON.stringify(args)));
+}
+
+export async function deleteDesk(args: { desk: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_desk(JSON.stringify(args)));
+}
+
+export async function deleteStand(args: { stand: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_stand(JSON.stringify(args)));
 }
 
 export async function setCommander(args: {
   section?: string;
   desk?: string;
   commander_principal: string;
+  permissions?: string[] | '*';
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).set_commander(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).set_commander(JSON.stringify(args)));
+}
+
+export async function setPermissions(args: {
+  section?: string;
+  desk?: string;
+  permissions: string[] | '*';
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
+}
+
+export async function listPermissions(): Promise<Permission[]> {
+  return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
 }
 
 export async function registerStand(args: {
@@ -434,11 +574,12 @@ export async function registerStand(args: {
   canister_id: string;
   kind: StandKind;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).register_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).register_stand(JSON.stringify(args)));
 }
 
 export async function addAuthorizedWasm(args: {
   key: string;
+  version?: string;
   section?: string;
   registry_namespace?: string;
   registry_path: string;
@@ -446,11 +587,11 @@ export async function addAuthorizedWasm(args: {
   kind?: string;
   description?: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).add_authorized_wasm(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).add_authorized_wasm(JSON.stringify(args)));
 }
 
 export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).remove_authorized_wasm(JSON.stringify({ key })));
+  return _parseUpdate(await (await _actor(true)).remove_authorized_wasm(JSON.stringify({ key })));
 }
 
 // ---------------------------------------------------------------------------
@@ -463,31 +604,102 @@ export async function createStand(args: {
   kind: StandKind;
   wasm_key: string;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).create_stand(JSON.stringify(args)));
 }
 
 export async function upgradeTo(args: {
   desk?: string;
   stand?: string;
   wasm_key: string;
+  reinstall?: boolean;
 }): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).upgrade_to(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
 }
 
 export async function createSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).create_snapshot(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ stand })));
 }
 
 export async function revertSnapshot(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).revert_snapshot(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).revert_snapshot(JSON.stringify({ stand })));
 }
 
 export async function stopCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).stop_canister(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).stop_canister(JSON.stringify({ stand })));
 }
 
 export async function startCanister(stand: string): Promise<UpdateResult> {
-  return _parseUpdate(await _actor(true).start_canister(JSON.stringify({ stand })));
+  return _parseUpdate(await (await _actor(true)).start_canister(JSON.stringify({ stand })));
+}
+
+// Make a stand's logs publicly fetchable (or revert to controllers-only). New
+// stands are created public already; this backfills existing ones.
+export async function setLogVisibility(
+  args: { stand?: string; public?: boolean } = {},
+): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_log_visibility(JSON.stringify(args)));
+}
+
+// ---------------------------------------------------------------------------
+// Basilisk introspection (browse / shell) — relayed through Casals
+// ---------------------------------------------------------------------------
+// Only available for Basilisk stands built with
+// `__basilisk_features__ = ["shell", "browse"]`. Casals (the stand's
+// controller) relays the calls.
+
+export interface BrowseResult extends UpdateResult {
+  result?: unknown;
+}
+
+export interface ExecResult extends UpdateResult {
+  output?: string;
+}
+
+// Read-only data introspection. `query` defaults to {action:"schema"} on the
+// backend. Other actions: len / keys / get / items.
+export async function standBrowse(
+  stand: string,
+  query?: Record<string, unknown>,
+): Promise<BrowseResult> {
+  const args: Record<string, unknown> = { stand };
+  if (query) args.query = query;
+  return _parseUpdate(await (await _actor()).stand_browse(JSON.stringify(args))) as BrowseResult;
+}
+
+// Run Python inside the stand (controller-gated). Requires auth.
+export async function standExec(stand: string, code: string): Promise<ExecResult> {
+  return _parseUpdate(await (await _actor(true)).stand_exec(JSON.stringify({ stand, code }))) as ExecResult;
+}
+
+// ---------------------------------------------------------------------------
+// Canister logs (read straight from the IC management canister in the browser)
+// ---------------------------------------------------------------------------
+// `fetch_canister_logs` is a query-only management method that canisters cannot
+// call, so the dashboard fetches a stand's logs directly. It works anonymously
+// only when the stand's log_visibility is `public` (see setLogVisibility).
+
+export interface CanisterLogRecord {
+  idx: number;
+  timestamp_nanos: bigint;
+  content: string;
+}
+
+export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRecord[]> {
+  const [{ ICManagementCanister }, { Principal }] = await Promise.all([
+    import('@dfinity/ic-management'),
+    import('@dfinity/principal'),
+  ]);
+  const agent = new HttpAgent({ host: icHost() });
+  if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
+  const mgmt = ICManagementCanister.create({ agent });
+  const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));
+  const recs: any[] = res?.canister_log_records ?? [];
+  const dec = new TextDecoder();
+  return recs.map((r) => ({
+    idx: Number(r.idx),
+    timestamp_nanos: r.timestamp_nanos as bigint,
+    content: dec.decode(r.content instanceof Uint8Array ? r.content : new Uint8Array(r.content ?? [])),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +724,33 @@ export function formatCycles(n: number | undefined | null): string {
   if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   return `${n}`;
+}
+
+// Symbols for the currencies the backend offers (XRC FiatCurrency codes).
+export const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$', EUR: '€', GBP: '£', CHF: 'CHF ', JPY: '¥', CNY: '¥', CAD: 'CA$', AUD: 'A$',
+};
+
+// Convert a raw cycles count to its fiat value given the cached factor
+// (millionths of currency per 1T cycles). Returns null if no rate is available.
+export function cyclesToFiat(cycles: number | undefined | null, microPerTcycle: number | undefined | null): number | null {
+  if (cycles === undefined || cycles === null) return null;
+  if (!microPerTcycle || microPerTcycle <= 0) return null;
+  return (cycles / 1e12) * (microPerTcycle / 1e6);
+}
+
+// Render a fiat value compactly (more decimals for small amounts), prefixed
+// with the currency symbol. "" when there's nothing to show.
+export function formatFiat(value: number | null, currency: string | undefined): string {
+  if (value === null || !isFinite(value)) return '';
+  const cur = currency || 'USD';
+  const sym = CURRENCY_SYMBOLS[cur] ?? '';
+  const abs = Math.abs(value);
+  let digits = 2;
+  if (abs > 0 && abs < 0.01) digits = 4;
+  else if (abs < 1) digits = 3;
+  const num = value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return sym ? `${sym}${num}` : `${num} ${cur}`;
 }
 
 // Parse a human cycles string ("1.5t", "500b", "1000000") into a raw count.
@@ -542,7 +781,7 @@ export function cycleStatusBadge(status: CycleStatus): string {
 export function candidUiUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
-    return `http://localhost:4943/?canisterId=${canisterId}`;
+    return `${icHost()}/?canisterId=${canisterId}`;
   }
   return `https://a4gq6-oaaaa-aaaab-qaa4q-cai.raw.icp0.io/?id=${canisterId}`;
 }
@@ -552,12 +791,21 @@ export function candidUiUrl(canisterId: string): string {
 export function canisterUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
-    return `http://${canisterId}.localhost:4943`;
+    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
+    return `http://${canisterId}.localhost:${port}`;
   }
   return `https://${canisterId}.icp0.io`;
 }
 
 export function standLink(stand: { kind: StandKind; url: string; canister_id: string }): string {
+  // On local replica the backend bakes mainnet icp0.io URLs into every stand
+  // view (it has no knowledge of the frontend's host). Override with the
+  // correct local URL whenever we detect we are running locally.
+  if (IS_LOCAL) {
+    return stand.kind === 'backend'
+      ? candidUiUrl(stand.canister_id)
+      : canisterUrl(stand.canister_id);
+  }
   if (stand.url) return stand.url;
   return stand.kind === 'backend' ? candidUiUrl(stand.canister_id) : canisterUrl(stand.canister_id);
 }

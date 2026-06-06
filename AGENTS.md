@@ -52,18 +52,60 @@ Deploy identity principal: `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2w
 
 ## Local development
 
+### Full local setup (from scratch)
+
 ```bash
-# 1. Install Python deps
-pip install -r requirements-dev.txt
+git submodule update --init          # populate file_registry/
+pip install -r requirements-dev.txt  # ic-basilisk-toolkit + pytest
+npm --prefix frontend install        # frontend deps (one-time)
 
-# 2. Install frontend deps
-npm --prefix frontend install
+# Terminal 1 — keep the replica running
+icp network start -e local
 
-# 3. Build the backend WASM (output: .basilisk/casals_backend/casals_backend.wasm)
-make build
+# Terminal 2 — build, deploy, seed
+make deploy                          # builds WASMs + deploys all 3 canisters + syncs assets
+icp canister top-up --amount 100t casals_backend -e local   # fund the treasury (see note)
+python3 scripts/seed.py -e local --deploy   # upload templates + deploy demo orchestra
+```
 
-# 4. Start a local replica, deploy backend + frontend, run tests
-pytest tests/ -v               # spins up a replica and tears it down automatically
+Open **http://casals_frontend.local.localhost:8000/** to see the app.
+
+Re-deploy after code changes: `make deploy && python3 scripts/seed.py -e local --deploy`
+
+### Known quirks
+
+**`icp.yaml` — asset sync path must be `dist`, not `frontend/dist`.**
+The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths like
+`frontend/dist`. A symlink `dist → frontend/dist` lives at the repo root and `icp.yaml`
+uses `dir: dist`. Do not change this back to `dir: frontend/dist`.
+
+**`deploy_sheet` needs a well-funded treasury.**
+`casals_backend` acts as the cycles treasury — it creates stand canisters and sends
+them cycles. A fresh local replica seeds each canister with ~1.4T cycles, which is not
+enough to create 6 stand canisters. Before calling `deploy_sheet` (or
+`seed.py --deploy`) top up the backend with at least 100T:
+
+```bash
+icp canister top-up --amount 100t casals_backend -e local
+```
+
+On local you have 1 000 000 seeded ICP so this costs nothing.
+
+**"Out of cycles" ≠ mainnet.**
+If you see `Canister a5dhi-k7777-77775-aaabq-cai is out of cycles`, the canister ID
+prefix (`...77775-`) confirms it is the **local** canister, not mainnet
+(`ip2wh-iyaaa-aaaao-bbaoq-cai`). Just top up as above.
+
+**Frontend shows local data, not mainnet.**
+The `ic_env` cookie served by the asset canister contains the local canister IDs.
+The frontend reads from it, so it always talks to the local backend. Symptoms that
+confirm you are on local: **Stands: 0** (fresh deploy), treasury ~1–3T cycles,
+"No samples in this range yet" on the Cycles page.
+
+### Run tests
+
+```bash
+pytest tests/ -v    # spins up its own replica and tears it down automatically
 ```
 
 ## Deploy to IC mainnet
@@ -136,9 +178,12 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `revert_snapshot` | update | roll a Stand back to its snapshot |
 | `stop_canister` | update | stop a Stand |
 | `start_canister` | update | start a Stand |
-| `get_sheet` | query | the live (ephemeral) sheet |
-| `set_sheet` | update | replace the live sheet (heap-only; nothing on-chain yet) |
-| `reset_sheet` | update | reload the live sheet from the bundled default |
+| `get_sheet` | query | the live (persisted) sheet |
+| `set_sheet` | update | replace + persist the live sheet (nothing on-chain yet) |
+| `reset_sheet` | update | reset the live sheet to the bundled default (persisted) |
+| `estimate_deploy` | query | idempotent-aware cycles top-up estimate for a deploy |
+| `list_subnets` | update | default subnet ids the CMC can place canisters on |
+| `refresh_fx` | update | refresh + cache the cycles→`display_currency` rate (throttled) |
 | `deploy_sheet` | update | idempotently reconcile the orchestra to the live sheet |
 | `list_pool` | query | every canister Casals ever created + its pool status |
 | `get_cycles` | update | live treasury + per-stand solvency (reads canister_status) |
@@ -155,10 +200,10 @@ on-disk twin is `seed/sheets/demo.json` (keep them in sync): a **Demo** section
 with one desk per language (**Motoko**, **Rust**, **Python**), each holding a
 backend stand and a certified-assets **frontend** stand.
 
-The live sheet is **ephemeral**: it is loaded from the default at every canister
-start and held only in the Wasm heap. `set_sheet` edits it; nothing changes
-on-chain until `deploy_sheet`, which **idempotently** reconciles real canisters
-to the sheet:
+The live sheet is **persistent**: it is stored in stable storage (the bundled
+default only seeds the first boot) and survives restarts/upgrades. `set_sheet`
+edits + persists it; nothing changes on-chain until `deploy_sheet`, which
+**idempotently** reconciles real canisters to the sheet:
 
 - create any missing section / desk;
 - create any missing stand — **reusing a free pooled canister** before paying to

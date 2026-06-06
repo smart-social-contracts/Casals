@@ -11,6 +11,8 @@
     { href: '/', label: 'Orchestra' },
     { href: '/sheet', label: 'Sheet' },
     { href: '/cycles', label: 'Cycles' },
+    { href: '/activity', label: 'Activity' },
+    { href: '/commanders', label: 'Commanders' },
     { href: '/wasms', label: 'Authorized WASMs' },
     { href: '/settings', label: 'Settings' },
   ];

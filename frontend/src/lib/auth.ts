@@ -8,10 +8,10 @@ export const principal = writable('');
 
 let _authClient: AuthClient | null = null;
 
-const II_URL =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? `http://localhost:4943?canisterId=rdmx6-jaaaa-aaaaa-aaadq-cai`
-    : 'https://identity.ic0.app';
+// Always use the production Internet Identity — it issues delegations that
+// work with any replica (local or mainnet). The delegation is scoped to the
+// current origin, so local and mainnet get separate identities automatically.
+const II_URL = 'https://identity.ic0.app';
 
 function _applyIdentity(id: Identity) {
   identity.set(id);

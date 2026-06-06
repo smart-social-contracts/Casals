@@ -1,0 +1,447 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { getTree, setCommander, setPermissions, listPermissions } from '$lib/api';
+  import type { Tree, Permission } from '$lib/api';
+  import { isAuthenticated } from '$lib/auth';
+  import { toasts } from '$lib/stores/toast';
+
+  interface CommanderRow {
+    scope: 'section' | 'desk';
+    section: string;
+    desk?: string;
+    principal: string;
+    label: string;            // hierarchy path label
+    permissions: string[];    // resolved granted keys
+    allPermissions: boolean;  // true => full access ("*")
+  }
+
+  let tree = $state<Tree | null>(null);
+  let catalog = $state<Permission[]>([]);
+  let loading = $state(true);
+  let error = $state('');
+  let filterQuery = $state('');
+
+  async function load() {
+    loading = true;
+    error = '';
+    try {
+      const [t, perms] = await Promise.all([getTree(), listPermissions().catch(() => [])]);
+      tree = t;
+      if (perms.length) catalog = perms;
+    } catch (e: any) {
+      error = e?.message ?? 'Failed to load data';
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(load);
+
+  // Catalog grouped by group, in declaration order.
+  const groupedCatalog = $derived.by(() => {
+    const groups: { name: string; perms: Permission[] }[] = [];
+    for (const p of catalog) {
+      let g = groups.find((x) => x.name === p.group);
+      if (!g) { g = { name: p.group, perms: [] }; groups.push(g); }
+      g.perms.push(p);
+    }
+    return groups;
+  });
+
+  const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
+
+  // Flatten tree into commander rows.
+  const rows = $derived.by((): CommanderRow[] => {
+    if (!tree) return [];
+    const out: CommanderRow[] = [];
+    for (const sec of tree.sections) {
+      if (sec.commander_principal) {
+        out.push({
+          scope: 'section', section: sec.name, principal: sec.commander_principal,
+          label: sec.name, permissions: sec.permissions ?? [], allPermissions: sec.all_permissions ?? true,
+        });
+      }
+      for (const dk of sec.desks) {
+        if (dk.commander_principal) {
+          out.push({
+            scope: 'desk', section: sec.name, desk: dk.name, principal: dk.commander_principal,
+            label: `${sec.name} / ${dk.name}`, permissions: dk.permissions ?? [], allPermissions: dk.all_permissions ?? true,
+          });
+        }
+      }
+    }
+    return out;
+  });
+
+  const filteredRows = $derived.by(() => {
+    const q = filterQuery.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      [r.principal, r.label, r.section, r.desk ?? '', r.scope, ...r.permissions]
+        .some((v) => v.toLowerCase().includes(q))
+    );
+  });
+
+  // Group by principal so we can see all roles for each person.
+  const byPrincipal = $derived.by(() => {
+    const map = new Map<string, CommanderRow[]>();
+    for (const r of filteredRows) {
+      if (!map.has(r.principal)) map.set(r.principal, []);
+      map.get(r.principal)!.push(r);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  });
+
+  async function copyToClipboard(text: string) {
+    try { await navigator.clipboard.writeText(text); toasts.success('Copied'); } catch { /* ignore */ }
+  }
+
+  // ── Assign commander modal ──────────────────────────────────────────────────
+  const sectionOptions = $derived((tree?.sections ?? []).map((s) => s.name));
+  function deskNames(sectionName: string) {
+    return (tree?.sections.find((s) => s.name === sectionName)?.desks ?? []).map((d) => d.name);
+  }
+
+  let busy = $state(false);
+
+  let assignOpen = $state(false);
+  let assignScope = $state<'section' | 'desk'>('section');
+  let assignSection = $state('');
+  let assignDesk = $state('');
+  let assignPrincipal = $state('');
+  let assignPerms = $state<Set<string>>(new Set());
+
+  function openAssign() {
+    assignScope = 'section';
+    assignSection = sectionOptions[0] ?? '';
+    assignDesk = '';
+    assignPrincipal = '';
+    // Default a new commander to full access (all permissions checked).
+    assignPerms = new Set(catalog.map((p) => p.key));
+    assignOpen = true;
+  }
+
+  const assignAllChecked = $derived(catalog.length > 0 && assignPerms.size >= catalog.length);
+  function assignToggleAll() {
+    assignPerms = assignAllChecked ? new Set() : new Set(catalog.map((p) => p.key));
+  }
+  function assignTogglePerm(key: string) {
+    const next = new Set(assignPerms);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    assignPerms = next;
+  }
+
+  async function submitAssign() {
+    if (!assignPrincipal.trim()) return;
+    busy = true;
+    try {
+      const target = assignScope === 'desk' && assignDesk
+        ? { desk: assignDesk }
+        : { section: assignSection };
+      const permissions: string[] | '*' = assignAllChecked ? '*' : [...assignPerms];
+      await setCommander({ ...target, commander_principal: assignPrincipal.trim(), permissions });
+      toasts.success('Commander assigned');
+      assignOpen = false;
+      await load();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed');
+    } finally {
+      busy = false;
+    }
+  }
+
+  // ── Permissions editor modal ────────────────────────────────────────────────
+  let permsOpen = $state(false);
+  let permsRow = $state<CommanderRow | null>(null);
+  let permsSelected = $state<Set<string>>(new Set());
+
+  function openPerms(row: CommanderRow) {
+    permsRow = row;
+    // If full access, pre-check everything; otherwise the explicit subset.
+    permsSelected = new Set(row.allPermissions ? catalog.map((p) => p.key) : row.permissions);
+    permsOpen = true;
+  }
+
+  function togglePerm(key: string) {
+    const next = new Set(permsSelected);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    permsSelected = next;
+  }
+
+  const allChecked = $derived(catalog.length > 0 && permsSelected.size >= catalog.length);
+  function toggleAll() {
+    permsSelected = allChecked ? new Set() : new Set(catalog.map((p) => p.key));
+  }
+
+  async function submitPerms() {
+    if (!permsRow) return;
+    busy = true;
+    try {
+      const target = permsRow.scope === 'desk' ? { desk: permsRow.desk! } : { section: permsRow.section };
+      // Collapse a full set to "*" so it reads as full access.
+      const permissions: string[] | '*' = allChecked ? '*' : [...permsSelected];
+      await setPermissions({ ...target, permissions });
+      toasts.success('Permissions updated');
+      permsOpen = false;
+      await load();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed');
+    } finally {
+      busy = false;
+    }
+  }
+</script>
+
+<svelte:head><title>Casals · Commanders</title></svelte:head>
+
+<div class="space-y-6 animate-fade-in">
+  <!-- Header -->
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-primary-900">Commanders</h1>
+      <p class="text-sm text-primary-500 mt-1">Principals that govern sections and desks, and their permissions</p>
+    </div>
+    <div class="flex items-center gap-2 self-start">
+      {#if $isAuthenticated}
+        <button class="btn-primary btn-sm" onclick={openAssign}>
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          Assign
+        </button>
+      {/if}
+      <button class="btn-secondary btn-sm" onclick={load}>
+        <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Filter -->
+  {#if !loading && rows.length > 0}
+    <div class="relative">
+      <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+      </svg>
+      <input
+        type="text"
+        class="input pl-9 {filterQuery ? 'pr-9' : ''} text-sm"
+        placeholder="Filter by principal, section, desk, permission…"
+        bind:value={filterQuery}
+      />
+      {#if filterQuery}
+        <button type="button" class="absolute right-3 top-1/2 -translate-y-1/2 text-primary-400 hover:text-primary-600" aria-label="Clear" onclick={() => (filterQuery = '')}>
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Error -->
+  {#if error}
+    <div class="card border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+  {/if}
+
+  <!-- Loading -->
+  {#if loading}
+    <div class="space-y-3">
+      {#each [1, 2, 3] as n (n)}
+        <div class="card p-4 flex items-center gap-4">
+          <div class="skeleton h-10 w-10 rounded-full shrink-0"></div>
+          <div class="flex-1 space-y-2"><div class="skeleton h-4 w-64"></div><div class="skeleton h-3 w-40"></div></div>
+        </div>
+      {/each}
+    </div>
+
+  {:else if rows.length === 0}
+    <div class="text-center py-16">
+      <svg class="w-12 h-12 mx-auto text-primary-200 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+      </svg>
+      <p class="text-primary-500 text-sm font-medium">No commanders assigned yet</p>
+      {#if $isAuthenticated}
+        <p class="text-primary-400 text-xs mt-1">Use the Assign button or set commanders from the Orchestra tab.</p>
+      {/if}
+    </div>
+
+  {:else if filterQuery && byPrincipal.length === 0}
+    <div class="text-center py-10 text-primary-400 text-sm">No results for <strong class="text-primary-700">"{filterQuery}"</strong></div>
+
+  {:else}
+    <div class="space-y-3">
+      {#each byPrincipal as [principal, pRows] (principal)}
+        <div class="card overflow-hidden">
+          <!-- Principal header -->
+          <div class="flex items-center gap-3 px-4 py-3 bg-primary-50/60 border-b border-primary-100">
+            <div class="w-9 h-9 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
+              <svg class="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+              </svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="font-mono text-sm text-primary-800 truncate" title={principal}>{principal}</div>
+              <div class="text-xs text-primary-400 mt-0.5">{pRows.length} role{pRows.length !== 1 ? 's' : ''}</div>
+            </div>
+            <button class="icon-btn shrink-0" title="Copy principal" onclick={() => copyToClipboard(principal)}>
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.185a9.064 9.064 0 0 0-1.5.124" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Roles list -->
+          <div class="divide-y divide-primary-50">
+            {#each pRows as row (row.label)}
+              <div class="px-4 py-3 pl-6">
+                <div class="flex items-center gap-3">
+                  <span class="badge {row.scope === 'section' ? 'badge-primary' : 'badge-neutral'} shrink-0">{row.scope}</span>
+                  <span class="text-sm text-primary-800 flex-1 truncate">
+                    {#if row.desk}
+                      <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.desk}</span>
+                    {:else}
+                      <span class="font-medium">{row.section}</span>
+                    {/if}
+                  </span>
+                  {#if $isAuthenticated}
+                    <button class="btn-ghost btn-sm text-xs shrink-0" onclick={() => openPerms(row)}>Permissions</button>
+                  {/if}
+                </div>
+
+                <!-- Permission chips -->
+                <div class="mt-2 flex flex-wrap items-center gap-1.5 pl-1">
+                  {#if row.allPermissions}
+                    <span class="badge badge-primary text-[11px]">Full access</span>
+                  {:else if row.permissions.length === 0}
+                    <span class="text-xs text-amber-600">No permissions — cannot act</span>
+                  {:else}
+                    {#each row.permissions as key (key)}
+                      <span class="inline-flex items-center rounded bg-primary-50 border border-primary-100 px-2 py-0.5 text-[11px] text-primary-600">{labelFor(key)}</span>
+                    {/each}
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/each}
+    </div>
+
+    <p class="text-xs text-primary-400 text-right">
+      {byPrincipal.length} principal{byPrincipal.length !== 1 ? 's' : ''} ·
+      {rows.length} role{rows.length !== 1 ? 's' : ''}
+      {#if filterQuery}(filtered){/if}
+    </p>
+  {/if}
+</div>
+
+<!-- Assign commander modal -->
+{#if assignOpen}
+  <div class="fixed inset-0 z-40 flex items-center justify-center">
+    <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (assignOpen = false)}></button>
+    <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <h3 class="text-lg font-semibold text-primary-900">Assign commander</h3>
+      <div>
+        <span class="label">Scope</span>
+        <div class="flex gap-2 mt-1">
+          <button class="btn-sm {assignScope === 'section' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'section'; assignDesk = ''; }}>Section</button>
+          <button class="btn-sm {assignScope === 'desk' ? 'btn-primary' : 'btn-secondary'}" onclick={() => (assignScope = 'desk')}>Desk</button>
+        </div>
+      </div>
+      <div>
+        <label class="label" for="assign-section">Section</label>
+        <select id="assign-section" class="input" bind:value={assignSection}>
+          {#each sectionOptions as name (name)}<option value={name}>{name}</option>{/each}
+        </select>
+      </div>
+      {#if assignScope === 'desk'}
+        <div>
+          <label class="label" for="assign-desk">Desk</label>
+          <select id="assign-desk" class="input" bind:value={assignDesk}>
+            <option value="">— select a desk —</option>
+            {#each deskNames(assignSection) as name (name)}<option value={name}>{name}</option>{/each}
+          </select>
+        </div>
+      {/if}
+      <div>
+        <label class="label" for="assign-principal">Principal</label>
+        <input id="assign-principal" type="text" class="input font-mono text-sm" placeholder="aaaaa-aa…" bind:value={assignPrincipal} />
+      </div>
+
+      <!-- Permissions -->
+      <div class="border-t border-primary-100 pt-3 space-y-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" class="w-4 h-4 rounded border-primary-300" checked={assignAllChecked} onchange={assignToggleAll} />
+          <span class="text-sm font-semibold text-primary-800">Full access (all permissions)</span>
+        </label>
+        {#each groupedCatalog as group (group.name)}
+          <div>
+            <div class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider mb-1.5">{group.name}</div>
+            <div class="grid sm:grid-cols-2 gap-1.5">
+              {#each group.perms as perm (perm.key)}
+                <label class="flex items-center gap-2 cursor-pointer rounded px-2 py-1.5 hover:bg-primary-50">
+                  <input type="checkbox" class="w-4 h-4 rounded border-primary-300" checked={assignPerms.has(perm.key)} onchange={() => assignTogglePerm(perm.key)} />
+                  <span class="text-sm text-primary-700">{perm.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <div class="flex items-center justify-between pt-1 border-t border-primary-100">
+        <span class="text-xs text-primary-400">{assignPerms.size} of {catalog.length} permissions</span>
+        <div class="flex gap-3">
+          <button class="btn-secondary btn-sm" onclick={() => (assignOpen = false)} disabled={busy}>Cancel</button>
+          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'desk' && !assignDesk)} onclick={submitAssign}>
+            {busy ? 'Assigning…' : 'Assign'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Permissions editor modal -->
+{#if permsOpen && permsRow}
+  <div class="fixed inset-0 z-40 flex items-center justify-center">
+    <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (permsOpen = false)}></button>
+    <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div>
+        <h3 class="text-lg font-semibold text-primary-900">Permissions</h3>
+        <p class="text-sm text-primary-500 mt-0.5">
+          {permsRow.scope === 'desk' ? `Desk "${permsRow.desk}"` : `Section "${permsRow.section}"`} ·
+          <span class="font-mono">{permsRow.principal.slice(0, 12)}…</span>
+        </p>
+      </div>
+
+      <label class="flex items-center gap-2 cursor-pointer border-b border-primary-100 pb-3">
+        <input type="checkbox" class="w-4 h-4 rounded border-primary-300" checked={allChecked} onchange={toggleAll} />
+        <span class="text-sm font-semibold text-primary-800">Full access (all permissions)</span>
+      </label>
+
+      {#each groupedCatalog as group (group.name)}
+        <div>
+          <div class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider mb-1.5">{group.name}</div>
+          <div class="grid sm:grid-cols-2 gap-1.5">
+            {#each group.perms as perm (perm.key)}
+              <label class="flex items-center gap-2 cursor-pointer rounded px-2 py-1.5 hover:bg-primary-50">
+                <input type="checkbox" class="w-4 h-4 rounded border-primary-300" checked={permsSelected.has(perm.key)} onchange={() => togglePerm(perm.key)} />
+                <span class="text-sm text-primary-700">{perm.label}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+      {/each}
+
+      <div class="flex items-center justify-between pt-2 border-t border-primary-100">
+        <span class="text-xs text-primary-400">{permsSelected.size} of {catalog.length} selected</span>
+        <div class="flex gap-3">
+          <button class="btn-secondary btn-sm" onclick={() => (permsOpen = false)} disabled={busy}>Cancel</button>
+          <button class="btn-primary btn-sm" disabled={busy} onclick={submitPerms}>{busy ? 'Saving…' : 'Save permissions'}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}

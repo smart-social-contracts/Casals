@@ -48,8 +48,9 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 ```bash
 pip install ic-basilisk-toolkit
 make deploy          # build + local deploy
-make deploy-ic       # mainnet
-make seed-ic         # upload templates + authorize WASMs
+make seed            # upload templates + authorize WASMs (locally)
+make deploy-ic       # build + mainnet deploy
+make seed-ic         # upload templates + authorize WASMs (mainnet)
 ```
 
 ---
