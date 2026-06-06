@@ -45,6 +45,11 @@ class Section(Entity, TimestampedMixin):
     # section. The vote happens *inside* that canister; Casals trusts its
     # decision. Empty string => only Casals controllers may command.
     commander_principal = String(max_length=64, default="")
+    # Comma-separated permission keys granted to this section's commander (see
+    # PERMISSIONS in main.py). Empty string or "*" => full access (every
+    # permission), preserving the historical "commander can do everything"
+    # behaviour. Otherwise only the listed permissions are granted.
+    permissions = String(max_length=512, default="")
     created_by = String(max_length=64, default="")
     # Cycle policy (0 => inherit from Settings defaults). See util.resolve_cycle_policy.
     min_cycles = Integer(default=0)
@@ -68,6 +73,8 @@ class Desk(Entity, TimestampedMixin):
     description = String(max_length=512, default="")
     # Optional per-desk commander; overrides the section commander when set.
     commander_principal = String(max_length=64, default="")
+    # Permission keys granted to this desk's commander (see Section.permissions).
+    permissions = String(max_length=512, default="")
     created_by = String(max_length=64, default="")
     # Cycle policy override (0 => inherit from the section, then Settings).
     min_cycles = Integer(default=0)
@@ -249,3 +256,4 @@ class OrchestrationEvent(Entity, TimestampedMixin):
     payload_json = String(max_length=4096, default="")
     parent_hash = String(max_length=128, default="")
     self_hash = String(max_length=128, default="")
+    timestamp_secs = Integer(default=0)

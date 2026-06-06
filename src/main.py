@@ -432,6 +432,68 @@ def _pool_free(canister_id: str) -> None:
 #  - lifecycle commands on a section/desk require the registered *commander*
 #    principal for that target (or a controller).
 
+# ── Commander permissions ────────────────────────────────────────────────────
+#
+# A commander (a principal appointed over a section or desk) may be granted a
+# subset of these capabilities. The permission set is stored as a comma-separated
+# string on the Section/Desk; empty string or "*" means "all" (full control),
+# which keeps every pre-existing commander working exactly as before.
+#
+# Each entry is (key, human label, group) — the label/group drive the UI.
+PERMISSIONS = [
+    ("stand.create",    "Create stands",          "Stands"),
+    ("stand.deploy",    "Deploy / upgrade stands", "Stands"),
+    ("stand.delete",    "Delete stands",          "Stands"),
+    ("stand.rename",    "Rename stands",          "Stands"),
+    ("stand.snapshot",  "Create snapshots",       "Stands"),
+    ("stand.revert",    "Revert to snapshot",     "Stands"),
+    ("stand.lifecycle", "Start / stop canisters", "Stands"),
+    ("stand.topup",     "Top up cycles",          "Stands"),
+    ("stand.shell",     "Run shell / exec code",  "Stands"),
+    ("desk.rename",     "Rename desk",            "Desk"),
+    ("desk.delete",     "Delete desk",            "Desk"),
+    ("commander.assign","Appoint sub-commanders", "Governance"),
+]
+PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
+
+
+def _parse_permissions(stored: str) -> list:
+    """Resolve a stored permission string into the list of granted keys.
+
+    Empty or "*" => full access (every known permission). Otherwise the
+    comma-separated subset, filtered to known keys."""
+    s = (stored or "").strip()
+    if s == "" or s == "*":
+        return list(PERMISSION_KEYS)
+    granted = [k.strip() for k in s.split(",") if k.strip()]
+    return [k for k in granted if k in PERMISSION_KEYS]
+
+
+def _normalize_permissions(perms) -> str:
+    """Turn an incoming permissions value (list or str) into the stored form.
+
+    A set covering every permission is collapsed to "*". Unknown keys are
+    dropped. None => "" (full access, unchanged)."""
+    if perms is None:
+        return ""
+    if isinstance(perms, str):
+        keys = [k.strip() for k in perms.split(",") if k.strip()]
+    else:
+        keys = [str(k).strip() for k in perms if str(k).strip()]
+    if "*" in keys:
+        return "*"
+    keys = [k for k in keys if k in PERMISSION_KEYS]
+    if set(keys) >= set(PERMISSION_KEYS):
+        return "*"
+    return ",".join(keys)
+
+
+def _has_permission(stored: str, permission: str) -> bool:
+    if not permission:
+        return True
+    return permission in _parse_permissions(stored)
+
+
 def _require_admin() -> None:
     if not _is_controller():
         raise Exception("unauthorized: caller is not a Casals controller")
@@ -452,19 +514,49 @@ def _commander_for(desk: Desk) -> str:
     return section.commander_principal if section else ""
 
 
-def _require_commander(desk: Desk) -> None:
+def _require_commander(desk: Desk, permission: str = "") -> None:
+    """Authorize a desk/section lifecycle action, optionally requiring a
+    specific permission of the matching commander.
+
+    Resolution order:
+      - Casals controllers may do anything.
+      - The desk's own commander (if set) is matched against the desk's
+        permission grant.
+      - Otherwise the parent section's commander is matched against the
+        section's permission grant.
+      - With no commander assigned, open-access mode grants any authenticated
+        caller full control (demo desks), mirroring _require_can_add.
+    """
     if _is_controller():
         return
-    commander = _commander_for(desk)
-    if commander:
-        # A real commander (e.g. a project's governance canister) is set: only
-        # it may drive this desk/section's lifecycle, even under open access.
-        if _caller() == commander:
-            return
-        raise Exception("unauthorized: caller is not the commander for this desk/section")
+    caller = _caller()
+    # Prefer the desk-level commander; its permission grant governs.
+    desk_commander = (desk.commander_principal or "").strip() if desk else ""
+    if desk_commander:
+        if caller != desk_commander:
+            # A section commander may still act on the desk via the section grant.
+            section = desk.section if desk else None
+            sec_commander = (section.commander_principal or "").strip() if section else ""
+            if sec_commander and caller == sec_commander:
+                if not _has_permission(section.permissions, permission):
+                    raise Exception(f"unauthorized: commander lacks permission '{permission}'")
+                return
+            raise Exception("unauthorized: caller is not the commander for this desk/section")
+        if not _has_permission(desk.permissions, permission):
+            raise Exception(f"unauthorized: commander lacks permission '{permission}'")
+        return
+    # No desk commander: fall back to the section commander.
+    section = desk.section if desk else None
+    sec_commander = (section.commander_principal or "").strip() if section else ""
+    if sec_commander:
+        if caller != sec_commander:
+            raise Exception("unauthorized: caller is not the commander for this desk/section")
+        if not _has_permission(section.permissions, permission):
+            raise Exception(f"unauthorized: commander lacks permission '{permission}'")
+        return
     # No commander assigned (e.g. the demo desks): in open-access mode any
     # authenticated caller may drive the lifecycle, mirroring _require_can_add.
-    if _settings().open_access and _caller() != ANONYMOUS:
+    if _settings().open_access and caller != ANONYMOUS:
         return
     raise Exception("unauthorized: caller is not the commander for this desk/section")
 
@@ -496,6 +588,7 @@ def _append_event(btype: str, canister_id: str, payload: dict) -> "Orchestration
         self_hash=self_hash,
     )
     ev.idx = idx
+    ev.timestamp_secs = int(ts // 1_000_000_000)
     return ev
 
 
@@ -522,6 +615,8 @@ def _desk_view(dk: Desk) -> dict:
         "name": dk.name,
         "description": dk.description,
         "commander_principal": dk.commander_principal,
+        "permissions": _parse_permissions(dk.permissions),
+        "all_permissions": _normalize_permissions(dk.permissions) == "*" or (dk.permissions or "") == "",
         "min_cycles": int(dk.min_cycles or 0),
         "topup_cycles": int(dk.topup_cycles or 0),
         "subnet": dk.subnet or "",
@@ -535,6 +630,8 @@ def _section_view(sec: Section) -> dict:
         "name": sec.name,
         "description": sec.description,
         "commander_principal": sec.commander_principal,
+        "permissions": _parse_permissions(sec.permissions),
+        "all_permissions": _normalize_permissions(sec.permissions) == "*" or (sec.permissions or "") == "",
         "min_cycles": int(sec.min_cycles or 0),
         "topup_cycles": int(sec.topup_cycles or 0),
         "subnet": sec.subnet or "",
@@ -694,6 +791,8 @@ def get_events(args: text) -> text:
         {
             "idx": e.idx,
             "btype": e.btype,
+            "kind": e.btype,           # frontend alias
+            "timestamp_secs": int(e.timestamp_secs or 0),
             "canister_id": e.canister_id,
             "caller": e.caller,
             "payload": json.loads(e.payload_json or "{}"),
@@ -865,6 +964,152 @@ def create_desk(args: text) -> text:
 
 
 @update
+def rename_section(args: text) -> text:
+    """Args (JSON): {section, new_name, description?}."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        old_name = params["section"].strip()
+        new_name = params["new_name"].strip()
+        desc = params.get("description")
+        sections = list(Section.instances())
+        sec = Section[old_name] or next((s for s in sections if s.name == old_name), None)
+        if sec is None:
+            return _err(f"unknown section '{old_name}'")
+        if new_name != old_name and Section[new_name] is not None:
+            return _err(f"section '{new_name}' already exists")
+        sec.name = new_name
+        if desc is not None:
+            sec.description = desc[:512]
+        _append_event("section_renamed", "", {"old": old_name, "new": new_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def rename_desk(args: text) -> text:
+    """Args (JSON): {desk, new_name, description?}."""
+    try:
+        params = json.loads(args)
+        old_name = params["desk"].strip()
+        new_name = params["new_name"].strip()
+        desc = params.get("description")
+        list(Section.instances())
+        desks = list(Desk.instances())
+        dk = Desk[old_name] or next((d for d in desks if d.name == old_name), None)
+        if dk is None:
+            return _err(f"unknown desk '{old_name}'")
+        _require_commander(dk, "desk.rename")
+        if new_name != old_name and Desk[new_name] is not None:
+            return _err(f"desk '{new_name}' already exists")
+        dk.name = new_name
+        if desc is not None:
+            dk.description = desc[:512]
+        _append_event("desk_renamed", "", {"old": old_name, "new": new_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def rename_stand(args: text) -> text:
+    """Args (JSON): {stand, new_name}. `stand` is the current stand name."""
+    try:
+        params = json.loads(args)
+        old_name = params["stand"].strip()
+        new_name = params["new_name"].strip()
+        list(Section.instances())
+        list(Desk.instances())
+        stands = list(Stand.instances())
+        st = Stand[old_name] or next((s for s in stands if s.name == old_name), None)
+        if st is None:
+            return _err(f"unknown stand '{old_name}'")
+        _require_commander(st.desk, "stand.rename")
+        if new_name != old_name and Stand[new_name] is not None:
+            return _err(f"stand '{new_name}' already exists")
+        st.name = new_name
+        _pool_mark_in_use(st.canister_id, new_name)
+        _append_event("stand_renamed", st.canister_id, {"old": old_name, "new": new_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def delete_section(args: text) -> text:
+    """Delete a section and all its desks (stands are returned to the pool).
+    Args (JSON): {section}."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        sec_name = params["section"].strip()
+        list(Section.instances())
+        list(Desk.instances())
+        list(Stand.instances())
+        sec = Section[sec_name]
+        if sec is None:
+            return _err(f"unknown section '{sec_name}'")
+        for dk in list(sec.desks or []):
+            for st in list(dk.stands or []):
+                _pool_free(st.canister_id)
+                st.delete()
+            dk.delete()
+        sec.delete()
+        _append_event("section_deleted", "", {"name": sec_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def delete_desk(args: text) -> text:
+    """Delete a desk (stands are returned to the pool).
+    Args (JSON): {desk}."""
+    try:
+        params = json.loads(args)
+        desk_name = params["desk"].strip()
+        list(Section.instances())
+        desks = list(Desk.instances())
+        list(Stand.instances())
+        dk = Desk[desk_name] or next((d for d in desks if d.name == desk_name), None)
+        if dk is None:
+            return _err(f"unknown desk '{desk_name}'")
+        _require_commander(dk, "desk.delete")
+        for st in list(dk.stands or []):
+            _pool_free(st.canister_id)
+            st.delete()
+        dk.delete()
+        _append_event("desk_deleted", "", {"name": desk_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def delete_stand(args: text) -> text:
+    """Retire a stand and return its canister to the pool.
+    Args (JSON): {stand}."""
+    try:
+        params = json.loads(args)
+        stand_name = params["stand"].strip()
+        list(Section.instances())
+        list(Desk.instances())
+        stands = list(Stand.instances())
+        st = Stand[stand_name] or next((s for s in stands if s.name == stand_name), None)
+        if st is None:
+            return _err(f"unknown stand '{stand_name}'")
+        _require_commander(st.desk, "stand.delete")
+        cid = st.canister_id
+        _pool_free(cid)
+        st.delete()
+        _append_event("stand_deleted", cid, {"name": stand_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
 def set_commander(args: text) -> text:
     """Set the commander principal for a section or desk.
 
@@ -878,6 +1123,9 @@ def set_commander(args: text) -> text:
     try:
         params = json.loads(args)
         commander = (params.get("commander_principal") or "").strip()
+        # Optional permission grant supplied alongside the commander. None =>
+        # leave at the default (full access) unless already set.
+        perms = params.get("permissions", None)
         caller = _caller()
         if params.get("desk"):
             list(Desk.instances())
@@ -885,7 +1133,8 @@ def set_commander(args: text) -> text:
             dk = Desk[params["desk"].strip()]
             if dk is None:
                 return _err(f"unknown desk '{params['desk']}'")
-            # Allow: Casals controller, or the commander of the desk's parent section.
+            # Allow: Casals controller, or the commander of the desk's parent
+            # section holding the `commander.assign` permission.
             if not _is_controller():
                 sec = dk.section
                 sec_commander = (sec.commander_principal or "").strip() if sec else ""
@@ -894,7 +1143,11 @@ def set_commander(args: text) -> text:
                         "unauthorized: must be a Casals controller or the section commander "
                         f"to set a desk commander (section commander: {sec_commander or '—'})"
                     )
+                if not _has_permission(sec.permissions, "commander.assign"):
+                    raise Exception("unauthorized: section commander lacks 'commander.assign'")
             dk.commander_principal = commander
+            if perms is not None:
+                dk.permissions = _normalize_permissions(perms)
             _append_event("commander_set", "", {"desk": dk.name, "commander": commander})
         elif params.get("section"):
             # Section commanders are top-level governance — only Casals controllers
@@ -905,12 +1158,67 @@ def set_commander(args: text) -> text:
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
             sec.commander_principal = commander
+            if perms is not None:
+                sec.permissions = _normalize_permissions(perms)
             _append_event("commander_set", "", {"section": sec.name, "commander": commander})
         else:
             return _err("expected 'section' or 'desk'")
         return _ok()
     except Exception as e:
         return _err(str(e))
+
+
+@update
+def set_permissions(args: text) -> text:
+    """Update the permission grant of an existing section/desk commander
+    without changing who the commander is.
+
+    Authorization mirrors set_commander:
+      - section permissions: Casals controllers only;
+      - desk permissions: controller, or the parent section's commander holding
+        `commander.assign`.
+
+    Args (JSON): {"section": str} or {"desk": str} + {"permissions": [str]|"*"}.
+    """
+    try:
+        params = json.loads(args)
+        perms = params.get("permissions", [])
+        caller = _caller()
+        if params.get("desk"):
+            list(Desk.instances())
+            list(Section.instances())
+            dk = Desk[params["desk"].strip()]
+            if dk is None:
+                return _err(f"unknown desk '{params['desk']}'")
+            if not _is_controller():
+                sec = dk.section
+                sec_commander = (sec.commander_principal or "").strip() if sec else ""
+                if not sec_commander or caller != sec_commander:
+                    raise Exception("unauthorized: must be a controller or the section commander")
+                if not _has_permission(sec.permissions, "commander.assign"):
+                    raise Exception("unauthorized: section commander lacks 'commander.assign'")
+            dk.permissions = _normalize_permissions(perms)
+            _append_event("permissions_set", "", {"desk": dk.name, "permissions": _parse_permissions(dk.permissions)})
+        elif params.get("section"):
+            _require_admin()
+            list(Section.instances())
+            sec = Section[params["section"].strip()]
+            if sec is None:
+                return _err(f"unknown section '{params['section']}'")
+            sec.permissions = _normalize_permissions(perms)
+            _append_event("permissions_set", "", {"section": sec.name, "permissions": _parse_permissions(sec.permissions)})
+        else:
+            return _err("expected 'section' or 'desk'")
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@query
+def list_permissions() -> text:
+    """Return the catalog of assignable commander permissions:
+    [{key, label, group}]."""
+    return json.dumps([{"key": k, "label": lbl, "group": grp} for (k, lbl, grp) in PERMISSIONS])
 
 
 @update
@@ -1094,10 +1402,12 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
     if "error" in size_json:
         raise Exception(f"file-registry: {size_json['error']}")
     total = int(size_json["size"])
+    _append_event("wasm_download_start", target_id, {"path": path, "size_bytes": total})
 
     target = Principal.from_str(target_id)
     chunk_hashes = []
     offset = 0
+    chunk_num = 0
     while offset < total:
         chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
         chunk_json = json.loads(unwrap_call_result(chunk_res))
@@ -1108,12 +1418,17 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
         up = unwrap_call_result(up_res)
         chunk_hash = up.get("hash") if isinstance(up, dict) else getattr(up, "hash", up)
         chunk_hashes.append({"hash": chunk_hash})
+        chunk_num += 1
         offset += len(data)
+        _append_event("wasm_chunk_uploaded", target_id,
+                      {"chunk": chunk_num, "bytes_so_far": offset, "total_bytes": total,
+                       "pct": int(offset * 100 // total)})
         if chunk_json.get("eof"):
             break
 
     if not chunk_hashes:
         raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
+    _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
     install_res = yield management_canister.install_chunked_code({
         "mode": install_mode,
         "target_canister": target,
@@ -1320,8 +1635,12 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
     canister is returned to the pool and the exception propagates.
     """
     subnet, subnet_type = _target_subnet(dk)
+    _append_event("allocating_canister", "", {"desk": dk.name, "name": name,
+                                              "wasm_key": w.key, "subnet": subnet or "default"})
     cid, reused = yield from _allocate_canister(subnet, subnet_type)
     mode = {"reinstall": None} if reused else {"install": None}
+    _append_event("installing_wasm", cid, {"desk": dk.name, "name": name,
+                                           "wasm_key": w.key, "reused": reused})
     try:
         yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
                                      w.wasm_hash, mode, _install_arg_for(w))
@@ -1354,6 +1673,7 @@ def _provision_stand(dk: "Desk", name: str, kind: str, w: "AuthorizedWasm"):
 
     # Upload the template's asset (e.g. index.html) so a frontend stand serves a
     # real page. Best-effort: a failure here leaves the stand installed.
+    _append_event("verifying_hash", cid, {"wasm_key": w.key})
     yield from _maybe_provision_assets(cid, w, dk)
 
     st = Stand(name=name)
@@ -1416,7 +1736,7 @@ def create_stand(args: text) -> Async[text]:
         dk = Desk[params["desk"].strip()]
         if dk is None:
             return _err(f"unknown desk '{params['desk']}'")
-        _require_commander(dk)
+        _require_commander(dk, "stand.create")
 
         name = params["name"].strip()
         kind = params.get("kind") or StandKind.BACKEND
@@ -1920,7 +2240,7 @@ def upgrade_to(args: text) -> Async[text]:
         else:
             return _err("expected 'desk' or 'stand'")
 
-        _require_commander(dk)
+        _require_commander(dk, "stand.deploy")
         if not targets:
             return _err("no stands to upgrade")
 
@@ -2002,7 +2322,7 @@ def create_snapshot(args: text) -> Async[text]:
         st = Stand[params["stand"].strip()]
         if st is None:
             return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk)
+        _require_commander(st.desk, "stand.snapshot")
         snap_res = yield management_canister.take_canister_snapshot({"canister_id": Principal.from_str(st.canister_id)})
         snap = unwrap_call_result(snap_res)
         snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
@@ -2022,7 +2342,7 @@ def revert_snapshot(args: text) -> Async[text]:
         st = Stand[params["stand"].strip()]
         if st is None:
             return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk)
+        _require_commander(st.desk, "stand.revert")
         snap_hex = (params.get("snapshot_id") or st.snapshot_id or "").strip()
         if not snap_hex:
             return _err("no snapshot to revert to")
@@ -2046,7 +2366,7 @@ def stop_canister(args: text) -> Async[text]:
         st = Stand[params["stand"].strip()]
         if st is None:
             return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk)
+        _require_commander(st.desk, "stand.lifecycle")
         yield management_canister.stop_canister({"canister_id": Principal.from_str(st.canister_id)})
         st.status = StandStatus.STOPPED
         _append_event("stop_canister", st.canister_id, {})
@@ -2064,7 +2384,7 @@ def start_canister(args: text) -> Async[text]:
         st = Stand[params["stand"].strip()]
         if st is None:
             return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(st.desk)
+        _require_commander(st.desk, "stand.lifecycle")
         yield management_canister.start_canister({"canister_id": Principal.from_str(st.canister_id)})
         st.status = StandStatus.INSTALLED
         _append_event("start_canister", st.canister_id, {})
@@ -2172,7 +2492,7 @@ def stand_exec(args: text) -> Async[text]:
         st = Stand[(params.get("stand") or "").strip()]
         if st is None or not st.canister_id:
             return _err(f"unknown stand '{params.get('stand')}'")
-        _require_commander(st.desk)
+        _require_commander(st.desk, "stand.shell")
         code = params.get("code") or ""
         output = yield from _stand_call(st.canister_id, "__shell__", code)
         _append_event("stand_exec", st.canister_id, {"name": st.name, "bytes": len(code)})
@@ -2597,7 +2917,7 @@ def top_up(args: text) -> Async[text]:
     try:
         params = json.loads(args)
         targets, dk = _resolve_stand_or_desk(params)
-        _require_commander(dk)
+        _require_commander(dk, "stand.topup")
         s = _settings()
         reserve = int(s.treasury_reserve or 0)
         treasury = int(ic.canister_balance128())

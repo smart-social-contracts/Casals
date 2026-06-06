@@ -104,14 +104,24 @@
         source.innerHTML = 'backend: <code>' + BACKEND_ID + '</code>';
         status.textContent = 'Loading agent…';
 
-        import('https://esm.sh/@dfinity/agent@2.1.3').then(({ HttpAgent, Actor }) => {
+        import('https://esm.sh/@dfinity/agent@2.1.3').then(async ({ HttpAgent, Actor }) => {
           // greet is an update call (not a query): the backend logs the name to
           // the canister log, and the IC only records logs in replicated mode.
           const idlFactory = ({ IDL }) => IDL.Service({
             greet: IDL.Func([IDL.Text], [IDL.Text], []),
           });
 
-          const agent = new HttpAgent({ host: 'https://ic0.app' });
+          // Auto-detect local replica vs mainnet from the page origin.
+          const isLocal = window.location.hostname.endsWith('localhost')
+                       || window.location.hostname === '127.0.0.1';
+          const host = isLocal
+            ? `${window.location.protocol}//${window.location.hostname}:${window.location.port || 8000}`
+            : 'https://ic0.app';
+
+          const agent = new HttpAgent({ host });
+          // Local replicas do not have a real root key — fetch it so the
+          // agent can verify update-call certificates without errors.
+          if (isLocal) await agent.fetchRootKey().catch(() => {});
           const actor = Actor.createActor(idlFactory, { agent, canisterId: BACKEND_ID });
 
           btn.textContent = 'Greet';

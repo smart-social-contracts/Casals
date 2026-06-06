@@ -26,6 +26,8 @@ export interface Desk {
   name: string;
   description: string;
   commander_principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
   subnet?: string;
   subnet_type?: string;
   stands: Stand[];
@@ -35,9 +37,17 @@ export interface Section {
   name: string;
   description: string;
   commander_principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
   subnet?: string;
   subnet_type?: string;
   desks: Desk[];
+}
+
+export interface Permission {
+  key: string;
+  label: string;
+  group: string;
 }
 
 export interface Tree {
@@ -101,6 +111,8 @@ export interface AuthorizedWasm {
 export interface OrchestrationEvent {
   idx: number;
   btype: string;
+  kind: string;          // alias for btype, set by backend
+  timestamp_secs: number;
   canister_id: string;
   caller: string;
   payload: Record<string, any>;
@@ -511,12 +523,49 @@ export async function createDesk(args: {
   return _parseUpdate(await (await _actor(true)).create_desk(JSON.stringify(args)));
 }
 
+export async function renameSection(args: { section: string; new_name: string; description?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_section(JSON.stringify(args)));
+}
+
+export async function renameDesk(args: { desk: string; new_name: string; description?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_desk(JSON.stringify(args)));
+}
+
+export async function renameStand(args: { stand: string; new_name: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).rename_stand(JSON.stringify(args)));
+}
+
+export async function deleteSection(args: { section: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_section(JSON.stringify(args)));
+}
+
+export async function deleteDesk(args: { desk: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_desk(JSON.stringify(args)));
+}
+
+export async function deleteStand(args: { stand: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_stand(JSON.stringify(args)));
+}
+
 export async function setCommander(args: {
   section?: string;
   desk?: string;
   commander_principal: string;
+  permissions?: string[] | '*';
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_commander(JSON.stringify(args)));
+}
+
+export async function setPermissions(args: {
+  section?: string;
+  desk?: string;
+  permissions: string[] | '*';
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
+}
+
+export async function listPermissions(): Promise<Permission[]> {
+  return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
 }
 
 export async function registerStand(args: {
@@ -749,6 +798,14 @@ export function canisterUrl(canisterId: string): string {
 }
 
 export function standLink(stand: { kind: StandKind; url: string; canister_id: string }): string {
+  // On local replica the backend bakes mainnet icp0.io URLs into every stand
+  // view (it has no knowledge of the frontend's host). Override with the
+  // correct local URL whenever we detect we are running locally.
+  if (IS_LOCAL) {
+    return stand.kind === 'backend'
+      ? candidUiUrl(stand.canister_id)
+      : canisterUrl(stand.canister_id);
+  }
   if (stand.url) return stand.url;
   return stand.kind === 'backend' ? candidUiUrl(stand.canister_id) : canisterUrl(stand.canister_id);
 }

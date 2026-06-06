@@ -113,7 +113,15 @@ service : {
   "set_settings" : (text) -> (text);
   "create_section" : (text) -> (text);
   "create_desk" : (text) -> (text);
+  "rename_section" : (text) -> (text);
+  "rename_desk" : (text) -> (text);
+  "rename_stand" : (text) -> (text);
+  "delete_section" : (text) -> (text);
+  "delete_desk" : (text) -> (text);
+  "delete_stand" : (text) -> (text);
   "set_commander" : (text) -> (text);
+  "set_permissions" : (text) -> (text);
+  "list_permissions" : () -> (text) query;
   "register_stand" : (text) -> (text);
   "add_authorized_wasm" : (text) -> (text);
   "remove_authorized_wasm" : (text) -> (text);
