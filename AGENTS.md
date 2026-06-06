@@ -74,10 +74,11 @@ Re-deploy after code changes: `make deploy && python3 scripts/seed.py -e local -
 
 ### Known quirks
 
-**`icp.yaml` — asset sync path must be `dist`, not `frontend/dist`.**
+**`icp.yaml` — asset sync path must be a top-level `dist`.**
 The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths like
-`frontend/dist`. A symlink `dist → frontend/dist` lives at the repo root and `icp.yaml`
-uses `dir: dist`. Do not change this back to `dir: frontend/dist`.
+`frontend/dist`. So the SvelteKit static adapter is configured to build into the
+repo-root `dist` (`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), and
+`icp.yaml` uses `dir: dist`. Do not change `dir` to `frontend/dist`.
 
 **`deploy_sheet` needs a well-funded treasury.**
 `casals_backend` acts as the cycles treasury — it creates stand canisters and sends

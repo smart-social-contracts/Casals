@@ -58,6 +58,6 @@ test:
 	pytest -q
 
 clean:
-	rm -rf .basilisk frontend/dist frontend/.svelte-kit frontend/node_modules \
+	rm -rf .basilisk dist frontend/.svelte-kit frontend/node_modules \
 		templates/hello-world-rust/target templates/hello-world-motoko/.icp \
 		templates/hello-world-motoko/.mops
