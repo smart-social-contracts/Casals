@@ -94,6 +94,20 @@ icp canister top-up --amount 100t casals_backend -e local
 
 On local you have 1 000 000 seeded ICP so this costs nothing.
 
+**`provision_assets` is an additive upsert — stale encodings survive upgrades.**
+`provision_assets` calls `store(key, content_encoding, ...)` for each file in the
+new bundle. If a previous deploy stored a *gzip* or *br* encoding for a path (e.g.
+because `precompress: true` was set in the SvelteKit adapter at the time), and the
+new build is *identity-only* (`precompress: false`), the old compressed blob for
+that path remains in the asset canister's stable store. Browsers send
+`Accept-Encoding: gzip` and will keep getting the stale version even though a fresh
+identity copy was provisioned. The symptom is: `curl` (identity) shows the new
+build, a real browser shows the old one.
+Fix: run the rollout with `--mode reinstall` to wipe the asset canister before
+provisioning. This is safe for frontend canisters because their entire state is the
+asset bundle, which Casals re-uploads from the file-registry immediately after the
+wipe.
+
 **"Out of cycles" ≠ mainnet.**
 If you see `Canister a5dhi-k7777-77775-aaabq-cai is out of cycles`, the canister ID
 prefix (`...77775-`) confirms it is the **local** canister, not mainnet
