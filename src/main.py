@@ -383,10 +383,23 @@ def _pool_take_free(subnet: str = "", subnet_type: str = "") -> str:
 
     A constrained target never reuses a canister of unknown placement — we'd
     risk landing on the wrong subnet — so it creates a fresh one instead.
+
+    Safety: never hand out a canister that already backs a live Canister
+    record — a stale `free` pool entry (e.g. left by a partial deploy or an
+    incorrect self-heal pass) must not overwrite a running service.
     """
     list(PooledCanister.instances())
+    list(Canister.instances())
+    live_cids = {st.canister_id for st in Canister.instances() if st.canister_id}
     for p in PooledCanister.instances():
         if p.status != "free" or not p.canister_id:
+            continue
+        if p.canister_id in live_cids:
+            # Stale free entry — this canister is still in active use.
+            # Re-mark it in_use so it cannot be handed out again, and log.
+            p.status = "in_use"
+            p.canister_name = "(recovered)"
+            _log.error(f"pool_take_free: skipped live canister {p.canister_id}; re-marked in_use")
             continue
         if subnet:
             if p.subnet == subnet:
@@ -856,6 +869,34 @@ def list_pool() -> text:
     out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
     free = sum(1 for p in out if p["status"] == "free")
     return json.dumps({"total": len(out), "free": free, "in_use": len(out) - free, "canisters": out})
+
+
+@update
+def pool_remove(args: text) -> text:
+    """Controller-only. Remove a canister from the pool entirely (whether free
+    or in_use). Use to evict stale entries that should never be recycled —
+    e.g. infra canisters that ended up in the pool by mistake.
+
+    Args (JSON): {canister_id: "<id>"}
+    Returns: {ok, canister_id, was_status}
+    """
+    try:
+        _require_admin()
+        params = json.loads(args) if args else {}
+        cid = (params.get("canister_id") or "").strip()
+        if not cid:
+            return _err("canister_id required")
+        list(PooledCanister.instances())
+        p = PooledCanister[cid]
+        if p is None:
+            return _err(f"canister_id '{cid}' not in pool")
+        was_status = p.status or "unknown"
+        p.delete()
+        _append_event("pool_removed", cid, {"was_status": was_status})
+        _log.info(f"pool_remove: removed {cid} (was {was_status})")
+        return _ok(canister_id=cid, was_status=was_status)
+    except Exception as e:
+        return _err(str(e))
 
 
 # ── Governance / registration update endpoints ──────────────────────────────
