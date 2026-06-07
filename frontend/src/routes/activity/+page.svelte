@@ -40,7 +40,7 @@
   function severity(btype: string): Severity {
     if (btype.includes('failed')) return 'fail';
     if (btype === 'revert' || btype === 'cycles_low') return 'warn';
-    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister/.test(btype))
+    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile/.test(btype))
       return 'ok';
     return 'neutral';
   }
@@ -55,6 +55,13 @@
   function shortHash(h?: string): string {
     if (!h) return '';
     return h.length > 12 ? `${h.slice(0, 8)}…` : h;
+  }
+  function fmtTime(secs?: number): string {
+    if (!secs) return '';
+    return new Date(secs * 1000).toLocaleString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
   }
   function fmt(n?: number): string {
     if (n === undefined || n === null) return '—';
@@ -86,7 +93,9 @@
       case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
       case 'create_failed': return 'Create failed: module hash mismatch';
       case 'cycles_topup': return `Topped up ${fmt(p.amount)} cycles${p.manual ? ' (manual)' : ''}`;
-      case 'cycles_low': return 'Low cycles balance';
+      case 'cycles_low': return 'Low cycles balance — treasury exhausted';
+      case 'cycles_reconcile': return `Reconcile (${p.source ?? 'autopilot'}): checked ${p.checked ?? 0}, topped up ${p.topped_up ?? 0}`;
+      case 'set_controllers': return `Controllers updated${p.added?.length ? `: added ${p.added.join(', ')}` : ''}`;
       case 'section_created': return `Created section ${p.name ?? ''}`;
       case 'stand_created': return `Created stand ${p.name ?? ''} in ${p.section ?? ''}`;
       case 'commander_set': return 'Commander updated';
@@ -186,7 +195,7 @@
           <div class="min-w-0 flex-1">
             <p class="text-sm text-primary-800 break-words">{describe(e)}</p>
             <p class="text-xs text-primary-400 mt-0.5 font-mono">
-              {#if targetLabel(e)}{targetLabel(e)} · {/if}by {shortPrincipal(e.caller)}
+              {#if e.timestamp_secs}<span class="text-primary-500">{fmtTime(e.timestamp_secs)}</span> · {/if}{#if targetLabel(e)}{targetLabel(e)} · {/if}by {shortPrincipal(e.caller)}
             </p>
           </div>
         </div>

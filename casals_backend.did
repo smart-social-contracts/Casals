@@ -108,6 +108,7 @@ service : {
   "get_events" : (text) -> (text) query;
   "get_sheet" : () -> (text) query;
   "list_pool" : () -> (text) query;
+  "pool_remove" : (text) -> (text);
   "set_sheet" : (text) -> (text);
   "reset_sheet" : () -> (text);
   "set_settings" : (text) -> (text);

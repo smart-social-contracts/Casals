@@ -2942,6 +2942,11 @@ def _reconcile_cb():
     roll back the whole timer execution)."""
     try:
         summary = yield from _reconcile_all_gen()
+        _append_event("cycles_reconcile", "", {
+            "checked": summary.get("checked", 0),
+            "topped_up": summary.get("topped_up", 0),
+            "source": "autopilot",
+        })
         _log.info(f"autopilot reconcile: {summary.get('topped_up')} topped of {summary.get('checked')}")
     except Exception as e:  # pragma: no cover - defensive
         _log.error(f"autopilot reconcile failed: {e}")
@@ -3185,6 +3190,11 @@ def reconcile() -> Async[text]:
     try:
         _require_admin()
         summary = yield from _reconcile_all_gen()
+        _append_event("cycles_reconcile", "", {
+            "checked": summary.get("checked", 0),
+            "topped_up": summary.get("topped_up", 0),
+            "source": "manual",
+        })
         return _ok(**summary)
     except Exception as e:
         _log.error(f"reconcile error: {e}")
@@ -3240,3 +3250,73 @@ def cycleops_monitored() -> text:
         "cycleops_principal": s.cycleops_principal,
         "canister_ids": ids,
     })
+
+
+@update
+def sync_controllers(args: text) -> Async[text]:
+    """Controller-only. Sweep all managed canisters and, for each where Casals
+    is already a controller, ensure the desired controller set is applied:
+    Casals itself is always preserved; the CycleOps principal is added when
+    cycleops_enabled is on and it is not yet in the list.
+
+    Useful when cycleops_enabled is turned on after canisters were already
+    created, or as a health-check after any controller changes.
+
+    Args (JSON, optional): {"dry_run": true} to report without applying.
+    Returns: {updated, skipped, failed, dry_run}."""
+    try:
+        _require_admin()
+        params = json.loads(args) if args else {}
+        dry_run = bool(params.get("dry_run"))
+        list(Canister.instances())
+        s = _settings()
+        self_id = ic.id().to_str()
+        cycleops_id = (s.cycleops_principal or "").strip() if s.cycleops_enabled else ""
+        want_extra = [cycleops_id] if cycleops_id else []
+
+        updated = []
+        skipped = []
+        failed = []
+
+        for st in Canister.instances():
+            if not st.canister_id:
+                skipped.append({"canister": st.name, "reason": "no canister_id"})
+                continue
+            try:
+                status_res = yield management_canister.canister_status(
+                    {"canister_id": Principal.from_str(st.canister_id)}
+                )
+                status = unwrap_call_result(status_res)
+                raw_settings = (status.get("settings") if isinstance(status, dict)
+                                else getattr(status, "settings", None))
+                raw_ctls = []
+                if raw_settings is not None:
+                    raw_ctls = (raw_settings.get("controllers") if isinstance(raw_settings, dict)
+                                else getattr(raw_settings, "controllers", []))
+                current = [c.to_str() if hasattr(c, "to_str") else str(c) for c in raw_ctls]
+
+                desired = list(current)
+                added = []
+                for p in [self_id] + want_extra:
+                    if p and p not in desired:
+                        desired.append(p)
+                        added.append(p)
+
+                if not added:
+                    skipped.append({"canister": st.name, "canister_id": st.canister_id,
+                                    "reason": "already up to date"})
+                    continue
+
+                if not dry_run:
+                    yield from _add_controllers(st.canister_id, desired)
+                    _append_event("set_controllers", st.canister_id,
+                                  {"controllers": desired, "added": added})
+                updated.append({"canister": st.name, "canister_id": st.canister_id,
+                                "added": added})
+            except Exception as e:
+                failed.append({"canister": st.name, "canister_id": st.canister_id,
+                               "error": str(e)})
+
+        return _ok(updated=updated, skipped=skipped, failed=failed, dry_run=dry_run)
+    except Exception as e:
+        return _err(str(e))
