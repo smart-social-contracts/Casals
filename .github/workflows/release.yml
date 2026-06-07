@@ -1,0 +1,155 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Type of release (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      release_notes:
+        description: 'Release notes (markdown)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull latest file_registry from main
+        run: git submodule update --remote file_registry
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install icp-cli + ic-wasm
+        run: npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      # Bump version
+      - name: Bump version
+        id: bump_version
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          if [ ! -f "version.txt" ]; then
+            # Bootstrap from the version already in package.json
+            node -p "require('./frontend/package.json').version" > version.txt
+          fi
+
+          CURRENT_VERSION=$(cat version.txt)
+          pip install --quiet semver
+          NEW_VERSION=$(python -c "import semver; v=semver.VersionInfo.parse('${CURRENT_VERSION}'); print(v.bump_${{ github.event.inputs.release_type || 'patch' }}())")
+
+          echo "${NEW_VERSION}" > version.txt
+
+          # Update frontend/package.json version
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('frontend/package.json', 'utf8'));
+            pkg.version = '${NEW_VERSION}';
+            fs.writeFileSync('frontend/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          echo "NEW_VERSION=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        run: |
+          TAG="v${{ steps.bump_version.outputs.NEW_VERSION }}"
+          if gh release view "$TAG" &>/dev/null; then
+            echo "❌ ERROR: Release $TAG already exists!"
+            exit 1
+          fi
+          echo "✅ Release $TAG does not exist yet, proceeding..."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build artifacts
+      - name: Build backend WASM
+        run: |
+          CANISTER_CANDID_PATH=./casals_backend.did python3 -m basilisk casals_backend src/main.py
+          gzip -k .basilisk/casals_backend/casals_backend.wasm
+          mv .basilisk/casals_backend/casals_backend.wasm.gz ./casals_backend.wasm.gz
+          echo "✅ Backend WASM built ($(stat -c%s casals_backend.wasm.gz) bytes)"
+
+      - name: Build file_registry WASM
+        run: |
+          CANISTER_CANDID_PATH=./file_registry/ic_file_registry.did \
+            python3 -m basilisk ic_file_registry file_registry/src/main.py
+          gzip -k .basilisk/ic_file_registry/ic_file_registry.wasm
+          mv .basilisk/ic_file_registry/ic_file_registry.wasm.gz ./ic_file_registry.wasm.gz
+          echo "✅ File registry WASM built ($(stat -c%s ic_file_registry.wasm.gz) bytes)"
+
+      - name: Build frontend
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+          cd dist
+          tar czf ../casals_frontend.tar.gz .
+          cd ..
+          echo "✅ Frontend tarball built ($(stat -c%s casals_frontend.tar.gz) bytes)"
+
+      - name: Compute release asset checksums
+        run: |
+          echo "# SHA-256 checksums for release assets" > checksums.txt
+          for f in casals_backend.wasm.gz casals_backend.did ic_file_registry.wasm.gz casals_frontend.tar.gz; do
+            [ -f "$f" ] && sha256sum "$f" >> checksums.txt
+          done
+          cat checksums.txt
+
+      # Create GitHub release
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump_version.outputs.NEW_VERSION }}
+          name: Release v${{ steps.bump_version.outputs.NEW_VERSION }}
+          body: ${{ github.event.inputs.release_notes }}
+          fail_on_unmatched_files: true
+          files: |
+            casals_backend.wasm.gz
+            casals_backend.did
+            ic_file_registry.wasm.gz
+            casals_frontend.tar.gz
+            checksums.txt
+
+      - name: Commit and push version changes
+        run: |
+          git add version.txt frontend/package.json
+          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.NEW_VERSION }}"
+          git remote set-url origin https://${{ secrets.PAT_GITHUB }}@github.com/${{ github.repository }}.git
+          git push origin
+          echo "✅ Version changes committed and pushed"
+
+      - name: Summary
+        run: |
+          echo "═══════════════════════════════════════════════════════"
+          echo " Release v${{ steps.bump_version.outputs.NEW_VERSION }} complete"
+          echo " GitHub: ${{ steps.create_release.outputs.url }}"
+          echo "═══════════════════════════════════════════════════════"
