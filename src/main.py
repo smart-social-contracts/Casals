@@ -189,6 +189,9 @@ class FileRegistryService(Service):
     @service_query
     def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text: ...
 
+    @service_query
+    def list_files_icc(self, namespace: text) -> text: ...
+
 
 def _file_registry() -> FileRegistryService:
     s = _settings()
@@ -450,6 +453,7 @@ PERMISSIONS = [
     ("canister.lifecycle", "Start / stop canisters", "Canisters"),
     ("canister.topup",     "Top up cycles",          "Canisters"),
     ("canister.shell",     "Run shell / exec code",  "Canisters"),
+    ("stand.create",     "Create stands",           "Stand"),
     ("stand.rename",     "Rename stand",            "Stand"),
     ("stand.delete",     "Delete stand",            "Stand"),
     ("commander.assign","Appoint sub-commanders", "Governance"),
@@ -505,6 +509,35 @@ def _require_can_add() -> None:
     if _settings().open_access and _caller() != ANONYMOUS:
         return
     raise Exception("unauthorized: open access is disabled; caller is not a controller")
+
+
+def _section_commander_can(sec, permission: str) -> bool:
+    """True if the caller is `sec`'s commander and `sec` grants `permission`.
+
+    Lets a section's delegated commander perform scoped structural actions inside
+    its own section (e.g. create stands / register canisters) without being a full
+    Casals controller — the least-privilege path. Generic: no project specifics."""
+    if sec is None:
+        return False
+    commander = (getattr(sec, "commander_principal", "") or "").strip()
+    return bool(commander and _caller() == commander
+                and _has_permission(getattr(sec, "permissions", ""), permission))
+
+
+def _require_can_add_in_section(sec, permission: str) -> None:
+    """Authorize a structural add (stand / canister registration) scoped to a
+    section. Allowed for: Casals controllers; open-access authenticated callers;
+    or the section's own commander holding `permission`."""
+    if _is_controller():
+        return
+    if _settings().open_access and _caller() != ANONYMOUS:
+        return
+    if _section_commander_can(sec, permission):
+        return
+    raise Exception(
+        "unauthorized: caller is not a controller, open access is disabled, and caller "
+        f"is not the section commander holding '{permission}'"
+    )
 
 
 def _commander_for(stand: Stand) -> str:
@@ -937,9 +970,11 @@ def create_section(args: text) -> text:
 
 @update
 def create_stand(args: text) -> text:
-    """Args (JSON): {section, name, description?, commander_principal?}."""
+    """Args (JSON): {section, name, description?, commander_principal?}.
+
+    Authorized for Casals controllers, open-access callers, or the target
+    section's commander holding the `stand.create` permission (least privilege)."""
     try:
-        _require_can_add()
         params = json.loads(args)
         section_name = params["section"].strip()
         name = params["name"].strip()
@@ -947,6 +982,7 @@ def create_stand(args: text) -> text:
         sec = Section[section_name]
         if sec is None:
             return _err(f"unknown section '{section_name}'")
+        _require_can_add_in_section(sec, "stand.create")
         list(Stand.instances())
         if Stand[name] is not None:
             return _err(f"stand '{name}' already exists")
@@ -1225,14 +1261,18 @@ def list_permissions() -> text:
 def register_canister(args: text) -> text:
     """Register an existing canister as a canister (Casals must be a controller of
     it to manage it later). Args (JSON):
-    {stand, name, canister_id, kind}."""
+    {stand, name, canister_id, kind}.
+
+    Authorized for Casals controllers, open-access callers, or the stand's section
+    commander holding the `canister.create` permission (least privilege)."""
     try:
-        _require_can_add()
         params = json.loads(args)
+        list(Section.instances())
         list(Stand.instances())
         dk = Stand[params["stand"].strip()]
         if dk is None:
             return _err(f"unknown stand '{params['stand']}'")
+        _require_can_add_in_section(dk.section, "canister.create")
         name = params["name"].strip()
         list(Canister.instances())
         if Canister[name] is not None:
@@ -1253,7 +1293,12 @@ def register_canister(args: text) -> text:
 def add_authorized_wasm(args: text) -> text:
     """Controller only — represents an approved decision to authorize a WASM.
     Args (JSON):
-    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, description?}.
+    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, description?,
+     asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?}.
+
+    `bundle_namespace` (frontend WASMs): the file-registry namespace holding a
+    whole multi-file static bundle to upload into each canister built from this
+    WASM (takes precedence over a single `asset_path`).
 
     Upsert: re-authorizing an existing key updates its registry pointer, hash and
     metadata. This is essential for idempotent re-seeding after a template is
@@ -1290,6 +1335,7 @@ def add_authorized_wasm(args: text) -> text:
         w.description = (params.get("description") or "")[:512]
         w.asset_namespace = (params.get("asset_namespace") or "").strip()
         w.asset_path = (params.get("asset_path") or "").strip()
+        w.bundle_namespace = (params.get("bundle_namespace") or "").strip()
         if params.get("asset_content_type"):
             w.asset_content_type = params["asset_content_type"].strip()
         w.added_by = _caller()
@@ -1537,6 +1583,69 @@ def _provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
     _append_event("assets_uploaded", canister_id, {"wasm_key": w.key, "bytes": len(content)})
 
 
+def _list_registry_files(namespace: str):
+    """Generator: list the files in a file-registry namespace.
+
+    Returns a list of {path, size, content_type, sha256} dicts (empty for an
+    unknown namespace). Uses the positional `list_files_icc` variant because
+    Basilisk cannot pass JSON-dict args cross-canister."""
+    fr = _file_registry()
+    res = yield fr.list_files_icc(namespace)
+    parsed = json.loads(unwrap_call_result(res))
+    if isinstance(parsed, dict) and "error" in parsed:
+        raise Exception(f"file-registry: {parsed['error']}")
+    return parsed if isinstance(parsed, list) else []
+
+
+def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int = 0):
+    """Generator: upload a multi-file frontend bundle from the file-registry into
+    a certified-assets canister, returning (uploaded_in_batch, total_files).
+
+    Casals is the canister's controller, so it grants itself Commit once, then
+    `store`s every file in `namespace` under its path. One `store` per file (the
+    proven path).
+
+    Uploading every file in a single update call does not fit the ingress window
+    for a large bundle (100+ files), so callers may upload a slice: `offset` is the
+    first file index (sorted by path) and `limit` caps how many files this call
+    uploads (0 = all remaining). Re-running with the next offset resumes; `store`
+    is idempotent so overlap is harmless. The batch commits on return, so progress
+    survives even if the next slice fails."""
+    files = yield from _list_registry_files(namespace)
+    total = len(files)
+    if total == 0:
+        return (0, 0)
+    files.sort(key=lambda f: (f.get("path") or ""))
+    start = max(0, int(offset))
+    end = total if not limit else min(total, start + int(limit))
+    asset = AssetCanisterService(Principal.from_str(canister_id))
+    grant_res = yield asset.grant_permission({
+        "to_principal": ic.id(),
+        "permission": {"Commit": None},
+    })
+    unwrap_call_result(grant_res)
+    count = 0
+    for f in files[start:end]:
+        path = (f.get("path") or "").strip()
+        if not path:
+            continue
+        key = path if path.startswith("/") else "/" + path
+        content = yield from _pull_registry_bytes(namespace, path)
+        content_type = (f.get("content_type") or "application/octet-stream").strip()
+        store_res = yield asset.store({
+            "key": key,
+            "content_type": content_type,
+            "content_encoding": "identity",
+            "content": content,
+            "sha256": None,
+        })
+        unwrap_call_result(store_res)
+        count += 1
+    _append_event("bundle_uploaded", canister_id,
+                  {"namespace": namespace, "files": count, "offset": start, "total": total})
+    return (count, total)
+
+
 def _verify_module_hash(canister_id: str, expected_hash_hex: str):
     """Generator: returns (ok: bool, actual_hex: str)."""
     status_res = yield management_canister.canister_status({"canister_id": Principal.from_str(canister_id)})
@@ -1695,12 +1804,21 @@ def _provision_canister(dk: "Stand", name: str, kind: str, w: "AuthorizedWasm"):
 
 
 def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
-    """Generator: provision a WASM's asset if it has one, swallowing errors so a
-    failed upload never aborts canister creation (it is logged + audited instead)."""
-    if not (w.asset_path or "").strip():
+    """Generator: provision a WASM's asset(s) if it has any, swallowing errors so a
+    failed upload never aborts canister creation (it is logged + audited instead).
+
+    A `bundle_namespace` (a whole multi-file static build) takes precedence over a
+    single `asset_path`: the entire bundle is uploaded into this canister's own
+    certified-assets canister. Each deployment has its own frontend canister, so
+    the upload is per canister."""
+    bundle_ns = (getattr(w, "bundle_namespace", "") or "").strip()
+    if not bundle_ns and not (w.asset_path or "").strip():
         return
     try:
-        yield from _provision_assets(canister_id, w, stand)
+        if bundle_ns:
+            yield from _upload_bundle(canister_id, bundle_ns)
+        else:
+            yield from _provision_assets(canister_id, w, stand)
     except Exception as ae:
         _log.error(f"asset provisioning failed for {canister_id}: {ae}")
         _append_event("assets_failed", canister_id, {"wasm_key": w.key, "error": str(ae)[:300]})
@@ -2179,26 +2297,48 @@ def provision_assets(args: text) -> Async[text]:
         _require_can_add()
         params = json.loads(args) if args else {}
         target = (params.get("canister") or "").strip()
+        # Bundle batching: a large multi-file bundle does not fit one ingress
+        # window, so a caller targeting a single canister may upload a slice
+        # ([offset, offset+limit)) per call and poll `next_offset`/`done`.
+        offset = max(0, int(params.get("offset", 0) or 0))
+        limit = max(0, int(params.get("limit", 0) or 0))
         list(Canister.instances())
         list(AuthorizedWasm.instances())
         done, errors = [], []
+        bundle_progress = None
         for st in Canister.instances():
             if target and st.name != target:
                 continue
             if not st.canister_id:
                 continue
             w = AuthorizedWasm[st.wasm_key]
-            if w is None or not (w.asset_path or "").strip():
+            bundle_ns = (getattr(w, "bundle_namespace", "") or "").strip() if w is not None else ""
+            asset_path = (w.asset_path or "").strip() if w is not None else ""
+            if w is None or (not bundle_ns and not asset_path):
                 if target:
                     errors.append(f"{st.name}: no asset to provision")
                 continue
             try:
-                yield from _provision_assets(st.canister_id, w, st.stand)
+                # A whole multi-file bundle takes precedence over a single asset,
+                # mirroring _maybe_provision_assets (create/reinstall path).
+                if bundle_ns:
+                    uploaded, total = yield from _upload_bundle(
+                        st.canister_id, bundle_ns, offset=offset, limit=limit)
+                    next_offset = offset + uploaded
+                    bundle_progress = {
+                        "canister": st.name, "uploaded": uploaded,
+                        "offset": offset, "next_offset": next_offset,
+                        "total": total, "done": (limit == 0 or next_offset >= total),
+                    }
+                else:
+                    yield from _provision_assets(st.canister_id, w, st.stand)
                 done.append(st.name)
             except Exception as inner:
                 errors.append(f"{st.name}: {inner}")
         if target and not done and not errors:
             return _err(f"unknown canister '{target}'")
+        if bundle_progress is not None:
+            return _ok(provisioned=done, errors=errors, bundle=bundle_progress)
         return _ok(provisioned=done, errors=errors)
     except Exception as e:
         _log.error(f"provision_assets error: {e}")
@@ -2389,6 +2529,49 @@ def start_canister(args: text) -> Async[text]:
         st.status = CanisterStatus.INSTALLED
         _append_event("start_canister", st.canister_id, {})
         return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_canister_controllers(args: text) -> Async[text]:
+    """Replace the IC controller list of a managed canister.
+
+    Controller-only (NOT delegatable to stand commanders): changing controllers
+    is what keeps the orchestra sovereign, so a stand commander must never be
+    able to remove Casals from its own canister and escape.
+
+    Args (JSON): one of {canister: <registered name>} or {canister_id: <raw id>},
+    plus {controllers: [principal, ...]} (the full new list). As a safety net the
+    new list must include Casals itself unless {force: true} is given.
+    """
+    try:
+        _require_admin()
+        params = json.loads(args)
+        cid = (params.get("canister_id") or "").strip()
+        name = (params.get("canister") or "").strip()
+        if not cid:
+            if not name:
+                return _err("provide 'canister' (registered name) or 'canister_id'")
+            list(Canister.instances())
+            st = Canister[name]
+            if st is None:
+                return _err(f"unknown canister '{name}'")
+            cid = st.canister_id
+        controllers = params.get("controllers")
+        if not isinstance(controllers, list):
+            return _err("'controllers' must be a list of principals")
+        controllers = [c.strip() for c in controllers if c and c.strip()]
+        if not controllers:
+            return _err("'controllers' must be a non-empty list of principals")
+        self_id = ic.id().to_str()
+        if self_id not in controllers and not params.get("force"):
+            return _err(
+                "refusing to drop Casals from the controller list "
+                "(add Casals' own principal, or pass force=true to override)")
+        yield from _add_controllers(cid, controllers)
+        _append_event("set_controllers", cid, {"controllers": controllers})
+        return _ok(canister_id=cid, controllers=controllers)
     except Exception as e:
         return _err(str(e))
 

@@ -36,7 +36,7 @@ class CanisterStatus:
 
 
 class Section(Entity, TimestampedMixin):
-    """A logical group of stands with a shared role (e.g. "Deployed realms")."""
+    """A logical group of stands with a shared role (e.g. "Infra", "Deployments")."""
 
     __alias__ = "name"
     name = String(min_length=1, max_length=128)
@@ -163,9 +163,9 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     """
 
     __alias__ = "key"
-    key = String(min_length=1, max_length=256)        # e.g. "realm-gos@1.2.0"
+    key = String(min_length=1, max_length=256)        # e.g. "app-backend@1.2.0"
     # A `family` groups versions of the same template/release line (e.g.
-    # "realm-gos"); `version` is its release tag (e.g. "1.2.0"). The unique key
+    # "app-backend"); `version` is its release tag (e.g. "1.2.0"). The unique key
     # is "<family>@<version>". A bare family name resolves to the latest version.
     # Both are derived from `key` when omitted; legacy unversioned entries have
     # family == key and version == "".
@@ -186,6 +186,14 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     asset_namespace = String(max_length=256, default="")
     asset_path = String(max_length=256, default="")
     asset_content_type = String(max_length=128, default="text/html")
+    # For a frontend (certified-assets) WASM whose canister should serve a whole
+    # multi-file static bundle (e.g. a compiled single-page web-app build), this is
+    # the file-registry namespace holding every file. When set, Casals uploads the
+    # entire bundle into the freshly installed asset canister (see _upload_bundle)
+    # instead of a single `asset_path`. Each deployment gets its own frontend
+    # canister, so the bundle is uploaded per canister; speed is addressed by the
+    # batch-commit API, and incremental (changed-file-only) upgrades.
+    bundle_namespace = String(max_length=256, default="")
 
 
 class Settings(Entity):

@@ -93,7 +93,7 @@ type DecimalsResult = record { decimals : nat32 };
 type AssetPermission = variant { Commit : ; Prepare : ; ManagePermissions :  };
 type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
 type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
-type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query };
+type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text) query };
 type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
 type BasiliskIntrospectionService = service { __browse__ : (text) -> (text) query; __shell__ : (text) -> (text) };
 
@@ -136,6 +136,7 @@ service : {
   "revert_snapshot" : (text) -> (text);
   "stop_canister" : (text) -> (text);
   "start_canister" : (text) -> (text);
+  "set_canister_controllers" : (text) -> (text);
   "set_log_visibility" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_exec" : (text) -> (text);
