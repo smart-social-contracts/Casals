@@ -830,6 +830,13 @@ def get_events(args: text) -> text:
     evs = OrchestrationEvent.load_some(offset, fetch)
     if cid:
         evs = [e for e in evs if e.canister_id == cid]
+    # Deduplicate by idx — keep the last-written entry for each idx value to
+    # defend against corrupted data left by earlier bugs where _last_event()
+    # could return None and reset the counter to 0.
+    seen_idx: dict = {}
+    for e in evs:
+        seen_idx[e.idx] = e
+    evs = list(seen_idx.values())
     evs.sort(key=lambda e: e.idx, reverse=True)
     evs = evs[:take]
     return json.dumps([

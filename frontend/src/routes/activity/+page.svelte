@@ -188,7 +188,7 @@
     </div>
   {:else}
     <div class="card divide-y divide-[var(--color-border-primary)] overflow-hidden">
-      {#each filtered as e (e.idx)}
+      {#each filtered as e (e.self_hash || e.idx)}
         <div class="flex items-start gap-3 px-4 py-3">
           <span class="text-xs font-mono text-primary-300 pt-1 w-8 shrink-0 text-right">{e.idx}</span>
           <span class="badge {badgeClass[severity(e.btype)]} shrink-0 mt-0.5">{e.btype}</span>

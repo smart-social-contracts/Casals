@@ -1041,7 +1041,7 @@
                                     <div class="text-xs text-primary-400">No events for this canister.</div>
                                   {:else}
                                     <ul class="space-y-1">
-                                      {#each canisterEvents[canister.canister_id] as e (e.idx)}
+                                      {#each canisterEvents[canister.canister_id] as e (e.self_hash || e.idx)}
                                         <li class="text-xs flex items-start gap-2">
                                           <span class="badge {evBadge(e.btype)} shrink-0">{e.btype}</span>
                                           <span class="text-primary-600 break-words min-w-0">{evSummary(e)}</span>
