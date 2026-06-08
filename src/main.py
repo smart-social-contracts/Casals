@@ -610,11 +610,10 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 # ── Audit log (ICRC-3 / ICRC-121-style append-only chain) ─────────────────────
 
 def _last_event():
-    last = None
-    for ev in OrchestrationEvent.instances():
-        if last is None or ev.idx > last.idx:
-            last = ev
-    return last
+    mid = OrchestrationEvent.max_id()
+    if mid is None:
+        return None
+    return OrchestrationEvent[str(mid)]
 
 
 def _append_event(btype: str, canister_id: str, payload: dict) -> "OrchestrationEvent":
@@ -690,18 +689,13 @@ def _section_view(sec: Section) -> dict:
 
 @query
 def get_status() -> text:
-    list(Section.instances())
-    list(Stand.instances())
-    list(Canister.instances())
-    list(AuthorizedWasm.instances())
-    list(OrchestrationEvent.instances())
     return json.dumps({
         "version": VERSION,
-        "sections": len(list(Section.instances())),
-        "stands": len(list(Stand.instances())),
-        "canisters": len(list(Canister.instances())),
-        "authorized_wasms": len(list(AuthorizedWasm.instances())),
-        "events": len(list(OrchestrationEvent.instances())),
+        "sections": Section.count(),
+        "stands": Stand.count(),
+        "canisters": Canister.count(),
+        "authorized_wasms": AuthorizedWasm.count(),
+        "events": OrchestrationEvent.count(),
     })
 
 
@@ -826,13 +820,17 @@ def get_events(args: text) -> text:
     except (json.JSONDecodeError, ValueError):
         params = {}
     cid = (params.get("canister_id") or "").strip()
-    take = int(params.get("take", 100))
-    list(OrchestrationEvent.instances())
-    evs = list(OrchestrationEvent.instances())
+    take = max(1, int(params.get("take", 100)))
+    total = OrchestrationEvent.count()
+    # Load only the tail we need, then optionally filter by canister.
+    # When filtering, over-fetch by a factor so we have enough after the filter.
+    fetch = take if not cid else min(total, take * 10)
+    offset = max(0, total - fetch)
+    evs = OrchestrationEvent.load_some(offset, fetch)
     if cid:
         evs = [e for e in evs if e.canister_id == cid]
     evs.sort(key=lambda e: e.idx, reverse=True)
-    evs = evs[:max(1, take)]
+    evs = evs[:take]
     return json.dumps([
         {
             "idx": e.idx,
