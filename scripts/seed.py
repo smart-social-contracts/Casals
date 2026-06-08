@@ -223,7 +223,25 @@ def main():
     ap.add_argument("--apply-arrangement", action="store_true",
                     help="after deploying, apply the active arrangement's post-deploy steps "
                          "(requires --deploy)")
+    ap.add_argument("--arrangement-only", action="store_true",
+                    help="ONLY upsert/activate the --arrangement; skip template upload, "
+                         "set_settings and sheet deploy. For seeding an environment's "
+                         "arrangement into an already-provisioned Casals without touching "
+                         "its authorized-WASM catalog.")
     args = ap.parse_args()
+
+    # Arrangement-only: seed just the env's arrangement, leaving the catalog and
+    # sheet untouched. Used to (re)seed a live environment's config overlay.
+    if args.arrangement_only:
+        if not args.arrangement:
+            sys.exit("--arrangement-only requires --arrangement <name>")
+        casals_id = canister_id(CASALS, args)
+        print(f"casals_backend  : {casals_id}")
+        if not casals_id:
+            sys.exit("could not resolve casals_backend id; is the project deployed?")
+        print(f"seeding arrangement '{args.arrangement}' (arrangement-only)…")
+        seed_arrangement(args, args.arrangement)
+        return
 
     with open(CATALOG) as f:
         catalog = json.load(f)
