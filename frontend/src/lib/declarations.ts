@@ -20,6 +20,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
 
     // ── cycles management ──
     get_cycles:            IDL.Func([], [IDL.Text], []),
+    get_cycles_cached:     IDL.Func([], [IDL.Text], ['query']),
     get_cycle_history:     IDL.Func([IDL.Text], [IDL.Text], ['query']),
     top_up:                IDL.Func([IDL.Text], [IDL.Text], []),
     reconcile:             IDL.Func([], [IDL.Text], []),
