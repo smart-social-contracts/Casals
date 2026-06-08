@@ -619,7 +619,8 @@ def _last_event():
     total = OrchestrationEvent.count()
     if not total:
         return None
-    evs = OrchestrationEvent.load_some(total - 1, 1)
+    max_oid = OrchestrationEvent.max_id()
+    evs = OrchestrationEvent.load_some(max(1, max_oid), 1)
     return evs[0] if evs else None
 
 
@@ -832,8 +833,9 @@ def get_events(args: text) -> text:
     # Load only the tail we need, then optionally filter by canister.
     # When filtering, over-fetch by a factor so we have enough after the filter.
     fetch = take if not cid else min(total, take * 10)
-    offset = max(0, total - fetch)
-    evs = OrchestrationEvent.load_some(offset, fetch)
+    max_oid = OrchestrationEvent.max_id() if total else 0
+    start_id = max(1, max_oid - fetch + 1)
+    evs = OrchestrationEvent.load_some(start_id, fetch) if total else []
     if cid:
         evs = [e for e in evs if e.canister_id == cid]
     # Deduplicate by idx — keep the last-written entry for each idx value to
@@ -3159,9 +3161,12 @@ def get_cycle_history(args: text) -> text:
     # 3 000 entries covers ~28 days of autopilot data for 27 canisters
     # (27 canisters × 4 runs/day = 108/day → 3 000 / 108 ≈ 28 days).
     total = CycleSample.count()
+    if not total:
+        return json.dumps({"now": now, "samples": []})
     fetch = min(total, 3000)
-    offset = max(0, total - fetch)
-    samples = CycleSample.load_some(offset, fetch)
+    max_sid = CycleSample.max_id()
+    start_id = max(1, max_sid - fetch + 1)
+    samples = CycleSample.load_some(start_id, fetch)
     rows = []
     for s in samples:
         if int(s.ts or 0) < since:
