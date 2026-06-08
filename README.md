@@ -55,6 +55,42 @@ make seed-ic         # upload templates + authorize WASMs (mainnet)
 
 ---
 
+## CLI
+
+Install the `casals` command:
+
+```bash
+pip install ic-casals
+```
+
+Run from your project directory (where `icp.yaml` lives):
+
+```bash
+casals status                                      # version + object counts
+casals tree                                        # Section → Stand → Canister tree
+casals events                                      # audit log
+casals wasms                                       # authorized WASM catalog
+casals cycles                                      # treasury + per-canister balances
+casals pool                                        # canister pool
+casals sheet get                                   # live sheet JSON
+casals sheet set   my-sheet.json                   # replace live sheet
+casals sheet deploy                                # deploy current live sheet
+casals sheet deploy my-sheet.json                  # set + deploy in one step
+
+casals -e ic --identity casals status              # mainnet, explicit identity
+```
+
+All output is JSON. Errors go to stderr as `{"ok": false, "error": "..."}` with exit code 1.
+
+Without installing, the same commands are available via:
+
+```bash
+python3 scripts/casals.py status
+make cli ARGS="status"
+```
+
+---
+
 ## API
 
 JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false, "error": "…"}`.

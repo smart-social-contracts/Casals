@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ic-casals"
+version = "0.2.0"
+description = "CLI for querying and commanding a deployed Casals canister orchestrator"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+casals = "casals_cli:main"
+
+[tool.setuptools]
+py-modules = ["casals_cli"]

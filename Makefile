@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-registry build-templates deploy deploy-ic seed seed-ic test clean local-conductor local-network-json
+.PHONY: build build-backend build-registry build-templates deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
 
 # Local "master conductor": added as a controller of the local canisters after
 # a local deploy so this principal can run admin endpoints (set commanders,
@@ -71,6 +71,12 @@ seed:
 
 seed-ic:
 	python3 scripts/seed.py -e ic --identity casals
+
+# Thin CLI for querying and commanding a deployed Casals backend.
+# Usage: make cli ARGS="status"
+#        make cli ARGS="sheet deploy seed/sheets/demo.json -e ic --identity casals"
+cli:
+	python3 scripts/casals.py $(ARGS)
 
 test:
 	pytest -q

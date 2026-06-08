@@ -28,6 +28,27 @@ jobs:
       - name: Run unit tests
         run: pytest tests/test_unit.py -v
 
+  cli-unit:
+    name: CLI unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # tests/test_cli_unit.py covers scripts/casals.py with no IC runtime:
+      # _parse / _candid_unescape / _candid_text_arg helpers, the arg parser,
+      # _load_sheet_file, call() subprocess wiring (mocked), error exit codes,
+      # and a full subprocess suite using a pure-Python fake icp binary.
+      - name: Run CLI unit tests
+        run: pytest tests/test_cli_unit.py -v
+
   frontend-build:
     name: Frontend build
     runs-on: ubuntu-latest

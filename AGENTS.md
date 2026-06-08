@@ -14,9 +14,11 @@ src/main.py          — Basilisk (Python) conductor canister
 src/models.py        — ic_python_db entities (Section, Stand, Canister, CycleSample, PooledCanister, …)
 src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
 src/util.py          — pure helpers (audit hash, canister URL)
+casals_cli.py        — CLI module (pip install ic-casals → `casals` command)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
+pyproject.toml       — package metadata; entry point casals = casals_cli:main
 icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
-Makefile             — build / deploy / seed / test targets
+Makefile             — build / deploy / seed / test / cli targets
 frontend/            — SvelteKit UI (Orchestra, Sheet, Cycles, Authorized WASMs, Settings)
 file_registry/       — git submodule: the file-registry canister (WASM store)
 templates/           — hello-world template sources (basilisk / rust / motoko)
@@ -24,8 +26,8 @@ seed/templates.json  — default template catalog (what to upload + authorize)
 seed/templates/      — committed, gzipped template WASMs
 seed/sheets/         — sheets (desired orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
-scripts/             — build_templates.sh, seed.py
-tests/               — pytest unit + integration + e2e suites
+scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper)
+tests/               — pytest unit + integration + e2e suites (incl. test_cli_unit.py)
 .icp/data/           — committed mainnet canister-ID mappings (do NOT delete)
 ```
 
@@ -165,6 +167,74 @@ To re-lock:
 icp canister call casals_backend set_settings '("{\"open_access\":false}")' \
   -e ic --identity casals
 ```
+
+## CLI (`casals`)
+
+A thin wrapper over the backend's JSON API for scripting and CI/CD. No new
+dependencies beyond the standard library. All output is JSON on stdout; errors
+go to stderr as `{"ok": false, "error": "..."}` with exit code 1.
+
+### Install (recommended)
+
+```bash
+pip install ic-casals   # installs the `casals` console command
+```
+
+Run from your project directory (where `icp.yaml` lives — required so `icp`
+can resolve canister names):
+
+```bash
+casals [-e ENV] [--identity ID] <command>
+```
+
+### Run without installing (repo checkout)
+
+```bash
+python3 scripts/casals.py [-e ENV] [--identity ID] <command>
+# or via make:
+make cli ARGS="<command>"
+```
+
+### Source layout
+
+| File | Role |
+|---|---|
+| `casals_cli.py` | Canonical module — imported by the installed `casals` entry point |
+| `scripts/casals.py` | Thin wrapper for direct script invocation from a checkout |
+| `pyproject.toml` | Package metadata; entry point `casals = casals_cli:main` |
+
+### Commands
+
+| Command | Backend method |
+|---|---|
+| `status` | `get_status` |
+| `tree` | `get_tree` |
+| `events` | `get_events` |
+| `wasms` | `list_authorized_wasms` |
+| `cycles` | `get_cycles` |
+| `pool` | `list_pool` |
+| `sheet get` | `get_sheet` |
+| `sheet set FILE` | `set_sheet` |
+| `sheet deploy [FILE]` | `set_sheet` (if FILE given) then `deploy_sheet` |
+
+Common flags on every command: `-e local|ic` (default `local`), `--identity <id>`.
+
+### Examples
+
+```bash
+casals status
+casals -e ic --identity casals tree
+casals sheet deploy seed/sheets/demo.json
+casals sheet deploy        # deploy the current live sheet
+casals cycles -e ic
+```
+
+### Tests
+
+CLI unit tests (no replica needed) live in `tests/test_cli_unit.py` and run on
+every PR via the `cli-unit` job in `.github/workflows/ci.yml`. Integration
+tests that run the CLI against a live replica are in
+`tests/test_cli_integration.py` (picked up by `integration.yml`).
 
 ## Backend API (JSON-in / JSON-out)
 
