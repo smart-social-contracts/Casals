@@ -94,9 +94,7 @@ jobs:
         run: make build
 
       - name: Deploy to IC mainnet
-        # --force ensures every canister is (re)installed even if the WASM hash
-        # hasn't changed (e.g. only Python source embedded in the WASM changed).
-        run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} --force -y
+        run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} -y
 
       - name: Add conductor as controller
         env:
