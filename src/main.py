@@ -13,13 +13,11 @@ verifies success via the management canister's `module_hash` rather than a
 target-reported status.
 """
 
-import base64
 import json
 import traceback
 
 from basilisk import (
     Async,
-    CallResult,
     Duration,
     Opt,
     Principal,
@@ -35,7 +33,6 @@ from basilisk import (
     void,
 )
 from basilisk.canisters.management import management_canister
-from basilisk.canisters.xrc import XRC_CANISTER_ID, XRCCanister
 from ic_python_db import Database
 from ic_python_logging import get_logger
 
@@ -46,7 +43,56 @@ from auth import (
     _normalize_permissions,
     _parse_permissions,
 )
-from default_sheet import DEFAULT_SHEET
+from audit import _append_event, _last_event
+import cycles as _cycles_mod
+from cycles import (
+    FX_MIN_REFRESH_SECS,
+    FX_SUPPORTED_CURRENCIES,
+    SAMPLE_MIN_GAP_SECS,
+    _arm_autopilot,
+    _arm_cycle_sampler,
+    _now_secs,
+    _policy_for,
+    _prune_cycle_samples,
+    _reconcile_all_gen,
+    _refresh_fx_gen,
+    _resolve_canister_or_stand,
+    _record_cycle_sample,
+    _status_cycles,
+    _status_freezing,
+)
+from helpers import (
+    ANONYMOUS,
+    VERSION,
+    _caller,
+    _canister_call,
+    _err,
+    _file_registry,
+    _is_controller,
+    _nat64s_in,
+    _ok,
+    _principals_in,
+    _settings,
+    unwrap_call_result,
+)
+from lifecycle import (
+    CMC_CANISTER_ID,
+    CREATE_CYCLES,
+    _add_controllers,
+    _allocate_canister,
+    _install_arg_for,
+    _maybe_provision_assets,
+    _provision_canister,
+    _pull_and_install,
+    _resolve_authorized_wasm,
+    _retire_canister,
+    _set_log_visibility,
+    _spec_target_subnet,
+    _target_subnet,
+    _upload_bundle,
+    _verify_module_hash,
+    _versions_in_family,
+)
 from models import (
     AuthorizedWasm,
     CycleSample,
@@ -60,20 +106,17 @@ from models import (
     CanisterKind,
     CanisterStatus,
 )
+from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from services import (
-    AssetCanisterService,
     AssetPermission,
-    BasiliskIntrospectionService,
-    FileRegistryService,
     GrantPermissionArg,
     StoreArg,
 )
+from sheet import _default_sheet_copy, _load_sheet, _set_live_sheet, get_live_sheet
 from util import (
-    audit_block_hash,
+    canister_url,
     cycles_status,
     decide_topup,
-    resolve_cycle_policy,
-    canister_url,
     to_hex as _to_hex,
 )
 from views import _canister_view, _section_view, _stand_view
@@ -81,111 +124,10 @@ from wasm_helpers import _family_of, _split_key, _ver_tuple
 
 _log = get_logger("casals")
 
-VERSION = "0.1.0"
-ANONYMOUS = "2vxsx-fae"
-# Cycles provisioned into a freshly created canister. Tune per deployment.
-CREATE_CYCLES = 2_000_000_000_000  # 2T
-# Per-chunk read size when pulling a WASM from the file-registry (matches the
-# registry's get_file_chunk cap).
-PULL_CHUNK_BYTES = 128 * 1024
-
-# Candid encoding of `(null)` — a single null-typed argument. Used as the install
-# arg for the certified-assets canister, whose init is `(opt AssetCanisterArgs)`
-# (null <: opt T, so this means "no configuration"). An empty arg wouldn't decode
-# against an opt parameter and the install would trap.
-CANDID_NULL_ARG = bytes([0x44, 0x49, 0x44, 0x4C, 0x00, 0x01, 0x7F])  # b"DIDL\x00\x01\x7f"
-
 # The management canister's principal (used for hand-encoded calls below).
 MANAGEMENT_CANISTER_ID = "aaaaa-aa"
 
-# The NNS Cycles Minting Canister. Its `create_canister` lets a canister create
-# another *on a chosen subnet* (the management canister can only place on the
-# caller's own subnet). Cycles are attached to the call; the reply is
-# `variant { Ok : principal; Err : ... }`.
-CMC_CANISTER_ID = "rkp4c-7iaaa-aaaaa-aaaca-cai"
 
-# The IC Exchange Rate Canister charges 1B cycles per get_exchange_rate call.
-XRC_CYCLES_PER_CALL = 1_000_000_000
-# Don't pay for a fresh rate more often than this when callers ask to refresh
-# (the sampler timer refreshes unconditionally on its own, slower cadence).
-FX_MIN_REFRESH_SECS = 300
-# Fiat currencies the dashboard offers (XRC FiatCurrency symbols).
-FX_SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "CNY", "CAD", "AUD"]
-
-
-def _principals_in(s: str) -> list:
-    """Extract every `principal "<id>"` value from a decoded-candid string.
-    Avoids the `re` module, which is only partially available in the runtime."""
-    out = []
-    marker = 'principal "'
-    i = 0
-    while True:
-        j = s.find(marker, i)
-        if j < 0:
-            break
-        start = j + len(marker)
-        end = s.find('"', start)
-        if end < 0:
-            break
-        out.append(s[start:end])
-        i = end + 1
-    return out
-
-
-def _nat64s_in(s: str) -> list:
-    """Extract every `<number> : nat64` value from a decoded-candid string.
-    Avoids the `re` module. Underscores in the rendered number are stripped."""
-    out = []
-    marker = ": nat64"
-    i = 0
-    while True:
-        j = s.find(marker, i)
-        if j < 0:
-            break
-        # Walk back over the space(s) before the ':' to the end of the number.
-        k = j - 1
-        while k >= 0 and s[k] == ' ':
-            k -= 1
-        end = k + 1
-        start = end
-        while start - 1 >= 0 and (s[start - 1].isdigit() or s[start - 1] == '_'):
-            start -= 1
-        num = s[start:end].replace('_', '')
-        if num:
-            try:
-                out.append(int(num))
-            except ValueError:
-                pass
-        i = j + len(marker)
-    return out
-
-# Active autopilot timer id (within this instance's lifetime; IC timers — like
-# this module global — do not survive an upgrade, so they are re-armed in
-# post_upgrade). None when autopilot is off.
-_autopilot_timer_id = None
-# Active cycle-sampler timer id (records balance history). Re-armed on start.
-_sampler_timer_id = None
-# Last time a balance sample batch was recorded (unix secs); throttles the
-# opportunistic sampling done inside get_cycles so refreshes don't flood history.
-_last_sample_ts = 0
-
-# Volatile cache of the last get_cycles result (JSON string). Populated every
-# time get_cycles completes successfully so the frontend can show stale data
-# instantly via get_cycles_cached() while the live refresh runs in background.
-_cycles_cache: str = ""
-
-# Cycle-history retention: drop samples older than this, and hard-cap the total
-# number of stored samples, to bound stable-memory growth.
-SAMPLE_RETENTION_SECS = 35 * 24 * 3600   # ~35 days
-SAMPLE_MAX = 8000
-# Minimum spacing between opportunistic (get_cycles) samples.
-SAMPLE_MIN_GAP_SECS = 120
-
-# The live, editable sheet (the desired orchestra). It is EPHEMERAL: held only
-# in the Wasm heap, loaded from DEFAULT_SHEET at canister start, and reset on
-# every restart/upgrade. Editing it (set_sheet) changes nothing on-chain until
-# deploy_sheet is called; deploy is what reconciles real canisters to it.
-_live_sheet = None
 
 # ── Storage ──────────────────────────────────────────────────────────────
 
@@ -194,63 +136,6 @@ try:
     Database.init(db_storage=_db_storage, audit_enabled=False)
 except RuntimeError:
     pass
-
-
-# ── Inter-canister helpers ────────────────────────────────────────────────
-
-def _file_registry() -> FileRegistryService:
-    s = _settings()
-    fr = (s.file_registry_canister_id or "").strip()
-    if not fr:
-        raise Exception("file_registry_canister_id is not configured (see set_settings)")
-    return FileRegistryService(Principal.from_str(fr))
-
-
-def _canister_call(canister_id: str, method: str, arg: str):
-    """Generator: relay a single text-in/text-out call to a canister's
-    introspection endpoint and return the decoded text reply."""
-    svc = BasiliskIntrospectionService(Principal.from_str(canister_id))
-    res = yield getattr(svc, method)(arg)
-    return unwrap_call_result(res)
-
-
-# ── Small helpers ──────────────────────────────────────────────────────────
-
-def _ok(**kw) -> str:
-    kw.setdefault("ok", True)
-    return json.dumps(kw)
-
-
-def _err(message: str) -> str:
-    return json.dumps({"ok": False, "error": message})
-
-
-def _caller() -> str:
-    return ic.caller().to_str()
-
-
-def _is_controller() -> bool:
-    return ic.is_controller(ic.caller())
-
-
-def unwrap_call_result(cr: CallResult):
-    """Return the Ok payload of a CallResult or raise on Err."""
-    ok = getattr(cr, "Ok", None)
-    err = getattr(cr, "Err", None)
-    if ok is None and err is not None:
-        raise Exception(f"inter-canister call failed: {err}")
-    return ok if ok is not None else cr
-
-
-# ── Settings (singleton) ────────────────────────────────────────────────────
-
-def _settings() -> Settings:
-    list(Settings.instances())
-    s = Settings["singleton"]
-    if s is None:
-        s = Settings(key="singleton")
-        s.version = VERSION
-    return s
 
 
 def _bootstrap() -> None:
@@ -271,123 +156,6 @@ def init_() -> void:
 @post_upgrade
 def post_upgrade_() -> void:
     _bootstrap()
-
-
-# ── Sheet (persistent; default is only the first-boot seed) ───────────────────
-
-def _default_sheet_copy() -> dict:
-    """A fresh deep copy of the bundled default sheet."""
-    try:
-        return json.loads(json.dumps(DEFAULT_SHEET))
-    except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"could not load default sheet: {e}")
-        return {"sections": []}
-
-
-def _persist_sheet(sheet) -> None:
-    """Write the live sheet to stable storage (the persistent source of truth)."""
-    _settings().sheet_json = json.dumps(sheet)
-
-
-def _load_sheet() -> None:
-    """Load the live sheet from stable storage at canister start. The bundled
-    default is used only to seed the very first boot (when nothing is persisted
-    yet); after that, edits survive restarts and upgrades."""
-    global _live_sheet
-    raw = (_settings().sheet_json or "").strip()
-    if raw:
-        try:
-            _live_sheet = json.loads(raw)
-            return
-        except Exception as e:  # pragma: no cover - defensive
-            _log.error(f"could not parse persisted sheet, reseeding default: {e}")
-    _live_sheet = _default_sheet_copy()
-    try:
-        _persist_sheet(_live_sheet)
-    except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"could not persist default sheet: {e}")
-
-
-def _set_live_sheet(sheet) -> dict:
-    """Validate, replace, and persist the live sheet (the desired orchestra)."""
-    global _live_sheet
-    if isinstance(sheet, str):
-        sheet = json.loads(sheet)
-    if not isinstance(sheet, dict):
-        raise Exception("sheet must be a JSON object")
-    if not isinstance(sheet.get("sections", []), list):
-        raise Exception("sheet.sections must be a list")
-    _live_sheet = sheet
-    _persist_sheet(_live_sheet)
-    return _live_sheet
-
-
-# ── Canister pool (reuse before create) ───────────────────────────────────────
-
-def _pool_take_free(subnet: str = "", subnet_type: str = "") -> str:
-    """Return the id of a free pooled canister matching the desired placement
-    (or '' if none available).
-
-      - explicit `subnet`: only a free canister recorded on that subnet;
-      - `subnet_type`: only a free canister created for that type;
-      - neither: any free canister (default placement).
-
-    A constrained target never reuses a canister of unknown placement — we'd
-    risk landing on the wrong subnet — so it creates a fresh one instead.
-
-    Safety: never hand out a canister that already backs a live Canister
-    record — a stale `free` pool entry (e.g. left by a partial deploy or an
-    incorrect self-heal pass) must not overwrite a running service.
-    """
-    list(PooledCanister.instances())
-    list(Canister.instances())
-    live_cids = {st.canister_id for st in Canister.instances() if st.canister_id}
-    for p in PooledCanister.instances():
-        if p.status != "free" or not p.canister_id:
-            continue
-        if p.canister_id in live_cids:
-            # Stale free entry — this canister is still in active use.
-            # Re-mark it in_use so it cannot be handed out again, and log.
-            p.status = "in_use"
-            p.canister_name = "(recovered)"
-            _log.error(f"pool_take_free: skipped live canister {p.canister_id}; re-marked in_use")
-            continue
-        if subnet:
-            if p.subnet == subnet:
-                return p.canister_id
-        elif subnet_type:
-            if p.subnet_type == subnet_type:
-                return p.canister_id
-        else:
-            return p.canister_id
-    return ""
-
-
-def _pool_register(canister_id: str, subnet: str = "", subnet_type: str = "") -> "PooledCanister":
-    """Ensure a PooledCanister exists for `canister_id`, recording its (known)
-    subnet placement. Returns the record."""
-    list(PooledCanister.instances())
-    p = PooledCanister[canister_id]
-    if p is None:
-        p = PooledCanister(canister_id=canister_id)
-    if subnet:
-        p.subnet = subnet
-    if subnet_type:
-        p.subnet_type = subnet_type
-    return p
-
-
-def _pool_mark_in_use(canister_id: str, canister_name: str) -> None:
-    p = _pool_register(canister_id)
-    p.status = "in_use"
-    p.canister_name = canister_name
-
-
-def _pool_free(canister_id: str) -> None:
-    # Preserve the recorded subnet placement; only clear the occupancy.
-    p = _pool_register(canister_id)
-    p.status = "free"
-    p.canister_name = ""
 
 
 # ── Authorization ────────────────────────────────────────────────────────────
@@ -498,39 +266,8 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
     raise Exception("unauthorized: caller is not the commander for this stand/section")
 
 
-# ── Audit log (ICRC-3 / ICRC-121-style append-only chain) ─────────────────────
-
-def _last_event():
-    total = OrchestrationEvent.count()
-    if not total:
-        return None
-    max_oid = OrchestrationEvent.max_id()
-    evs = OrchestrationEvent.load_some(max(1, max_oid), 1)
-    return evs[0] if evs else None
-
-
-def _append_event(btype: str, canister_id: str, payload: dict) -> "OrchestrationEvent":
-    last = _last_event()
-    idx = (last.idx + 1) if last is not None else 0
-    parent = last.self_hash if last is not None else ""
-    payload_json = json.dumps(payload)[:4000]
-    caller = _caller()
-    ts = ic.time()
-    self_hash = audit_block_hash(idx, btype, canister_id or "", caller, ts, payload_json, parent)
-    ev = OrchestrationEvent(
-        btype=btype,
-        canister_id=canister_id or "",
-        caller=caller,
-        payload_json=payload_json,
-        parent_hash=parent,
-        self_hash=self_hash,
-    )
-    ev.idx = idx
-    ev.timestamp_secs = int(ts // 1_000_000_000)
-    return ev
-
-
 # _canister_view, _stand_view, _section_view imported from views.py above.
+# _last_event, _append_event imported from audit.py above.
 
 # ── Query endpoints ──────────────────────────────────────────────────────────
 
@@ -709,7 +446,7 @@ def get_sheet() -> text:
     """Return the live sheet — the desired orchestra. Editable via set_sheet,
     applied via deploy_sheet. Persisted across restarts/upgrades (the bundled
     default only seeds the first boot)."""
-    return json.dumps(_live_sheet or {"sections": []})
+    return json.dumps(get_live_sheet() or {"sections": []})
 
 
 @query
@@ -766,8 +503,8 @@ def set_sheet(args: text) -> text:
         params = json.loads(args)
         sheet = params.get("sheet", params)
         _set_live_sheet(sheet)
-        _append_event("sheet_edited", "", {"sections": len(_live_sheet.get("sections", []))})
-        return _ok(sheet=_live_sheet)
+        _append_event("sheet_edited", "", {"sections": len(get_live_sheet().get("sections", []))})
+        return _ok(sheet=get_live_sheet())
     except Exception as e:
         return _err(str(e))
 
@@ -780,7 +517,7 @@ def reset_sheet() -> text:
         _require_can_add()
         _set_live_sheet(_default_sheet_copy())
         _append_event("sheet_reset", "", {})
-        return _ok(sheet=_live_sheet)
+        return _ok(sheet=get_live_sheet())
     except Exception as e:
         return _err(str(e))
 
@@ -1260,459 +997,8 @@ def remove_authorized_wasm(args: text) -> text:
         return _err(str(e))
 
 
-# ── Lifecycle helpers (Async generators over the management canister) ─────────
-# _split_key, _ver_tuple, _family_of imported from wasm_helpers.py above.
-
-
-def _versions_in_family(family: str):
-    """All authorized wasms in a family, newest version first."""
-    list(AuthorizedWasm.instances())
-    members = [w for w in AuthorizedWasm.instances() if _family_of(w) == family]
-    members.sort(key=lambda w: _ver_tuple((w.version or _split_key(w.key)[1])), reverse=True)
-    return members
-
-
-def _latest_in_family(family: str):
-    members = _versions_in_family(family)
-    return members[0] if members else None
-
-
-def _resolve_authorized_wasm(wasm_key: str, section: "Section"):
-    """Resolve a wasm key to an AuthorizedWasm. A bare family name ("foo")
-    resolves to the latest version in that family; a pinned key ("foo@1.2.0")
-    resolves to that exact version."""
-    list(AuthorizedWasm.instances())
-    family, version = _split_key(wasm_key)
-    if version:
-        w = AuthorizedWasm[wasm_key]
-    else:
-        # Bare family name: prefer the latest version, falling back to a legacy
-        # unversioned entry whose key equals the family.
-        w = _latest_in_family(family) or AuthorizedWasm[family]
-    if w is None:
-        raise Exception(f"unknown authorized wasm '{wasm_key}'")
-    # A wasm is usable if it is global (no section) or bound to this section.
-    if w.section is not None and section is not None and w.section.name != section.name:
-        raise Exception(f"wasm '{w.key}' is not authorized for section '{section.name}'")
-    return w
-
-
-def _install_arg_for(w: "AuthorizedWasm") -> bytes:
-    """The install/init argument for a WASM. The certified-assets canister needs
-    `(null)` (its init is `opt AssetCanisterArgs`); everything else takes `()`."""
-    if w.kind == CanisterKind.FRONTEND or (w.asset_path or "").strip():
-        return CANDID_NULL_ARG
-    return b""
-
-
-def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
-                      install_mode, init_arg: bytes = b""):
-    """Pull a WASM from the file-registry into the target's chunk store and
-    install it via install_chunked_code. Generator: use with `yield from`.
-
-    `init_arg` is the (already candid-encoded) install argument; defaults to the
-    empty arg `()`.
-
-    NOTE: the exact management-canister record shapes (opt encoding, chunk
-    hash records) should be validated against your Basilisk version on first
-    deploy.
-    """
-    fr = _file_registry()
-    size_res = yield fr.get_file_size_icc(namespace, path)
-    size_json = json.loads(unwrap_call_result(size_res))
-    if "error" in size_json:
-        raise Exception(f"file-registry: {size_json['error']}")
-    total = int(size_json["size"])
-    _append_event("wasm_download_start", target_id, {"path": path, "size_bytes": total})
-
-    target = Principal.from_str(target_id)
-    chunk_hashes = []
-    offset = 0
-    chunk_num = 0
-    while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
-        chunk_json = json.loads(unwrap_call_result(chunk_res))
-        if "error" in chunk_json:
-            raise Exception(f"file-registry: {chunk_json['error']}")
-        data = base64.b64decode(chunk_json["content_b64"])
-        up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": data})
-        up = unwrap_call_result(up_res)
-        chunk_hash = up.get("hash") if isinstance(up, dict) else getattr(up, "hash", up)
-        chunk_hashes.append({"hash": chunk_hash})
-        chunk_num += 1
-        offset += len(data)
-        _append_event("wasm_chunk_uploaded", target_id,
-                      {"chunk": chunk_num, "bytes_so_far": offset, "total_bytes": total,
-                       "pct": int(offset * 100 // total)})
-        if chunk_json.get("eof"):
-            break
-
-    if not chunk_hashes:
-        raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
-    _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
-    install_res = yield management_canister.install_chunked_code({
-        "mode": install_mode,
-        "target_canister": target,
-        "store_canister": target,
-        "chunk_hashes_list": chunk_hashes,
-        "wasm_module_hash": bytes.fromhex(expected_hash_hex),
-        "arg": init_arg,
-    })
-    # Surface a rejected install (e.g. chunk-hash mismatch, oversized module)
-    # instead of silently proceeding to a confusing "hash mismatch" verify.
-    unwrap_call_result(install_res)
-    try:
-        yield management_canister.clear_chunk_store({"canister_id": target})
-    except Exception:
-        pass  # best-effort cleanup; never fail a good install on store cleanup
-
-
-def _pull_registry_bytes(namespace: str, path: str):
-    """Generator: download a (small) file from the file-registry into memory and
-    return its bytes. Used for frontend assets (index.html), not WASMs."""
-    fr = _file_registry()
-    size_res = yield fr.get_file_size_icc(namespace, path)
-    size_json = json.loads(unwrap_call_result(size_res))
-    if "error" in size_json:
-        raise Exception(f"file-registry: {size_json['error']}")
-    total = int(size_json["size"])
-    buf = b""
-    offset = 0
-    while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
-        chunk_json = json.loads(unwrap_call_result(chunk_res))
-        if "error" in chunk_json:
-            raise Exception(f"file-registry: {chunk_json['error']}")
-        data = base64.b64decode(chunk_json["content_b64"])
-        buf += data
-        offset += len(data)
-        if chunk_json.get("eof"):
-            break
-    return buf
-
-
-def _backend_cid_for_stand(frontend_cid: str, stand=None) -> str:
-    """Return the backend canister's ID in the same stand as `frontend_cid`.
-
-    Used to inject the paired backend's canister ID into a frontend asset page
-    so the browser can call e.g. `greet()` on the matching backend canister.
-    If `stand` is not supplied the canister is looked up by canister_id. Returns ""
-    when no backend is found (standalone frontend or stand not loaded).
-    """
-    dk = stand
-    if dk is None:
-        list(Canister.instances())
-        for st in Canister.instances():
-            if st.canister_id == frontend_cid and st.stand is not None:
-                dk = st.stand
-                break
-    if dk is None:
-        return ""
-    list(Canister.instances())
-    for peer in Canister.instances():
-        if (peer.kind == CanisterKind.BACKEND
-                and peer.canister_id
-                and peer.canister_id != frontend_cid
-                and peer.stand is not None
-                and peer.stand.name == dk.name):
-            return peer.canister_id
-    return ""
-
-
-def _provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
-    """Generator: upload the WASM's associated asset into a freshly installed
-    certified-assets canister. Casals is the canister's controller, so it grants itself
-    Commit permission, then `store`s the asset at /index.html.
-
-    The placeholder `__BACKEND_CANISTER_ID__` in the asset is replaced with the
-    paired backend canister's ID (found from `stand` or by canister lookup),
-    so the page can call the backend canister directly from the browser.
-    """
-    asset_namespace = (w.asset_namespace or w.registry_namespace or "").strip()
-    asset_path = (w.asset_path or "").strip()
-    if not asset_path:
-        return
-    asset = AssetCanisterService(Principal.from_str(canister_id))
-    grant_res = yield asset.grant_permission({
-        "to_principal": ic.id(),
-        "permission": {"Commit": None},
-    })
-    unwrap_call_result(grant_res)
-    content = yield from _pull_registry_bytes(asset_namespace, asset_path)
-    # Inject the paired backend canister ID so the page can call it directly.
-    _PLACEHOLDER = b"__BACKEND_CANISTER_ID__"
-    if _PLACEHOLDER in content:
-        backend_cid = _backend_cid_for_stand(canister_id, stand)
-        if backend_cid:
-            content = content.replace(_PLACEHOLDER, backend_cid.encode())
-    content_type = (w.asset_content_type or "text/html").strip()
-    # Store /index.html; the asset canister aliases "/" to it by default.
-    store_res = yield asset.store({
-        "key": "/index.html",
-        "content_type": content_type,
-        "content_encoding": "identity",
-        "content": content,
-        "sha256": None,
-    })
-    unwrap_call_result(store_res)
-    _append_event("assets_uploaded", canister_id, {"wasm_key": w.key, "bytes": len(content)})
-
-
-def _list_registry_files(namespace: str):
-    """Generator: list the files in a file-registry namespace.
-
-    Returns a list of {path, size, content_type, sha256} dicts (empty for an
-    unknown namespace). Uses the positional `list_files_icc` variant because
-    Basilisk cannot pass JSON-dict args cross-canister."""
-    fr = _file_registry()
-    res = yield fr.list_files_icc(namespace)
-    parsed = json.loads(unwrap_call_result(res))
-    if isinstance(parsed, dict) and "error" in parsed:
-        raise Exception(f"file-registry: {parsed['error']}")
-    return parsed if isinstance(parsed, list) else []
-
-
-def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int = 0):
-    """Generator: upload a multi-file frontend bundle from the file-registry into
-    a certified-assets canister, returning (uploaded_in_batch, total_files).
-
-    Casals is the canister's controller, so it grants itself Commit once, then
-    `store`s every file in `namespace` under its path. One `store` per file (the
-    proven path).
-
-    Uploading every file in a single update call does not fit the ingress window
-    for a large bundle (100+ files), so callers may upload a slice: `offset` is the
-    first file index (sorted by path) and `limit` caps how many files this call
-    uploads (0 = all remaining). Re-running with the next offset resumes; `store`
-    is idempotent so overlap is harmless. The batch commits on return, so progress
-    survives even if the next slice fails."""
-    files = yield from _list_registry_files(namespace)
-    total = len(files)
-    if total == 0:
-        return (0, 0)
-    files.sort(key=lambda f: (f.get("path") or ""))
-    start = max(0, int(offset))
-    end = total if not limit else min(total, start + int(limit))
-    asset = AssetCanisterService(Principal.from_str(canister_id))
-    grant_res = yield asset.grant_permission({
-        "to_principal": ic.id(),
-        "permission": {"Commit": None},
-    })
-    unwrap_call_result(grant_res)
-    count = 0
-    for f in files[start:end]:
-        path = (f.get("path") or "").strip()
-        if not path:
-            continue
-        key = path if path.startswith("/") else "/" + path
-        content = yield from _pull_registry_bytes(namespace, path)
-        content_type = (f.get("content_type") or "application/octet-stream").strip()
-        store_res = yield asset.store({
-            "key": key,
-            "content_type": content_type,
-            "content_encoding": "identity",
-            "content": content,
-            "sha256": None,
-        })
-        unwrap_call_result(store_res)
-        count += 1
-    _append_event("bundle_uploaded", canister_id,
-                  {"namespace": namespace, "files": count, "offset": start, "total": total})
-    return (count, total)
-
-
-def _verify_module_hash(canister_id: str, expected_hash_hex: str):
-    """Generator: returns (ok: bool, actual_hex: str)."""
-    status_res = yield management_canister.canister_status({"canister_id": Principal.from_str(canister_id)})
-    status = unwrap_call_result(status_res)
-    mh = status.get("module_hash") if isinstance(status, dict) else getattr(status, "module_hash", None)
-    actual = _to_hex(mh).lower() if mh is not None else ""
-    return (actual == (expected_hash_hex or "").lower(), actual)
-
-
-def _add_controllers(canister_id: str, controllers: list):
-    """Generator: set the controllers list on a canister."""
-    principals = [Principal.from_str(c) for c in controllers if c]
-    yield management_canister.update_settings({
-        "canister_id": Principal.from_str(canister_id),
-        "settings": {"controllers": principals},
-    })
-
-
-def _target_subnet(dk: "Stand"):
-    """Resolve a stand's desired placement: (subnet, subnet_type). A stand's own
-    setting wins; otherwise it inherits its section's. Empty strings => default
-    (the conductor's subnet)."""
-    if dk is not None:
-        if (dk.subnet or "").strip():
-            return (dk.subnet.strip(), "")
-        if (dk.subnet_type or "").strip():
-            return ("", dk.subnet_type.strip())
-        sec = dk.section
-        if sec is not None:
-            if (sec.subnet or "").strip():
-                return (sec.subnet.strip(), "")
-            if (sec.subnet_type or "").strip():
-                return ("", sec.subnet_type.strip())
-    return ("", "")
-
-
-def _create_canister_via_cmc(self_id: str, endow: int, subnet: str, subnet_type: str):
-    """Generator: create a canister on a chosen subnet through the CMC, attaching
-    `endow` cycles, and return its id (str). `subnet` pins an explicit subnet
-    principal; otherwise `subnet_type` asks the CMC for one of that type."""
-    if subnet:
-        selection = 'opt variant { Subnet = record { subnet = principal "' + subnet + '" } }'
-    elif subnet_type:
-        selection = 'opt variant { Filter = record { subnet_type = opt "' + subnet_type + '" } }'
-    else:
-        selection = "null"
-    arg = ('(record { subnet_selection = ' + selection +
-           '; settings = opt record { controllers = opt vec { principal "' + self_id + '" } } })')
-    res = yield ic.call_raw(
-        Principal.from_str(CMC_CANISTER_ID), "create_canister", ic.candid_encode(arg), endow)
-    reply = unwrap_call_result(res)  # raw candid reply bytes
-    decoded = ic.candid_decode(reply)
-    # On success the reply is `(variant { Ok = principal "<id>" })`; the error
-    # variant carries no principal, so the lone principal is the new canister.
-    found = _principals_in(decoded)
-    if not found:
-        raise Exception(f"CMC create_canister failed: {decoded[:300]}")
-    return found[0]
-
-
-def _allocate_canister(subnet: str = "", subnet_type: str = ""):
-    """Generator: hand back a canister to back a canister, preferring reuse.
-
-    Returns (canister_id, reused). Reuses a free pooled canister matching the
-    desired subnet placement when one exists (the caller must then `reinstall`
-    fresh code over it); otherwise creates a new one — on the chosen subnet via
-    the CMC when `subnet`/`subnet_type` is given, else on the conductor's subnet
-    via the management canister. The returned canister is marked in_use with no
-    occupant yet — the caller records the occupant via _pool_mark_in_use.
-    """
-    cid = _pool_take_free(subnet, subnet_type)
-    if cid:
-        _pool_mark_in_use(cid, "")
-        return (cid, True)
-    self_id = ic.id().to_str()
-    endow = int(_settings().create_cycles or 0) or CREATE_CYCLES
-    if subnet or subnet_type:
-        new_id_str = yield from _create_canister_via_cmc(self_id, endow, subnet, subnet_type)
-    else:
-        create_res = yield management_canister.create_canister(
-            {"settings": {"controllers": [Principal.from_str(self_id)]}}
-        ).with_cycles(endow)
-        created = unwrap_call_result(create_res)
-        new_id = created.get("canister_id") if isinstance(created, dict) else getattr(created, "canister_id", None)
-        new_id_str = new_id.to_str() if hasattr(new_id, "to_str") else str(new_id)
-    # Record placement we know: an explicit subnet id (Subnet selection) is known
-    # for sure; a Filter only yields the id, not which subnet, so we tag the type.
-    _pool_register(new_id_str, subnet=subnet, subnet_type=subnet_type)
-    _pool_mark_in_use(new_id_str, "")
-    return (new_id_str, False)
-
-
-def _provision_canister(dk: "Stand", name: str, kind: str, w: "AuthorizedWasm"):
-    """Generator: allocate a canister (reuse or create), install `w`, verify the
-    module hash, wire CycleOps, and create+return the Canister. On failure the
-    canister is returned to the pool and the exception propagates.
-    """
-    subnet, subnet_type = _target_subnet(dk)
-    _append_event("allocating_canister", "", {"stand": dk.name, "name": name,
-                                              "wasm_key": w.key, "subnet": subnet or "default"})
-    cid, reused = yield from _allocate_canister(subnet, subnet_type)
-    mode = {"reinstall": None} if reused else {"install": None}
-    _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
-                                           "wasm_key": w.key, "reused": reused})
-    try:
-        yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
-                                     w.wasm_hash, mode, _install_arg_for(w))
-        if reused:
-            # A reused canister may have been stopped when it was retired.
-            try:
-                yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
-            except Exception:
-                pass
-        ok, actual = yield from _verify_module_hash(cid, w.wasm_hash)
-    except Exception:
-        _pool_free(cid)
-        raise
-    if not ok:
-        _pool_free(cid)
-        _append_event("create_failed", cid, {"expected": w.wasm_hash, "actual": actual})
-        raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
-
-    s = _settings()
-    if s.cycleops_enabled and s.cycleops_principal:
-        yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
-
-    # Make the canister's runtime logs publicly fetchable so the dashboard can show
-    # them (logs are read from the browser; canisters can't fetch them). Best
-    # effort — a failure here shouldn't abort an otherwise-successful install.
-    try:
-        yield from _set_log_visibility(cid, True)
-    except Exception as lv:
-        _log.error(f"could not set log_visibility for {cid}: {lv}")
-
-    # Upload the template's asset (e.g. index.html) so a frontend canister serves a
-    # real page. Best-effort: a failure here leaves the canister installed.
-    _append_event("verifying_hash", cid, {"wasm_key": w.key})
-    yield from _maybe_provision_assets(cid, w, dk)
-
-    st = Canister(name=name)
-    st.stand = dk
-    st.canister_id = cid
-    st.kind = kind
-    st.wasm_key = w.key
-    st.wasm_hash = actual
-    st.status = CanisterStatus.INSTALLED
-    st.created_by = _caller()
-    # Record the canister's known subnet from the pool (set when we placed it on
-    # a chosen subnet, or carried over from a reused canister).
-    pooled = PooledCanister[cid]
-    st.subnet = pooled.subnet if pooled is not None else ""
-    _pool_mark_in_use(cid, name)
-    _append_event("canister_created", cid,
-                  {"stand": dk.name, "name": name, "wasm_key": w.key, "hash": actual, "reused": reused})
-    return st
-
-
-def _maybe_provision_assets(canister_id: str, w: "AuthorizedWasm", stand=None):
-    """Generator: provision a WASM's asset(s) if it has any, swallowing errors so a
-    failed upload never aborts canister creation (it is logged + audited instead).
-
-    A `bundle_namespace` (a whole multi-file static build) takes precedence over a
-    single `asset_path`: the entire bundle is uploaded into this canister's own
-    certified-assets canister. Each deployment has its own frontend canister, so
-    the upload is per canister."""
-    bundle_ns = (getattr(w, "bundle_namespace", "") or "").strip()
-    if not bundle_ns and not (w.asset_path or "").strip():
-        return
-    try:
-        if bundle_ns:
-            yield from _upload_bundle(canister_id, bundle_ns)
-        else:
-            yield from _provision_assets(canister_id, w, stand)
-    except Exception as ae:
-        _log.error(f"asset provisioning failed for {canister_id}: {ae}")
-        _append_event("assets_failed", canister_id, {"wasm_key": w.key, "error": str(ae)[:300]})
-
-
-def _retire_canister(st: "Canister"):
-    """Generator: stop a canister, return it to the pool (never deleted),
-    and remove the Canister record."""
-    cid = st.canister_id
-    name = st.name
-    if cid:
-        try:
-            yield management_canister.stop_canister({"canister_id": Principal.from_str(cid)})
-        except Exception:
-            pass
-        _pool_free(cid)
-    _append_event("canister_retired", cid, {"name": name})
-    st.delete()
-
+# Lifecycle helpers (_versions_in_family, _resolve_authorized_wasm, _provision_canister,
+# _retire_canister, etc.) live in lifecycle.py.
 
 # ── Lifecycle update endpoints ────────────────────────────────────────────────
 
@@ -1768,7 +1054,7 @@ def deploy_sheet(args: text) -> Async[text]:
         params = json.loads(args) if args else {}
         if params.get("sheet"):
             _set_live_sheet(params["sheet"])
-        sheet = _live_sheet
+        sheet = get_live_sheet()
         if not sheet:
             return _err("no sheet loaded")
 
@@ -1925,72 +1211,6 @@ def list_subnets() -> Async[text]:
         return _err(str(e))
 
 
-# ── Fiat rates (cycles → currency equivalent) ─────────────────────────────────
-#
-#  Cycles are pegged 1 trillion cycles = 1 XDR. To show "≈ $X" next to a cycle
-#  count we need the value of one XDR in the chosen currency. Neither oracle
-#  gives XDR→currency directly, but it falls out of two rates (ICP cancels):
-#       currency / XDR = (currency / ICP) / (XDR / ICP)
-#  - currency / ICP   : the XRC's ICP/<currency> exchange rate.
-#  - XDR / ICP        : the CMC's xdr_permyriad_per_icp (XDR*1e4 per ICP).
-
-def _fetch_icp_rate_gen(currency: str):
-    """Generator: the ICP price in `currency` (float), via the XRC. Mirrors the
-    request shape used by ic-basilisk-toolkit's FXService."""
-    xrc = XRCCanister(Principal.from_str(XRC_CANISTER_ID))
-    res = yield xrc.get_exchange_rate({
-        "base_asset": {"symbol": "ICP", "class": {"Cryptocurrency": None}},
-        "quote_asset": {"symbol": currency, "class": {"FiatCurrency": None}},
-        "timestamp": None,
-    }).with_cycles(XRC_CYCLES_PER_CALL)
-    gr = unwrap_call_result(res)
-    ok = gr.get("Ok") if isinstance(gr, dict) else getattr(gr, "Ok", None)
-    if ok is None:
-        err = gr.get("Err") if isinstance(gr, dict) else getattr(gr, "Err", None)
-        raise Exception(f"XRC: {err}")
-    rate = ok.get("rate") if isinstance(ok, dict) else getattr(ok, "rate")
-    meta = ok.get("metadata") if isinstance(ok, dict) else getattr(ok, "metadata")
-    decimals = meta.get("decimals") if isinstance(meta, dict) else getattr(meta, "decimals")
-    return float(rate) / float(10 ** int(decimals))
-
-
-def _fetch_xdr_permyriad_per_icp_gen():
-    """Generator: the CMC's xdr_permyriad_per_icp (int, XDR*1e4 per ICP)."""
-    res = yield ic.call_raw(
-        Principal.from_str(CMC_CANISTER_ID), "get_icp_xdr_conversion_rate",
-        ic.candid_encode("()"), 0)
-    decoded = ic.candid_decode(unwrap_call_result(res))
-    # The reply carries exactly two nat64s (timestamp_seconds, xdr_permyriad_per_icp);
-    # the rate is by far the smaller (~tens of thousands vs a ~1.7e9 timestamp).
-    vals = _nat64s_in(decoded)
-    if not vals:
-        raise Exception(f"CMC rate: no nat64 in {decoded[:200]}")
-    return min(vals)
-
-
-def _refresh_fx_gen():
-    """Generator: refresh and persist the cycles→currency factor. Returns the
-    currency value of 1T cycles (float). Records errors on the Settings row."""
-    s = _settings()
-    currency = ((s.display_currency or "USD").strip().upper()) or "USD"
-    try:
-        icp_in_cur = yield from _fetch_icp_rate_gen(currency)       # currency per ICP
-        permyriad = yield from _fetch_xdr_permyriad_per_icp_gen()   # XDR*1e4 per ICP
-        xdr_per_icp = float(permyriad) / 10000.0
-        if xdr_per_icp <= 0 or icp_in_cur <= 0:
-            raise Exception("non-positive rate")
-        currency_per_tcycle = icp_in_cur / xdr_per_icp             # currency per 1T cycles (= per XDR)
-        s.fx_micro_per_tcycle = int(round(currency_per_tcycle * 1_000_000))
-        s.fx_currency = currency
-        s.fx_updated = _now_secs()
-        s.fx_error = ""
-        return currency_per_tcycle
-    except Exception as e:
-        s.fx_error = str(e)[:255]
-        s.fx_updated = _now_secs()
-        raise
-
-
 @update
 def refresh_fx() -> Async[text]:
     """Fetch the cycles→currency rate for the configured display currency and
@@ -2016,23 +1236,6 @@ def refresh_fx() -> Async[text]:
         return _err(str(e))
 
 
-def _spec_target_subnet(sec_spec: dict, stand_spec: dict):
-    """Resolve a (subnet, subnet_type) target from raw sheet specs, mirroring
-    _target_subnet's precedence: stand.subnet > stand.subnet_type > section.subnet
-    > section.subnet_type."""
-    dsub = (stand_spec.get("subnet") or "").strip()
-    dtype = (stand_spec.get("subnet_type") or "").strip()
-    if dsub:
-        return (dsub, "")
-    if dtype:
-        return ("", dtype)
-    ssub = (sec_spec.get("subnet") or "").strip()
-    stype = (sec_spec.get("subnet_type") or "").strip()
-    if ssub:
-        return (ssub, "")
-    if stype:
-        return ("", stype)
-    return ("", "")
 
 
 @query
@@ -2054,7 +1257,7 @@ def estimate_deploy(args: text) -> text:
             params = json.loads(args) if args else {}
         except (json.JSONDecodeError, ValueError):
             params = {}
-        sheet = params.get("sheet") or _live_sheet or {"sections": []}
+        sheet = params.get("sheet") or get_live_sheet() or {"sections": []}
 
         list(Section.instances())
         list(Canister.instances())
@@ -2451,17 +1654,6 @@ def set_canister_controllers(args: text) -> Async[text]:
         return _err(str(e))
 
 
-def _set_log_visibility(canister_id: str, public: bool):
-    """Generator: set a canister's log_visibility via a hand-encoded management
-    call. The stock basilisk binding's settings record omits log_visibility, so
-    we encode the argument directly with candid_encode + call_raw rather than the
-    typed wrapper (which would silently drop the field)."""
-    variant = "public" if public else "controllers"
-    arg = ('(record { canister_id = principal "' + canister_id +
-           '"; settings = record { log_visibility = opt variant { ' + variant + ' } } })')
-    res = yield ic.call_raw(
-        Principal.from_str(MANAGEMENT_CANISTER_ID), "update_settings", ic.candid_encode(arg), 0)
-    unwrap_call_result(res)
 
 
 @update
@@ -2559,255 +1751,6 @@ def canister_exec(args: text) -> Async[text]:
         return _err(f"{e}")
 
 
-# ── Native cycles management (the conductor as the orchestra's paymaster) ─────
-#
-#  Casals is the sole controller of every canister, so it can both observe their
-#  balance (canister_status.cycles) and fund them (deposit_cycles) directly —
-#  no external monitor required. The decision primitives (resolve_cycle_policy,
-#  decide_topup, cycles_status) are pure and unit-tested in util.py; everything
-#  here is the on-chain plumbing around them.
-
-def _status_cycles(status) -> int:
-    c = status.get("cycles") if isinstance(status, dict) else getattr(status, "cycles", 0)
-    return int(c or 0)
-
-
-def _status_freezing(status) -> int:
-    settings = status.get("settings") if isinstance(status, dict) else getattr(status, "settings", None)
-    if settings is None:
-        return 0
-    fz = settings.get("freezing_threshold") if isinstance(settings, dict) else getattr(settings, "freezing_threshold", 0)
-    return int(fz or 0)
-
-
-def _policy_for(st: Canister, s: "Settings" = None):
-    """Effective (min_cycles, topup_cycles) for a canister, inheriting up the tree."""
-    s = s or _settings()
-    dk = st.stand
-    sec = dk.section if dk else None
-    return resolve_cycle_policy(
-        canister=(int(st.min_cycles or 0), int(st.topup_cycles or 0)),
-        stand=(int(dk.min_cycles or 0), int(dk.topup_cycles or 0)) if dk else (0, 0),
-        section=(int(sec.min_cycles or 0), int(sec.topup_cycles or 0)) if sec else (0, 0),
-        defaults=(int(s.default_min_cycles or 0), int(s.default_topup_cycles or 0)),
-    )
-
-
-def _resolve_canister_or_stand(params):
-    """Return (targets, stand) for a {"canister": ...} or {"stand": ...} request."""
-    if params.get("canister"):
-        list(Canister.instances())
-        st = Canister[params["canister"].strip()]
-        if st is None:
-            raise Exception(f"unknown canister '{params['canister']}'")
-        return [st], st.stand
-    if params.get("stand"):
-        list(Stand.instances())
-        dk = Stand[params["stand"].strip()]
-        if dk is None:
-            raise Exception(f"unknown stand '{params['stand']}'")
-        return list(dk.canisters or []), dk
-    raise Exception("expected 'canister' or 'stand'")
-
-
-def _now_secs() -> int:
-    return int(ic.time() // 1_000_000_000)
-
-
-def _record_cycle_sample(st: Canister, ts: int, cycles: int) -> None:
-    """Append one balance reading for a canister (denormalized with its position in
-    the tree so history survives restructuring)."""
-    dk = st.stand
-    sec = dk.section if dk else None
-    smp = CycleSample(
-        canister_id=st.canister_id,
-        canister_name=st.name,
-        stand_name=dk.name if dk else "",
-        section_name=sec.name if sec else "",
-        kind=st.kind,
-    )
-    smp.ts = int(ts)
-    smp.cycles = int(cycles)
-    smp.deposited = int(st.cycles_deposited or 0)
-
-
-def _prune_cycle_samples(now: int) -> None:
-    """Bound stable-memory growth: drop samples past the retention window, then,
-    if still over the hard cap, drop the oldest until under it."""
-    try:
-        samples = list(CycleSample.instances())
-        cutoff = now - SAMPLE_RETENTION_SECS
-        stale = [s for s in samples if int(s.ts or 0) < cutoff]
-        for s in stale:
-            s.delete()
-        remaining = [s for s in samples if int(s.ts or 0) >= cutoff]
-        overflow = len(remaining) - SAMPLE_MAX
-        if overflow > 0:
-            remaining.sort(key=lambda x: int(x.ts or 0))
-            for s in remaining[:overflow]:
-                s.delete()
-    except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"prune cycle samples failed: {e}")
-
-
-def _sample_all_gen(ts: int):
-    """Generator: read every canister's balance and record a sample (no top-ups)."""
-    list(Canister.instances())
-    n = 0
-    for st in Canister.instances():
-        if not st.canister_id:
-            continue
-        try:
-            status_res = yield management_canister.canister_status(
-                {"canister_id": Principal.from_str(st.canister_id)}
-            )
-            status = unwrap_call_result(status_res)
-            _record_cycle_sample(st, ts, _status_cycles(status))
-            n += 1
-        except Exception as e:  # pragma: no cover - per-canister, keep going
-            _log.error(f"sample {st.name} failed: {e}")
-    if n:
-        _prune_cycle_samples(ts)
-        global _last_sample_ts
-        _last_sample_ts = ts
-    return n
-
-
-def _sampler_cb():
-    """Cycle-sampler timer callback (generator; never raises). Also refreshes
-    the fiat conversion factor on the same (slow) cadence so the dashboard's
-    "≈ $X" annotations stay current without per-request XRC calls."""
-    try:
-        n = yield from _sample_all_gen(_now_secs())
-        _log.info(f"cycle sampler: recorded {n} samples")
-    except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"cycle sampler failed: {e}")
-    try:
-        yield from _refresh_fx_gen()
-    except Exception as e:  # pragma: no cover - best-effort
-        _log.error(f"fx refresh failed: {e}")
-
-
-def _arm_cycle_sampler() -> None:
-    """(Re)arm the balance-sampling timer to match current settings. Independent
-    of autopilot; re-armed on init/post_upgrade since timers don't survive
-    upgrades."""
-    global _sampler_timer_id
-    try:
-        if _sampler_timer_id is not None:
-            try:
-                ic.clear_timer(_sampler_timer_id)
-            except Exception:
-                pass
-            _sampler_timer_id = None
-        s = _settings()
-        interval = int(s.cycles_sample_interval_secs or 0)
-        if s.cycles_sampling and interval > 0:
-            _sampler_timer_id = ic.set_timer_interval(Duration(interval), _sampler_cb)
-            _log.info(f"cycle sampler armed: every {interval}s")
-    except Exception as e:  # pragma: no cover - defensive at install time
-        _log.error(f"could not arm cycle sampler: {e}")
-
-
-def _reconcile_all_gen():
-    """Generator: top up every canister below its policy threshold.
-
-    Returns a summary dict {treasury, topped_up, checked, results}. Used both by
-    the `reconcile` endpoint and by the autopilot timer.
-    """
-    list(Canister.instances())
-    s = _settings()
-    reserve = int(s.treasury_reserve or 0)
-    treasury = int(ic.canister_balance128())
-    batch_ts = _now_secs()
-    results = []
-    topped = 0
-    sampled = False
-    for st in Canister.instances():
-        if not st.canister_id:
-            continue
-        try:
-            status_res = yield management_canister.canister_status(
-                {"canister_id": Principal.from_str(st.canister_id)}
-            )
-            status = unwrap_call_result(status_res)
-            bal = _status_cycles(status)
-            frz = _status_freezing(status)
-        except Exception as e:
-            results.append({"canister": st.name, "canister_id": st.canister_id, "error": str(e)})
-            continue
-        min_c, topup_c = _policy_for(st, s)
-        amount = decide_topup(bal, frz, min_c, topup_c, treasury, reserve)
-        if amount > 0:
-            try:
-                yield management_canister.deposit_cycles(
-                    {"canister_id": Principal.from_str(st.canister_id)}
-                ).with_cycles(amount)
-                treasury -= amount
-                topped += 1
-                st.cycles_deposited = int(st.cycles_deposited or 0) + amount
-                _append_event("cycles_topup", st.canister_id,
-                              {"amount": amount, "balance_before": bal})
-                results.append({"canister": st.name, "topped_up": amount, "balance_before": bal})
-                # Sample the post-top-up balance so history reflects the deposit.
-                bal = bal + amount
-            except Exception as e:
-                results.append({"canister": st.name, "canister_id": st.canister_id, "error": str(e)})
-        else:
-            label = cycles_status(bal, frz, min_c)
-            # A wanted-but-unfunded top-up means the treasury is exhausted: flag it.
-            wanted = bool(min_c > 0 and topup_c > 0 and (bal - frz) < min_c)
-            if wanted:
-                _append_event("cycles_low", st.canister_id,
-                              {"balance": bal, "status": label, "reason": "treasury exhausted"})
-            results.append({"canister": st.name, "balance": bal, "status": label})
-        _record_cycle_sample(st, batch_ts, bal)
-        sampled = True
-    if sampled:
-        _prune_cycle_samples(batch_ts)
-        global _last_sample_ts
-        _last_sample_ts = batch_ts
-    return {"treasury": treasury, "topped_up": topped, "checked": len(results), "results": results}
-
-
-def _reconcile_cb():
-    """Autopilot timer callback. A generator so the runtime drives the async
-    canister_status / deposit_cycles calls; never raises (a raise would trap and
-    roll back the whole timer execution)."""
-    try:
-        summary = yield from _reconcile_all_gen()
-        _append_event("cycles_reconcile", "", {
-            "checked": summary.get("checked", 0),
-            "topped_up": summary.get("topped_up", 0),
-            "source": "autopilot",
-        })
-        _log.info(f"autopilot reconcile: {summary.get('topped_up')} topped of {summary.get('checked')}")
-    except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"autopilot reconcile failed: {e}")
-
-
-def _arm_autopilot() -> None:
-    """(Re)arm the recurring reconcile timer to match current settings.
-
-    IC timers do not survive upgrades, so this is also called from
-    init / post_upgrade. Clears any timer armed earlier in this instance's
-    lifetime before setting a new one, so toggling settings never stacks timers.
-    """
-    global _autopilot_timer_id
-    try:
-        if _autopilot_timer_id is not None:
-            try:
-                ic.clear_timer(_autopilot_timer_id)
-            except Exception:
-                pass
-            _autopilot_timer_id = None
-        s = _settings()
-        interval = int(s.cycles_check_interval_secs or 0)
-        if s.cycles_autopilot and interval > 0:
-            _autopilot_timer_id = ic.set_timer_interval(Duration(interval), _reconcile_cb)
-            _log.info(f"autopilot armed: every {interval}s")
-    except Exception as e:  # pragma: no cover - defensive at install time
-        _log.error(f"could not arm autopilot: {e}")
 
 
 @update
@@ -2830,8 +1773,7 @@ def get_cycles() -> Async[text]:
         # Opportunistically record a history sample from the balances we read
         # here, but throttle so frequent refreshes don't flood the history.
         batch_ts = _now_secs()
-        global _last_sample_ts
-        do_sample = bool(s.cycles_sampling) and (batch_ts - int(_last_sample_ts or 0) >= SAMPLE_MIN_GAP_SECS)
+        do_sample = bool(s.cycles_sampling) and (batch_ts - int(_cycles_mod._last_sample_ts or 0) >= SAMPLE_MIN_GAP_SECS)
         sampled = False
         for st in Canister.instances():
             if not st.canister_id:
@@ -2869,7 +1811,7 @@ def get_cycles() -> Async[text]:
             canisters_out.append(row)
         if sampled:
             _prune_cycle_samples(batch_ts)
-            _last_sample_ts = batch_ts
+            _cycles_mod._last_sample_ts = batch_ts
 
         # Pool view: every canister Casals ever created, its status, and current
         # balance. Reuses balances already read above; only fetches for pooled
@@ -2924,8 +1866,7 @@ def get_cycles() -> Async[text]:
             },
             "cached_at": _now_secs(),
         })
-        global _cycles_cache
-        _cycles_cache = result
+        _cycles_mod._cycles_cache = result
         # Persist to stable memory so the cache survives upgrades.
         try:
             snap = CyclesSnapshot["singleton"] or CyclesSnapshot(key="singleton")
@@ -2952,7 +1893,7 @@ def get_cycles_cached() -> text:
             return snap.snapshot_json
     except Exception:
         pass
-    return _cycles_cache or "{}"
+    return _cycles_mod._cycles_cache or "{}"
 
 
 @query
