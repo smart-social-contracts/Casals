@@ -142,6 +142,7 @@ service : {
   "canister_browse" : (text) -> (text);
   "canister_exec" : (text) -> (text);
   "get_cycles" : () -> (text);
+  "get_cycles_cached" : () -> (text) query;
   "get_cycle_history" : (text) -> (text) query;
   "top_up" : (text) -> (text);
   "reconcile" : () -> (text);

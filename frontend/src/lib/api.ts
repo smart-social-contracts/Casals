@@ -454,6 +454,16 @@ export async function getCycles(): Promise<CyclesReport> {
   return _parseQuery<CyclesReport>(await (await _actor()).get_cycles());
 }
 
+// Instant query returning the last stored get_cycles result (may be stale).
+// Returns null if no snapshot exists yet (first load after upgrade).
+export async function getCyclesCached(): Promise<(CyclesReport & { cached_at?: number }) | null> {
+  const raw = _parseQuery<CyclesReport & { cached_at?: number }>(
+    await (await _actor()).get_cycles_cached()
+  );
+  if (!raw || !(raw as any).treasury) return null;
+  return raw;
+}
+
 // Per-canister balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.

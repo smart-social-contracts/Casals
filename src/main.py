@@ -156,6 +156,11 @@ _sampler_timer_id = None
 # opportunistic sampling done inside get_cycles so refreshes don't flood history.
 _last_sample_ts = 0
 
+# Volatile cache of the last get_cycles result (JSON string). Populated every
+# time get_cycles completes successfully so the frontend can show stale data
+# instantly via get_cycles_cached() while the live refresh runs in background.
+_cycles_cache: str = ""
+
 # Cycle-history retention: drop samples older than this, and hard-cap the total
 # number of stored samples, to bound stable-memory growth.
 SAMPLE_RETENTION_SECS = 35 * 24 * 3600   # ~35 days
@@ -3078,7 +3083,7 @@ def get_cycles() -> Async[text]:
             pool_out.append(prow)
         pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
 
-        return json.dumps({
+        result = json.dumps({
             "treasury": {
                 "balance": treasury,
                 "reserve": int(s.treasury_reserve or 0),
@@ -3094,10 +3099,23 @@ def get_cycles() -> Async[text]:
                 "in_use": len(pool_out) - pool_free,
                 "canisters": pool_out,
             },
+            "cached_at": _now_secs(),
         })
+        global _cycles_cache
+        _cycles_cache = result
+        return result
     except Exception as e:
         _log.error(f"get_cycles error: {e}")
         return _err(str(e))
+
+
+@query
+def get_cycles_cached() -> text:
+    """Return the last stored get_cycles snapshot (instant query, may be stale).
+    The result includes a 'cached_at' unix-seconds field so the frontend can show
+    how old the data is. Returns {} if no snapshot has been recorded yet
+    (first load after upgrade; frontend should fall back to get_cycles)."""
+    return _cycles_cache or "{}"
 
 
 @query

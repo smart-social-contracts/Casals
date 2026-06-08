@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import {
     getCycles,
+    getCyclesCached,
     getCycleHistory,
     topUp,
     reconcile,
@@ -21,6 +22,8 @@
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
   let loading = $state(true);
+  let refreshing = $state(false); // live refresh running in background
+  let cachedAt = $state<number | null>(null);
   let error = $state('');
   let busy = $state('');
 
@@ -34,17 +37,43 @@
   let windowKey = $state<WindowKey>('1d');
   let metric = $state<Metric>('burn');
 
+  function fmtAge(secs: number): string {
+    const age = Math.floor(Date.now() / 1000) - secs;
+    if (age < 60) return `${age}s ago`;
+    if (age < 3600) return `${Math.floor(age / 60)}m ago`;
+    return `${Math.floor(age / 3600)}h ago`;
+  }
+
   async function load() {
     loading = true;
     error = '';
     try {
-      const [r, h] = await Promise.all([getCycles(), getCycleHistory()]);
-      report = r;
+      // Phase 1: show cached snapshot + history immediately (both fast)
+      const [cached, h] = await Promise.all([getCyclesCached(), getCycleHistory()]);
+      if (cached?.treasury) {
+        report = cached;
+        cachedAt = cached.cached_at ?? null;
+        loading = false;
+        loadFx();
+      }
       history = h;
-      loadFx();
+      if (loading) { loading = false; loadFx(); }
+
+      // Phase 2: fetch live balances in background (takes ~1 min)
+      refreshing = true;
+      try {
+        const live = await getCycles();
+        report = live;
+        cachedAt = null; // now showing live data
+        loadFx();
+      } catch (e: any) {
+        // If live refresh fails but we have cached data, keep it shown
+        if (!report) error = e?.message ?? String(e);
+      } finally {
+        refreshing = false;
+      }
     } catch (e: any) {
       error = e?.message ?? String(e);
-    } finally {
       loading = false;
     }
   }
@@ -180,9 +209,14 @@
       <h1 class="text-2xl font-bold text-primary-900">Cycles</h1>
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
-    <div class="flex items-center gap-2 self-start">
-      <button class="btn-secondary btn-sm" onclick={load}>
-        <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <div class="flex items-center gap-2 self-start flex-wrap justify-end">
+      {#if cachedAt}
+        <span class="text-xs text-primary-400 italic">snapshot from {fmtAge(cachedAt)} · refreshing…</span>
+      {:else if refreshing}
+        <span class="text-xs text-primary-400 italic">refreshing live balances…</span>
+      {/if}
+      <button class="btn-secondary btn-sm" onclick={load} disabled={loading}>
+        <svg class="w-4 h-4 {loading || refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
         </svg>
         Refresh
