@@ -23,18 +23,13 @@ from basilisk import (
     Duration,
     Opt,
     Principal,
-    Record,
-    Service,
     StableBTreeMap,
-    Variant,
     blob,
     ic,
     init,
     nat64,
     post_upgrade,
     query,
-    service_query,
-    service_update,
     text,
     update,
     void,
@@ -44,6 +39,13 @@ from basilisk.canisters.xrc import XRC_CANISTER_ID, XRCCanister
 from ic_python_db import Database
 from ic_python_logging import get_logger
 
+from auth import (
+    PERMISSIONS,
+    PERMISSION_KEYS,
+    _has_permission,
+    _normalize_permissions,
+    _parse_permissions,
+)
 from default_sheet import DEFAULT_SHEET
 from models import (
     AuthorizedWasm,
@@ -58,6 +60,14 @@ from models import (
     CanisterKind,
     CanisterStatus,
 )
+from services import (
+    AssetCanisterService,
+    AssetPermission,
+    BasiliskIntrospectionService,
+    FileRegistryService,
+    GrantPermissionArg,
+    StoreArg,
+)
 from util import (
     audit_block_hash,
     cycles_status,
@@ -66,6 +76,8 @@ from util import (
     canister_url,
     to_hex as _to_hex,
 )
+from views import _canister_view, _section_view, _stand_view
+from wasm_helpers import _family_of, _split_key, _ver_tuple
 
 _log = get_logger("casals")
 
@@ -184,20 +196,7 @@ except RuntimeError:
     pass
 
 
-# ── Inter-canister: file-registry ──────────────────────────────────────────
-
-class FileRegistryService(Service):
-    """Pulls authorized WASM bytes from the file-registry canister."""
-
-    @service_query
-    def get_file_size_icc(self, namespace: text, path: text) -> text: ...
-
-    @service_query
-    def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text: ...
-
-    @service_query
-    def list_files_icc(self, namespace: text) -> text: ...
-
+# ── Inter-canister helpers ────────────────────────────────────────────────
 
 def _file_registry() -> FileRegistryService:
     s = _settings()
@@ -205,60 +204,6 @@ def _file_registry() -> FileRegistryService:
     if not fr:
         raise Exception("file_registry_canister_id is not configured (see set_settings)")
     return FileRegistryService(Principal.from_str(fr))
-
-
-# ── Inter-canister: certified assets canister ──────────────────────────────
-#
-#  A `frontend` canister can run the DFINITY certified-assets canister, which
-#  installs empty. After install Casals (the canister's controller) grants itself
-#  Commit permission and uploads the template's asset (e.g. index.html) via
-#  `store`, so the canister actually serves a page. Records mirror the asset
-#  canister's Candid.
-
-class AssetPermission(Variant, total=False):
-    Commit: void
-    Prepare: void
-    ManagePermissions: void
-
-
-class GrantPermissionArg(Record):
-    to_principal: Principal
-    permission: AssetPermission
-
-
-class StoreArg(Record):
-    key: text
-    content_type: text
-    content_encoding: text
-    content: blob
-    sha256: Opt[blob]
-
-
-class AssetCanisterService(Service):
-    @service_update
-    def grant_permission(self, arg: GrantPermissionArg) -> void: ...
-
-    @service_update
-    def store(self, arg: StoreArg) -> void: ...
-
-
-# ── Inter-canister: Basilisk introspection (shell / browse) ────────────────
-#
-#  A Basilisk canister built with `__basilisk_features__ = ["shell", "browse"]`
-#  exposes two extra methods. Casals (the canister's controller) relays calls to
-#  them so the dashboard can inspect / drive a canister without the operator being
-#  a direct controller of that canister:
-#    __browse__(query)  read-only data introspection — public @query
-#    __shell__(code)    runs Python in the canister  — controller-only @update
-#  The on-chain method names are the dunders themselves; the runtime maps a
-#  Service method to the wire name by its `__name__`, so the names must match.
-
-class BasiliskIntrospectionService(Service):
-    @service_query
-    def __browse__(self, query: text) -> text: ...
-
-    @service_update
-    def __shell__(self, code: text) -> text: ...
 
 
 def _canister_call(canister_id: str, method: str, arg: str):
@@ -453,69 +398,9 @@ def _pool_free(canister_id: str) -> None:
 #    open_access is enabled (deployer flips this for dev/demo);
 #  - lifecycle commands on a section/stand require the registered *commander*
 #    principal for that target (or a controller).
-
-# ── Commander permissions ────────────────────────────────────────────────────
 #
-# A commander (a principal appointed over a section or stand) may be granted a
-# subset of these capabilities. The permission set is stored as a comma-separated
-# string on the Section/Stand; empty string or "*" means "all" (full control),
-# which keeps every pre-existing commander working exactly as before.
-#
-# Each entry is (key, human label, group) — the label/group drive the UI.
-PERMISSIONS = [
-    ("canister.create",    "Create canisters",          "Canisters"),
-    ("canister.deploy",    "Deploy / upgrade canisters", "Canisters"),
-    ("canister.delete",    "Delete canisters",          "Canisters"),
-    ("canister.rename",    "Rename canisters",          "Canisters"),
-    ("canister.snapshot",  "Create snapshots",       "Canisters"),
-    ("canister.revert",    "Revert to snapshot",     "Canisters"),
-    ("canister.lifecycle", "Start / stop canisters", "Canisters"),
-    ("canister.topup",     "Top up cycles",          "Canisters"),
-    ("canister.shell",     "Run shell / exec code",  "Canisters"),
-    ("stand.create",     "Create stands",           "Stand"),
-    ("stand.rename",     "Rename stand",            "Stand"),
-    ("stand.delete",     "Delete stand",            "Stand"),
-    ("commander.assign","Appoint sub-commanders", "Governance"),
-]
-PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
-
-
-def _parse_permissions(stored: str) -> list:
-    """Resolve a stored permission string into the list of granted keys.
-
-    Empty or "*" => full access (every known permission). Otherwise the
-    comma-separated subset, filtered to known keys."""
-    s = (stored or "").strip()
-    if s == "" or s == "*":
-        return list(PERMISSION_KEYS)
-    granted = [k.strip() for k in s.split(",") if k.strip()]
-    return [k for k in granted if k in PERMISSION_KEYS]
-
-
-def _normalize_permissions(perms) -> str:
-    """Turn an incoming permissions value (list or str) into the stored form.
-
-    A set covering every permission is collapsed to "*". Unknown keys are
-    dropped. None => "" (full access, unchanged)."""
-    if perms is None:
-        return ""
-    if isinstance(perms, str):
-        keys = [k.strip() for k in perms.split(",") if k.strip()]
-    else:
-        keys = [str(k).strip() for k in perms if str(k).strip()]
-    if "*" in keys:
-        return "*"
-    keys = [k for k in keys if k in PERMISSION_KEYS]
-    if set(keys) >= set(PERMISSION_KEYS):
-        return "*"
-    return ",".join(keys)
-
-
-def _has_permission(stored: str, permission: str) -> bool:
-    if not permission:
-        return True
-    return permission in _parse_permissions(stored)
-
+# The pure permission helpers (PERMISSIONS, PERMISSION_KEYS, _parse_permissions,
+# _normalize_permissions, _has_permission) live in auth.py; imported above.
 
 def _require_admin() -> None:
     if not _is_controller():
@@ -645,53 +530,7 @@ def _append_event(btype: str, canister_id: str, payload: dict) -> "Orchestration
     return ev
 
 
-# ── Serialization ────────────────────────────────────────────────────────────
-
-def _canister_view(st: Canister) -> dict:
-    return {
-        "name": st.name,
-        "canister_id": st.canister_id,
-        "kind": st.kind,
-        "url": canister_url(st.kind, st.canister_id),
-        "wasm_key": st.wasm_key,
-        "wasm_hash": st.wasm_hash,
-        "status": st.status,
-        "snapshot_id": st.snapshot_id,
-        "min_cycles": int(st.min_cycles or 0),
-        "topup_cycles": int(st.topup_cycles or 0),
-        "subnet": st.subnet or "",
-    }
-
-
-def _stand_view(dk: Stand) -> dict:
-    return {
-        "name": dk.name,
-        "description": dk.description,
-        "commander_principal": dk.commander_principal,
-        "permissions": _parse_permissions(dk.permissions),
-        "all_permissions": _normalize_permissions(dk.permissions) == "*" or (dk.permissions or "") == "",
-        "min_cycles": int(dk.min_cycles or 0),
-        "topup_cycles": int(dk.topup_cycles or 0),
-        "subnet": dk.subnet or "",
-        "subnet_type": dk.subnet_type or "",
-        "canisters": [_canister_view(s) for s in (dk.canisters or [])],
-    }
-
-
-def _section_view(sec: Section) -> dict:
-    return {
-        "name": sec.name,
-        "description": sec.description,
-        "commander_principal": sec.commander_principal,
-        "permissions": _parse_permissions(sec.permissions),
-        "all_permissions": _normalize_permissions(sec.permissions) == "*" or (sec.permissions or "") == "",
-        "min_cycles": int(sec.min_cycles or 0),
-        "topup_cycles": int(sec.topup_cycles or 0),
-        "subnet": sec.subnet or "",
-        "subnet_type": sec.subnet_type or "",
-        "stands": [_stand_view(d) for d in (sec.stands or [])],
-    }
-
+# _canister_view, _stand_view, _section_view imported from views.py above.
 
 # ── Query endpoints ──────────────────────────────────────────────────────────
 
@@ -1422,28 +1261,7 @@ def remove_authorized_wasm(args: text) -> text:
 
 
 # ── Lifecycle helpers (Async generators over the management canister) ─────────
-
-def _split_key(key: str):
-    """Split an authorized-wasm key into (family, version). "foo@1.2.0" ->
-    ("foo", "1.2.0"); a bare "foo" -> ("foo", "")."""
-    key = (key or "").strip()
-    if "@" in key:
-        fam, _, ver = key.partition("@")
-        return fam.strip(), ver.strip()
-    return key, ""
-
-
-def _ver_tuple(version: str):
-    """Comparable tuple for a version string ("1.2.0" -> (1, 2, 0)). Non-numeric
-    components and the empty (unversioned) string sort lowest."""
-    out = []
-    for part in (version or "0").replace("-", ".").split("."):
-        out.append(int(part) if part.isdigit() else 0)
-    return tuple(out)
-
-
-def _family_of(w: "AuthorizedWasm") -> str:
-    return (w.family or "").strip() or _split_key(w.key)[0]
+# _split_key, _ver_tuple, _family_of imported from wasm_helpers.py above.
 
 
 def _versions_in_family(family: str):

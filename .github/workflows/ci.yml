@@ -23,8 +23,11 @@ jobs:
       - name: Install pytest
         run: pip install pytest
 
-      # tests/test_unit.py covers the pure helpers (stand URLs, audit hash chain,
-      # and the cycles policy/top-up decision logic) with no IC runtime needed.
+      # tests/test_unit.py covers all pure helpers with no IC runtime needed:
+      #   util    — canister URLs, audit hash chain, cycles policy/top-up
+      #   auth    — PERMISSIONS table, _parse/_normalize/_has_permission
+      #   wasm_helpers — _split_key, _ver_tuple, _family_of
+      #   views   — _canister_view, _stand_view, _section_view
       - name: Run unit tests
         run: pytest tests/test_unit.py -v
 
