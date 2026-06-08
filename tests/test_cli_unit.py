@@ -212,6 +212,39 @@ class TestParser:
         args = self._parse(["sheet", "deploy", "/tmp/my.json"])
         assert args.sheet_command == "deploy" and args.file == "/tmp/my.json"
 
+    # arrangement subcommands
+    def test_arrangement_list(self):
+        args = self._parse(["arrangement", "list"])
+        assert args.command == "arrangement" and args.arrangement_command == "list"
+
+    def test_arrangement_get_no_name(self):
+        args = self._parse(["arrangement", "get"])
+        assert args.arrangement_command == "get" and args.name is None
+
+    def test_arrangement_get_with_name(self):
+        args = self._parse(["arrangement", "get", "test"])
+        assert args.arrangement_command == "get" and args.name == "test"
+
+    def test_arrangement_set_requires_file(self):
+        with pytest.raises(SystemExit):
+            self._parse(["arrangement", "set"])
+
+    def test_arrangement_set_with_file(self):
+        args = self._parse(["arrangement", "set", "/tmp/a.json"])
+        assert args.arrangement_command == "set" and args.file == "/tmp/a.json"
+
+    def test_arrangement_activate_requires_name(self):
+        with pytest.raises(SystemExit):
+            self._parse(["arrangement", "activate"])
+
+    def test_arrangement_apply_optional_name(self):
+        args = self._parse(["arrangement", "apply"])
+        assert args.arrangement_command == "apply" and args.name is None
+
+    def test_arrangement_delete_with_name(self):
+        args = self._parse(["arrangement", "delete", "old"])
+        assert args.arrangement_command == "delete" and args.name == "old"
+
     # error cases
     def test_no_command_exits(self):
         with pytest.raises(SystemExit):
@@ -457,6 +490,9 @@ class TestSubprocessRouting:
         ["cycles"],
         ["pool"],
         ["sheet", "get"],
+        ["arrangement", "list"],
+        ["arrangement", "get"],
+        ["arrangement", "apply"],
     ])
     def test_read_command_exits_0_and_stdout_is_json(self, fake_icp_dir, cmd):
         result = _run_cli(cmd, fake_icp_dir)

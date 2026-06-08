@@ -23,7 +23,8 @@ class TestStatusAndMetadata:
     def test_status_shape(self, canister):
         st = call_canister("get_status")
         assert "version" in st
-        for k in ("sections", "stands", "canisters", "authorized_wasms", "events"):
+        for k in ("sections", "stands", "canisters", "authorized_wasms",
+                  "arrangements", "events"):
             assert k in st
 
     def test_metadata_defaults(self, canister):
@@ -184,6 +185,71 @@ class TestCyclesManagement:
         res = call_canister("reconcile")
         assert res.get("ok") is True
         assert res.get("topped_up") == 0
+
+
+class TestArrangements:
+    def test_set_get_and_list(self, canister):
+        _ok("set_arrangement", {
+            "name": "test-env",
+            "description": "integration arrangement",
+            "parameters": {"TEST_MODE": True, "ENVIRONMENT": "test"},
+            "steps": [{"target": "be-1", "method": "set_canister_config",
+                       "args": {"test_flags_json": {"test_mode": True}}}],
+        })
+        got = call_canister("get_arrangement", json.dumps({"name": "test-env"}))
+        assert got["ok"] is True
+        assert got["parameters"]["ENVIRONMENT"] == "test"
+        assert got["steps"][0]["method"] == "set_canister_config"
+        names = [a["name"] for a in call_canister("list_arrangements")]
+        assert "test-env" in names
+
+    def test_upsert_updates_in_place(self, canister):
+        _ok("set_arrangement", {"name": "upsert-env", "parameters": {"A": 1}})
+        res = _ok("set_arrangement", {"name": "upsert-env", "parameters": {"A": 2, "B": 3}})
+        assert res["created"] is False
+        got = call_canister("get_arrangement", json.dumps({"name": "upsert-env"}))
+        assert got["parameters"] == {"A": 2, "B": 3}
+
+    def test_active_is_exclusive(self, canister):
+        _ok("set_arrangement", {"name": "env-x", "active": True})
+        _ok("set_arrangement", {"name": "env-y", "active": True})
+        arrangements = {a["name"]: a for a in call_canister("list_arrangements")}
+        assert arrangements["env-y"]["active"] is True
+        assert arrangements["env-x"]["active"] is False
+        # get_arrangement with no name returns the active one
+        active = call_canister("get_arrangement", json.dumps({}))
+        assert active["name"] == "env-y"
+
+    def test_set_active_arrangement_switches(self, canister):
+        _ok("set_arrangement", {"name": "env-p"})
+        _ok("set_arrangement", {"name": "env-q", "active": True})
+        _ok("set_active_arrangement", {"name": "env-p"})
+        arrangements = {a["name"]: a for a in call_canister("list_arrangements")}
+        assert arrangements["env-p"]["active"] is True
+        assert arrangements["env-q"]["active"] is False
+
+    def test_rejects_malformed_steps(self, canister):
+        res = call_canister("set_arrangement", json.dumps({
+            "name": "bad-env", "steps": [{"method": "m"}],  # missing target
+        }))
+        assert res.get("ok") is False
+        assert "target" in res.get("error", "")
+
+    def test_rejects_non_object_parameters(self, canister):
+        res = call_canister("set_arrangement", json.dumps({
+            "name": "bad-params", "parameters": [1, 2, 3],
+        }))
+        assert res.get("ok") is False
+
+    def test_apply_unknown_arrangement_errors(self, canister):
+        res = call_canister("apply_arrangement", json.dumps({"name": "does-not-exist"}))
+        assert res.get("ok") is False
+
+    def test_delete_arrangement(self, canister):
+        _ok("set_arrangement", {"name": "env-del"})
+        _ok("delete_arrangement", {"name": "env-del"})
+        names = [a["name"] for a in call_canister("list_arrangements")]
+        assert "env-del" not in names
 
 
 class TestAuditLog:

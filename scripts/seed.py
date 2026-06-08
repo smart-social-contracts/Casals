@@ -41,6 +41,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SEED_DIR = os.path.join(REPO_ROOT, "seed")
 TEMPLATES_DIR = os.path.join(SEED_DIR, "templates")
 ASSETS_DIR = os.path.join(SEED_DIR, "assets")
+ARRANGEMENTS_DIR = os.path.join(SEED_DIR, "arrangements")
 CATALOG = os.path.join(SEED_DIR, "templates.json")
 
 CASALS = "casals_backend"
@@ -186,12 +187,42 @@ def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> st
     return res["sha256"]
 
 
+def seed_arrangement(args, name: str) -> None:
+    """Upsert a seed/arrangements/<name>.json into Casals and (if it is marked
+    active) activate it. Idempotent: set_arrangement is an upsert."""
+    path = os.path.join(ARRANGEMENTS_DIR, f"{name}.json")
+    if not os.path.exists(path):
+        sys.exit(f"arrangement file not found: {path}")
+    with open(path) as f:
+        arr = json.load(f)
+    payload = {
+        "name": arr.get("name") or name,
+        "description": arr.get("description", ""),
+        "parameters": arr.get("parameters", {}),
+        "steps": arr.get("steps", []),
+        "active": bool(arr.get("active", False)),
+    }
+    res = call(CASALS, "set_arrangement", args, json.dumps(payload))
+    if not (isinstance(res, dict) and res.get("ok")):
+        sys.exit(f"set_arrangement failed for '{payload['name']}': {res}")
+    state = "active" if res.get("active") else "reference"
+    verb = "created" if res.get("created") else "updated"
+    print(f"  {verb} arrangement '{payload['name']}' ({state}, "
+          f"{len(payload['parameters'])} params, {len(payload['steps'])} steps)")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Seed a Casals deployment.")
     ap.add_argument("-e", "--env", default="local", help="icp environment (local|ic)")
     ap.add_argument("--identity", default=None, help="icp identity to call with")
     ap.add_argument("--deploy", action="store_true",
                     help="also deploy the live sheet (stand up the orchestra)")
+    ap.add_argument("--arrangement", default=None,
+                    help="seed an arrangement by name from seed/arrangements/<name>.json "
+                         "(upsert + activate if marked active)")
+    ap.add_argument("--apply-arrangement", action="store_true",
+                    help="after deploying, apply the active arrangement's post-deploy steps "
+                         "(requires --deploy)")
     args = ap.parse_args()
 
     with open(CATALOG) as f:
@@ -281,12 +312,22 @@ def main():
             if isinstance(res, dict) and res.get("ok"):
                 print(f"    - removed legacy unversioned {family}")
 
+    # 2c. Optionally seed an arrangement (post-deploy config overlay). This only
+    #     registers/activates it on Casals; it is applied on deploy (below) or
+    #     later via `apply_arrangement`.
+    if args.arrangement:
+        print(f"seeding arrangement '{args.arrangement}'…")
+        seed_arrangement(args, args.arrangement)
+
     # 3. Optionally deploy the live sheet (stand up the orchestra). The sheet is
     #    the backend's default (loaded at canister start); deploy_sheet is
-    #    idempotent and reuses pooled canisters before creating new ones.
+    #    idempotent and reuses pooled canisters before creating new ones. With
+    #    --apply-arrangement it also runs the active arrangement's post-deploy
+    #    steps in the same call, so the environment comes up fully configured.
     if args.deploy:
         print("deploying live sheet (this creates/reuses canisters)…")
-        res = call(CASALS, "deploy_sheet", args, json.dumps({}))
+        deploy_args = {"apply_arrangement": True} if args.apply_arrangement else {}
+        res = call(CASALS, "deploy_sheet", args, json.dumps(deploy_args))
         if not (isinstance(res, dict) and res.get("ok")):
             sys.exit(f"deploy_sheet failed: {res}")
         for k in ("created_sections", "created_stands", "created_canisters",
@@ -295,6 +336,10 @@ def main():
                 print(f"  {k}: {', '.join(res[k])}")
         if res.get("errors"):
             sys.exit(f"deploy_sheet had errors: {res['errors']}")
+        arr = res.get("arrangement")
+        if isinstance(arr, dict):
+            print(f"  arrangement '{arr.get('arrangement', '')}': "
+                  f"{arr.get('applied', 0)} applied, {arr.get('failed', 0)} failed")
 
     print("Seed complete.")
 

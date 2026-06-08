@@ -43,6 +43,8 @@ from auth import (
     _normalize_permissions,
     _parse_permissions,
 )
+from arrangement import _apply_arrangement_gen, _get_active_arrangement
+from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
 from audit import _append_event, _last_event
 import cycles as _cycles_mod
 from cycles import (
@@ -94,6 +96,7 @@ from lifecycle import (
     _versions_in_family,
 )
 from models import (
+    Arrangement,
     AuthorizedWasm,
     CycleSample,
     CyclesSnapshot,
@@ -279,6 +282,7 @@ def get_status() -> text:
         "stands": Stand.count(),
         "canisters": Canister.count(),
         "authorized_wasms": AuthorizedWasm.count(),
+        "arrangements": Arrangement.count(),
         "events": OrchestrationEvent.count(),
         "cycle_samples": CycleSample.count(),
         "cycle_samples_max_id": CycleSample.max_id(),
@@ -518,6 +522,153 @@ def reset_sheet() -> text:
         _set_live_sheet(_default_sheet_copy())
         _append_event("sheet_reset", "", {})
         return _ok(sheet=get_live_sheet())
+    except Exception as e:
+        return _err(str(e))
+
+
+# ── Arrangements (environment config overlays) ─────────────────────────────
+#
+# A sheet describes the orchestra's topology + code; an Arrangement describes how
+# one environment is configured *after* a deploy: a flat map of `parameters` plus
+# an ordered list of declarative post-deploy `steps` ({target, method, args}).
+# Exactly one arrangement is active per Casals instance. Casals never interprets
+# the parameters/steps — it stores and forwards them (see arrangement.py).
+
+@query
+def list_arrangements() -> text:
+    """List all arrangements (post-deploy config overlays). Exactly one is active."""
+    list(Arrangement.instances())
+    out = []
+    for a in Arrangement.instances():
+        try:
+            nparams = len(json.loads(a.parameters_json or "{}"))
+        except (json.JSONDecodeError, ValueError):
+            nparams = 0
+        try:
+            nsteps = len(json.loads(a.steps_json or "[]"))
+        except (json.JSONDecodeError, ValueError):
+            nsteps = 0
+        out.append({
+            "name": a.name,
+            "description": a.description,
+            "active": bool(int(getattr(a, "active", 0) or 0)),
+            "parameter_count": nparams,
+            "step_count": nsteps,
+        })
+    out.sort(key=lambda x: (not x["active"], x["name"]))
+    return json.dumps(out)
+
+
+@query
+def get_arrangement(args: text) -> text:
+    """Return one arrangement in full (parameters + steps).
+    Args (JSON, optional): {"name": str} — absent/empty => the active arrangement."""
+    try:
+        params = json.loads(args) if args else {}
+    except (json.JSONDecodeError, ValueError):
+        params = {}
+    name = (params.get("name") or "").strip()
+    list(Arrangement.instances())
+    a = Arrangement[name] if name else _get_active_arrangement()
+    if a is None:
+        return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
+    try:
+        parameters = json.loads(a.parameters_json or "{}")
+    except (json.JSONDecodeError, ValueError):
+        parameters = {}
+    try:
+        steps = json.loads(a.steps_json or "[]")
+    except (json.JSONDecodeError, ValueError):
+        steps = []
+    return json.dumps({
+        "ok": True,
+        "name": a.name,
+        "description": a.description,
+        "active": bool(int(getattr(a, "active", 0) or 0)),
+        "parameters": parameters,
+        "steps": steps,
+    })
+
+
+@update
+def set_arrangement(args: text) -> text:
+    """Create or update an arrangement (upsert by name). Controller or open-access.
+
+    Args (JSON): {name, description?, parameters?, steps?, active?}.
+      - parameters: a flat JSON object of config values (opaque to Casals).
+      - steps: an ordered list of {target, method, args} declarative calls.
+      - active: if true, mark this arrangement active (clearing any other).
+
+    parameters/steps are validated here so a malformed arrangement is rejected at
+    write time, not silently at apply time. Idempotent."""
+    try:
+        _require_can_add()
+        params = json.loads(args)
+        name = (params.get("name") or "").strip()
+        if not name:
+            return _err("name required")
+        list(Arrangement.instances())
+        a = Arrangement[name]
+        created = a is None
+        if created:
+            a = Arrangement(name=name)
+            a.created_by = _caller()
+        if "description" in params:
+            a.description = (params.get("description") or "")[:512]
+        if "parameters" in params:
+            a.parameters_json = json.dumps(normalize_parameters(params.get("parameters")))
+        if "steps" in params:
+            a.steps_json = json.dumps(validate_and_normalize_steps(params.get("steps")))
+        if params.get("active"):
+            for other in Arrangement.instances():
+                if other.name != name and int(getattr(other, "active", 0) or 0) == 1:
+                    other.active = 0
+            a.active = 1
+        _append_event("arrangement_set", "",
+                      {"name": name, "created": created, "active": bool(int(a.active or 0))})
+        return _ok(name=name, created=created, active=bool(int(a.active or 0)))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_active_arrangement(args: text) -> text:
+    """Mark one arrangement active (clearing any other). Controller or open-access.
+    Args (JSON): {"name": str}."""
+    try:
+        _require_can_add()
+        params = json.loads(args)
+        name = (params.get("name") or "").strip()
+        if not name:
+            return _err("name required")
+        list(Arrangement.instances())
+        a = Arrangement[name]
+        if a is None:
+            return _err(f"unknown arrangement '{name}'")
+        for other in Arrangement.instances():
+            if other.name != name and int(getattr(other, "active", 0) or 0) == 1:
+                other.active = 0
+        a.active = 1
+        _append_event("arrangement_activated", "", {"name": name})
+        return _ok(name=name)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def delete_arrangement(args: text) -> text:
+    """Delete an arrangement. Controller only. Args (JSON): {"name": str}."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        name = (params.get("name") or "").strip()
+        list(Arrangement.instances())
+        a = Arrangement[name]
+        if a is None:
+            return _err(f"unknown arrangement '{name}'")
+        a.delete()
+        _append_event("arrangement_deleted", "", {"name": name})
+        return _ok(name=name)
     except Exception as e:
         return _err(str(e))
 
@@ -1191,10 +1342,51 @@ def deploy_sheet(args: text) -> Async[text]:
         _append_event("sheet_deployed", "", {k: result[k] for k in (
             "created_sections", "created_stands", "created_canisters",
             "reused_canisters", "reinstalled_canisters", "retired_canisters")})
+
+        # Optionally apply the active arrangement (post-deploy config) in the same
+        # call, so a single deploy can bring an environment fully up and ready.
+        # Off by default to keep deploy_sheet's behaviour backward-compatible.
+        if params.get("apply_arrangement"):
+            arr = _get_active_arrangement()
+            if arr is not None:
+                result["arrangement"] = yield from _apply_arrangement_gen(arr)
+            else:
+                result["arrangement"] = {"applied": 0, "failed": 0,
+                                         "note": "no active arrangement"}
+
         return _ok(**result)
     except Exception as e:
         _log.error(f"deploy_sheet error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
+
+
+@update
+def apply_arrangement(args: text) -> Async[text]:
+    """Apply an arrangement's post-deploy steps in order against their targets.
+
+    Run this after deploy_sheet to bring an environment to its configured,
+    ready-to-use state (set parameters, trigger canister self-reconciliation,
+    etc.). Controller or open-access caller. Steps are best-effort and idempotent
+    (see arrangement._apply_arrangement_gen): re-applying converges.
+
+    Args (JSON, optional): {"name": str} — absent/empty => the active arrangement.
+    """
+    try:
+        _require_can_add()
+        params = json.loads(args) if args else {}
+        name = (params.get("name") or "").strip()
+        list(Arrangement.instances())
+        arr = Arrangement[name] if name else _get_active_arrangement()
+        if arr is None:
+            return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
+        summary = yield from _apply_arrangement_gen(arr)
+        _append_event("arrangement_applied", "",
+                      {"name": arr.name, "applied": summary.get("applied", 0),
+                       "failed": summary.get("failed", 0)})
+        return _ok(**summary)
+    except Exception as e:
+        _log.error(f"apply_arrangement error: {e}")
+        return _err(f"{e} :: {traceback.format_exc()[-400:]}")
 
 
 @update

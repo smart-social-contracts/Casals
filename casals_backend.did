@@ -111,6 +111,12 @@ service : {
   "pool_remove" : (text) -> (text);
   "set_sheet" : (text) -> (text);
   "reset_sheet" : () -> (text);
+  "list_arrangements" : () -> (text) query;
+  "get_arrangement" : (text) -> (text) query;
+  "set_arrangement" : (text) -> (text);
+  "set_active_arrangement" : (text) -> (text);
+  "delete_arrangement" : (text) -> (text);
+  "apply_arrangement" : (text) -> (text);
   "set_settings" : (text) -> (text);
   "create_section" : (text) -> (text);
   "create_stand" : (text) -> (text);
@@ -148,5 +154,6 @@ service : {
   "reconcile" : () -> (text);
   "set_cycle_policy" : (text) -> (text);
   "cycleops_monitored" : () -> (text) query;
+  "sync_controllers" : (text) -> (text);
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

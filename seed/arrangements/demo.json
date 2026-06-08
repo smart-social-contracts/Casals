@@ -1,0 +1,17 @@
+{
+  "$comment": "An arrangement: an environment's post-deploy configuration overlay, applied AFTER a sheet is deployed. It is a sibling of the sheet (seed/sheets/*.json), not part of the orchestra tree — Casals stores `parameters` and runs `steps` without interpreting them. `parameters` is a flat map of config values handed to canisters; `steps` is an ordered list of declarative calls {target, method, args} where `target` is a registered canister name (or a raw canister id), `method` is a text-in/text-out method, and `args` is the JSON value passed as the single text argument (a bare string is passed verbatim; null/absent means a no-argument call). Exactly one arrangement is active per Casals instance. Loaded + activated by scripts/seed.py --arrangement demo.",
+  "name": "demo",
+  "description": "Demo arrangement for the default hello-world orchestra: a couple of illustrative parameters plus one post-deploy step that greets via the Python backend.",
+  "active": true,
+  "parameters": {
+    "ENVIRONMENT": "demo",
+    "DEMO_DATA": true
+  },
+  "steps": [
+    {
+      "target": "python-backend",
+      "method": "greet",
+      "args": "Casals arrangement"
+    }
+  ]
+}

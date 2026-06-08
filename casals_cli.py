@@ -21,6 +21,12 @@ Commands:
     sheet get           print the live sheet
     sheet set FILE      replace the live sheet from a JSON file
     sheet deploy [FILE] deploy the live sheet (optionally set from FILE first)
+    arrangement list    list arrangements (post-deploy config overlays)
+    arrangement get [NAME]   print an arrangement (active if no NAME)
+    arrangement set FILE     create/update an arrangement from a JSON file
+    arrangement activate NAME  mark an arrangement active
+    arrangement apply [NAME]   run an arrangement's post-deploy steps
+    arrangement delete NAME    delete an arrangement
 
 Examples::
 
@@ -176,6 +182,40 @@ def cmd_sheet_deploy(args):
     _out(call(CASALS, "deploy_sheet", args, "{}"))
 
 
+def cmd_arrangement_list(args):
+    _out(call(CASALS, "list_arrangements", args, "{}"))
+
+
+def cmd_arrangement_get(args):
+    payload = {"name": args.name} if args.name else {}
+    _out(call(CASALS, "get_arrangement", args, json.dumps(payload)))
+
+
+def cmd_arrangement_set(args):
+    arr = _load_sheet_file(args.file)
+    payload = {
+        "name": arr.get("name"),
+        "description": arr.get("description", ""),
+        "parameters": arr.get("parameters", {}),
+        "steps": arr.get("steps", []),
+        "active": bool(arr.get("active", False)),
+    }
+    _out(call(CASALS, "set_arrangement", args, json.dumps(payload)))
+
+
+def cmd_arrangement_activate(args):
+    _out(call(CASALS, "set_active_arrangement", args, json.dumps({"name": args.name})))
+
+
+def cmd_arrangement_apply(args):
+    payload = {"name": args.name} if args.name else {}
+    _out(call(CASALS, "apply_arrangement", args, json.dumps(payload)))
+
+
+def cmd_arrangement_delete(args):
+    _out(call(CASALS, "delete_arrangement", args, json.dumps({"name": args.name})))
+
+
 # ── arg parser ───────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -221,6 +261,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional path to sheet JSON; if given, set_sheet is called first",
     )
 
+    arr_p = sub.add_parser("arrangement", help="arrangement (post-deploy config) subcommands")
+    arr_sub = arr_p.add_subparsers(dest="arrangement_command", required=True)
+    arr_sub.add_parser("list", help="list arrangements")
+
+    arr_get_p = arr_sub.add_parser("get", help="print an arrangement (active if no NAME)")
+    arr_get_p.add_argument("name", nargs="?", metavar="NAME", help="arrangement name")
+
+    arr_set_p = arr_sub.add_parser("set", help="create/update an arrangement from FILE")
+    arr_set_p.add_argument("file", metavar="FILE", help="path to arrangement JSON file")
+
+    arr_act_p = arr_sub.add_parser("activate", help="mark an arrangement active")
+    arr_act_p.add_argument("name", metavar="NAME", help="arrangement name")
+
+    arr_apply_p = arr_sub.add_parser("apply", help="apply an arrangement's post-deploy steps (active if no NAME)")
+    arr_apply_p.add_argument("name", nargs="?", metavar="NAME", help="arrangement name")
+
+    arr_del_p = arr_sub.add_parser("delete", help="delete an arrangement")
+    arr_del_p.add_argument("name", metavar="NAME", help="arrangement name")
+
     return ap
 
 
@@ -248,6 +307,19 @@ def main():
                 cmd_sheet_set(args)
             elif args.sheet_command == "deploy":
                 cmd_sheet_deploy(args)
+        elif args.command == "arrangement":
+            if args.arrangement_command == "list":
+                cmd_arrangement_list(args)
+            elif args.arrangement_command == "get":
+                cmd_arrangement_get(args)
+            elif args.arrangement_command == "set":
+                cmd_arrangement_set(args)
+            elif args.arrangement_command == "activate":
+                cmd_arrangement_activate(args)
+            elif args.arrangement_command == "apply":
+                cmd_arrangement_apply(args)
+            elif args.arrangement_command == "delete":
+                cmd_arrangement_delete(args)
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
         sys.exit(1)

@@ -28,6 +28,7 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 - **Lifecycle** — create, chunked install/upgrade, snapshot, `module_hash` verification, all-or-nothing rollback across a stand.
 - **Sheets** — declare a whole orchestra in one JSON document; `deploy_sheet` idempotently brings it to life.
+- **Arrangements** — per-environment config overlays applied *after* a deploy: a flat `parameters` map plus ordered, declarative post-deploy `steps` (`{target, method, args}`) Casals runs against managed canisters. One active per instance; Casals forwards the data without interpreting it (so app concepts like extensions stay out of the orchestrator).
 - **Canister pool** — reuses existing canisters before creating new ones (creation is expensive).
 - **Cycles management** — native treasury, per-section/stand/canister policy, autopilot top-up timer, history charts.
 - **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend); more added via governed list.
@@ -76,6 +77,10 @@ casals sheet get                                   # live sheet JSON
 casals sheet set   my-sheet.json                   # replace live sheet
 casals sheet deploy                                # deploy current live sheet
 casals sheet deploy my-sheet.json                  # set + deploy in one step
+casals arrangement list                            # post-deploy config overlays
+casals arrangement set demo.json                   # create/update an arrangement
+casals arrangement activate test                   # make one arrangement active
+casals arrangement apply                           # run the active arrangement's steps
 
 casals -e ic --identity casals status              # mainnet, explicit identity
 ```
@@ -102,6 +107,9 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | query | `get_cycle_history` | balance samples over time |
 | update | `create_section` / `create_stand` / `create_canister` | structure |
 | update | `deploy_sheet` | idempotently deploy the whole orchestra |
+| query | `list_arrangements` / `get_arrangement` | environment config overlays |
+| update | `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | manage arrangements |
+| update | `apply_arrangement` | run an arrangement's post-deploy steps |
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |

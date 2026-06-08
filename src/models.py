@@ -262,6 +262,42 @@ class CyclesSnapshot(Entity):
     updated_at = Integer(default=0)
 
 
+class Arrangement(Entity, TimestampedMixin):
+    """An environment-specific configuration overlay, applied after a deploy.
+
+    Casals stays a general-purpose orchestrator. A *sheet* (see sheet.py) says
+    what canisters exist and what WASM they run; an *Arrangement* says how one
+    environment (test / demo / staging) is configured *after* those canisters are
+    up. It is a sibling document to the sheet — deliberately NOT modeled into the
+    orchestra tree, and Casals does not interpret its contents.
+
+    An arrangement carries two opaque documents:
+      - `parameters_json`: a flat JSON map of config values Casals hands to
+        canisters (e.g. test-mode flags). Casals stores and forwards them; the
+        canisters interpret and reconcile to them (pulling extensions/codices,
+        toggling flags, etc.).
+      - `steps_json`: an ordered JSON list of declarative post-deploy calls, each
+        `{"target", "method", "args"}`. Casals executes them in order against the
+        named/identified canisters. Steps are *data*, never code — there is no
+        arbitrary execution path here.
+
+    Exactly one arrangement is `active` per Casals instance (others may exist as
+    reference). Applying is idempotent when the steps set desired state, so a
+    re-apply (or a retry after a partial failure) converges.
+    """
+
+    __alias__ = "name"
+    name = String(min_length=1, max_length=128)        # e.g. "test", "demo", "staging"
+    description = String(max_length=512, default="")
+    # 1 => the single active arrangement for this Casals instance; 0 => reference.
+    active = Integer(default=0)
+    # Flat JSON map of config values handed to canisters (opaque to Casals).
+    parameters_json = String(max_length=8000, default="{}")
+    # Ordered JSON list of declarative post-deploy steps: [{target, method, args}].
+    steps_json = String(max_length=8000, default="[]")
+    created_by = String(max_length=64, default="")
+
+
 class OrchestrationEvent(Entity, TimestampedMixin):
     """Append-only audit block.
 

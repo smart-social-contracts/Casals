@@ -10,10 +10,13 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import arrangement_helpers  # noqa: E402
 import auth         # noqa: E402
 import util         # noqa: E402
 import views        # noqa: E402
 import wasm_helpers # noqa: E402
+
+import pytest       # noqa: E402
 
 
 # ── util ────────────────────────────────────────────────────────────────────
@@ -405,3 +408,111 @@ def test_section_view_subnet_and_subnet_type():
     v = views._section_view(_mock_section(subnet="abc123", subnet_type="fiduciary"))
     assert v["subnet"] == "abc123"
     assert v["subnet_type"] == "fiduciary"
+
+
+# ── arrangement_helpers: candid_text_tuple ───────────────────────────────────
+
+def test_candid_text_tuple_escapes_quotes_and_backslashes():
+    assert arrangement_helpers.candid_text_tuple("hi") == '("hi")'
+    # A JSON arg with quotes/backslashes must be escaped so the Candid literal is valid.
+    assert arrangement_helpers.candid_text_tuple('{"a":"b"}') == '("{\\"a\\":\\"b\\"}")'
+    assert arrangement_helpers.candid_text_tuple("a\\b") == '("a\\\\b")'
+
+
+def test_candid_text_tuple_none_is_empty_string():
+    assert arrangement_helpers.candid_text_tuple(None) == '("")'
+
+
+# ── arrangement_helpers: step_text_arg ───────────────────────────────────────
+
+def test_step_text_arg_none_is_none():
+    assert arrangement_helpers.step_text_arg(None) is None
+
+
+def test_step_text_arg_string_passes_through():
+    assert arrangement_helpers.step_text_arg("Casals") == "Casals"
+
+
+def test_step_text_arg_object_is_json_serialized():
+    assert arrangement_helpers.step_text_arg({"test_mode": True}) == '{"test_mode": true}'
+
+
+def test_step_text_arg_list_is_json_serialized():
+    assert arrangement_helpers.step_text_arg([1, 2]) == "[1, 2]"
+
+
+# ── arrangement_helpers: validate_and_normalize_steps ────────────────────────
+
+def test_validate_steps_accepts_list_and_normalizes():
+    steps = [{"target": " python-backend ", "method": " greet ", "args": "hi"}]
+    out = arrangement_helpers.validate_and_normalize_steps(steps)
+    assert out == [{"target": "python-backend", "method": "greet", "args": "hi"}]
+
+
+def test_validate_steps_accepts_json_string():
+    out = arrangement_helpers.validate_and_normalize_steps(
+        '[{"target": "c", "method": "m"}]'
+    )
+    assert out == [{"target": "c", "method": "m", "args": None}]
+
+
+def test_validate_steps_none_and_empty():
+    assert arrangement_helpers.validate_and_normalize_steps(None) == []
+    assert arrangement_helpers.validate_and_normalize_steps([]) == []
+    assert arrangement_helpers.validate_and_normalize_steps("[]") == []
+
+
+def test_validate_steps_preserves_args_object():
+    out = arrangement_helpers.validate_and_normalize_steps(
+        [{"target": "c", "method": "set_canister_config", "args": {"x": 1}}]
+    )
+    assert out[0]["args"] == {"x": 1}
+
+
+def test_validate_steps_rejects_non_list():
+    with pytest.raises(ValueError):
+        arrangement_helpers.validate_and_normalize_steps({"target": "c", "method": "m"})
+
+
+def test_validate_steps_rejects_non_object_step():
+    with pytest.raises(ValueError):
+        arrangement_helpers.validate_and_normalize_steps(["not-an-object"])
+
+
+def test_validate_steps_rejects_missing_target():
+    with pytest.raises(ValueError):
+        arrangement_helpers.validate_and_normalize_steps([{"method": "m"}])
+
+
+def test_validate_steps_rejects_missing_method():
+    with pytest.raises(ValueError):
+        arrangement_helpers.validate_and_normalize_steps([{"target": "c"}])
+
+
+def test_validate_steps_rejects_bad_json():
+    with pytest.raises(ValueError):
+        arrangement_helpers.validate_and_normalize_steps("{not json")
+
+
+# ── arrangement_helpers: normalize_parameters ────────────────────────────────
+
+def test_normalize_parameters_dict_passthrough():
+    assert arrangement_helpers.normalize_parameters({"A": 1}) == {"A": 1}
+
+
+def test_normalize_parameters_json_string():
+    assert arrangement_helpers.normalize_parameters('{"A": true}') == {"A": True}
+
+
+def test_normalize_parameters_none_is_empty():
+    assert arrangement_helpers.normalize_parameters(None) == {}
+
+
+def test_normalize_parameters_rejects_list():
+    with pytest.raises(ValueError):
+        arrangement_helpers.normalize_parameters([1, 2, 3])
+
+
+def test_normalize_parameters_rejects_bad_json():
+    with pytest.raises(ValueError):
+        arrangement_helpers.normalize_parameters("{bad")

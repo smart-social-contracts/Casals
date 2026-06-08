@@ -1,0 +1,131 @@
+{
+  "$comment": "Test-environment arrangement for the realms mundus. Applied AFTER a sheet deploy/reinstall to bring the 3 realm backends up configured and ready. Each realm runs, in order: (1) set_canister_config_json — runtime test-mode flags + file_registry id + network (the config that used to be baked in at build time); (2) install_codex_from_registry — the realm's codex package; (3) install_extension_from_registry — demo_simulator, which auto-activates from the runtime demo_data flag set in step 1 (so step order matters). The full ~28-extension set per realm is manifest-driven by the installer; this arrangement owns the runtime config and demonstrates the declarative self-install pattern using the realm backend's existing text-in endpoints. Targets are raw canister ids from deployment-descriptors/test-mundus-layered.yml. registry = uq2mu-kaaaa-aaaah-avqcq-cai.",
+  "name": "test",
+  "description": "Realms test environment: per-realm runtime flags + codex + demo_simulator (auto-activated by the runtime demo_data flag).",
+  "active": true,
+  "parameters": {
+    "network": "test",
+    "file_registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+    "test_flags": {
+      "test_mode": true,
+      "skip_authentication": true,
+      "ii_bypass": true,
+      "user_self_registration": true,
+      "demo_data": true,
+      "skip_terms": true,
+      "skip_passport_zkproof": true
+    }
+  },
+  "steps": [
+    {
+      "target": "ku6cv-2iaaa-aaaab-agrpa-cai",
+      "method": "set_canister_config_json",
+      "args": {
+        "network": "test",
+        "file_registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "test_flags": {
+          "test_mode": true,
+          "skip_authentication": true,
+          "ii_bypass": true,
+          "user_self_registration": true,
+          "demo_data": true,
+          "skip_terms": true,
+          "skip_passport_zkproof": true
+        }
+      }
+    },
+    {
+      "target": "ku6cv-2iaaa-aaaab-agrpa-cai",
+      "method": "install_codex_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "codex_id": "dominion",
+        "version": null,
+        "run_init": true
+      }
+    },
+    {
+      "target": "ku6cv-2iaaa-aaaab-agrpa-cai",
+      "method": "install_extension_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "ext_id": "demo_simulator",
+        "version": null
+      }
+    },
+
+    {
+      "target": "rnghe-haaaa-aaaak-qyxyq-cai",
+      "method": "set_canister_config_json",
+      "args": {
+        "network": "test",
+        "file_registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "test_flags": {
+          "test_mode": true,
+          "skip_authentication": true,
+          "ii_bypass": true,
+          "user_self_registration": true,
+          "demo_data": true,
+          "skip_terms": true,
+          "skip_passport_zkproof": true
+        }
+      }
+    },
+    {
+      "target": "rnghe-haaaa-aaaak-qyxyq-cai",
+      "method": "install_codex_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "codex_id": "agora",
+        "version": null,
+        "run_init": true
+      }
+    },
+    {
+      "target": "rnghe-haaaa-aaaak-qyxyq-cai",
+      "method": "install_extension_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "ext_id": "demo_simulator",
+        "version": null
+      }
+    },
+
+    {
+      "target": "m2wv3-uaaaa-aaaah-quoiq-cai",
+      "method": "set_canister_config_json",
+      "args": {
+        "network": "test",
+        "file_registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "test_flags": {
+          "test_mode": true,
+          "skip_authentication": true,
+          "ii_bypass": true,
+          "user_self_registration": true,
+          "demo_data": true,
+          "skip_terms": true,
+          "skip_passport_zkproof": true
+        }
+      }
+    },
+    {
+      "target": "m2wv3-uaaaa-aaaah-quoiq-cai",
+      "method": "install_codex_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "codex_id": "syntropia",
+        "version": null,
+        "run_init": true
+      }
+    },
+    {
+      "target": "m2wv3-uaaaa-aaaah-quoiq-cai",
+      "method": "install_extension_from_registry",
+      "args": {
+        "registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
+        "ext_id": "demo_simulator",
+        "version": null
+      }
+    }
+  ]
+}
