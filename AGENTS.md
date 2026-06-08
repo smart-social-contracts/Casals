@@ -28,7 +28,7 @@ seed/sheets/         — sheets (desired orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
 scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper)
 tests/               — pytest unit + integration + e2e suites (incl. test_cli_unit.py)
-.icp/data/           — committed mainnet canister-ID mappings (do NOT delete)
+.icp/data/           — committed canister-ID mappings for the demo deployment (do NOT delete)
 ```
 
 `file_registry` is a **git submodule** of the public
@@ -42,7 +42,11 @@ git clone --recurse-submodules <casals-url>
 git submodule update --init
 ```
 
-## Mainnet canisters
+## Demo deployment
+
+These are smart-social-contracts' own instance of Casals, deployed on IC mainnet
+for development and demonstration purposes. They are **not a production service**
+— projects that use Casals (such as Realms) deploy their own separate instances.
 
 | Canister          | ID                              | URL |
 |-------------------|---------------------------------|-----|
@@ -108,12 +112,12 @@ provisioning. This is safe for frontend canisters because their entire state is 
 asset bundle, which Casals re-uploads from the file-registry immediately after the
 wipe.
 
-**"Out of cycles" ≠ mainnet.**
+**"Out of cycles" ≠ the demo deployment.**
 If you see `Canister a5dhi-k7777-77775-aaabq-cai is out of cycles`, the canister ID
-prefix (`...77775-`) confirms it is the **local** canister, not mainnet
+prefix (`...77775-`) confirms it is the **local** canister, not the demo deployment
 (`ip2wh-iyaaa-aaaao-bbaoq-cai`). Just top up as above.
 
-**Frontend shows local data, not mainnet.**
+**Frontend shows local data, not the demo deployment.**
 The `ic_env` cookie served by the asset canister contains the local canister IDs.
 The frontend reads from it, so it always talks to the local backend. Symptoms that
 confirm you are on local: **Canisters: 0** (fresh deploy), treasury ~1–3T cycles,
@@ -133,6 +137,10 @@ pytest tests/ -v    # spins up its own replica and tears it down automatically
 ```
 
 ## Deploy to IC mainnet
+
+> This section covers deploying Casals' own **demo instance** (the canisters
+> listed above). If you are a project deploying your own Casals instance, the
+> same steps apply — substitute your own canister IDs and identity.
 
 ### One-time setup
 1. The `casals` icp-cli identity is stored in `~/.local/share/icp-cli/identity/keys/casals.pem`.
@@ -164,7 +172,7 @@ The workflow checks out submodules, imports the `CASALS_IDENTITY_PEM` secret,
 builds both Basilisk WASMs (`make build`), and runs `icp deploy -e ic` (which
 deploys `casals_backend`, `ic_file_registry`, and `casals_frontend`). Canister
 IDs are read from `.icp/data/` (committed), so every run targets the same
-mainnet canisters.
+demo-deployment canisters.
 
 ## Open access
 
@@ -358,7 +366,7 @@ deploying a sheet.
 
 ```bash
 make seed                              # catalog only, local replica
-make seed-ic                           # catalog only, mainnet (casals identity)
+make seed-ic                           # catalog only, IC mainnet (casals identity, demo deployment)
 python3 scripts/seed.py -e ic --identity casals --deploy   # catalog + deploy the sheet
 ```
 
