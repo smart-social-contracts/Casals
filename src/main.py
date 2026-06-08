@@ -3155,9 +3155,15 @@ def get_cycle_history(args: text) -> text:
         since = int(params["since"])
     if params.get("window_secs"):
         since = max(since, now - int(params["window_secs"]))
-    list(CycleSample.instances())
+    # Load from the tail (most recent first) to avoid loading all samples.
+    # 3 000 entries covers ~28 days of autopilot data for 27 canisters
+    # (27 canisters × 4 runs/day = 108/day → 3 000 / 108 ≈ 28 days).
+    total = CycleSample.count()
+    fetch = min(total, 3000)
+    offset = max(0, total - fetch)
+    samples = CycleSample.load_some(offset, fetch)
     rows = []
-    for s in CycleSample.instances():
+    for s in samples:
         if int(s.ts or 0) < since:
             continue
         rows.append({
