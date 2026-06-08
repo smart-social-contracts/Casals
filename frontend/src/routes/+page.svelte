@@ -825,7 +825,7 @@
     {/if}
     {#if orchestraView === 'tree'}
     <div class="space-y-4">
-      {#each filteredTree.sections as section (section.name)}
+      {#each filteredTree.sections as section (section.name + '|' + section.id)}
         <div class="card overflow-hidden">
           <!-- Section header -->
           <div class="flex items-start justify-between gap-3 p-4 bg-primary-50/60">
@@ -876,7 +876,7 @@
               {#if section.stands.length === 0}
                 <div class="px-4 py-3 text-xs text-primary-400">No stands in this section.</div>
               {/if}
-              {#each section.stands as stand (stand.name)}
+              {#each section.stands as stand (section.name + '/' + stand.name)}
                 {@const standKey = `${section.name}/${stand.name}`}
                 <div>
                   <!-- Stand header -->
@@ -934,7 +934,7 @@
                       {#if stand.canisters.length === 0}
                         <div class="text-xs text-primary-400 py-1">No canisters in this stand.</div>
                       {/if}
-                      {#each stand.canisters as canister (canister.name)}
+                      {#each stand.canisters as canister (canister.canister_id || canister.name)}
                         <div class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3">
                           <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                             <div class="min-w-0 space-y-1.5">
