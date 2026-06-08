@@ -704,6 +704,8 @@ def get_status() -> text:
         "canisters": Canister.count(),
         "authorized_wasms": AuthorizedWasm.count(),
         "events": OrchestrationEvent.count(),
+        "cycle_samples": CycleSample.count(),
+        "cycle_samples_max_id": CycleSample.max_id(),
     })
 
 
@@ -3157,13 +3159,14 @@ def get_cycle_history(args: text) -> text:
         since = int(params["since"])
     if params.get("window_secs"):
         since = max(since, now - int(params["window_secs"]))
-    # Load from the tail (most recent first) to avoid loading all samples.
-    # 3 000 entries covers ~28 days of autopilot data for 27 canisters
-    # (27 canisters × 4 runs/day = 108/day → 3 000 / 108 ≈ 28 days).
+    # Load from the tail (most recent). Cap at 500 to stay well under the
+    # 5 B instruction query limit. 500 entries covers ~4 days at autopilot
+    # frequency (27 canisters × 4 runs/day = 108/day → 500/108 ≈ 4.6 days).
+    # For longer windows the frontend will see fewer points but won't crash.
     total = CycleSample.count()
     if not total:
         return json.dumps({"now": now, "samples": []})
-    fetch = min(total, 3000)
+    fetch = min(total, 500)
     max_sid = CycleSample.max_id()
     start_id = max(1, max_sid - fetch + 1)
     samples = CycleSample.load_some(start_id, fetch)

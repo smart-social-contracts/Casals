@@ -48,8 +48,10 @@
     loading = true;
     error = '';
     try {
-      // Phase 1: show cached snapshot + history immediately (both fast)
-      const [cached, h] = await Promise.all([getCyclesCached(), getCycleHistory()]);
+      // Phase 1: show cached snapshot + history immediately (both fast).
+      // Pass the max window (1 month) so the backend pre-filters samples.
+      const MAX_WINDOW_SECS = 2592000; // 1 month
+      const [cached, h] = await Promise.all([getCyclesCached(), getCycleHistory({ window_secs: MAX_WINDOW_SECS })]);
       if (cached?.treasury) {
         report = cached;
         cachedAt = cached.cached_at ?? null;
