@@ -610,10 +610,11 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 # ── Audit log (ICRC-3 / ICRC-121-style append-only chain) ─────────────────────
 
 def _last_event():
-    mid = OrchestrationEvent.max_id()
-    if mid is None:
+    total = OrchestrationEvent.count()
+    if not total:
         return None
-    return OrchestrationEvent[str(mid)]
+    evs = OrchestrationEvent.load_some(total - 1, 1)
+    return evs[0] if evs else None
 
 
 def _append_event(btype: str, canister_id: str, payload: dict) -> "OrchestrationEvent":
