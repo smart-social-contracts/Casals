@@ -240,7 +240,7 @@
     </div>
   {/if}
 
-  {#if loading && !report}
+  {#if (loading || refreshing) && !report}
     <div class="card p-6 space-y-4">
       {#each [1, 2, 3, 4] as n (n)}
         <div class="skeleton h-5 w-full"></div>
