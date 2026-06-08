@@ -248,6 +248,20 @@ class Settings(Entity):
     version = String(max_length=32, default="0.1.0")
 
 
+class CyclesSnapshot(Entity):
+    """Singleton: last successful get_cycles result persisted in stable memory.
+
+    Survives upgrades so the Cycles page can show stale-but-instant data on
+    first load after a deploy, before the background get_cycles completes.
+    Max ~16 KB per snapshot (27 canisters × ~200 chars + treasury/pool ~1 KB).
+    """
+
+    __alias__ = "key"
+    key = String(max_length=32, default="singleton")
+    snapshot_json = String(max_length=16384, default="")
+    updated_at = Integer(default=0)
+
+
 class OrchestrationEvent(Entity, TimestampedMixin):
     """Append-only audit block.
 

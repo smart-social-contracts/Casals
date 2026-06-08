@@ -48,6 +48,7 @@ from default_sheet import DEFAULT_SHEET
 from models import (
     AuthorizedWasm,
     CycleSample,
+    CyclesSnapshot,
     Stand,
     OrchestrationEvent,
     PooledCanister,
@@ -3103,6 +3104,14 @@ def get_cycles() -> Async[text]:
         })
         global _cycles_cache
         _cycles_cache = result
+        # Persist to stable memory so the cache survives upgrades.
+        try:
+            snap = CyclesSnapshot["singleton"] or CyclesSnapshot(key="singleton")
+            snap.snapshot_json = result
+            snap.updated_at = _now_secs()
+            snap.save()
+        except Exception as snap_err:
+            _log.error(f"get_cycles: could not persist snapshot: {snap_err}")
         return result
     except Exception as e:
         _log.error(f"get_cycles error: {e}")
@@ -3112,9 +3121,15 @@ def get_cycles() -> Async[text]:
 @query
 def get_cycles_cached() -> text:
     """Return the last stored get_cycles snapshot (instant query, may be stale).
-    The result includes a 'cached_at' unix-seconds field so the frontend can show
-    how old the data is. Returns {} if no snapshot has been recorded yet
-    (first load after upgrade; frontend should fall back to get_cycles)."""
+    Reads from stable memory (CyclesSnapshot entity) so it survives upgrades.
+    Falls back to the in-memory volatile cache (_cycles_cache) if the entity
+    is not yet populated. Returns {} if nothing is stored yet."""
+    try:
+        snap = CyclesSnapshot["singleton"]
+        if snap and snap.snapshot_json:
+            return snap.snapshot_json
+    except Exception:
+        pass
     return _cycles_cache or "{}"
 
 
