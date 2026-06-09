@@ -208,6 +208,25 @@ def _backend_cid_for_stand(frontend_cid: str, stand=None) -> str:
     return ""
 
 
+def _grant_backend_commit(asset, frontend_cid: str, stand=None):
+    """Generator: grant the paired realm backend Commit on its frontend asset
+    canister, so the backend can write deployment-specific assets after install
+    (e.g. /custom/ branding, extension frontend bundles).
+
+    A frontend (re)install resets the certified-assets canister's permission
+    list, so this must be re-granted on every provision — not only at first
+    creation. Returns the backend canister id (or "" when none is found).
+    """
+    backend_cid = _backend_cid_for_stand(frontend_cid, stand)
+    if backend_cid and backend_cid != ic.id().to_str():
+        grant_res = yield asset.grant_permission({
+            "to_principal": Principal.from_str(backend_cid),
+            "permission": {"Commit": None},
+        })
+        unwrap_call_result(grant_res)
+    return backend_cid
+
+
 def _provision_assets(canister_id: str, w, stand=None):
     """Generator: upload the WASM's associated asset into a freshly installed
     certified-assets canister. Grants Commit permission, injects the paired
@@ -223,6 +242,7 @@ def _provision_assets(canister_id: str, w, stand=None):
         "permission": {"Commit": None},
     })
     unwrap_call_result(grant_res)
+    yield from _grant_backend_commit(asset, canister_id, stand)
     content = yield from _pull_registry_bytes(asset_namespace, asset_path)
     _PLACEHOLDER = b"__BACKEND_CANISTER_ID__"
     if _PLACEHOLDER in content:
@@ -278,6 +298,7 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
         "permission": {"Commit": None},
     })
     unwrap_call_result(grant_res)
+    backend_cid = yield from _grant_backend_commit(asset, canister_id)
     count = 0
     for f in files[start:end]:
         path = (f.get("path") or "").strip()
@@ -306,7 +327,6 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
     # the same stand, so it is the natural writer (mirrors what the legacy
     # off-chain installer used to do).
     if end >= total:
-        backend_cid = _backend_cid_for_stand(canister_id)
         if backend_cid:
             ids = ('{realm_backend:"' + backend_cid
                    + '",internet_identity:"https://identity.ic0.app"')
