@@ -208,9 +208,10 @@ def main():
         full, active=True,
     )
 
-    # Lite: one realm + a few core extensions, for fast iteration. Not active by
-    # default (the full `test` arrangement is the active one); activate explicitly
-    # with `casals arrangement activate test-lite` when iterating.
+    # Lite: one realm + a few core extensions, for fast iteration. Marked active
+    # so seeding it makes it the env's active arrangement (activation is
+    # exclusive — this deactivates `test`). Re-seed/activate `test` to restore
+    # full fidelity.
     lite = build_steps(REALMS[:1], ext_filter=LITE_EXTENSIONS)
     _write(
         "test-lite.json", "test-lite",
@@ -219,10 +220,11 @@ def main():
         ("Fast-iteration variant of `test`: just Dominion and a handful of core "
          "extensions (" + ", ".join(LITE_EXTENSIONS) + "), ~" + str(len(lite)) +
          " steps, to exercise the reinstall→arrangement-apply chain end-to-end "
-         "without ~93 mainnet calls. Same per-realm step shape as `test`. Not "
-         "active by default; `casals arrangement activate test-lite` to use it. "
-         "Regenerate via scripts/_gen_test_arrangement.py."),
-        lite, active=False,
+         "without ~93 mainnet calls. Same per-realm step shape as `test`. Marked "
+         "active: seeding it makes it the env's active arrangement (exclusive, so "
+         "it deactivates `test`); re-seed/activate `test` to restore full "
+         "fidelity. Regenerate via scripts/_gen_test_arrangement.py."),
+        lite, active=True,
     )
 
 

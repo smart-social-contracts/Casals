@@ -1,8 +1,8 @@
 {
-  "$comment": "Fast-iteration variant of `test`: just Dominion and a handful of core extensions (public_dashboard, member_dashboard, demo_simulator, hello_world, llm_chat), ~8 steps, to exercise the reinstall\u2192arrangement-apply chain end-to-end without ~93 mainnet calls. Same per-realm step shape as `test`. Not active by default; `casals arrangement activate test-lite` to use it. Regenerate via scripts/_gen_test_arrangement.py.",
+  "$comment": "Fast-iteration variant of `test`: just Dominion and a handful of core extensions (public_dashboard, member_dashboard, demo_simulator, hello_world, llm_chat), ~8 steps, to exercise the reinstall\u2192arrangement-apply chain end-to-end without ~93 mainnet calls. Same per-realm step shape as `test`. Marked active: seeding it makes it the env's active arrangement (exclusive, so it deactivates `test`); re-seed/activate `test` to restore full fidelity. Regenerate via scripts/_gen_test_arrangement.py.",
   "name": "test-lite",
   "description": "Lightweight realms test arrangement: 1 realm (Dominion) + core extensions (public_dashboard, member_dashboard, demo_simulator, hello_world, llm_chat) for fast iteration.",
-  "active": false,
+  "active": true,
   "parameters": {
     "network": "test",
     "file_registry_canister_id": "uq2mu-kaaaa-aaaah-avqcq-cai",
