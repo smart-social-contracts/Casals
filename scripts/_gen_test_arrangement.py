@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
-"""One-shot generator for seed/arrangements/test.json (full-fidelity realms test
-environment). Mirrors examples/demo/realm{1,2,3}/manifest.json from the realms
-repo. Re-run if the manifests change, then delete — the JSON is the artifact."""
+"""Generator for the realms test-environment arrangements:
+
+  - seed/arrangements/test.json       full fidelity: 3 realms, every manifest
+                                      extension (~93 steps). Mirrors
+                                      examples/demo/realm{1,2,3}/manifest.json.
+  - seed/arrangements/test-lite.json  fast iteration: 1 realm (Dominion), a
+                                      handful of core extensions (~8 steps).
+
+Re-run if the manifests change. The JSON files are the committed artifacts."""
 import json
 import os
+
+# Lite arrangement: one realm + a few high-signal extensions, for fast end-to-end
+# iteration of the reinstall→arrangement-apply chain without ~93 mainnet calls.
+LITE_EXTENSIONS = [
+    "public_dashboard",
+    "member_dashboard",
+    "demo_simulator",
+    "hello_world",
+    "llm_chat",
+]
 
 FILE_REGISTRY = "uq2mu-kaaaa-aaaah-avqcq-cai"
 MARKETPLACE = "2wldc-niaaa-aaaad-qlxga-cai"
@@ -87,10 +103,14 @@ REALMS = [
 ]
 
 
-def build_steps():
+def build_steps(realms, ext_filter=None):
     steps = []
-    for r in REALMS:
+    for r in realms:
         be = r["backend"]
+        extensions = r["extensions"]
+        if ext_filter is not None:
+            # Preserve the realm's own ordering; keep only the requested set.
+            extensions = [e for e in ext_filter if e in r["extensions"]]
         # 1. Runtime config: test flags + infra ids + this realm's frontend, so
         #    extension installs copy their frontend bundles to the right asset
         #    canister. Must precede demo_simulator so its initialize() sees
@@ -130,7 +150,7 @@ def build_steps():
         # 4..n. Every extension from the realm manifest. demo_simulator (in the
         #       list) auto-activates persona generation from the runtime
         #       demo_data flag set in step 1.
-        for ext in r["extensions"]:
+        for ext in extensions:
             steps.append({
                 "target": be,
                 "method": "install_extension_from_registry",
@@ -143,32 +163,12 @@ def build_steps():
     return steps
 
 
-def main():
-    steps = build_steps()
+def _write(filename, name, description, comment, steps, active):
     doc = {
-        "$comment": (
-            "Full-fidelity test-environment arrangement for the realms mundus, "
-            "applied AFTER a sheet deploy/reinstall to bring the 3 demo realms "
-            "(Dominion, Agora, Syntropia) up fully configured and usable. Per "
-            "realm, in order: (1) set_canister_config_json — runtime test flags + "
-            "file_registry/frontend/marketplace ids (config that used to be baked "
-            "in at build time); (2) update_realm_config — name/manifesto/welcome "
-            "(identity that used to come from the baked manifest.json); (3) "
-            "install_codex_from_registry — the realm's codex; (4..n) "
-            "install_extension_from_registry for every extension in the realm's "
-            "manifest. demo_simulator auto-generates rich personas on its schedule "
-            "from the runtime demo_data flag (step order matters). Targets are raw "
-            "canister ids from realms/deployment-descriptors/test-mundus-layered.yml. "
-            "Apply in batches (apply_arrangement offset/limit) — this is ~"
-            + str(len(steps)) + " steps. Regenerate via "
-            "scripts/_gen_test_arrangement.py."
-        ),
-        "name": "test",
-        "description": (
-            "Realms test environment: per-realm runtime flags + identity + codex "
-            "+ full extension set (demo_simulator auto-seeds personas)."
-        ),
-        "active": True,
+        "$comment": comment,
+        "name": name,
+        "description": description,
+        "active": active,
         "parameters": {
             "network": NETWORK,
             "file_registry_canister_id": FILE_REGISTRY,
@@ -177,12 +177,53 @@ def main():
         },
         "steps": steps,
     }
-    out = os.path.join(os.path.dirname(__file__), "..", "seed", "arrangements", "test.json")
+    out = os.path.join(os.path.dirname(__file__), "..", "seed", "arrangements", filename)
     out = os.path.abspath(out)
     with open(out, "w") as f:
         json.dump(doc, f, indent=2)
         f.write("\n")
     print(f"wrote {out}: {len(steps)} steps")
+
+
+def main():
+    full = build_steps(REALMS)
+    _write(
+        "test.json", "test",
+        ("Realms test environment: per-realm runtime flags + identity + codex + "
+         "full extension set (demo_simulator auto-seeds personas)."),
+        ("Full-fidelity test-environment arrangement for the realms mundus, "
+         "applied AFTER a sheet deploy/reinstall to bring the 3 demo realms "
+         "(Dominion, Agora, Syntropia) up fully configured and usable. Per realm, "
+         "in order: (1) set_canister_config_json — runtime test flags + "
+         "file_registry/frontend/marketplace ids (config that used to be baked in "
+         "at build time); (2) update_realm_config — name/manifesto/welcome "
+         "(identity that used to come from the baked manifest.json); (3) "
+         "install_codex_from_registry — the realm's codex; (4..n) "
+         "install_extension_from_registry for every extension in the realm's "
+         "manifest. demo_simulator auto-generates rich personas on its schedule "
+         "from the runtime demo_data flag (step order matters). Targets are raw "
+         "canister ids from realms/deployment-descriptors/test-mundus-layered.yml. "
+         "Apply in batches (apply_arrangement offset/limit) — ~" + str(len(full)) +
+         " steps. Regenerate via scripts/_gen_test_arrangement.py."),
+        full, active=True,
+    )
+
+    # Lite: one realm + a few core extensions, for fast iteration. Not active by
+    # default (the full `test` arrangement is the active one); activate explicitly
+    # with `casals arrangement activate test-lite` when iterating.
+    lite = build_steps(REALMS[:1], ext_filter=LITE_EXTENSIONS)
+    _write(
+        "test-lite.json", "test-lite",
+        ("Lightweight realms test arrangement: 1 realm (Dominion) + core "
+         "extensions (" + ", ".join(LITE_EXTENSIONS) + ") for fast iteration."),
+        ("Fast-iteration variant of `test`: just Dominion and a handful of core "
+         "extensions (" + ", ".join(LITE_EXTENSIONS) + "), ~" + str(len(lite)) +
+         " steps, to exercise the reinstall→arrangement-apply chain end-to-end "
+         "without ~93 mainnet calls. Same per-realm step shape as `test`. Not "
+         "active by default; `casals arrangement activate test-lite` to use it. "
+         "Regenerate via scripts/_gen_test_arrangement.py."),
+        lite, active=False,
+    )
 
 
 if __name__ == "__main__":
