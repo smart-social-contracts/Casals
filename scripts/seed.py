@@ -46,6 +46,7 @@ CATALOG = os.path.join(SEED_DIR, "templates.json")
 
 CASALS = "casals_backend"
 REGISTRY = "ic_file_registry"
+REGISTRY_FRONTEND = "ic_file_registry_frontend"
 
 # Raw bytes per upload chunk. base64 expands ~1.33x, so a 1 MiB chunk is ~1.4 MiB
 # of candid — under the 2 MiB ingress budget. Args are passed via --args-file, so
@@ -138,6 +139,13 @@ def canister_id(name: str, args) -> str:
     out = _icp(["canister", "status", name] + _base_flags(args), args).stdout
     m = re.search(r"Canister Id:\s*([a-z0-9-]+)", out)
     return m.group(1) if m else ""
+
+
+def canister_id_optional(name: str, args) -> str:
+    try:
+        return canister_id(name, args)
+    except Exception:
+        return ""
 
 
 def _read_template_bytes(file_name: str) -> bytes:
@@ -271,10 +279,12 @@ def main():
     if not casals_id or not registry_id:
         sys.exit("could not resolve canister ids; is the project deployed?")
 
-    # 1. Wire Casals to the registry.
-    res = call(CASALS, "set_settings", args, json.dumps({
-        "file_registry_canister_id": registry_id,
-    }))
+    # 1. Wire Casals to the registry (+ optional browse UI canister).
+    registry_frontend_id = canister_id_optional(REGISTRY_FRONTEND, args)
+    settings = {"file_registry_canister_id": registry_id}
+    if registry_frontend_id:
+        settings["file_registry_frontend_canister_id"] = registry_frontend_id
+    res = call(CASALS, "set_settings", args, json.dumps(settings))
     if not (isinstance(res, dict) and res.get("ok")):
         sys.exit(f"set_settings failed: {res}")
     print("wired Casals -> file-registry")

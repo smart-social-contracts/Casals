@@ -67,6 +67,7 @@ export interface Metadata {
   version: string;
   open_access: boolean;
   file_registry_canister_id: string;
+  file_registry_frontend_canister_id?: string;
   cycleops_enabled: boolean;
   cycleops_principal: string;
   default_min_cycles: number;
@@ -496,6 +497,7 @@ export async function setCyclePolicy(args: {
 export interface SettingsPatch {
   open_access?: boolean;
   file_registry_canister_id?: string;
+  file_registry_frontend_canister_id?: string;
   cycleops_enabled?: boolean;
   cycleops_principal?: string;
   default_min_cycles?: number;

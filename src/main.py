@@ -296,6 +296,7 @@ def casals_metadata() -> text:
         "version": VERSION,
         "open_access": bool(s.open_access),
         "file_registry_canister_id": s.file_registry_canister_id,
+        "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
         "cycleops_enabled": bool(s.cycleops_enabled),
         "cycleops_principal": s.cycleops_principal,
         "default_min_cycles": int(s.default_min_cycles or 0),
@@ -677,6 +678,7 @@ def delete_arrangement(args: text) -> text:
 def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
     {open_access: bool, file_registry_canister_id: str,
+     file_registry_frontend_canister_id: str,
      cycleops_enabled: bool, cycleops_principal: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
      cycles_autopilot: bool, cycles_check_interval_secs: int}."""
@@ -688,6 +690,10 @@ def set_settings(args: text) -> text:
             s.open_access = 1 if params["open_access"] else 0
         if "file_registry_canister_id" in params:
             s.file_registry_canister_id = (params["file_registry_canister_id"] or "").strip()
+        if "file_registry_frontend_canister_id" in params:
+            s.file_registry_frontend_canister_id = (
+                params["file_registry_frontend_canister_id"] or ""
+            ).strip()
         if "cycleops_enabled" in params:
             s.cycleops_enabled = 1 if params["cycleops_enabled"] else 0
         if "cycleops_principal" in params:

@@ -205,6 +205,9 @@ class Settings(Entity):
     # may (deployer can flip this for experimentation / dev / demo).
     open_access = Integer(default=0)
     file_registry_canister_id = String(max_length=64, default="")
+    # Optional browse UI for the registry (separate asset canister in Realms;
+    # bundled as ic_file_registry_frontend in standalone Casals deployments).
+    file_registry_frontend_canister_id = String(max_length=64, default="")
     # CycleOps: Casals keeps this principal informed of the canisters to
     # monitor and adds it as a controller so it can auto-top-up. Optional
     # backstop alongside Casals' own native cycles management (below).

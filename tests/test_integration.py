@@ -99,12 +99,14 @@ class TestSettingsAndCommander:
     def test_set_settings_roundtrip(self, canister):
         _ok("set_settings", {
             "file_registry_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
+            "file_registry_frontend_canister_id": "oe3kv-3aaaa-aaaac-qgmzq-cai",
             "open_access": True,
             "cycleops_enabled": True,
             "cycleops_principal": "cpbhx-cqaaa-aaaad-aancq-cai",
         })
         md = call_canister("casals_metadata")
         assert md["file_registry_canister_id"] == "ryjl3-tyaaa-aaaaa-aaaba-cai"
+        assert md["file_registry_frontend_canister_id"] == "oe3kv-3aaaa-aaaac-qgmzq-cai"
         assert md["open_access"] is True
         assert md["cycleops_enabled"] is True
         # reset open_access so later assertions are stable

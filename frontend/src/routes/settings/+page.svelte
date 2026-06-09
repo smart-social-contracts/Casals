@@ -26,6 +26,7 @@
   // $effect, to keep reactivity explicit).
   let openAccess = $state(false);
   let fileRegistryId = $state('');
+  let fileRegistryFrontendId = $state('');
   let cycleopsEnabled = $state(false);
   let cycleopsPrincipal = $state('');
   // Native cycles management
@@ -46,6 +47,7 @@
       [meta, cycleops] = await Promise.all([casalsMetadata(), cycleopsMonitored()]);
       openAccess = meta.open_access;
       fileRegistryId = meta.file_registry_canister_id ?? '';
+      fileRegistryFrontendId = meta.file_registry_frontend_canister_id ?? '';
       cycleopsEnabled = meta.cycleops_enabled;
       cycleopsPrincipal = meta.cycleops_principal ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
@@ -70,6 +72,7 @@
       const patch: SettingsPatch = {
         open_access: openAccess,
         file_registry_canister_id: fileRegistryId.trim(),
+        file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
         cycleops_enabled: cycleopsEnabled,
         cycleops_principal: cycleopsPrincipal.trim(),
         cycles_autopilot: cyclesAutopilot,
@@ -165,27 +168,30 @@
           </dd>
         </div>
         <div class="flex justify-between gap-3 sm:col-span-2">
-          <dt class="text-primary-500">File registry</dt>
+          <dt class="text-primary-500 shrink-0">File registry (backend)</dt>
+          <dd class="font-mono text-primary-900 truncate min-w-0" title={meta.file_registry_canister_id}>
+            {meta.file_registry_canister_id || '—'}
+          </dd>
+        </div>
+        <div class="flex justify-between gap-3 sm:col-span-2">
+          <dt class="text-primary-500 shrink-0">File registry (frontend)</dt>
           <dd class="flex items-center gap-2 min-w-0">
-            {#if meta.file_registry_canister_id}
+            {#if meta.file_registry_frontend_canister_id}
+              <span
+                class="font-mono text-primary-900 truncate"
+                title={meta.file_registry_frontend_canister_id}
+              >
+                {meta.file_registry_frontend_canister_id}
+              </span>
               <a
-                href={canisterUrl(meta.file_registry_canister_id)}
+                href={canisterUrl(meta.file_registry_frontend_canister_id)}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="font-mono text-primary-600 hover:text-primary-900 truncate transition-colors"
+                class="shrink-0 inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-900 transition-colors"
                 title="Browse files in registry"
               >
-                {meta.file_registry_canister_id}
-              </a>
-              <a
-                href={canisterUrl(meta.file_registry_canister_id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
-                title="Browse files in registry"
-                aria-label="Browse files in registry"
-              >
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                Browse
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
                 </svg>
               </a>
@@ -250,7 +256,7 @@
           </label>
 
           <div>
-            <label class="label" for="fileRegistry">File registry canister id</label>
+            <label class="label" for="fileRegistry">File registry backend canister id</label>
             <input
               id="fileRegistry"
               type="text"
@@ -258,9 +264,21 @@
               placeholder="aaaaa-aa"
               bind:value={fileRegistryId}
             />
-            {#if fileRegistryId.trim()}
+            <p class="text-xs text-primary-400 mt-1">WASM and asset storage — used by Casals to install bundles.</p>
+          </div>
+
+          <div>
+            <label class="label" for="fileRegistryFrontend">File registry frontend canister id</label>
+            <input
+              id="fileRegistryFrontend"
+              type="text"
+              class="input font-mono"
+              placeholder="aaaaa-aa"
+              bind:value={fileRegistryFrontendId}
+            />
+            {#if fileRegistryFrontendId.trim()}
               <a
-                href={canisterUrl(fileRegistryId.trim())}
+                href={canisterUrl(fileRegistryFrontendId.trim())}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="inline-flex items-center gap-1 mt-1.5 text-xs text-primary-600 hover:text-primary-900 transition-colors"
@@ -270,6 +288,8 @@
                   <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
                 </svg>
               </a>
+            {:else}
+              <p class="text-xs text-primary-400 mt-1">Optional browse UI — leave blank if the backend serves HTTP directly.</p>
             {/if}
           </div>
 
