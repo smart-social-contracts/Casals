@@ -240,6 +240,11 @@ class TestParser:
     def test_arrangement_apply_optional_name(self):
         args = self._parse(["arrangement", "apply"])
         assert args.arrangement_command == "apply" and args.name is None
+        assert args.batch == 4  # default batch size
+
+    def test_arrangement_apply_custom_batch(self):
+        args = self._parse(["arrangement", "apply", "test-env", "--batch", "10"])
+        assert args.name == "test-env" and args.batch == 10
 
     def test_arrangement_delete_with_name(self):
         args = self._parse(["arrangement", "delete", "old"])
@@ -435,6 +440,44 @@ class TestSheetDeployAbortOnSetFailure:
         assert mock_run.call_count == 1
         cmd = mock_run.call_args[0][0]
         assert "deploy_sheet" in cmd
+
+
+# ── cmd_arrangement_apply — batched walk ─────────────────────────────────────
+
+class TestArrangementApplyBatched:
+    @patch("casals_cli.call")
+    def test_walks_batches_until_done(self, mock_call, capsys):
+        # Three batches; cli should advance offset to next_offset until done.
+        mock_call.side_effect = [
+            {"ok": True, "arrangement": "env", "steps_total": 5,
+             "offset": 0, "next_offset": 2, "done": False, "applied": 2, "failed": 0},
+            {"ok": True, "arrangement": "env", "steps_total": 5,
+             "offset": 2, "next_offset": 4, "done": False, "applied": 1, "failed": 1},
+            {"ok": True, "arrangement": "env", "steps_total": 5,
+             "offset": 4, "next_offset": 5, "done": True, "applied": 1, "failed": 0},
+        ]
+        cli.cmd_arrangement_apply(_make_args(name="env", batch=2))
+        assert mock_call.call_count == 3
+        # offsets passed in each successive call advance: 0, 2, 4
+        offsets = [json.loads(c.args[3])["offset"] for c in mock_call.call_args_list]
+        assert offsets == [0, 2, 4]
+        out = json.loads(capsys.readouterr().out)
+        assert out["applied"] == 4 and out["failed"] == 1 and out["done"] is True
+
+    @patch("casals_cli.call")
+    def test_stops_when_cursor_does_not_advance(self, mock_call, capsys):
+        # Backend without batch fields (no next_offset/done) => single call.
+        mock_call.return_value = {"ok": True, "arrangement": "env", "applied": 3, "failed": 0}
+        cli.cmd_arrangement_apply(_make_args(name="env", batch=2))
+        assert mock_call.call_count == 1
+
+    @patch("casals_cli.call")
+    def test_error_response_is_emitted_and_stops(self, mock_call, capsys):
+        mock_call.return_value = {"ok": False, "error": "no active arrangement"}
+        cli.cmd_arrangement_apply(_make_args(name=None, batch=4))
+        assert mock_call.call_count == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["ok"] is False
 
 
 # ── subprocess tests with a fake icp binary ──────────────────────────────────

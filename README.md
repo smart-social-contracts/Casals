@@ -80,7 +80,7 @@ casals sheet deploy my-sheet.json                  # set + deploy in one step
 casals arrangement list                            # post-deploy config overlays
 casals arrangement set demo.json                   # create/update an arrangement
 casals arrangement activate test                   # make one arrangement active
-casals arrangement apply                           # run the active arrangement's steps
+casals arrangement apply                           # run the active arrangement's steps (batched until done)
 
 casals -e ic --identity casals status              # mainnet, explicit identity
 ```
@@ -109,7 +109,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | update | `deploy_sheet` | idempotently deploy the whole orchestra |
 | query | `list_arrangements` / `get_arrangement` | environment config overlays |
 | update | `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | manage arrangements |
-| update | `apply_arrangement` | run an arrangement's post-deploy steps |
+| update | `apply_arrangement` | run an arrangement's post-deploy steps (accepts `offset`/`limit` to apply in batches; returns `next_offset`/`done`) |
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |

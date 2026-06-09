@@ -245,6 +245,34 @@ class TestArrangements:
         res = call_canister("apply_arrangement", json.dumps({"name": "does-not-exist"}))
         assert res.get("ok") is False
 
+    def test_apply_batched_walks_to_done(self, canister):
+        # Target a valid principal (the management canister) with a bogus method
+        # so each step fails gracefully via a *reject* (caught & recorded) rather
+        # than an invalid-principal trap — enough to exercise offset/done batching.
+        steps = [{"target": "aaaaa-aa", "method": "noop", "args": {}}
+                 for _ in range(5)]
+        _ok("set_arrangement", {"name": "batch-env", "steps": steps})
+        r0 = _ok("apply_arrangement", {"name": "batch-env", "offset": 0, "limit": 2})
+        assert r0["steps_total"] == 5
+        assert r0["offset"] == 0 and r0["next_offset"] == 2 and r0["done"] is False
+        r1 = _ok("apply_arrangement",
+                 {"name": "batch-env", "offset": r0["next_offset"], "limit": 2})
+        assert r1["next_offset"] == 4 and r1["done"] is False
+        r2 = _ok("apply_arrangement",
+                 {"name": "batch-env", "offset": r1["next_offset"], "limit": 2})
+        assert r2["next_offset"] == 5 and r2["done"] is True
+        # Each batch reports only its own slice's counts.
+        assert (r0["applied"] + r0["failed"]) == 2
+        assert (r2["applied"] + r2["failed"]) == 1
+
+    def test_apply_no_limit_runs_all(self, canister):
+        steps = [{"target": "aaaaa-aa", "method": "noop", "args": {}}
+                 for _ in range(3)]
+        _ok("set_arrangement", {"name": "allatonce-env", "steps": steps})
+        res = _ok("apply_arrangement", {"name": "allatonce-env"})
+        assert res["steps_total"] == 3 and res["done"] is True
+        assert res["next_offset"] == 3
+
     def test_delete_arrangement(self, canister):
         _ok("set_arrangement", {"name": "env-del"})
         _ok("delete_arrangement", {"name": "env-del"})

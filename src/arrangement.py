@@ -58,19 +58,29 @@ def _call_text_method(canister_id: str, method: str, text_arg):
     return ic.candid_decode(unwrap_call_result(res))
 
 
-def _apply_arrangement_gen(arr):
-    """Generator: run an arrangement's steps in order against their targets.
+def _apply_arrangement_gen(arr, offset=0, limit=0):
+    """Generator: run an arrangement's steps against their targets.
 
     Steps are independent and best-effort: a failing step is recorded and the
     remaining steps still run (re-applying an arrangement is idempotent when its
     steps set desired state, so a later retry converges). Each step emits an
-    OrchestrationEvent. Returns a summary dict.
+    OrchestrationEvent.
+
+    To stay within a single message's instruction budget, only the slice
+    ``steps[offset : offset+limit]`` is run (``limit <= 0`` => run to the end).
+    The caller advances ``offset`` to ``next_offset`` and calls again until
+    ``done`` — each batch is its own ingress message, and applied state persists
+    between them. Returns a summary dict (counts are for THIS batch).
     """
     steps = validate_and_normalize_steps(arr.steps_json)
+    total = len(steps)
+    start = max(0, int(offset or 0))
+    end = total if (limit is None or int(limit) <= 0) else min(start + int(limit), total)
     results = []
     applied = 0
     failed = 0
-    for i, step in enumerate(steps):
+    for i in range(start, end):
+        step = steps[i]
         target = step["target"]
         method = step["method"]
         cid = _resolve_target_canister_id(target)
@@ -97,5 +107,6 @@ def _apply_arrangement_gen(arr):
             _append_event("arrangement_step_failed", cid,
                           {"arrangement": arr.name, "step": i, "method": method,
                            "error": str(e)[:300]})
-    return {"arrangement": arr.name, "steps_total": len(steps),
+    return {"arrangement": arr.name, "steps_total": total,
+            "offset": start, "next_offset": end, "done": end >= total,
             "applied": applied, "failed": failed, "results": results}

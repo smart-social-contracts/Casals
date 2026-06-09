@@ -208,8 +208,40 @@ def cmd_arrangement_activate(args):
 
 
 def cmd_arrangement_apply(args):
-    payload = {"name": args.name} if args.name else {}
-    _out(call(CASALS, "apply_arrangement", args, json.dumps(payload)))
+    """Apply an arrangement, walking it in batches until done.
+
+    A long arrangement can exceed a single message's instruction budget, so we
+    call apply_arrangement with offset/limit and advance to next_offset until
+    the response reports done. Counts are summed across batches.
+    """
+    batch = int(getattr(args, "batch", 0) or 0)
+    offset = 0
+    applied = 0
+    failed = 0
+    steps_total = None
+    last = None
+    for _ in range(1000):
+        payload = {"offset": offset, "limit": batch}
+        if args.name:
+            payload["name"] = args.name
+        res = call(CASALS, "apply_arrangement", args, json.dumps(payload))
+        last = res
+        if not (isinstance(res, dict) and res.get("ok")):
+            _out(res)
+            return
+        applied += int(res.get("applied", 0) or 0)
+        failed += int(res.get("failed", 0) or 0)
+        if res.get("steps_total") is not None:
+            steps_total = int(res["steps_total"])
+        new_offset = int(res.get("next_offset", offset) or offset)
+        # Stop on done, when not batching, or if the cursor did not advance
+        # (older backend without batch fields, or nothing left to do).
+        if res.get("done") or batch <= 0 or new_offset <= offset:
+            break
+        offset = new_offset
+    _out({"ok": True, "arrangement": (last or {}).get("arrangement"),
+          "steps_total": steps_total, "applied": applied, "failed": failed,
+          "done": True})
 
 
 def cmd_arrangement_delete(args):
@@ -276,6 +308,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     arr_apply_p = arr_sub.add_parser("apply", help="apply an arrangement's post-deploy steps (active if no NAME)")
     arr_apply_p.add_argument("name", nargs="?", metavar="NAME", help="arrangement name")
+    arr_apply_p.add_argument("--batch", type=int, default=4, metavar="N",
+                             help="steps per call; loop until done (0 = all in one call)")
 
     arr_del_p = arr_sub.add_parser("delete", help="delete an arrangement")
     arr_del_p.add_argument("name", metavar="NAME", help="arrangement name")

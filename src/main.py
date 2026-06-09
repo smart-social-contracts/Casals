@@ -1369,19 +1369,32 @@ def apply_arrangement(args: text) -> Async[text]:
     etc.). Controller or open-access caller. Steps are best-effort and idempotent
     (see arrangement._apply_arrangement_gen): re-applying converges.
 
-    Args (JSON, optional): {"name": str} — absent/empty => the active arrangement.
+    Args (JSON, optional):
+      - "name": str — absent/empty => the active arrangement.
+      - "offset": int — first step to run (default 0).
+      - "limit": int — max steps to run this call (default/<=0 => run to the end).
+
+    Long arrangements can exceed a single message's instruction budget, so apply
+    them in batches: start at offset 0 and re-call with the returned "next_offset"
+    until "done" is true. Each batch is its own message; applied state persists.
+    The returned applied/failed counts are for THIS batch.
     """
     try:
         _require_can_add()
         params = json.loads(args) if args else {}
         name = (params.get("name") or "").strip()
+        offset = int(params.get("offset", 0) or 0)
+        limit = int(params.get("limit", 0) or 0)
         list(Arrangement.instances())
         arr = Arrangement[name] if name else _get_active_arrangement()
         if arr is None:
             return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
-        summary = yield from _apply_arrangement_gen(arr)
+        summary = yield from _apply_arrangement_gen(arr, offset, limit)
         _append_event("arrangement_applied", "",
-                      {"name": arr.name, "applied": summary.get("applied", 0),
+                      {"name": arr.name, "offset": summary.get("offset", 0),
+                       "next_offset": summary.get("next_offset", 0),
+                       "done": summary.get("done", True),
+                       "applied": summary.get("applied", 0),
                        "failed": summary.get("failed", 0)})
         return _ok(**summary)
     except Exception as e:
