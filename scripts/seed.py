@@ -215,6 +215,11 @@ def main():
     ap = argparse.ArgumentParser(description="Seed a Casals deployment.")
     ap.add_argument("-e", "--env", default="local", help="icp environment (local|ic)")
     ap.add_argument("--identity", default=None, help="icp identity to call with")
+    ap.add_argument("--config-dir", default=None,
+                    help="directory holding the seed data (templates.json, templates/, "
+                         "assets/, arrangements/). Defaults to the in-repo seed/. Point "
+                         "this at a consumer repo's own config (e.g. realms/casals-config) "
+                         "so environment-specific objects live outside the engine repo.")
     ap.add_argument("--deploy", action="store_true",
                     help="also deploy the live sheet (stand up the orchestra)")
     ap.add_argument("--arrangement", default=None,
@@ -229,6 +234,18 @@ def main():
                          "arrangement into an already-provisioned Casals without touching "
                          "its authorized-WASM catalog.")
     args = ap.parse_args()
+
+    # Allow a consumer repo to own its seed data outside this engine repo: point
+    # --config-dir at e.g. realms/casals-config and re-derive the data paths.
+    if args.config_dir:
+        global SEED_DIR, TEMPLATES_DIR, ASSETS_DIR, ARRANGEMENTS_DIR, CATALOG
+        SEED_DIR = os.path.abspath(args.config_dir)
+        if not os.path.isdir(SEED_DIR):
+            sys.exit(f"--config-dir not found: {SEED_DIR}")
+        TEMPLATES_DIR = os.path.join(SEED_DIR, "templates")
+        ASSETS_DIR = os.path.join(SEED_DIR, "assets")
+        ARRANGEMENTS_DIR = os.path.join(SEED_DIR, "arrangements")
+        CATALOG = os.path.join(SEED_DIR, "templates.json")
 
     # Arrangement-only: seed just the env's arrangement, leaving the catalog and
     # sheet untouched. Used to (re)seed a live environment's config overlay.
