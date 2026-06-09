@@ -297,6 +297,34 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
         count += 1
     _append_event("bundle_uploaded", canister_id,
                   {"namespace": namespace, "files": count, "offset": start, "total": total})
+    # On the final batch, write the per-deployment /canister_ids.js that wires
+    # this SPA frontend to its paired backend canister. It is deployment-specific
+    # (the backend id differs per realm/env) so it cannot live in the shared
+    # registry bundle: the frontend's app.html loads /canister_ids.js and
+    # lib/canisters.js reads globalThis.__CANISTER_IDS.realm_backend. Casals holds
+    # Commit on the freshly (re)installed asset canister and knows the backend in
+    # the same stand, so it is the natural writer (mirrors what the legacy
+    # off-chain installer used to do).
+    if end >= total:
+        backend_cid = _backend_cid_for_stand(canister_id)
+        if backend_cid:
+            ids = ('{realm_backend:"' + backend_cid
+                   + '",internet_identity:"https://identity.ic0.app"')
+            fr = (_settings().file_registry_canister_id or "").strip()
+            if fr:
+                ids += ',file_registry:"' + fr + '"'
+            ids += "}"
+            js = ("globalThis.__CANISTER_IDS=" + ids + ";").encode()
+            store_res = yield asset.store({
+                "key": "/canister_ids.js",
+                "content_type": "application/javascript",
+                "content_encoding": "identity",
+                "content": js,
+                "sha256": None,
+            })
+            unwrap_call_result(store_res)
+            _append_event("canister_ids_written", canister_id,
+                          {"realm_backend": backend_cid})
     return (count, total)
 
 
