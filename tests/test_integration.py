@@ -265,6 +265,19 @@ class TestArrangements:
         assert (r0["applied"] + r0["failed"]) == 2
         assert (r2["applied"] + r2["failed"]) == 1
 
+    def test_large_arrangement_roundtrips(self, canister):
+        # A full-fidelity env arrangement (e.g. realms test ≈ 93 steps / ~20 KB)
+        # must fit steps_json. Use long, manifesto-like text to exercise the size.
+        manifesto = "Lorem ipsum governance manifesto. " * 8
+        steps = [{"target": "aaaaa-aa", "method": "update_realm_config",
+                  "args": {"name": f"Realm {i}", "manifesto": manifesto}}
+                 for i in range(60)]
+        _ok("set_arrangement", {"name": "big-env", "steps": steps})
+        got = call_canister("get_arrangement", json.dumps({"name": "big-env"}))
+        assert got["ok"] is True
+        assert len(got["steps"]) == 60
+        assert got["steps"][59]["args"]["name"] == "Realm 59"
+
     def test_apply_no_limit_runs_all(self, canister):
         steps = [{"target": "aaaaa-aa", "method": "noop", "args": {}}
                  for _ in range(3)]

@@ -292,9 +292,11 @@ class Arrangement(Entity, TimestampedMixin):
     # 1 => the single active arrangement for this Casals instance; 0 => reference.
     active = Integer(default=0)
     # Flat JSON map of config values handed to canisters (opaque to Casals).
-    parameters_json = String(max_length=8000, default="{}")
+    parameters_json = String(max_length=16000, default="{}")
     # Ordered JSON list of declarative post-deploy steps: [{target, method, args}].
-    steps_json = String(max_length=8000, default="[]")
+    # Sized for a full-fidelity environment (e.g. realms test = 3 realms × ~31
+    # steps incl. per-realm identity/manifesto text ≈ 20 KB).
+    steps_json = String(max_length=131072, default="[]")
     created_by = String(max_length=64, default="")
 
 
