@@ -20,7 +20,7 @@
   import { toasts } from '$lib/stores/toast';
   import LineChart from '$lib/components/LineChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
-  import { colorAt, type Series, type TreemapInput } from '$lib/charts';
+  import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
 
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
@@ -32,6 +32,7 @@
   let showDeposit = $state(false);
   let copiedField = $state('');
   let meta = $state<Metadata | null>(null);
+  let derivedLedgerId = $state('');
 
   const depositBackendId = $derived(
     report?.treasury?.backend_canister_id
@@ -42,8 +43,18 @@
   const depositLedgerId = $derived(
     report?.treasury?.ledger_account_id
       ?? meta?.ledger_account_id
+      ?? derivedLedgerId
       ?? '',
   );
+
+  $effect(() => {
+    if (report?.treasury?.ledger_account_id || meta?.ledger_account_id) return;
+    const cid = depositBackendId;
+    if (!cid) return;
+    ledgerAccountIdFromCanister(cid)
+      .then((id) => { derivedLedgerId = id; })
+      .catch(() => {});
+  });
 
   // ── chart controls ──
   type Scope = 'total' | 'section' | 'stand' | 'canister';
