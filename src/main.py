@@ -63,7 +63,9 @@ from cycles import (
     _status_cycles,
     _status_freezing,
     _ic_run_status,
+    _maybe_convert_icp_to_cycles_gen,
     _treasury_icp_e8s_gen,
+    icp_autoconvert_enabled,
 )
 from helpers import (
     ANONYMOUS,
@@ -309,6 +311,7 @@ def casals_metadata() -> text:
         "create_cycles": int(s.create_cycles or 0),
         "cycles_autopilot": bool(s.cycles_autopilot),
         "cycles_check_interval_secs": int(s.cycles_check_interval_secs or 0),
+        "cycles_icp_autoconvert": icp_autoconvert_enabled(s),
         "cycles_sampling": bool(s.cycles_sampling),
         "cycles_sample_interval_secs": int(s.cycles_sample_interval_secs or 0),
         # Fiat display: the currency every cycle count is also shown in, and the
@@ -702,7 +705,8 @@ def set_settings(args: text) -> text:
      file_registry_frontend_canister_id: str,
      cycleops_enabled: bool, cycleops_principal: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
-     cycles_autopilot: bool, cycles_check_interval_secs: int}."""
+     cycles_autopilot: bool, cycles_check_interval_secs: int,
+     cycles_icp_autoconvert: bool}."""
     try:
         _require_admin()
         params = json.loads(args)
@@ -739,6 +743,8 @@ def set_settings(args: text) -> text:
         if "cycles_check_interval_secs" in params:
             s.cycles_check_interval_secs = max(0, int(params["cycles_check_interval_secs"]))
             autopilot_touched = True
+        if "cycles_icp_autoconvert" in params:
+            s.cycles_icp_autoconvert = 1 if params["cycles_icp_autoconvert"] else 0
         # Sampling toggle / interval re-arms the (independent) sampler timer.
         sampler_touched = False
         if "cycles_sampling" in params:
@@ -2032,6 +2038,7 @@ def get_cycles() -> Async[text]:
         list(Stand.instances())
         list(Canister.instances())
         s = _settings()
+        yield from _maybe_convert_icp_to_cycles_gen()
         treasury = int(ic.canister_balance128())
         canisters_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
@@ -2122,6 +2129,7 @@ def get_cycles() -> Async[text]:
             "spendable": max(0, treasury - int(s.treasury_reserve or 0)),
             "autopilot": bool(s.cycles_autopilot),
             "interval_secs": int(s.cycles_check_interval_secs or 0),
+            "icp_autoconvert": icp_autoconvert_enabled(s),
         }
         if icp_e8s is not None:
             treasury_obj["icp_e8s"] = icp_e8s
@@ -2262,6 +2270,20 @@ def top_up(args: text) -> Async[text]:
         return _ok(topped_up=out, treasury=treasury)
     except Exception as e:
         _log.error(f"top_up error: {e}")
+        return _err(str(e))
+
+
+@update
+def convert_treasury_icp() -> Async[text]:
+    """Controller only. Convert all ledger ICP on this canister to cycles via the CMC."""
+    try:
+        _require_admin()
+        summary = yield from _maybe_convert_icp_to_cycles_gen(force=True)
+        if summary.get("converted"):
+            return _ok(**summary)
+        return _ok(converted=False, **{k: v for k, v in summary.items() if k != "converted"})
+    except Exception as e:
+        _log.error(f"convert_treasury_icp error: {e}")
         return _err(str(e))
 
 

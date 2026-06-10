@@ -291,7 +291,7 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `provision_assets` | update | (re)upload a frontend bundle from the registry into its asset canister (batched via `offset`/`limit`) |
 | `list_pool` | query | every canister Casals ever created + its pool status |
 | `get_cycles` | update | live treasury + per-canister solvency (reads canister_status) |
-| `reconcile` / `top_up` / `set_cycle_policy` | update | native cycles management |
+| `reconcile` / `top_up` / `convert_treasury_icp` / `set_cycle_policy` | update | native cycles management |
 | `get_cycle_history` | query | per-canister balance samples over time (Cycles charts) |
 | `list_arrangements` / `get_arrangement` | query | stored arrangements (post-deploy step sets) |
 | `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | update | manage arrangements |
@@ -383,6 +383,13 @@ section⊃stand⊃canister treemap sized by burn-over-window or current balance.
 its policy threshold — **funded from Casals' own balance** (`canister_balance128`)
 minus `treasury_reserve`. So Casals itself must stay funded, and the reserve caps
 how much it will spend. Toggle/tune via `set_settings` / `set_cycle_policy`.
+
+**ICP auto-convert.** When `cycles_icp_autoconvert` is on (default), `reconcile`
+and `get_cycles` first convert any ledger ICP on the backend canister's default
+account into cycles via the CMC (`transfer` + `notify_top_up`). Deposit ICP to
+the backend's ledger account ID (shown on the Cycles page); autopilot or a manual
+`convert_treasury_icp` call mints cycles from it. Controllers can also trigger
+conversion on demand with `convert_treasury_icp`.
 
 > ⚠️ Autopilot is **not always on** (it can be disabled per instance), and it only
 > funds — it does **not restart** a canister that already stopped from cycle

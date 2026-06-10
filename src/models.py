@@ -229,6 +229,9 @@ class Settings(Entity):
     # canister's balance against its policy. Interval is in seconds.
     cycles_autopilot = Integer(default=1)
     cycles_check_interval_secs = Integer(default=3_600)        # 1h
+    # When enabled, reconcile / get_cycles convert ledger ICP on this canister's
+    # default account into cycles via the CMC (notify_top_up).
+    cycles_icp_autoconvert = Integer(default=1)
     # Sampling: independent of autopilot, a timer records every canister's balance
     # so the Cycles page can chart history. Default on, hourly.
     cycles_sampling = Integer(default=1)

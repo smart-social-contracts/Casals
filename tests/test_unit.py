@@ -77,6 +77,29 @@ def test_ic_run_status_parses_variant():
     assert cycles_mod._ic_run_status({}) == "unknown"
 
 
+def test_icp_convert_amount():
+    import cycles as cycles_mod
+    assert cycles_mod.icp_convert_amount(10_000) is None
+    assert cycles_mod.icp_convert_amount(10_001) == 1
+    assert cycles_mod.icp_convert_amount(100_000_000) == 100_000_000 - 10_000
+
+
+def test_subaccount_from_principal_right_aligns():
+    import cycles as cycles_mod
+    class P:
+        _bytes = b"\x01\x02\x03"
+    sub = cycles_mod._subaccount_from_principal(P())
+    assert len(sub) == 32
+    assert sub[-3:] == b"\x01\x02\x03"
+    assert sub[:29] == b"\x00" * 29
+
+
+def test_variant_ok_first_number():
+    import cycles as cycles_mod
+    assert cycles_mod._variant_ok_first_number("(variant { Ok = 42 : nat64; })") == 42
+    assert cycles_mod._variant_ok_first_number("(variant { Err = ...; })") is None
+
+
 def test_deployment_from_events_picks_latest():
     import audit
     ev_old = types.SimpleNamespace(

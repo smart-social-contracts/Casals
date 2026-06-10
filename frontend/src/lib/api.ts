@@ -75,6 +75,7 @@ export interface Metadata {
   treasury_reserve: number;
   cycles_autopilot: boolean;
   cycles_check_interval_secs: number;
+  cycles_icp_autoconvert?: boolean;
   // Fiat display: the currency cycle counts are also shown in, and the cached
   // conversion factor (millionths of currency per 1T cycles; 0 => not fetched).
   display_currency?: string;
@@ -159,6 +160,8 @@ export interface Treasury {
   spendable: number;
   autopilot: boolean;
   interval_secs: number;
+  /** When true, ledger ICP is auto-converted to cycles during reconcile / get_cycles. */
+  icp_autoconvert?: boolean;
   /** ICP ledger balance (10^-8 ICP) on the Casals backend account, when known. */
   icp_e8s?: number;
 }
@@ -500,6 +503,10 @@ export async function reconcile(): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).reconcile());
 }
 
+export async function convertTreasuryIcp(): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).convert_treasury_icp());
+}
+
 export async function setCyclePolicy(args: {
   section?: string;
   stand?: string;
@@ -525,6 +532,7 @@ export interface SettingsPatch {
   treasury_reserve?: number;
   cycles_autopilot?: boolean;
   cycles_check_interval_secs?: number;
+  cycles_icp_autoconvert?: boolean;
   display_currency?: string;
 }
 

@@ -105,7 +105,7 @@ service : {
   "list_sections" : () -> (text) query;
   "list_authorized_wasms" : (text) -> (text) query;
   "get_settings" : () -> (text) query;
-    "get_events" : (text) -> (text) query;
+  "get_events" : (text) -> (text) query;
   "get_canister_deployment" : (text) -> (text) query;
   "get_sheet" : () -> (text) query;
   "list_pool" : () -> (text) query;
@@ -153,6 +153,7 @@ service : {
   "get_cycles_cached" : () -> (text) query;
   "get_cycle_history" : (text) -> (text) query;
   "top_up" : (text) -> (text);
+  "convert_treasury_icp" : () -> (text);
   "reconcile" : () -> (text);
   "set_cycle_policy" : (text) -> (text);
   "cycleops_monitored" : () -> (text) query;

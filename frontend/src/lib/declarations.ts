@@ -24,6 +24,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     get_cycles_cached:     IDL.Func([], [IDL.Text], ['query']),
     get_cycle_history:     IDL.Func([IDL.Text], [IDL.Text], ['query']),
     top_up:                IDL.Func([IDL.Text], [IDL.Text], []),
+    convert_treasury_icp:  IDL.Func([], [IDL.Text], []),
     reconcile:             IDL.Func([], [IDL.Text], []),
     set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
 

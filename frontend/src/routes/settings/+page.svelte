@@ -31,6 +31,7 @@
   let cycleopsPrincipal = $state('');
   // Native cycles management
   let cyclesAutopilot = $state(false);
+  let cyclesIcpAutoconvert = $state(true);
   let cyclesIntervalHours = $state(6);
   let defaultMinCycles = $state('');
   let defaultTopupCycles = $state('');
@@ -51,6 +52,7 @@
       cycleopsEnabled = meta.cycleops_enabled;
       cycleopsPrincipal = meta.cycleops_principal ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
+      cyclesIcpAutoconvert = meta.cycles_icp_autoconvert ?? true;
       cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 3600) / 3600));
       defaultMinCycles = formatCycles(meta.default_min_cycles);
       defaultTopupCycles = formatCycles(meta.default_topup_cycles);
@@ -76,6 +78,7 @@
         cycleops_enabled: cycleopsEnabled,
         cycleops_principal: cycleopsPrincipal.trim(),
         cycles_autopilot: cyclesAutopilot,
+        cycles_icp_autoconvert: cyclesIcpAutoconvert,
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
         display_currency: displayCurrency,
       };
@@ -164,6 +167,14 @@
           <dd>
             <span class="badge {meta.cycles_autopilot ? 'badge-frontend' : 'badge-neutral'}">
               {meta.cycles_autopilot ? 'enabled' : 'disabled'}
+            </span>
+          </dd>
+        </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-primary-500">ICP auto-convert</dt>
+          <dd>
+            <span class="badge {meta.cycles_icp_autoconvert ? 'badge-frontend' : 'badge-neutral'}">
+              {meta.cycles_icp_autoconvert ? 'enabled' : 'disabled'}
             </span>
           </dd>
         </div>
@@ -320,6 +331,12 @@
               <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesAutopilot} />
               <span class="text-sm font-medium text-primary-700">Autopilot</span>
               <span class="text-xs text-primary-400">— periodically reconcile balances</span>
+            </label>
+
+            <label class="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesIcpAutoconvert} />
+              <span class="text-sm font-medium text-primary-700">ICP auto-convert</span>
+              <span class="text-xs text-primary-400">— mint cycles from ledger ICP during reconcile / refresh</span>
             </label>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">

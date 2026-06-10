@@ -135,10 +135,11 @@ class TestCyclesManagement:
         md = call_canister("casals_metadata")
         for k in (
             "default_min_cycles", "default_topup_cycles", "treasury_reserve",
-            "cycles_autopilot", "cycles_check_interval_secs",
+            "cycles_autopilot", "cycles_check_interval_secs", "cycles_icp_autoconvert",
         ):
             assert k in md, md
         assert md["cycles_autopilot"] is True
+        assert md["cycles_icp_autoconvert"] is True
 
     def test_set_cycle_settings_roundtrip(self, canister):
         _ok("set_settings", {
@@ -146,12 +147,14 @@ class TestCyclesManagement:
             "default_topup_cycles": 2_000_000_000_000,
             "treasury_reserve": 3_000_000_000_000,
             "cycles_autopilot": True,
+            "cycles_icp_autoconvert": False,
             "cycles_check_interval_secs": 3600,
         })
         md = call_canister("casals_metadata")
         assert md["default_min_cycles"] == 750_000_000_000
         assert md["treasury_reserve"] == 3_000_000_000_000
         assert md["cycles_autopilot"] is True
+        assert md["cycles_icp_autoconvert"] is False
         assert md["cycles_check_interval_secs"] == 3600
         # disable autopilot again so other tests / the replica stay quiet
         _ok("set_settings", {"cycles_autopilot": False})

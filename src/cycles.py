@@ -235,6 +235,7 @@ def _reconcile_all_gen():
     """
     list(Canister.instances())
     s = _settings()
+    yield from _maybe_convert_icp_to_cycles_gen()
     reserve = int(s.treasury_reserve or 0)
     treasury = int(ic.canister_balance128())
     batch_ts = _now_secs()
@@ -351,6 +352,51 @@ def _fetch_icp_rate_gen(currency: str):
 
 # The NNS ICP ledger canister (mainnet).
 ICP_LEDGER_CANISTER_ID = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+# Ledger memo for ICP→cycles conversion via the CMC (see ic-ledger-types).
+MEMO_TOP_UP_CANISTER = 1_347_768_404
+ICP_TRANSFER_FEE_E8S = 10_000
+
+
+def icp_convert_amount(icp_e8s: int, fee: int = ICP_TRANSFER_FEE_E8S):
+    """Return the ICP transfer amount (e8s) if balance is convertible, else None."""
+    if icp_e8s is None or icp_e8s <= fee:
+        return None
+    return int(icp_e8s) - fee
+
+
+def icp_autoconvert_enabled(s=None) -> bool:
+    """True unless a Settings row explicitly disables ICP auto-convert."""
+    s = s or _settings()
+    raw = getattr(s, "cycles_icp_autoconvert", None)
+    if raw is None:
+        return True
+    return bool(int(raw))
+
+
+def _subaccount_from_principal(principal) -> bytes:
+    """CMC subaccount encoding: principal bytes right-aligned in 32 bytes."""
+    raw = getattr(principal, "_bytes", None)
+    if raw is None:
+        raw = bytes(principal)
+    if len(raw) > 32:
+        raise ValueError("principal too long for subaccount")
+    sub = bytearray(32)
+    sub[32 - len(raw):] = raw
+    return bytes(sub)
+
+
+def _variant_ok_first_number(decoded: str):
+    """Extract the first numeric value from a Candid Ok variant."""
+    marker = "Ok = "
+    j = decoded.find(marker)
+    if j < 0:
+        return None
+    rest = decoded[j + len(marker):]
+    end = 0
+    while end < len(rest) and (rest[end].isdigit() or rest[end] == "_"):
+        end += 1
+    num = rest[:end].replace("_", "")
+    return int(num) if num else None
 
 def _ledger_account_bytes(account) -> bytes:
     """Raw 32-byte ledger AccountIdentifier from a Principal.to_account_id() value."""
@@ -387,6 +433,85 @@ def _treasury_icp_e8s_gen():
 
 
 _CMC_CANISTER_ID = "rkp4c-7iaaa-aaaaa-aaaca-cai"
+
+
+def _maybe_convert_icp_to_cycles_gen(force: bool = False):
+    """Generator: burn ledger ICP into cycles on this canister via the CMC.
+
+    Flow: ICP ledger transfer (memo=top-up) to the CMC account keyed by this
+    canister's principal, then ``notify_top_up`` to mint cycles here.
+    """
+    s = _settings()
+    if not force and not icp_autoconvert_enabled(s):
+        return {"converted": False, "reason": "disabled"}
+
+    icp_e8s = yield from _treasury_icp_e8s_gen()
+    if icp_e8s is None:
+        return {"converted": False, "reason": "ledger unavailable"}
+
+    amount_e8s = icp_convert_amount(icp_e8s)
+    if amount_e8s is None:
+        return {"converted": False, "icp_e8s": icp_e8s, "reason": "below minimum"}
+
+    try:
+        canister_id = ic.id()
+        cid_str = str(canister_id)
+        sub = _subaccount_from_principal(canister_id)
+        to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
+        to_hex = _ledger_account_bytes(to_acct).hex()
+        transfer_arg = (
+            f"(record {{ memo = {MEMO_TOP_UP_CANISTER} : nat64; "
+            f"amount = record {{ e8s = {amount_e8s} : nat64 }}; "
+            f"fee = record {{ e8s = {ICP_TRANSFER_FEE_E8S} : nat64 }}; "
+            f"from_subaccount = null; to = blob \"{to_hex}\"; created_at_time = null }})"
+        )
+        res = yield ic.call_raw(
+            Principal.from_str(ICP_LEDGER_CANISTER_ID),
+            "transfer",
+            ic.candid_encode(transfer_arg),
+            0,
+        )
+        decoded = ic.candid_decode(unwrap_call_result(res))
+        block_index = _variant_ok_first_number(decoded)
+        if block_index is None:
+            err = decoded[:300]
+            _log.error(f"icp transfer for mint failed: {err}")
+            return {"converted": False, "icp_e8s": icp_e8s, "error": err}
+
+        notify_arg = (
+            f"(record {{ block_index = {block_index} : nat64; "
+            f"canister_id = principal \"{cid_str}\" }})"
+        )
+        res2 = yield ic.call_raw(
+            Principal.from_str(_CMC_CANISTER_ID),
+            "notify_top_up",
+            ic.candid_encode(notify_arg),
+            0,
+        )
+        decoded2 = ic.candid_decode(unwrap_call_result(res2))
+        cycles = _variant_ok_first_number(decoded2)
+        if cycles is None:
+            err = decoded2[:300]
+            _log.error(f"notify_top_up failed: {err}")
+            return {"converted": False, "block_index": block_index, "error": err}
+
+        _append_event("cycles_icp_convert", "", {
+            "icp_e8s": amount_e8s,
+            "fee_e8s": ICP_TRANSFER_FEE_E8S,
+            "cycles": cycles,
+            "block_index": block_index,
+            "source": "manual" if force else "autoconvert",
+        })
+        _log.info(f"converted {amount_e8s} e8s ICP -> {cycles} cycles")
+        return {
+            "converted": True,
+            "icp_e8s": amount_e8s,
+            "cycles": cycles,
+            "block_index": block_index,
+        }
+    except Exception as e:  # pragma: no cover - on-chain failures
+        _log.error(f"icp autoconvert: {e}")
+        return {"converted": False, "error": str(e)[:255]}
 
 
 def _fetch_xdr_permyriad_per_icp_gen():

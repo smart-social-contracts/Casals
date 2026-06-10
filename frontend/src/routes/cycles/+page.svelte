@@ -262,6 +262,9 @@
           {:else}
             ICP: —
           {/if}
+          {#if report.treasury.icp_autoconvert}
+            <span class="text-primary-400"> · auto-converts</span>
+          {/if}
         </p>
       </div>
       <div class="card p-4">
