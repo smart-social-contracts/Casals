@@ -159,6 +159,8 @@ export interface Treasury {
   spendable: number;
   autopilot: boolean;
   interval_secs: number;
+  /** ICP ledger balance (10^-8 ICP) on the Casals backend account, when known. */
+  icp_e8s?: number;
 }
 
 export interface PoolCanisterCycles {
@@ -750,14 +752,29 @@ export function shortPrincipal(p: string): string {
   return p.length > 12 ? `${p.slice(0, 5)}…${p.slice(-5)}` : p;
 }
 
-// Render a raw cycles count as a compact T/B/M string (1T = 1e12).
+// Render a raw cycles count in TC (1 TC = 1e12 cycles).
 export function formatCycles(n: number | undefined | null): string {
   if (n === undefined || n === null) return '—';
-  const abs = Math.abs(n);
-  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  return `${n}`;
+  const tc = n / 1e12;
+  const abs = Math.abs(tc);
+  let digits = 2;
+  if (abs > 0 && abs < 0.01) digits = 4;
+  else if (abs < 1) digits = 3;
+  const num = tc.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${num} TC`;
+}
+
+// Render an ICP amount from ledger e8s (10^-8 ICP).
+export function formatIcp(e8s: number | undefined | null): string {
+  if (e8s === undefined || e8s === null) return '—';
+  const icp = e8s / 1e8;
+  const abs = Math.abs(icp);
+  let digits = 4;
+  if (abs >= 100) digits = 2;
+  else if (abs >= 1) digits = 4;
+  else if (abs > 0 && abs < 0.0001) digits = 8;
+  const num = icp.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${num} ICP`;
 }
 
 // Symbols for the currencies the backend offers (XRC FiatCurrency codes).
@@ -787,12 +804,13 @@ export function formatFiat(value: number | null, currency: string | undefined): 
   return sym ? `${sym}${num}` : `${num} ${cur}`;
 }
 
-// Parse a human cycles string ("1.5t", "500b", "1000000") into a raw count.
+// Parse a human cycles string ("1.5t", "1.5tc", "500b", "1000000") into a raw count.
 export function parseCycles(s: string): number {
-  const m = String(s).trim().toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*([tbm])?$/);
+  const m = String(s).trim().toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*(tc|t|b|m)?$/);
   if (!m) return NaN;
   const value = parseFloat(m[1]);
-  const mult = m[2] === 't' ? 1e12 : m[2] === 'b' ? 1e9 : m[2] === 'm' ? 1e6 : 1;
+  const unit = m[2];
+  const mult = unit === 'tc' || unit === 't' ? 1e12 : unit === 'b' ? 1e9 : unit === 'm' ? 1e6 : 1;
   return Math.round(value * mult);
 }
 

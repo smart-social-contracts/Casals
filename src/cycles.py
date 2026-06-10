@@ -349,6 +349,28 @@ def _fetch_icp_rate_gen(currency: str):
     return float(rate) / float(10 ** int(decimals))
 
 
+# The NNS ICP ledger canister (mainnet).
+ICP_LEDGER_CANISTER_ID = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+LEDGER_CYCLES_PER_CALL = 1_000_000_000
+
+
+def _treasury_icp_e8s_gen():
+    """Generator: ICP ledger balance (e8s) held in this canister's default account."""
+    try:
+        from basilisk.canisters.ledger import LedgerCanister
+        account = ic.id().to_account_id()
+        acct = bytes(account) if not isinstance(account, (bytes, bytearray)) else account
+        ledger = LedgerCanister(Principal.from_str(ICP_LEDGER_CANISTER_ID))
+        res = yield ledger.account_balance({"account": acct}).with_cycles(LEDGER_CYCLES_PER_CALL)
+        tok = unwrap_call_result(res)
+        if isinstance(tok, dict):
+            return int(tok.get("e8s") or 0)
+        return int(getattr(tok, "e8s", 0) or 0)
+    except Exception as e:  # pragma: no cover - ledger absent on some replicas
+        _log.error(f"treasury icp balance: {e}")
+        return None
+
+
 _CMC_CANISTER_ID = "rkp4c-7iaaa-aaaaa-aaaca-cai"
 
 

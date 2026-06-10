@@ -63,6 +63,7 @@ from cycles import (
     _status_cycles,
     _status_freezing,
     _ic_run_status,
+    _treasury_icp_e8s_gen,
 )
 from helpers import (
     ANONYMOUS,
@@ -2114,14 +2115,19 @@ def get_cycles() -> Async[text]:
             pool_out.append(prow)
         pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
 
+        icp_e8s = yield from _treasury_icp_e8s_gen()
+        treasury_obj = {
+            "balance": treasury,
+            "reserve": int(s.treasury_reserve or 0),
+            "spendable": max(0, treasury - int(s.treasury_reserve or 0)),
+            "autopilot": bool(s.cycles_autopilot),
+            "interval_secs": int(s.cycles_check_interval_secs or 0),
+        }
+        if icp_e8s is not None:
+            treasury_obj["icp_e8s"] = icp_e8s
+
         result = json.dumps({
-            "treasury": {
-                "balance": treasury,
-                "reserve": int(s.treasury_reserve or 0),
-                "spendable": max(0, treasury - int(s.treasury_reserve or 0)),
-                "autopilot": bool(s.cycles_autopilot),
-                "interval_secs": int(s.cycles_check_interval_secs or 0),
-            },
+            "treasury": treasury_obj,
             "totals": {"canisters": len(canisters_out), **counts},
             "canisters": canisters_out,
             "pool": {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getEvents, getTree, shortPrincipal } from '$lib/api';
+  import { getEvents, getTree, shortPrincipal, formatCycles } from '$lib/api';
   import type { OrchestrationEvent, Tree } from '$lib/api';
 
   let events = $state<OrchestrationEvent[]>([]);
@@ -66,10 +66,7 @@
   }
   function fmt(n?: number): string {
     if (n === undefined || n === null) return '—';
-    const abs = Math.abs(n);
-    if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-    if (abs >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-    return String(n);
+    return formatCycles(n);
   }
 
   function targetLabel(e: OrchestrationEvent): string {
