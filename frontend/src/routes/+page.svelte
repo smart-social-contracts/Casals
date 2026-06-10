@@ -1094,10 +1094,10 @@
                           </div>
 
                           {#if expandedCanisters[canister.canister_id]}
+                            {@const cycles = canisterCycles[canister.canister_id]}
+                            {@const deploy = canisterDeployment[canister.canister_id]}
+                            {@const balance = balanceLabel(cycles)}
                             <div class="mt-3 pt-3 border-t border-[var(--color-border-primary)] space-y-3">
-                              {@const cycles = canisterCycles[canister.canister_id]}
-                              {@const deploy = canisterDeployment[canister.canister_id]}
-                              {@const balance = balanceLabel(cycles)}
                               <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary-500">
                                 <span>runtime: <span class="font-medium text-primary-800">{runtimeLabel(cycles?.runtime_status)}</span></span>
                                 <span>balance:
