@@ -1,0 +1,89 @@
+# CLI end-to-end integration tests for scripts/casals.py.
+#
+# Spins up a local IC replica with icp-cli, builds + deploys the Casals
+# backend and the file-registry, then exercises the full CLI surface:
+#
+#   Part 1 — infrastructure tests (synthetic EMPTY_WASM, fast)
+#     • status / tree / events / wasms / pool / cycles — field-by-field shape
+#     • cross-command consistency (status counts == tree traversal)
+#     • output format (pretty JSON, 2-space indent, empty stderr on success)
+#     • exhaustive error paths (bad file, wrong CWD, argparse, abort mid-deploy)
+#     • flag threading (-e / --env / --identity)
+#
+#   Part 2 — real template orchestra (seed/templates/)
+#     • seed Basilisk / Rust / Motoko hello-world WASMs into the file-registry
+#     • deploy a 3-backend orchestra via `casals sheet deploy`
+#     • verify on-chain module hashes per the management canister
+#     • lifecycle: idempotency, upgrade, add/retire/reuse, pool arithmetic
+#     • events hash-chain integrity after all mutations
+#
+#   Part 3 — full demo orchestra (seed/sheets/demo.json)
+#     • seed ALL templates including the certified-assets frontend
+#     • deploy the demo sheet (6 canisters: 3 backends + 3 frontends)
+#     • verify on-chain hashes for every canister
+#     • verify assets_uploaded events and /index.html served for each frontend
+#     • idempotency of the full demo deploy
+
+name: CLI end-to-end
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Pass -v to pytest"
+        type: boolean
+        default: true
+
+jobs:
+  cli-e2e:
+    name: CLI e2e (local replica)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # file_registry/ is a (public) submodule; conftest builds + deploys it.
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli and ic-wasm
+        run: npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Show toolchain versions
+        run: |
+          icp --version   || true
+          python3 -m basilisk --version || true
+          pytest --version
+
+      # conftest.py starts the local replica, builds the Basilisk backend WASM
+      # (casals_backend + ic_file_registry) and deploys them.  The replica is
+      # stopped during teardown.  Part 2 / Part 3 of the test suite top up the
+      # treasury and upload real template WASMs from seed/templates/.
+      - name: Run CLI e2e tests
+        env:
+          # The registry fixture tops up with this amount; the cli-e2e fixtures
+          # add extra top-ups on top of this for the larger orchestras.
+          CASALS_TOPUP: "50t"
+        run: |
+          pytest tests/test_cli_e2e.py \
+            ${{ inputs.verbose == true && '-v' || '' }} \
+            --tb=short \
+            -p no:randomly
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop || true
