@@ -118,9 +118,11 @@ class TestReadCommands:
         _, rc = _cli("pool")
         assert rc == 0
 
-    def test_pool_returns_list(self, canister):
+    def test_pool_returns_report(self, canister):
         data, _ = _cli("pool")
-        assert isinstance(data, list)
+        assert isinstance(data, dict)
+        assert "canisters" in data
+        assert isinstance(data["canisters"], list)
 
     def test_sheet_get_exits_0(self, canister):
         _, rc = _cli("sheet", "get")

@@ -112,11 +112,45 @@ def call_canister(method: str, args: str = None):
     return _parse(_icp(cmd).stdout)
 
 
+def _local_network_healthy() -> bool:
+    """True when the local replica responds to icp network ping."""
+    result = _icp(["network", "ping", "local"], check=False, timeout=30)
+    return result.returncode == 0 and "healthy" in result.stdout
+
+
+def _ensure_local_network(max_wait_secs: int = 120) -> None:
+    """Start the local replica if needed and wait until it is healthy."""
+    if _local_network_healthy():
+        return
+
+    start = _icp(["network", "start", "-d"], check=False, timeout=300)
+    combined = (start.stdout or "") + (start.stderr or "")
+    if start.returncode != 0 and not _local_network_healthy():
+        already = any(
+            s in combined.lower()
+            for s in ("already running", "network is already", "port 8000")
+        )
+        if not already:
+            raise RuntimeError(
+                f"icp network start failed (exit {start.returncode}):\n"
+                f"stdout: {start.stdout[-800:]}\n"
+                f"stderr: {start.stderr[-800:]}"
+            )
+
+    deadline = time.time() + max_wait_secs
+    while time.time() < deadline:
+        if _local_network_healthy():
+            return
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"local IC network did not become healthy within {max_wait_secs}s"
+    )
+
+
 @pytest.fixture(scope="session")
 def replica():
-    # Tolerant start: a network may already be running locally / in CI.
-    _icp(["network", "start", "-d"], cwd=REPO_ROOT, check=False, timeout=300)
-    time.sleep(3)
+    _ensure_local_network()
     yield "local"
     _icp(["network", "stop"], cwd=REPO_ROOT, check=False)
 
@@ -143,7 +177,7 @@ def canister(replica):
     wasm = _build_basilisk(REPO_ROOT, CANISTER_NAME, "casals_backend.did")
     assert os.path.exists(wasm), wasm
     # Deploy just the backend (skip the frontend asset build in CI).
-    _icp(["deploy", CANISTER_NAME], timeout=600)
+    _icp(["deploy", CANISTER_NAME, "-y"], timeout=600)
     yield CANISTER_NAME
 
 

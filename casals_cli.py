@@ -112,16 +112,23 @@ def _candid_text_arg(json_str: str) -> str:
     return f'("{escaped}")'
 
 
-def call(canister: str, method: str, args, payload: str):
-    """Invoke a canister method with a JSON payload."""
+def call(canister: str, method: str, args, payload: str | None):
+    """Invoke a canister method.
+
+    ``payload=None`` for zero-arg endpoints (Candid ``()``). Otherwise ``payload``
+    is JSON encoded as the single ``text`` argument.
+    """
     cmd = ["canister", "call", canister, method]
+    cmd += _base_flags(args)
+    if payload is None:
+        cmd.append("()")
+        return _parse(_icp(cmd, args).stdout)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".candid", delete=False, encoding="utf-8"
     )
     tmp.write(_candid_text_arg(payload))
     tmp.close()
     cmd += ["--args-file", tmp.name, "--args-format", "candid"]
-    cmd += _base_flags(args)
     try:
         return _parse(_icp(cmd, args).stdout)
     finally:
@@ -140,11 +147,11 @@ def _load_sheet_file(path: str) -> dict:
 # ── command handlers ─────────────────────────────────────────────────────────
 
 def cmd_status(args):
-    _out(call(CASALS, "get_status", args, "{}"))
+    _out(call(CASALS, "get_status", args, None))
 
 
 def cmd_tree(args):
-    _out(call(CASALS, "get_tree", args, "{}"))
+    _out(call(CASALS, "get_tree", args, None))
 
 
 def cmd_events(args):
@@ -156,15 +163,15 @@ def cmd_wasms(args):
 
 
 def cmd_cycles(args):
-    _out(call(CASALS, "get_cycles", args, "{}"))
+    _out(call(CASALS, "get_cycles", args, None))
 
 
 def cmd_pool(args):
-    _out(call(CASALS, "list_pool", args, "{}"))
+    _out(call(CASALS, "list_pool", args, None))
 
 
 def cmd_sheet_get(args):
-    _out(call(CASALS, "get_sheet", args, "{}"))
+    _out(call(CASALS, "get_sheet", args, None))
 
 
 def cmd_sheet_set(args):
@@ -183,7 +190,7 @@ def cmd_sheet_deploy(args):
 
 
 def cmd_arrangement_list(args):
-    _out(call(CASALS, "list_arrangements", args, "{}"))
+    _out(call(CASALS, "list_arrangements", args, None))
 
 
 def cmd_arrangement_get(args):

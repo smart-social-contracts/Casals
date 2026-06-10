@@ -302,7 +302,7 @@ class TestCall:
     @patch("subprocess.run")
     def test_invokes_icp_canister_call(self, mock_run):
         mock_run.return_value = _fake_proc(stdout=_encode_candid({"ok": True}))
-        result = cli.call("casals_backend", "get_status", _make_args(), "{}")
+        result = cli.call("casals_backend", "get_status", _make_args(), None)
         assert result == {"ok": True}
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "icp"
@@ -314,7 +314,7 @@ class TestCall:
     @patch("subprocess.run")
     def test_env_flag_appended(self, mock_run):
         mock_run.return_value = _fake_proc(stdout=_encode_candid({"ok": True}))
-        cli.call("casals_backend", "get_status", _make_args(env="ic"), "{}")
+        cli.call("casals_backend", "get_status", _make_args(env="ic"), None)
         cmd = mock_run.call_args[0][0]
         idx = cmd.index("-e")
         assert cmd[idx + 1] == "ic"
@@ -322,7 +322,7 @@ class TestCall:
     @patch("subprocess.run")
     def test_identity_flag_appended_when_set(self, mock_run):
         mock_run.return_value = _fake_proc(stdout=_encode_candid({"ok": True}))
-        cli.call("casals_backend", "get_status", _make_args(identity="casals"), "{}")
+        cli.call("casals_backend", "get_status", _make_args(identity="casals"), None)
         cmd = mock_run.call_args[0][0]
         idx = cmd.index("--identity")
         assert cmd[idx + 1] == "casals"
@@ -330,9 +330,18 @@ class TestCall:
     @patch("subprocess.run")
     def test_identity_flag_absent_when_none(self, mock_run):
         mock_run.return_value = _fake_proc(stdout=_encode_candid({"ok": True}))
-        cli.call("casals_backend", "get_status", _make_args(), "{}")
+        cli.call("casals_backend", "get_status", _make_args(), None)
         cmd = mock_run.call_args[0][0]
         assert "--identity" not in cmd
+        assert cmd[-1] == "()"
+
+    @patch("subprocess.run")
+    def test_no_arg_skips_args_file(self, mock_run):
+        mock_run.return_value = _fake_proc(stdout=_encode_candid({"ok": True}))
+        cli.call("casals_backend", "get_sheet", _make_args(), None)
+        cmd = mock_run.call_args[0][0]
+        assert "--args-file" not in cmd
+        assert cmd[-1] == "()"
 
     @patch("subprocess.run")
     def test_uses_args_file_for_payload(self, mock_run):
@@ -372,7 +381,7 @@ class TestCall:
             return _fake_proc(stdout=_encode_candid({"ok": True}))
 
         mock_run.side_effect = side_effect
-        cli.call("casals_backend", "get_status", _make_args(), "{}")
+        cli.call("casals_backend", "set_sheet", _make_args(), '{"name": "demo"}')
         assert created_paths, "no --args-file arg found"
         assert not os.path.exists(created_paths[0]), "temp file not cleaned up"
 
@@ -387,14 +396,14 @@ class TestCall:
 
         mock_run.side_effect = side_effect
         with pytest.raises(RuntimeError):
-            cli.call("casals_backend", "get_status", _make_args(), "{}")
+            cli.call("casals_backend", "set_sheet", _make_args(), '{"name": "demo"}')
         assert created_paths and not os.path.exists(created_paths[0])
 
     @patch("subprocess.run")
     def test_nonzero_exit_raises_runtime_error(self, mock_run):
         mock_run.return_value = _fake_proc(returncode=1, stderr="network error")
         with pytest.raises(RuntimeError, match="failed"):
-            cli.call("casals_backend", "get_status", _make_args(), "{}")
+            cli.call("casals_backend", "get_status", _make_args(), None)
 
     @patch("subprocess.run")
     def test_large_json_payload(self, mock_run):
