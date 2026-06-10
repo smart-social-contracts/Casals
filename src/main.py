@@ -65,6 +65,7 @@ from cycles import (
     _ic_run_status,
     _sync_treasury_baseline,
     _treasury_ledger_account_hex,
+    treasury_deposit_fields,
     _treasury_watch_begin_gen,
     _treasury_watch_end_gen,
     _treasury_icp_e8s_gen,
@@ -326,6 +327,7 @@ def casals_metadata() -> text:
         "fx_error": (s.fx_error or ""),
         "fx_currencies": FX_SUPPORTED_CURRENCIES,
         "canister_type": "orchestrator",
+        **treasury_deposit_fields(),
     })
 
 
@@ -2136,8 +2138,7 @@ def get_cycles() -> Async[text]:
         }
         if icp_e8s is not None:
             treasury_obj["icp_e8s"] = icp_e8s
-        treasury_obj["backend_canister_id"] = str(ic.id())
-        treasury_obj["ledger_account_id"] = _treasury_ledger_account_hex()
+        treasury_obj.update(treasury_deposit_fields())
 
         result = json.dumps({
             "treasury": treasury_obj,
@@ -2173,13 +2174,28 @@ def get_cycles_cached() -> text:
     Reads from stable memory (CyclesSnapshot entity) so it survives upgrades.
     Falls back to the in-memory volatile cache (_cycles_cache) if the entity
     is not yet populated. Returns {} if nothing is stored yet."""
+    raw = ""
     try:
         snap = CyclesSnapshot["singleton"]
         if snap and snap.snapshot_json:
-            return snap.snapshot_json
+            raw = snap.snapshot_json
     except Exception:
         pass
-    return _cycles_mod._cycles_cache or "{}"
+    if not raw:
+        raw = _cycles_mod._cycles_cache or ""
+    if not raw:
+        return json.dumps({"treasury": treasury_deposit_fields()})
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return raw
+        treasury = data.setdefault("treasury", {})
+        if isinstance(treasury, dict):
+            for k, v in treasury_deposit_fields().items():
+                treasury.setdefault(k, v)
+        return json.dumps(data)
+    except Exception:
+        return raw
 
 
 @query

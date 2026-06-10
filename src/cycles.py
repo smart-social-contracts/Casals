@@ -399,6 +399,14 @@ def _treasury_ledger_account_hex() -> str:
     return _ledger_account_bytes(ic.id().to_account_id()).hex()
 
 
+def treasury_deposit_fields() -> dict:
+    """Static treasury funding targets (available from query endpoints)."""
+    return {
+        "backend_canister_id": str(ic.id()),
+        "ledger_account_id": _treasury_ledger_account_hex(),
+    }
+
+
 def _sync_treasury_baseline(cycles=None, icp_e8s=None) -> None:
     """Refresh stored baselines after an internal treasury change (e.g. destroy)."""
     s = _settings()

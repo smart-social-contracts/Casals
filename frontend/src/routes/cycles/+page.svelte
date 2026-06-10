@@ -10,8 +10,10 @@
     formatIcp,
     cycleStatusBadge,
     shortPrincipal,
+    casalsMetadata,
+    backendCanisterId,
   } from '$lib/api';
-  import type { CyclesReport, CanisterCycles, CycleHistory, PoolCanisterCycles } from '$lib/api';
+  import type { CyclesReport, CanisterCycles, CycleHistory, PoolCanisterCycles, Metadata } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
@@ -29,6 +31,19 @@
   let busy = $state('');
   let showDeposit = $state(false);
   let copiedField = $state('');
+  let meta = $state<Metadata | null>(null);
+
+  const depositBackendId = $derived(
+    report?.treasury?.backend_canister_id
+      ?? meta?.backend_canister_id
+      ?? backendCanisterId()
+      ?? '',
+  );
+  const depositLedgerId = $derived(
+    report?.treasury?.ledger_account_id
+      ?? meta?.ledger_account_id
+      ?? '',
+  );
 
   // ── chart controls ──
   type Scope = 'total' | 'section' | 'stand' | 'canister';
@@ -65,7 +80,12 @@
       // Phase 1: show cached snapshot + history immediately (both fast).
       // Pass the max window (1 month) so the backend pre-filters samples.
       const MAX_WINDOW_SECS = 2592000; // 1 month
-      const [cached, h] = await Promise.all([getCyclesCached(), getCycleHistory({ window_secs: MAX_WINDOW_SECS })]);
+      const [cached, h, md] = await Promise.all([
+        getCyclesCached(),
+        getCycleHistory({ window_secs: MAX_WINDOW_SECS }),
+        casalsMetadata().catch(() => null),
+      ]);
+      meta = md;
       if (cached?.treasury) {
         report = cached;
         cachedAt = cached.cached_at ?? null;
@@ -495,15 +515,15 @@
               Withdraw ICP from your exchange to this <strong>ledger account ID</strong>
               (not the canister principal).{#if report.treasury.icp_autoconvert} Casals auto-converts ledger ICP to cycles.{/if}
             </p>
-            {#if report.treasury.ledger_account_id}
+            {#if depositLedgerId}
               <div class="flex items-center gap-2">
-                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{report.treasury.ledger_account_id}</code>
-                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('account ID', report.treasury.ledger_account_id!)}>
+                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{depositLedgerId}</code>
+                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('account ID', depositLedgerId)}>
                   {copiedField === 'account ID' ? 'Copied' : 'Copy'}
                 </button>
               </div>
             {:else}
-              <p class="text-xs text-primary-400">Ledger account unavailable — refresh the page.</p>
+              <p class="text-xs text-primary-400">Ledger account unavailable — try again shortly.</p>
             {/if}
           </section>
 
@@ -512,17 +532,17 @@
             <p class="text-primary-600">
               Deposit cycles directly onto the backend canister from your CLI identity:
             </p>
-            {#if report.treasury.backend_canister_id}
+            {#if depositBackendId}
               <div class="flex items-center gap-2">
-                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{report.treasury.backend_canister_id}</code>
-                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('canister ID', report.treasury.backend_canister_id!)}>
+                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{depositBackendId}</code>
+                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('canister ID', depositBackendId)}>
                   {copiedField === 'canister ID' ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <pre class="text-xs font-mono bg-primary-950 text-green-400 rounded-lg p-3 overflow-x-auto">icp canister deposit-cycles {report.treasury.backend_canister_id} --amount 0.5 --network ic</pre>
+              <pre class="text-xs font-mono bg-primary-950 text-green-400 rounded-lg p-3 overflow-x-auto">icp canister deposit-cycles {depositBackendId} --amount 0.5 --network ic</pre>
               <p class="text-xs text-primary-400">Converts ICP from your identity and deposits cycles. Or use <code class="font-mono">--amount 1t</code> if your CLI accepts cycle units.</p>
             {:else}
-              <p class="text-xs text-primary-400">Canister id unavailable — refresh the page.</p>
+              <p class="text-xs text-primary-400">Canister id unavailable — try again shortly.</p>
             {/if}
           </section>
         </div>

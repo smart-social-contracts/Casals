@@ -85,6 +85,10 @@ export interface Metadata {
   fx_error?: string;
   fx_currencies?: string[];
   canister_type: string;
+  /** Backend canister id — target for direct cycle deposits. */
+  backend_canister_id?: string;
+  /** 64-char hex ICP ledger account id for exchange withdrawals. */
+  ledger_account_id?: string;
 }
 
 export interface SectionSummary {
@@ -336,6 +340,11 @@ function _backendCanisterId(): string {
   const fromBuild = import.meta.env.VITE_CANISTER_ID as string | undefined;
   if (fromBuild) return fromBuild;
   return _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] ?? '';
+}
+
+/** Backend canister id for this frontend deployment (from ic_env cookie or build). */
+export function backendCanisterId(): string {
+  return _backendCanisterId();
 }
 
 function _makeActorWithAgent(agent: HttpAgent): any {

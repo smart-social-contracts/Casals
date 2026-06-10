@@ -136,10 +136,12 @@ class TestCyclesManagement:
         for k in (
             "default_min_cycles", "default_topup_cycles", "treasury_reserve",
             "cycles_autopilot", "cycles_check_interval_secs", "cycles_icp_autoconvert",
+            "backend_canister_id", "ledger_account_id",
         ):
             assert k in md, md
         assert md["cycles_autopilot"] is True
         assert md["cycles_icp_autoconvert"] is True
+        assert len(md.get("ledger_account_id") or "") == 64
 
     def test_set_cycle_settings_roundtrip(self, canister):
         _ok("set_settings", {
