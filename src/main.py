@@ -45,7 +45,7 @@ from auth import (
 )
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
 from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
-from audit import _append_event, _last_event
+from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
 from cycles import (
     FX_MIN_REFRESH_SECS,
@@ -62,6 +62,7 @@ from cycles import (
     _record_cycle_sample,
     _status_cycles,
     _status_freezing,
+    _ic_run_status,
 )
 from helpers import (
     ANONYMOUS,
@@ -450,6 +451,19 @@ def get_events(args: text) -> text:
         }
         for e in evs
     ])
+
+
+@query
+def get_canister_deployment(args: text) -> text:
+    """Args (JSON): {"canister_id": str}. Latest install/upgrade/reinstall."""
+    try:
+        params = json.loads(args) if args else {}
+    except (json.JSONDecodeError, ValueError):
+        params = {}
+    cid = (params.get("canister_id") or "").strip()
+    if not cid:
+        return json.dumps(None)
+    return json.dumps(find_canister_deployment(cid))
 
 
 @query
@@ -2050,7 +2064,8 @@ def get_cycles() -> Async[text]:
                 frz = _status_freezing(status)
                 label = cycles_status(bal, frz, min_c)
                 row.update({"cycles": bal, "freezing_threshold": frz,
-                            "headroom": bal - frz, "status": label})
+                            "headroom": bal - frz, "status": label,
+                            "runtime_status": _ic_run_status(status)})
                 counts[label] = counts.get(label, 0) + 1
                 bal_by_cid[st.canister_id] = bal
                 if do_sample:

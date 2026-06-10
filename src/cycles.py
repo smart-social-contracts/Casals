@@ -74,6 +74,21 @@ def _status_freezing(status) -> int:
     return int(fz or 0)
 
 
+def _ic_run_status(status) -> str:
+    """Parse IC management canister_status.status to running/stopped/stopping."""
+    st = status.get("status") if isinstance(status, dict) else getattr(status, "status", None)
+    if st is None:
+        return "unknown"
+    if isinstance(st, dict):
+        for key in ("running", "stopped", "stopping"):
+            if key in st:
+                return key
+    for key in ("running", "stopped", "stopping"):
+        if hasattr(st, key):
+            return key
+    return "unknown"
+
+
 def _policy_for(st: Canister, s=None):
     """Effective (min_cycles, topup_cycles) for a canister, inheriting up the
     tree."""

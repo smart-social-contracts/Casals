@@ -129,6 +129,8 @@ export interface CycleOpsInfo {
 
 export type CycleStatus = 'ok' | 'low' | 'critical' | 'frozen' | 'error';
 
+export type IcRunStatus = 'running' | 'stopped' | 'stopping' | 'unknown';
+
 export interface CanisterCycles {
   section: string;
   stand: string;
@@ -141,7 +143,14 @@ export interface CanisterCycles {
   freezing_threshold?: number;
   headroom?: number;
   status: CycleStatus;
+  runtime_status?: IcRunStatus;
   error?: string;
+}
+
+export interface CanisterDeployment {
+  at: number; // unix seconds
+  kind: 'installed' | 'upgraded' | 'reinstalled';
+  wasm_key: string;
 }
 
 export interface Treasury {
@@ -395,6 +404,15 @@ export async function listAuthorizedWasms(section?: string): Promise<AuthorizedW
 
 export async function getEvents(opts: { canister_id?: string; btype?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
   return _parseQuery<OrchestrationEvent[]>(await (await _actor()).get_events(JSON.stringify(opts)));
+}
+
+export async function getCanisterDeployment(canisterId: string): Promise<CanisterDeployment | null> {
+  const raw = await (await _actor()).get_canister_deployment(JSON.stringify({ canister_id: canisterId }));
+  const result = JSON.parse(raw);
+  if (result && typeof result === 'object' && result.error) {
+    throw new Error(result.error);
+  }
+  return result as CanisterDeployment | null;
 }
 
 export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
@@ -791,6 +809,20 @@ export function cycleStatusBadge(status: CycleStatus): string {
     default:
       return 'badge-neutral';
   }
+}
+
+/** True when the canister's cycle balance is below its policy threshold. */
+export function cyclesIsLow(status: CycleStatus | undefined): boolean | null {
+  if (!status) return null;
+  if (status === 'ok') return false;
+  if (status === 'error') return null;
+  return true;
+}
+
+/** Render an ISO-8601 timestamp from unix seconds. */
+export function formatIsoTs(secs: number | undefined | null): string {
+  if (!secs) return '';
+  return new Date(secs * 1000).toISOString();
 }
 
 const MAINNET_CANDID_UI = 'a4gq6-oaaaa-aaaab-qaa4q-cai';

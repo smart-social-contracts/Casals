@@ -16,12 +16,17 @@
     setLogVisibility,
     getEvents,
     getCanisterLogs,
+    getCanisterDeployment,
+    getCyclesCached,
     listAuthorizedWasms,
     canisterBrowse,
     canisterExec,
     shortHash,
     shortPrincipal,
     canisterLink,
+    formatCycles,
+    formatIsoTs,
+    cyclesIsLow,
     renameSection,
     renameStand,
     renameCanister,
@@ -33,6 +38,7 @@
   import type {
     Tree, Status, Section, Stand, Canister, UpdateResult,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
+    CanisterCycles, CanisterDeployment, IcRunStatus,
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
@@ -68,6 +74,9 @@
   let canisterLogs = $state<Record<string, CanisterLogRecord[]>>({});
   let canisterLogErr = $state<Record<string, string>>({});
   let canisterLoading = $state<Record<string, boolean>>({});
+  let canisterCycles = $state<Record<string, CanisterCycles>>({});
+  let canisterDeployment = $state<Record<string, CanisterDeployment | null>>({});
+  let canisterDetailsErr = $state<Record<string, string>>({});
 
   // Basilisk introspection (only for canisters built with __basilisk_features__).
   let browseData = $state<Record<string, unknown>>({});
@@ -157,6 +166,7 @@
   async function load() {
     loading = true;
     error = '';
+    canisterCycles = {};
     try {
       [tree, status, catalog] = await Promise.all([
         getTree(),
@@ -231,7 +241,10 @@
     return [...fams];
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    ensureCyclesCache();
+  });
 
   function sectionOpen(name: string): boolean {
     // Auto-expand when a filter is active so matches are visible.
@@ -249,6 +262,32 @@
     expandedStands[key] = !standOpen(key);
   }
 
+  async function ensureCyclesCache() {
+    if (Object.keys(canisterCycles).length) return;
+    try {
+      const cached = await getCyclesCached();
+      if (!cached?.canisters) return;
+      const map: Record<string, CanisterCycles> = {};
+      for (const row of cached.canisters) map[row.canister_id] = row;
+      canisterCycles = map;
+    } catch {
+      /* cycles snapshot optional — details still show without it */
+    }
+  }
+
+  function runtimeLabel(status: IcRunStatus | undefined): string {
+    if (!status || status === 'unknown') return '—';
+    return status;
+  }
+
+  function balanceLabel(row: CanisterCycles | undefined): { text: string; low: boolean | null } {
+    if (!row) return { text: '—', low: null };
+    const low = cyclesIsLow(row.status);
+    if (low === false) return { text: 'ok', low: false };
+    if (low === true) return { text: 'low balance', low: true };
+    return { text: row.error ? 'unknown' : '—', low: null };
+  }
+
   async function toggleCanister(canister: Canister) {
     const cid = canister.canister_id;
     if (!cid) return;
@@ -260,20 +299,27 @@
   async function loadCanisterDetails(cid: string) {
     canisterLoading[cid] = true;
     canisterLogErr[cid] = '';
+    canisterDetailsErr[cid] = '';
     try {
-      // The audit log lives in Casals; the runtime logs are fetched straight
-      // from the management canister (only works if log_visibility is public).
-      const [evs, logs] = await Promise.all([
+      // The audit log lives in Casals; runtime logs are fetched straight from
+      // the management canister (only works if log_visibility is public).
+      const [evs, logs, deployment] = await Promise.all([
         getEvents({ canister_id: cid, take: 8 }),
         getCanisterLogs(cid).catch((e: any) => {
           canisterLogErr[cid] = e?.message ?? String(e);
           return [] as CanisterLogRecord[];
         }),
+        getCanisterDeployment(cid).catch((e: any) => {
+          canisterDetailsErr[cid] = e?.message ?? String(e);
+          return null;
+        }),
       ]);
       canisterEvents[cid] = evs;
       canisterLogs[cid] = logs;
+      canisterDeployment[cid] = deployment;
+      await ensureCyclesCache();
     } catch (e: any) {
-      canisterLogErr[cid] = e?.message ?? String(e);
+      canisterDetailsErr[cid] = e?.message ?? String(e);
     } finally {
       canisterLoading[cid] = false;
     }
@@ -1049,7 +1095,25 @@
 
                           {#if expandedCanisters[canister.canister_id]}
                             <div class="mt-3 pt-3 border-t border-[var(--color-border-primary)] space-y-3">
+                              {@const cycles = canisterCycles[canister.canister_id]}
+                              {@const deploy = canisterDeployment[canister.canister_id]}
+                              {@const balance = balanceLabel(cycles)}
                               <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary-500">
+                                <span>runtime: <span class="font-medium text-primary-800">{runtimeLabel(cycles?.runtime_status)}</span></span>
+                                <span>balance:
+                                  <span class="font-medium {balance.low === true ? 'text-amber-700' : balance.low === false ? 'text-emerald-700' : 'text-primary-800'}">
+                                    {balance.text}{#if cycles?.cycles !== undefined}<span class="font-mono font-normal text-primary-400"> ({formatCycles(cycles.cycles)})</span>{/if}
+                                  </span>
+                                </span>
+                                <span>last deploy:
+                                  {#if deploy?.at}
+                                    <span class="font-mono text-primary-800">{formatIsoTs(deploy.at)}</span>
+                                    <span class="text-primary-400"> · </span>
+                                    <span class="font-medium text-primary-800">{deploy.kind}</span>
+                                  {:else}
+                                    <span class="font-medium text-primary-800">—</span>
+                                  {/if}
+                                </span>
                                 <span>status: <span class="font-medium text-primary-800">{canister.status || '—'}</span></span>
                                 <span>wasm: <span class="font-mono">{canister.wasm_key || '—'}</span></span>
                                 {#if canister.wasm_hash}
@@ -1060,6 +1124,11 @@
                                 {/if}
                                 <span class="font-mono" title={canister.subnet || 'default (conductor subnet)'}>subnet {canister.subnet ? shortId(canister.subnet) : '— default'}</span>
                               </div>
+                              {#if canisterDetailsErr[canister.canister_id]}
+                                <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                                  Couldn't load deployment info: {canisterDetailsErr[canister.canister_id]}
+                                </div>
+                              {/if}
 
                               {#if canisterLoading[canister.canister_id]}
                                 <div class="skeleton h-4 w-48"></div>

@@ -69,6 +69,38 @@ def test_cycles_status_labels():
     assert util.cycles_status(400, 500, 1_000) == util.CYCLES_FROZEN        # headroom negative
 
 
+def test_ic_run_status_parses_variant():
+    import cycles as cycles_mod
+    assert cycles_mod._ic_run_status({"status": {"running": None}}) == "running"
+    assert cycles_mod._ic_run_status({"status": {"stopped": None}}) == "stopped"
+    assert cycles_mod._ic_run_status({"status": {"stopping": None}}) == "stopping"
+    assert cycles_mod._ic_run_status({}) == "unknown"
+
+
+def test_deployment_from_events_picks_latest():
+    import audit
+    ev_old = types.SimpleNamespace(
+        canister_id="aaaaa-aa", btype="canister_created",
+        timestamp_secs=100, payload_json='{"wasm_key":"w@1"}',
+    )
+    ev_new = types.SimpleNamespace(
+        canister_id="aaaaa-aa", btype="upgraded",
+        timestamp_secs=200, payload_json='{"wasm_key":"w@2"}',
+    )
+    found = audit.deployment_from_events("aaaaa-aa", [ev_new, ev_old])
+    assert found == {"at": 200, "kind": "upgraded", "wasm_key": "w@2"}
+
+
+def test_deployment_from_events_reinstalled():
+    import audit
+    ev = types.SimpleNamespace(
+        canister_id="aaaaa-aa", btype="canister_reinstalled",
+        timestamp_secs=300, payload_json='{"wasm_key":"w@3"}',
+    )
+    found = audit.deployment_from_events("aaaaa-aa", [ev])
+    assert found == {"at": 300, "kind": "reinstalled", "wasm_key": "w@3"}
+
+
 def test_decide_topup_triggers_below_threshold():
     # Below threshold, treasury healthy => deposit the full top-up amount.
     assert util.decide_topup(

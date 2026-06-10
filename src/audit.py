@@ -12,6 +12,49 @@ from helpers import _caller, unwrap_call_result
 from models import OrchestrationEvent
 from util import audit_block_hash
 
+# Audit event types that represent a successful code deployment on a canister.
+DEPLOYMENT_EVENT_KINDS = {
+    "canister_created": "installed",
+    "upgraded": "upgraded",
+    "reinstalled": "reinstalled",
+    "canister_reinstalled": "reinstalled",
+}
+
+
+def deployment_from_events(canister_id: str, events) -> dict | None:
+    """Return the latest deployment record from a newest-first event list."""
+    for e in events:
+        if e.canister_id != canister_id or e.btype not in DEPLOYMENT_EVENT_KINDS:
+            continue
+        payload = json.loads(e.payload_json or "{}")
+        return {
+            "at": int(e.timestamp_secs or 0),
+            "kind": DEPLOYMENT_EVENT_KINDS[e.btype],
+            "wasm_key": payload.get("wasm_key") or "",
+        }
+    return None
+
+
+def find_canister_deployment(canister_id: str) -> dict | None:
+    """Scan the audit log for the most recent install/upgrade/reinstall."""
+    cid = (canister_id or "").strip()
+    if not cid:
+        return None
+    total = OrchestrationEvent.count()
+    if not total:
+        return None
+    max_oid = OrchestrationEvent.max_id()
+    batch = 64
+    oid = max_oid
+    while oid >= 1:
+        start = max(1, oid - batch + 1)
+        evs = OrchestrationEvent.load_some(start, oid - start + 1)
+        found = deployment_from_events(cid, reversed(evs))
+        if found:
+            return found
+        oid = start - 1
+    return None
+
 
 def _last_event():
     """Return the most-recent OrchestrationEvent (highest idx), or None."""
