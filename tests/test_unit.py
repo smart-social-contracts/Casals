@@ -108,6 +108,47 @@ def test_treasury_cycles_deposit_amount():
     assert cycles_mod.treasury_cycles_deposit_amount(510, 500, minted=0, spent=0, dust=20) == 0
 
 
+def test_resolve_flow_window():
+    import cycles as cycles_mod
+    now = 10_000_000
+    since, bucket = cycles_mod.resolve_flow_window("day", None, now=now)
+    assert bucket == 86400
+    assert since == now - 2592000
+    since_all, bucket_all = cycles_mod.resolve_flow_window("inception", None, now=now)
+    assert since_all == 0
+    assert bucket_all == 0
+
+
+def test_aggregate_treasury_flow():
+    import cycles as cycles_mod
+    now = 1_700_000_000
+    events = [
+        {"btype": "treasury_icp_deposit", "timestamp_secs": now - 7200,
+         "payload": {"amount_e8s": 500_000_000}},
+        {"btype": "cycles_icp_convert", "timestamp_secs": now - 7100,
+         "payload": {"icp_e8s": 499_990_000, "cycles": 8_000_000_000_000}},
+        {"btype": "treasury_cycles_deposit", "timestamp_secs": now - 3600,
+         "payload": {"amount": 200_000_000_000}},
+        {"btype": "cycles_topup", "timestamp_secs": now - 1800,
+         "payload": {"amount": 100_000_000_000}},
+    ]
+    buckets, totals, rate = cycles_mod.aggregate_treasury_flow(
+        events, since=now - 86400, bucket_secs=3600, now=now,
+    )
+    assert totals["deposited_icp_e8s"] == 500_000_000
+    assert totals["converted_cycles"] == 8_000_000_000_000
+    assert totals["deposited_cycles"] == 200_000_000_000
+    assert totals["consumed_cycles"] == 100_000_000_000
+    assert rate > 0
+    assert len(buckets) >= 2
+
+    inc_buckets, inc_totals, _ = cycles_mod.aggregate_treasury_flow(
+        events, since=0, bucket_secs=0, now=now,
+    )
+    assert len(inc_buckets) == 1
+    assert inc_totals["consumed_cycles"] == totals["consumed_cycles"]
+
+
 def test_deployment_from_events_picks_latest():
     import audit
     ev_old = types.SimpleNamespace(

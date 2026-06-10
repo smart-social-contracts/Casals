@@ -152,6 +152,7 @@ service : {
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;
   "get_cycle_history" : (text) -> (text) query;
+  "get_treasury_flow" : (text) -> (text) query;
   "top_up" : (text) -> (text);
   "convert_treasury_icp" : () -> (text);
   "reconcile" : () -> (text);

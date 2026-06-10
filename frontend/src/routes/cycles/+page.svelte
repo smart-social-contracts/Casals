@@ -4,16 +4,27 @@
     getCycles,
     getCyclesCached,
     getCycleHistory,
+    getTreasuryFlow,
     topUp,
     reconcile,
     formatCycles,
     formatIcp,
+    formatFiat,
     cycleStatusBadge,
     shortPrincipal,
     casalsMetadata,
     backendCanisterId,
   } from '$lib/api';
-  import type { CyclesReport, CanisterCycles, CycleHistory, PoolCanisterCycles, Metadata } from '$lib/api';
+  import type {
+    CyclesReport,
+    CanisterCycles,
+    CycleHistory,
+    TreasuryFlow,
+    TreasuryFlowPeriod,
+    TreasuryFlowBucket,
+    PoolCanisterCycles,
+    Metadata,
+  } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
@@ -21,9 +32,11 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
+  import { colorAt, type Series, type TreemapInput } from '$lib/charts';
 
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
+  let treasuryFlow = $state<TreasuryFlow | null>(null);
   let loading = $state(true);
   let refreshing = $state(false); // live refresh running in background
   let cachedAt = $state<number | null>(null);
@@ -60,11 +73,28 @@
   type Scope = 'total' | 'section' | 'stand' | 'canister';
   type WindowKey = '1h' | '1d' | '1w' | '1month';
   type Metric = 'burn' | 'balance';
+  type FlowUnit = 'tc' | 'icp' | 'usd';
   const WINDOWS: Record<WindowKey, number> = { '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000 };
   const WINDOW_LABELS: Record<WindowKey, string> = { '1h': '1 hour', '1d': '1 day', '1w': '1 week', '1month': '1 month' };
+  const FLOW_PERIODS: { key: TreasuryFlowPeriod; label: string }[] = [
+    { key: 'hour', label: 'Hour' },
+    { key: 'day', label: 'Day' },
+    { key: 'week', label: 'Week' },
+    { key: 'month', label: 'Month' },
+    { key: 'inception', label: 'Inception' },
+  ];
+  const FLOW_PERIOD_LABELS: Record<TreasuryFlowPeriod, string> = {
+    hour: 'per hour',
+    day: 'per day',
+    week: 'per week',
+    month: 'per month',
+    inception: 'since inception',
+  };
   let scope = $state<Scope>('total');
   let windowKey = $state<WindowKey>('1d');
   let metric = $state<Metric>('burn');
+  let flowPeriod = $state<TreasuryFlowPeriod>('day');
+  let flowUnit = $state<FlowUnit>('tc');
 
   function fmtAge(secs: number): string {
     const age = Math.floor(Date.now() / 1000) - secs;
@@ -91,12 +121,14 @@
       // Phase 1: show cached snapshot + history immediately (both fast).
       // Pass the max window (1 month) so the backend pre-filters samples.
       const MAX_WINDOW_SECS = 2592000; // 1 month
-      const [cached, h, md] = await Promise.all([
+      const [cached, h, flow, md] = await Promise.all([
         getCyclesCached(),
         getCycleHistory({ window_secs: MAX_WINDOW_SECS }),
+        getTreasuryFlow({ period: flowPeriod }).catch(() => null),
         casalsMetadata().catch(() => null),
       ]);
       meta = md;
+      treasuryFlow = flow;
       if (cached?.treasury) {
         report = cached;
         cachedAt = cached.cached_at ?? null;
@@ -126,6 +158,79 @@
   }
 
   onMount(load);
+
+  async function reloadTreasuryFlow(period: TreasuryFlowPeriod = flowPeriod) {
+    try {
+      treasuryFlow = await getTreasuryFlow({ period });
+    } catch {
+      treasuryFlow = null;
+    }
+  }
+
+  async function setFlowPeriod(period: TreasuryFlowPeriod) {
+    flowPeriod = period;
+    await reloadTreasuryFlow(period);
+  }
+
+  const icpCyclesPerE8s = $derived(
+    treasuryFlow?.icp_cycles_per_e8s && treasuryFlow.icp_cycles_per_e8s > 0
+      ? treasuryFlow.icp_cycles_per_e8s
+      : 16175,
+  );
+
+  function flowBucketCycles(b: TreasuryFlowBucket, kind: 'deposited' | 'converted' | 'consumed'): number {
+    const rate = icpCyclesPerE8s;
+    if (kind === 'deposited') return b.deposited_cycles + b.deposited_icp_e8s * rate;
+    if (kind === 'converted') return b.converted_cycles;
+    return b.consumed_cycles;
+  }
+
+  function flowValue(cycles: number): number {
+    if (flowUnit === 'tc') return cycles / 1e12;
+    if (flowUnit === 'icp') return cycles / icpCyclesPerE8s / 1e8;
+    const fx = treasuryFlow?.fx_micro_per_tcycle ?? meta?.fx_micro_per_tcycle ?? 0;
+    if (fx <= 0) return 0;
+    return (cycles / 1e12) * (fx / 1e6);
+  }
+
+  function formatFlowValue(v: number): string {
+    if (flowUnit === 'tc') return formatCycles(v * 1e12);
+    if (flowUnit === 'icp') return formatIcp(Math.round(v * 1e8));
+    const cur = treasuryFlow?.display_currency ?? meta?.display_currency ?? 'USD';
+    return formatFiat(v, cur);
+  }
+
+  const flowSeries = $derived.by<Series[]>(() => {
+    const buckets = treasuryFlow?.buckets ?? [];
+    if (!buckets.length) return [];
+    const kinds: { key: 'deposited' | 'converted' | 'consumed'; label: string; color: string }[] = [
+      { key: 'deposited', label: 'Deposited', color: '#10b981' },
+      { key: 'converted', label: 'Converted', color: '#6366f1' },
+      { key: 'consumed', label: 'Consumed', color: '#ef4444' },
+    ];
+    return kinds.map((k) => ({
+      name: k.label,
+      color: k.color,
+      points: buckets.map((b) => ({
+        t: b.ts,
+        v: flowValue(flowBucketCycles(b, k.key)),
+      })),
+    }));
+  });
+
+  const flowTotals = $derived.by(() => {
+    const t = treasuryFlow?.totals;
+    if (!t) return null;
+    return {
+      deposited: flowValue(t.deposited_cycles + t.deposited_icp_e8s * icpCyclesPerE8s),
+      converted: flowValue(t.converted_cycles),
+      consumed: flowValue(t.consumed_cycles),
+    };
+  });
+
+  const flowUnitLabel = $derived(
+    flowUnit === 'tc' ? 'TC' : flowUnit === 'icp' ? 'ICP' : (treasuryFlow?.display_currency ?? meta?.display_currency ?? 'USD'),
+  );
 
   const now = $derived(history?.now ?? Math.floor(Date.now() / 1000));
   const winSecs = $derived(WINDOWS[windowKey]);
@@ -375,6 +480,53 @@
         </div>
       </div>
       <LineChart series={lineSeries} format={formatCycles} />
+    </div>
+
+    <!-- Treasury flow -->
+    <div class="card p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-primary-900">Treasury flow</h2>
+          <p class="text-xs text-primary-400">
+            Deposited, converted, and consumed {FLOW_PERIOD_LABELS[flowPeriod]} ({flowUnitLabel}).
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2 self-start">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each FLOW_PERIODS as p (p.key)}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {flowPeriod === p.key ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => setFlowPeriod(p.key)}
+              >{p.label}</button>
+            {/each}
+          </div>
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each [['tc', 'TC'], ['icp', 'ICP'], ['usd', meta?.display_currency ?? treasuryFlow?.display_currency ?? 'USD']] as opt (opt[0])}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {flowUnit === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => (flowUnit = opt[0] as FlowUnit)}
+              >{opt[1]}</button>
+            {/each}
+          </div>
+        </div>
+      </div>
+      {#if flowTotals}
+        <div class="grid grid-cols-3 gap-3 mb-4 text-center">
+          <div class="rounded-lg bg-emerald-50 px-3 py-2">
+            <p class="text-[11px] text-emerald-700">Deposited</p>
+            <p class="text-sm font-semibold font-mono text-emerald-900">{formatFlowValue(flowTotals.deposited)}</p>
+          </div>
+          <div class="rounded-lg bg-indigo-50 px-3 py-2">
+            <p class="text-[11px] text-indigo-700">Converted</p>
+            <p class="text-sm font-semibold font-mono text-indigo-900">{formatFlowValue(flowTotals.converted)}</p>
+          </div>
+          <div class="rounded-lg bg-red-50 px-3 py-2">
+            <p class="text-[11px] text-red-700">Consumed</p>
+            <p class="text-sm font-semibold font-mono text-red-900">{formatFlowValue(flowTotals.consumed)}</p>
+          </div>
+        </div>
+      {/if}
+      <LineChart series={flowSeries} format={formatFlowValue} />
     </div>
 
     <!-- Treemap -->

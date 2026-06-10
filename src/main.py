@@ -67,7 +67,10 @@ from cycles import (
     _treasury_ledger_account_hex,
     treasury_deposit_fields,
     _treasury_watch_begin_gen,
-    _treasury_watch_end_gen,
+    _sync_treasury_baseline_gen,
+    aggregate_treasury_flow,
+    resolve_flow_window,
+    FLOW_EVENT_BTYPES,
     _treasury_icp_e8s_gen,
     icp_autoconvert_enabled,
 )
@@ -2043,7 +2046,7 @@ def get_cycles() -> Async[text]:
         list(Stand.instances())
         list(Canister.instances())
         s = _settings()
-        minted = yield from _treasury_watch_begin_gen()
+        yield from _treasury_watch_begin_gen()
         treasury = int(ic.canister_balance128())
         canisters_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
@@ -2161,7 +2164,7 @@ def get_cycles() -> Async[text]:
             snap.save()
         except Exception as snap_err:
             _log.error(f"get_cycles: could not persist snapshot: {snap_err}")
-        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
+        yield from _sync_treasury_baseline_gen()
         return result
     except Exception as e:
         _log.error(f"get_cycles error: {e}")
@@ -2249,6 +2252,83 @@ def get_cycle_history(args: text) -> text:
     return json.dumps({"now": now, "samples": rows})
 
 
+@query
+def get_treasury_flow(args: text) -> text:
+    """Treasury inflow/outflow aggregated over time for charting.
+
+    Args (JSON, optional): {
+      "period": "hour"|"day"|"week"|"month"|"inception" (default day),
+      "window_secs": int — override look-back (ignored for inception)
+    }
+
+    Returns buckets of deposited / converted / consumed amounts plus window
+    totals. Amounts are raw cycles and icp_e8s; the frontend picks TC / ICP /
+    display currency using casals_metadata fx fields.
+    """
+    try:
+        params = json.loads(args) if args else {}
+    except (json.JSONDecodeError, ValueError):
+        params = {}
+    period = (params.get("period") or "day").strip().lower()
+    if period not in _cycles_mod.FLOW_PERIOD_SPECS:
+        period = "day"
+    now = _now_secs()
+    since, bucket_secs = resolve_flow_window(
+        period, params.get("window_secs"), now=now,
+    )
+    s = _settings()
+    total = OrchestrationEvent.count()
+    if not total:
+        return json.dumps({
+            "now": now,
+            "period": period,
+            "since": since,
+            "bucket_secs": bucket_secs,
+            "totals": {
+                "deposited_cycles": 0,
+                "deposited_icp_e8s": 0,
+                "converted_cycles": 0,
+                "consumed_cycles": 0,
+            },
+            "buckets": [],
+            "icp_cycles_per_e8s": 0,
+            "display_currency": (s.display_currency or "USD"),
+            "fx_micro_per_tcycle": int(s.fx_micro_per_tcycle or 0),
+        })
+    fetch = min(total, 2000)
+    max_oid = OrchestrationEvent.max_id()
+    start_id = max(1, max_oid - fetch + 1)
+    raw_evs = OrchestrationEvent.load_some(start_id, fetch)
+    flow_btypes = set(FLOW_EVENT_BTYPES)
+    events = []
+    for e in raw_evs:
+        if e.btype not in flow_btypes:
+            continue
+        try:
+            payload = json.loads(e.payload_json or "{}")
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        events.append({
+            "btype": e.btype,
+            "timestamp_secs": int(e.timestamp_secs or 0),
+            "payload": payload,
+        })
+    buckets, totals, icp_rate = aggregate_treasury_flow(
+        events, since, bucket_secs, now=now,
+    )
+    return json.dumps({
+        "now": now,
+        "period": period,
+        "since": since,
+        "bucket_secs": bucket_secs,
+        "totals": totals,
+        "buckets": buckets,
+        "icp_cycles_per_e8s": icp_rate,
+        "display_currency": (s.display_currency or "USD"),
+        "fx_micro_per_tcycle": int(s.fx_micro_per_tcycle or 0),
+    })
+
+
 @update
 def top_up(args: text) -> Async[text]:
     """Manually deposit cycles into a canister or every canister in a stand.
@@ -2300,9 +2380,10 @@ def convert_treasury_icp() -> Async[text]:
     """Controller only. Convert all ledger ICP on this canister to cycles via the CMC."""
     try:
         _require_admin()
-        minted = yield from _treasury_watch_begin_gen(force_convert=True)
-        summary = {"converted": minted > 0, "cycles": minted} if minted > 0 else {"converted": False}
-        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
+        convert = yield from _treasury_watch_begin_gen(force_convert=True)
+        yield from _sync_treasury_baseline_gen()
+        cycles = int(convert.get("cycles") or 0) if convert.get("converted") else 0
+        summary = {"converted": cycles > 0, "cycles": cycles} if cycles > 0 else {"converted": False}
         if summary.get("converted"):
             return _ok(**summary)
         return _ok(converted=False)

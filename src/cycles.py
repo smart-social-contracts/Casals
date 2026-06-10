@@ -194,9 +194,9 @@ def _sampler_cb():
     """Cycle-sampler timer callback (generator; never raises). Also refreshes
     the fiat conversion factor on the same (slow) cadence."""
     try:
-        minted = yield from _treasury_watch_begin_gen()
-        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
+        yield from _treasury_watch_begin_gen()
         n = yield from _sample_all_gen(_now_secs())
+        yield from _sync_treasury_baseline_gen()
         _log.info(f"cycle sampler: recorded {n} samples")
     except Exception as e:  # pragma: no cover - defensive
         _log.error(f"cycle sampler failed: {e}")
@@ -237,7 +237,7 @@ def _reconcile_all_gen():
     """
     list(Canister.instances())
     s = _settings()
-    minted = yield from _treasury_watch_begin_gen()
+    yield from _treasury_watch_begin_gen()
     reserve = int(s.treasury_reserve or 0)
     treasury = int(ic.canister_balance128())
     batch_ts = _now_secs()
@@ -291,7 +291,13 @@ def _reconcile_all_gen():
         _prune_cycle_samples(batch_ts)
         global _last_sample_ts
         _last_sample_ts = batch_ts
-    yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=topped_total)
+    if topped_total > 0:
+        _append_event("treasury_spent", "", {
+            "amount": topped_total,
+            "balance": int(ic.canister_balance128()),
+            "reason": "topup",
+        })
+    yield from _sync_treasury_baseline_gen()
     return {"treasury": treasury, "topped_up": topped, "checked": len(results), "results": results}
 
 
@@ -361,8 +367,8 @@ ICP_LEDGER_CANISTER_ID = "ryjl3-tyaaa-aaaaa-aaaba-cai"
 MEMO_TOP_UP_CANISTER = 1_347_768_404
 ICP_TRANSFER_FEE_E8S = 10_000
 # Ignore balance jitter below these thresholds when detecting deposits.
-ICP_DEPOSIT_DUST_E8S = 1_000
-CYCLES_DEPOSIT_DUST = 10_000_000  # 10M cycles
+ICP_DEPOSIT_DUST_E8S = 10_000  # 0.0001 ICP
+CYCLES_DEPOSIT_DUST = 100_000_000_000  # 0.1 TC — avoids query-cost jitter false positives
 
 
 def icp_convert_amount(icp_e8s: int, fee: int = ICP_TRANSFER_FEE_E8S):
@@ -418,13 +424,24 @@ def _sync_treasury_baseline(cycles=None, icp_e8s=None) -> None:
 
 
 def _treasury_watch_begin_gen(force_convert: bool = False):
-    """Detect ICP deposits and optionally convert ledger ICP to cycles.
+    """Detect external treasury deposits and optionally convert ledger ICP.
 
-    Returns minted cycles (int) from any conversion performed in this step.
+    Deposits are detected once at the start of reconcile/sampler/get_cycles by
+    comparing the current balance to the stored baseline — not after internal
+    cycle burns from status queries (which caused false positives).
     """
     s = _settings()
+    prev_cycles = int(s.treasury_last_cycles or 0)
     prev_icp = int(s.treasury_last_icp_e8s or 0)
     initialized = bool(int(s.treasury_watch_initialized or 0))
+
+    cycles_before = int(ic.canister_balance128())
+    if initialized and cycles_before > prev_cycles + CYCLES_DEPOSIT_DUST:
+        _append_event("treasury_cycles_deposit", "", {
+            "amount": cycles_before - prev_cycles,
+            "balance": cycles_before,
+            "source": "external",
+        })
 
     icp_before = yield from _treasury_icp_e8s_gen()
     if icp_before is not None:
@@ -435,37 +452,134 @@ def _treasury_watch_begin_gen(force_convert: bool = False):
                 "balance_e8s": icp_before,
             })
 
-    convert = yield from _maybe_convert_icp_to_cycles_gen(force=force_convert)
-    if convert.get("converted"):
-        return int(convert.get("cycles") or 0)
-    return 0
+    return (yield from _maybe_convert_icp_to_cycles_gen(force=force_convert))
 
 
-def _treasury_watch_end_gen(minted_cycles: int = 0, spent_cycles: int = 0):
-    """Detect cycles deposits and persist the latest treasury baselines."""
+def _sync_treasury_baseline_gen():
+    """Persist the latest treasury balances after internal activity completes."""
     s = _settings()
-    prev_cycles = int(s.treasury_last_cycles or 0)
-    initialized = bool(int(s.treasury_watch_initialized or 0))
-
     cycles_now = int(ic.canister_balance128())
     icp_now = yield from _treasury_icp_e8s_gen()
     icp_now = int(icp_now or 0) if icp_now is not None else int(s.treasury_last_icp_e8s or 0)
-
-    if initialized:
-        amount = treasury_cycles_deposit_amount(
-            cycles_now, prev_cycles, minted=minted_cycles, spent=spent_cycles,
-        )
-        if amount > 0:
-            _append_event("treasury_cycles_deposit", "", {
-                "amount": amount,
-                "balance": cycles_now,
-            })
-    else:
-        initialized = True
-
     s.treasury_last_cycles = cycles_now
     s.treasury_last_icp_e8s = icp_now
     s.treasury_watch_initialized = 1
+
+
+# Treasury-flow chart: bucket width and default look-back per granularity.
+FLOW_PERIOD_SPECS = {
+    "hour": {"bucket_secs": 3600, "default_window": 86400},          # 24 × 1h
+    "day": {"bucket_secs": 86400, "default_window": 2592000},        # 30 × 1d
+    "week": {"bucket_secs": 604800, "default_window": 7257600},      # 12 × 1w
+    "month": {"bucket_secs": 2592000, "default_window": 31536000},   # 12 × 30d
+    "inception": {"bucket_secs": 0, "default_window": 0},           # all history
+}
+
+FLOW_EVENT_BTYPES = (
+    "treasury_cycles_deposit",
+    "treasury_icp_deposit",
+    "cycles_icp_convert",
+    "cycles_topup",
+)
+
+
+def resolve_flow_window(period: str, window_secs=None, now: int = 0) -> tuple:
+    """Return (since, bucket_secs) for a treasury-flow query."""
+    spec = FLOW_PERIOD_SPECS.get(period) or FLOW_PERIOD_SPECS["day"]
+    bucket_secs = int(spec["bucket_secs"])
+    if period == "inception":
+        return 0, bucket_secs
+    default_window = int(spec["default_window"])
+    window = int(window_secs) if window_secs is not None else default_window
+    window = max(bucket_secs, window)
+    since = max(0, int(now) - window)
+    return since, bucket_secs
+
+
+def _flow_bucket_ts(ts: int, bucket_secs: int) -> int:
+    bs = max(60, int(bucket_secs))
+    return (int(ts) // bs) * bs
+
+
+def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
+    """Bucket treasury flow events for charting (pure; unit-tested).
+
+    ``events`` are dicts with keys btype, timestamp_secs, payload (dict).
+    Returns (buckets list, totals dict, icp_cycles_per_e8s float).
+    """
+    totals = {
+        "deposited_cycles": 0,
+        "deposited_icp_e8s": 0,
+        "converted_cycles": 0,
+        "consumed_cycles": 0,
+    }
+    icp_cycles_per_e8s = 0.0
+    buckets: dict = {}
+    earliest = None
+
+    for ev in events:
+        ts = int(ev.get("timestamp_secs") or 0)
+        if ts <= 0:
+            continue
+        if earliest is None or ts < earliest:
+            earliest = ts
+        if since and ts < since:
+            continue
+        btype = ev.get("btype") or ""
+        payload = ev.get("payload") or {}
+        if not isinstance(payload, dict):
+            try:
+                payload = json.loads(payload or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+
+        if bucket_secs <= 0:
+            bucket_key = 0
+        else:
+            bucket_key = _flow_bucket_ts(ts, bucket_secs)
+        b = buckets.setdefault(bucket_key, {
+            "ts": ts if bucket_secs <= 0 else bucket_key,
+            "deposited_cycles": 0,
+            "deposited_icp_e8s": 0,
+            "converted_cycles": 0,
+            "consumed_cycles": 0,
+        })
+
+        if btype == "treasury_cycles_deposit":
+            amt = int(payload.get("amount") or 0)
+            totals["deposited_cycles"] += amt
+            b["deposited_cycles"] += amt
+        elif btype == "treasury_icp_deposit":
+            amt = int(payload.get("amount_e8s") or 0)
+            totals["deposited_icp_e8s"] += amt
+            b["deposited_icp_e8s"] += amt
+        elif btype == "cycles_icp_convert":
+            icp = int(payload.get("icp_e8s") or 0)
+            cyc = int(payload.get("cycles") or 0)
+            if icp > 0 and cyc > 0:
+                icp_cycles_per_e8s = max(icp_cycles_per_e8s, cyc / icp)
+            totals["converted_cycles"] += cyc
+            b["converted_cycles"] += cyc
+        elif btype == "cycles_topup":
+            amt = int(payload.get("amount") or 0)
+            totals["consumed_cycles"] += amt
+            b["consumed_cycles"] += amt
+
+    if bucket_secs <= 0 and earliest is not None:
+        # Inception: one bucket spanning all recorded activity.
+        span_end = int(now) if now else max((r["ts"] for r in buckets.values()), default=earliest)
+        rows = [{
+            "ts": earliest,
+            "span_end": span_end,
+            **{k: totals[k] for k in (
+                "deposited_cycles", "deposited_icp_e8s",
+                "converted_cycles", "consumed_cycles",
+            )},
+        }]
+        return rows, totals, icp_cycles_per_e8s
+
+    rows = sorted(buckets.values(), key=lambda r: r["ts"])
+    return rows, totals, icp_cycles_per_e8s
 
 
 def _subaccount_from_principal(principal) -> bytes:

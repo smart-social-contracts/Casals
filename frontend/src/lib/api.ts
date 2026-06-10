@@ -206,6 +206,34 @@ export interface CycleHistory {
   samples: CycleSamplePoint[];
 }
 
+export type TreasuryFlowPeriod = 'hour' | 'day' | 'week' | 'month' | 'inception';
+
+export interface TreasuryFlowBucket {
+  ts: number;
+  span_end?: number;
+  deposited_cycles: number;
+  deposited_icp_e8s: number;
+  converted_cycles: number;
+  consumed_cycles: number;
+}
+
+export interface TreasuryFlow {
+  now: number;
+  period: TreasuryFlowPeriod;
+  since: number;
+  bucket_secs: number;
+  totals: {
+    deposited_cycles: number;
+    deposited_icp_e8s: number;
+    converted_cycles: number;
+    consumed_cycles: number;
+  };
+  buckets: TreasuryFlowBucket[];
+  icp_cycles_per_e8s: number;
+  display_currency: string;
+  fx_micro_per_tcycle: number;
+}
+
 export interface UpdateResult {
   ok: boolean;
   error?: string;
@@ -506,6 +534,13 @@ export async function getCyclesCached(): Promise<(CyclesReport & { cached_at?: n
 // time and the burn/balance treemap.
 export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
   return _parseQuery<CycleHistory>(await (await _actor()).get_cycle_history(JSON.stringify(opts)));
+}
+
+export async function getTreasuryFlow(opts: {
+  period?: TreasuryFlowPeriod;
+  window_secs?: number;
+} = {}): Promise<TreasuryFlow> {
+  return _parseQuery<TreasuryFlow>(await (await _actor()).get_treasury_flow(JSON.stringify(opts)));
 }
 
 export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {
