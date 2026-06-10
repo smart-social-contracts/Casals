@@ -351,21 +351,36 @@ def _fetch_icp_rate_gen(currency: str):
 
 # The NNS ICP ledger canister (mainnet).
 ICP_LEDGER_CANISTER_ID = "ryjl3-tyaaa-aaaaa-aaaba-cai"
-LEDGER_CYCLES_PER_CALL = 1_000_000_000
+
+def _ledger_account_bytes(account) -> bytes:
+    """Raw 32-byte ledger AccountIdentifier from a Principal.to_account_id() value."""
+    raw = getattr(account, "_bytes", None)
+    if raw is None:
+        raw = getattr(account, "bytes", None)
+        if callable(raw):
+            raw = raw()
+    if raw is None:
+        s = account.to_str()
+        raw = bytes.fromhex(s[2:] if s.startswith("0x") else s)
+    return bytes(raw)
 
 
 def _treasury_icp_e8s_gen():
     """Generator: ICP ledger balance (e8s) held in this canister's default account."""
     try:
-        from basilisk.canisters.ledger import LedgerCanister
-        account = ic.id().to_account_id()
-        acct = bytes(account) if not isinstance(account, (bytes, bytearray)) else account
-        ledger = LedgerCanister(Principal.from_str(ICP_LEDGER_CANISTER_ID))
-        res = yield ledger.account_balance({"account": acct}).with_cycles(LEDGER_CYCLES_PER_CALL)
-        tok = unwrap_call_result(res)
-        if isinstance(tok, dict):
-            return int(tok.get("e8s") or 0)
-        return int(getattr(tok, "e8s", 0) or 0)
+        acct_hex = _ledger_account_bytes(ic.id().to_account_id()).hex()
+        arg = ic.candid_encode(f'(record {{ account = blob "{acct_hex}" }})')
+        res = yield ic.call_raw(
+            Principal.from_str(ICP_LEDGER_CANISTER_ID),
+            "account_balance",
+            arg,
+            0,
+        )
+        decoded = ic.candid_decode(unwrap_call_result(res))
+        vals = _nat64s_in(decoded)
+        if not vals:
+            raise Exception(f"unexpected ledger reply: {decoded[:200]}")
+        return int(vals[0])
     except Exception as e:  # pragma: no cover - ledger absent on some replicas
         _log.error(f"treasury icp balance: {e}")
         return None

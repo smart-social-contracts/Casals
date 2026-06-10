@@ -254,9 +254,15 @@
         <p class="text-xs text-primary-500">Treasury balance</p>
         <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.balance)}</p>
         <Fiat value={report.treasury.balance} block />
-        {#if report.treasury.icp_e8s !== undefined}
-          <p class="text-[11px] text-primary-500 font-mono mt-1">{formatIcp(report.treasury.icp_e8s)}</p>
-        {/if}
+        <p class="text-[11px] text-primary-500 font-mono mt-1">
+          {#if report.treasury.icp_e8s !== undefined}
+            {formatIcp(report.treasury.icp_e8s)}
+          {:else if refreshing}
+            ICP: refreshing…
+          {:else}
+            ICP: —
+          {/if}
+        </p>
       </div>
       <div class="card p-4">
         <p class="text-xs text-primary-500">Spendable</p>
