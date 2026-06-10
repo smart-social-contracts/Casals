@@ -138,7 +138,7 @@ class TestCyclesManagement:
             "cycles_autopilot", "cycles_check_interval_secs",
         ):
             assert k in md, md
-        assert md["cycles_autopilot"] is False
+        assert md["cycles_autopilot"] is True
 
     def test_set_cycle_settings_roundtrip(self, canister):
         _ok("set_settings", {

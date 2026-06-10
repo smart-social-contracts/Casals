@@ -87,6 +87,8 @@ from lifecycle import (
     _provision_canister,
     _pull_and_install,
     _resolve_authorized_wasm,
+    _destroy_canister_gen,
+    _destroy_ic_canister_gen,
     _retire_canister,
     _set_log_visibility,
     _spec_target_subnet,
@@ -405,22 +407,26 @@ def get_settings() -> text:
 
 @query
 def get_events(args: text) -> text:
-    """Args (JSON, optional): {"canister_id": str, "take": int}."""
+    """Args (JSON, optional): {"canister_id": str, "btype": str, "take": int}."""
     try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
         params = {}
     cid = (params.get("canister_id") or "").strip()
+    btype = (params.get("btype") or "").strip()
     take = max(1, int(params.get("take", 100)))
     total = OrchestrationEvent.count()
-    # Load only the tail we need, then optionally filter by canister.
+    # Load only the tail we need, then optionally filter by canister / event type.
     # When filtering, over-fetch by a factor so we have enough after the filter.
-    fetch = take if not cid else min(total, take * 10)
+    filtered = bool(cid or btype)
+    fetch = take if not filtered else min(total, take * 10)
     max_oid = OrchestrationEvent.max_id() if total else 0
     start_id = max(1, max_oid - fetch + 1)
     evs = OrchestrationEvent.load_some(start_id, fetch) if total else []
     if cid:
         evs = [e for e in evs if e.canister_id == cid]
+    if btype:
+        evs = [e for e in evs if e.btype == btype]
     # Deduplicate by idx — keep the last-written entry for each idx value to
     # defend against corrupted data left by earlier bugs where _last_event()
     # could return None and reset the counter to 0.
@@ -932,6 +938,40 @@ def delete_canister(args: text) -> text:
         _append_event("canister_deleted", cid, {"name": canister_name})
         return _ok()
     except Exception as e:
+        return _err(str(e))
+
+
+@update
+def destroy_canister(args: text) -> Async[text]:
+    """Permanently delete a canister on the IC and reclaim its cycles to Casals.
+
+    Unlike ``delete_canister`` (retire-to-pool), this stops the canister, calls
+    management ``delete_canister`` (remaining cycles return to Casals' treasury),
+    removes any pool entry, and deletes the Canister record. Irreversible.
+    Controller-only. Args (JSON): {canister: <registered name>} or
+    {canister_id: <raw id>} to destroy a pooled/orphan canister by id."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        canister_name = (params.get("canister") or "").strip()
+        raw_id = (params.get("canister_id") or "").strip()
+        if canister_name:
+            list(Section.instances())
+            list(Stand.instances())
+            canisters = list(Canister.instances())
+            st = Canister[canister_name] or next((s for s in canisters if s.name == canister_name), None)
+            if st is None:
+                return _err(f"unknown canister '{canister_name}'")
+            if not st.canister_id:
+                return _err(f"canister '{canister_name}' has no canister_id")
+            result = yield from _destroy_canister_gen(st)
+            return _ok(**result)
+        if raw_id:
+            result = yield from _destroy_ic_canister_gen(raw_id)
+            return _ok(**result)
+        return _err("provide 'canister' (registered name) or 'canister_id'")
+    except Exception as e:
+        _log.error(f"destroy_canister error: {e}")
         return _err(str(e))
 
 

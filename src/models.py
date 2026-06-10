@@ -227,8 +227,8 @@ class Settings(Entity):
     create_cycles = Integer(default=2_000_000_000_000)         # 2T
     # Autopilot: when enabled, a re-arming timer periodically reconciles every
     # canister's balance against its policy. Interval is in seconds.
-    cycles_autopilot = Integer(default=0)
-    cycles_check_interval_secs = Integer(default=21_600)       # 6h
+    cycles_autopilot = Integer(default=1)
+    cycles_check_interval_secs = Integer(default=3_600)        # 1h
     # Sampling: independent of autopilot, a timer records every canister's balance
     # so the Cycles page can chart history. Default on, hourly.
     cycles_sampling = Integer(default=1)

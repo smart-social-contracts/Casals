@@ -393,7 +393,7 @@ export async function listAuthorizedWasms(section?: string): Promise<AuthorizedW
   return _parseQuery<AuthorizedWasm[]>(await (await _actor()).list_authorized_wasms(JSON.stringify(args)));
 }
 
-export async function getEvents(opts: { canister_id?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
+export async function getEvents(opts: { canister_id?: string; btype?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
   return _parseQuery<OrchestrationEvent[]>(await (await _actor()).get_events(JSON.stringify(opts)));
 }
 
@@ -557,6 +557,10 @@ export async function deleteStand(args: { stand: string }): Promise<UpdateResult
 
 export async function deleteCanister(args: { canister: string }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).delete_canister(JSON.stringify(args)));
+}
+
+export async function destroyCanister(args: { canister?: string; canister_id?: string }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).destroy_canister(JSON.stringify(args)));
 }
 
 export async function setCommander(args: {

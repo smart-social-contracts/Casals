@@ -11,7 +11,10 @@ Casals executes. Casals never embeds voting logic.
 
 ```
 src/main.py          — Basilisk (Python) conductor canister
-src/models.py        — ic_python_db entities (Section, Stand, Canister, CycleSample, PooledCanister, …)
+src/models.py        — ic_python_db entities (Section, Stand, Canister, CycleSample, PooledCanister, Arrangement, …)
+src/arrangement.py   — apply an arrangement's post-deploy steps (text-in/text-out calls)
+src/cycles.py        — native cycles management (sampler + autopilot reconcile)
+src/lifecycle.py     — create/install/upgrade/snapshot + asset provisioning
 src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
 src/util.py          — pure helpers (audit hash, canister URL)
 casals_cli.py        — CLI module (pip install ic-casals → `casals` command)
@@ -285,10 +288,14 @@ All methods accept and return a `text` containing JSON. Key endpoints:
 | `list_subnets` | update | default subnet ids the CMC can place canisters on |
 | `refresh_fx` | update | refresh + cache the cycles→`display_currency` rate (throttled) |
 | `deploy_sheet` | update | idempotently reconcile the orchestra to the live sheet |
+| `provision_assets` | update | (re)upload a frontend bundle from the registry into its asset canister (batched via `offset`/`limit`) |
 | `list_pool` | query | every canister Casals ever created + its pool status |
 | `get_cycles` | update | live treasury + per-canister solvency (reads canister_status) |
 | `reconcile` / `top_up` / `set_cycle_policy` | update | native cycles management |
 | `get_cycle_history` | query | per-canister balance samples over time (Cycles charts) |
+| `list_arrangements` / `get_arrangement` | query | stored arrangements (post-deploy step sets) |
+| `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | update | manage arrangements |
+| `apply_arrangement` | update | run an arrangement's steps against their targets (batched via `offset`/`limit`) |
 
 ## Sheets & the canister pool
 
@@ -317,6 +324,48 @@ Casals has ever created. Because creation is expensive, canisters are recycled,
 not discarded. The frontend **Sheet** page renders the live sheet in an editable
 JSON box with **Save** / **Reset** / **Deploy** and shows the pool.
 
+## Arrangements (declarative post-deploy config)
+
+A **sheet** stands up canisters (code); an **arrangement** configures them
+afterwards (state). An `Arrangement` (entity in `models.py`, stored in stable
+memory) is a named, ordered list of steps:
+
+```json
+{ "target": "<canister name or raw id>", "method": "<method>", "args": <json|null> }
+```
+
+Each step is executed as a **single-text-in / text-out** call: `args` is
+serialized to one JSON string and passed as the method's only `text` argument
+(so target methods must have the shape `(text) -> (text)`). `target` resolves to
+a registered canister name when possible, otherwise it is treated as a raw
+canister id — letting an arrangement address canisters Casals does not manage in
+its tree (e.g. a consumer's backends).
+
+- **Best-effort & idempotent.** A failing step is recorded as an
+  `arrangement_step_failed` event and the remaining steps still run; re-applying
+  converges because steps set desired state. Design target methods to be
+  idempotent (upsert).
+- **Batched.** `apply_arrangement` runs only `steps[offset : offset+limit]` per
+  call (to stay within one message's instruction budget) and returns
+  `next_offset` / `done`; the caller advances `offset` until `done`.
+- **One active at a time.** `set_active_arrangement` is exclusive — activating one
+  deactivates the others.
+
+This is how a consumer like Realms reinstalls extensions/codices, sets runtime
+flags, installs branding, and registers realms after a sheet reinstall — see the
+realms repo's `casals-config/arrangements/`.
+
+## Asset provisioning & the paired-backend Commit grant
+
+When Casals provisions a frontend (certified-assets) canister — on install or via
+`provision_assets` — it grants **itself** `Commit` and uploads the bundle, then
+also grants **the paired backend** (the backend canister in the same stand)
+`Commit` on that asset canister (`_grant_backend_commit` in `lifecycle.py`). This
+lets the backend write assets to its own frontend after a reinstall (which wipes
+the asset canister and its permissions) — e.g. a realm backend pulling per-realm
+branding from the file-registry and `store`-ing it. On the final batch Casals also
+writes a deployment-specific `/canister_ids.js` wiring the SPA to its backend.
+
 ## Cycle history & charts
 
 The IC keeps no balance history, so Casals samples each canister's balance itself —
@@ -328,6 +377,17 @@ so true consumption can be derived: `burn = Δdeposited − Δbalance`. `get_cyc
 returns the raw samples; the frontend **Cycles** page aggregates them into a
 cycles-over-time line chart (total / section / stand / canister) and a
 section⊃stand⊃canister treemap sized by burn-over-window or current balance.
+
+**Autopilot top-up.** When `cycles_autopilot` is on, a timer
+(`cycles_check_interval_secs`) runs `reconcile`, which tops up any canister below
+its policy threshold — **funded from Casals' own balance** (`canister_balance128`)
+minus `treasury_reserve`. So Casals itself must stay funded, and the reserve caps
+how much it will spend. Toggle/tune via `set_settings` / `set_cycle_policy`.
+
+> ⚠️ Autopilot is **not always on** (it can be disabled per instance), and it only
+> funds — it does **not restart** a canister that already stopped from cycle
+> starvation. If a canister drains to a stop, top it up *and* call `start_canister`;
+> a `reinstall` will not auto-start a stopped canister.
 
 ## Catalog templates & seeding
 

@@ -25,6 +25,7 @@ from helpers import (
     _settings,
     unwrap_call_result,
 )
+from cycles import _status_cycles
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
 
@@ -562,3 +563,49 @@ def _retire_canister(st):
         _pool_free(cid)
     _append_event("canister_retired", cid, {"name": name})
     st.delete()
+
+
+def _destroy_ic_canister_gen(cid: str, name: str = ""):
+    """Generator: stop + delete an IC canister by id; reclaim cycles to Casals."""
+    cycles_reclaimed = 0
+    treasury_before = int(ic.canister_balance128())
+    pid = Principal.from_str(cid)
+    try:
+        status_res = yield management_canister.canister_status({"canister_id": pid})
+        cycles_reclaimed = _status_cycles(unwrap_call_result(status_res))
+    except Exception:
+        pass
+    try:
+        yield management_canister.stop_canister({"canister_id": pid})
+    except Exception:
+        pass
+    yield management_canister.delete_canister({"canister_id": pid})
+    list(PooledCanister.instances())
+    p = PooledCanister[cid]
+    if p is not None:
+        p.delete()
+    treasury_after = int(ic.canister_balance128())
+    _append_event("canister_destroyed", cid, {
+        "name": name or cid,
+        "cycles_reclaimed": cycles_reclaimed,
+        "treasury_before": treasury_before,
+        "treasury_after": treasury_after,
+    })
+    return {
+        "name": name or cid,
+        "canister_id": cid,
+        "cycles_reclaimed": cycles_reclaimed,
+        "treasury_after": treasury_after,
+    }
+
+
+def _destroy_canister_gen(st):
+    """Generator: permanently delete a registered canister and reclaim its cycles."""
+    cid = st.canister_id
+    name = st.name
+    if not cid:
+        st.delete()
+        return {"name": name, "canister_id": "", "cycles_reclaimed": 0, "treasury_after": int(ic.canister_balance128())}
+    result = yield from _destroy_ic_canister_gen(cid, name)
+    st.delete()
+    return result

@@ -116,7 +116,6 @@ service : {
   "set_arrangement" : (text) -> (text);
   "set_active_arrangement" : (text) -> (text);
   "delete_arrangement" : (text) -> (text);
-  "apply_arrangement" : (text) -> (text);
   "set_settings" : (text) -> (text);
   "create_section" : (text) -> (text);
   "create_stand" : (text) -> (text);
@@ -126,6 +125,7 @@ service : {
   "delete_section" : (text) -> (text);
   "delete_stand" : (text) -> (text);
   "delete_canister" : (text) -> (text);
+  "destroy_canister" : (text) -> (text);
   "set_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
   "list_permissions" : () -> (text) query;
@@ -134,6 +134,7 @@ service : {
   "remove_authorized_wasm" : (text) -> (text);
   "create_canister" : (text) -> (text);
   "deploy_sheet" : (text) -> (text);
+  "apply_arrangement" : (text) -> (text);
   "list_subnets" : () -> (text);
   "refresh_fx" : () -> (text);
   "estimate_deploy" : (text) -> (text) query;

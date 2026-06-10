@@ -9,6 +9,7 @@
   let error = $state('');
   let take = $state(100);
   let filter = $state('');
+  let btypeFilter = $state('');
   let kindFilter = $state<'all' | 'failures'>('all');
 
   async function load() {
@@ -16,7 +17,7 @@
     error = '';
     try {
       const [evs, tree] = await Promise.all([
-        getEvents({ take }),
+        getEvents({ take, btype: btypeFilter || undefined }),
         getTree().catch(() => null as Tree | null),
       ]);
       events = evs;
@@ -40,7 +41,7 @@
   function severity(btype: string): Severity {
     if (btype.includes('failed')) return 'fail';
     if (btype === 'revert' || btype === 'cycles_low') return 'warn';
-    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile/.test(btype))
+    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile|cycles_checked|canister_destroyed/.test(btype))
       return 'ok';
     return 'neutral';
   }
@@ -88,11 +89,13 @@
       case 'canister_created': return `Created ${p.name ?? ''} (${p.wasm_key ?? ''})${p.reused ? ' · reused canister' : ''}`;
       case 'canister_reinstalled': return `Reinstalled ${p.name ?? ''} (${p.wasm_key ?? ''})`;
       case 'canister_retired': return `Retired ${p.name ?? ''}`;
+      case 'canister_destroyed': return `Destroyed ${p.name ?? ''}${p.cycles_reclaimed ? ` · reclaimed ${fmt(p.cycles_reclaimed)} cycles` : ''}`;
       case 'canister_registered': return `Registered ${p.name ?? ''} on ${p.stand ?? ''}`;
       case 'assets_uploaded': return `Assets uploaded (${p.bytes ?? 0} bytes)`;
       case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
       case 'create_failed': return 'Create failed: module hash mismatch';
       case 'cycles_topup': return `Topped up ${fmt(p.amount)} cycles${p.manual ? ' (manual)' : ''}`;
+      case 'cycles_checked': return `Checked balance ${fmt(p.balance)} · ${p.status ?? 'ok'}`;
       case 'cycles_low': return 'Low cycles balance — treasury exhausted';
       case 'cycles_reconcile': return `Reconcile (${p.source ?? 'autopilot'}): checked ${p.checked ?? 0}, topped up ${p.topped_up ?? 0}`;
       case 'set_controllers': return `Controllers updated${p.added?.length ? `: added ${p.added.join(', ')}` : ''}`;
@@ -119,6 +122,18 @@
       }
     }
     return out;
+  });
+
+  const eventTypes = $derived.by<string[]>(() => {
+    const seen: Record<string, true> = {};
+    const out: string[] = [];
+    for (const e of events) {
+      if (e.btype && !seen[e.btype]) {
+        seen[e.btype] = true;
+        out.push(e.btype);
+      }
+    }
+    return out.sort();
   });
 
   const filtered = $derived.by<OrchestrationEvent[]>(() => {
@@ -151,6 +166,12 @@
       <option value="">All targets</option>
       {#each targets as t (t)}
         <option value={t}>{canisterNames[t] ?? t}</option>
+      {/each}
+    </select>
+    <select class="text-sm rounded-lg border border-[var(--color-border-primary)] px-2 py-1.5 bg-white" bind:value={btypeFilter} onchange={load}>
+      <option value="">All event types</option>
+      {#each eventTypes as bt (bt)}
+        <option value={bt}>{bt}</option>
       {/each}
     </select>
     <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">

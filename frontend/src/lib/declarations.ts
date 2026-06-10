@@ -44,6 +44,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     delete_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     delete_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     delete_canister:          IDL.Func([IDL.Text], [IDL.Text], []),
+    destroy_canister:         IDL.Func([IDL.Text], [IDL.Text], []),
     register_canister:        IDL.Func([IDL.Text], [IDL.Text], []),
     add_authorized_wasm:   IDL.Func([IDL.Text], [IDL.Text], []),
     remove_authorized_wasm: IDL.Func([IDL.Text], [IDL.Text], []),

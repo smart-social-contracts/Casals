@@ -28,6 +28,7 @@
     deleteSection,
     deleteStand,
     deleteCanister,
+    destroyCanister,
   } from '$lib/api';
   import type {
     Tree, Status, Section, Stand, Canister, UpdateResult,
@@ -48,6 +49,7 @@
     description?: string;
     fields: Field[];
     submitLabel: string;
+    danger?: boolean;
     onsubmit: (values: Values) => Promise<UpdateResult>;
   }
 
@@ -544,6 +546,29 @@
     });
   }
 
+  function openDestroyCanister(canister: Canister) {
+    openModal({
+      title: `Destroy canister "${canister.name}"`,
+      description: 'Permanently deletes this canister on the Internet Computer. Remaining cycles are returned to the Casals treasury. This cannot be undone.',
+      fields: [
+        {
+          name: 'ack',
+          label: 'I understand this permanently destroys the canister and cannot be undone',
+          type: 'checkbox',
+          help: 'The canister will be deleted on-chain. Any remaining cycles return to Casals.',
+        },
+        { name: 'confirm', label: `Type "${canister.name}" to confirm`, required: true },
+      ],
+      submitLabel: 'Destroy canister',
+      danger: true,
+      onsubmit: async (v) => {
+        if (!v.ack) throw new Error('Please confirm you understand this action is irreversible');
+        if (String(v.confirm).trim() !== canister.name) throw new Error('Name does not match');
+        return destroyCanister({ canister: canister.name });
+      },
+    });
+  }
+
   function openSetCommander(target: { section?: string; stand?: string }, current: string) {
     const label = target.section ? `section "${target.section}"` : `stand "${target.stand}"`;
     openModal({
@@ -1010,9 +1035,13 @@
                                 <button class="icon-btn" title="Rename canister" onclick={() => openRenameCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                                 </button>
-                                <!-- Delete -->
-                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete canister" onclick={() => openDeleteCanister(canister)}>
+                                <!-- Delete (retire to pool) -->
+                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete canister (return to pool)" onclick={() => openDeleteCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
+                                </button>
+                                <!-- Destroy (permanent) -->
+                                <button class="btn-sm bg-red-600 text-white hover:bg-red-700 px-2 py-1 text-xs font-medium rounded-md" title="Permanently destroy canister and reclaim cycles" onclick={() => openDestroyCanister(canister)}>
+                                  Destroy
                                 </button>
                               {/if}
                             </div>
@@ -1135,6 +1164,7 @@
     description={modal.description}
     fields={modal.fields}
     submitLabel={modal.submitLabel}
+    danger={modal.danger}
     busy={modalBusy}
     logLines={modalLogLines}
     onsubmit={submitModal}

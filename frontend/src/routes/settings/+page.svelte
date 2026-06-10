@@ -51,7 +51,7 @@
       cycleopsEnabled = meta.cycleops_enabled;
       cycleopsPrincipal = meta.cycleops_principal ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
-      cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 21600) / 3600));
+      cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 3600) / 3600));
       defaultMinCycles = formatCycles(meta.default_min_cycles);
       defaultTopupCycles = formatCycles(meta.default_topup_cycles);
       treasuryReserve = formatCycles(meta.treasury_reserve);

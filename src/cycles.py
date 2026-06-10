@@ -261,6 +261,9 @@ def _reconcile_all_gen():
             if wanted:
                 _append_event("cycles_low", st.canister_id,
                               {"balance": bal, "status": label, "reason": "treasury exhausted"})
+            else:
+                _append_event("cycles_checked", st.canister_id,
+                              {"balance": bal, "status": label})
             results.append({"canister": st.name, "balance": bal, "status": label})
         _record_cycle_sample(st, batch_ts, bal)
         sampled = True

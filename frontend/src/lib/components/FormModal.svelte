@@ -24,6 +24,7 @@
     description?: string;
     fields?: Field[];
     submitLabel?: string;
+    danger?: boolean;
     busy?: boolean;
     logLines?: string[];
     onsubmit?: (values: Values) => void;
@@ -35,6 +36,7 @@
     description = '',
     fields = [],
     submitLabel = 'Submit',
+    danger = false,
     busy = false,
     logLines = [],
     onsubmit,
@@ -177,7 +179,7 @@
         </button>
         <button
           type="submit"
-          class="{(values['reinstall'] ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500' : '') + ' btn-primary btn-sm'}"
+          class="{(danger || values['reinstall'] ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500' : '') + ' btn-primary btn-sm'}"
           disabled={busy}
         >
           {#if busy}
