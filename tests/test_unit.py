@@ -100,6 +100,14 @@ def test_variant_ok_first_number():
     assert cycles_mod._variant_ok_first_number("(variant { Err = ...; })") is None
 
 
+def test_treasury_cycles_deposit_amount():
+    import cycles as cycles_mod
+    assert cycles_mod.treasury_cycles_deposit_amount(1000, 500, minted=0, spent=0, dust=10) == 500
+    assert cycles_mod.treasury_cycles_deposit_amount(600, 500, minted=100, spent=0, dust=10) == 0
+    assert cycles_mod.treasury_cycles_deposit_amount(600, 500, minted=0, spent=50, dust=10) == 150
+    assert cycles_mod.treasury_cycles_deposit_amount(510, 500, minted=0, spent=0, dust=20) == 0
+
+
 def test_deployment_from_events_picks_latest():
     import audit
     ev_old = types.SimpleNamespace(

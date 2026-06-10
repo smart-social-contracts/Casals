@@ -232,6 +232,10 @@ class Settings(Entity):
     # When enabled, reconcile / get_cycles convert ledger ICP on this canister's
     # default account into cycles via the CMC (notify_top_up).
     cycles_icp_autoconvert = Integer(default=1)
+    # Last observed treasury balances — used to detect external ICP/cycles deposits.
+    treasury_last_cycles = Integer(default=0)
+    treasury_last_icp_e8s = Integer(default=0)
+    treasury_watch_initialized = Integer(default=0)
     # Sampling: independent of autopilot, a timer records every canister's balance
     # so the Cycles page can chart history. Default on, hourly.
     cycles_sampling = Integer(default=1)

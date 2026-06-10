@@ -27,6 +27,8 @@
   let cachedAt = $state<number | null>(null);
   let error = $state('');
   let busy = $state('');
+  let showDeposit = $state(false);
+  let copiedField = $state('');
 
   // ── chart controls ──
   type Scope = 'total' | 'section' | 'stand' | 'canister';
@@ -43,6 +45,17 @@
     if (age < 60) return `${age}s ago`;
     if (age < 3600) return `${Math.floor(age / 60)}m ago`;
     return `${Math.floor(age / 3600)}h ago`;
+  }
+
+  async function copyText(label: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedField = label;
+      toasts.success(`Copied ${label}`);
+      setTimeout(() => { if (copiedField === label) copiedField = ''; }, 2000);
+    } catch {
+      toasts.error('Could not copy to clipboard');
+    }
   }
 
   async function load() {
@@ -251,7 +264,14 @@
     <!-- Treasury summary -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <div class="card p-4">
-        <p class="text-xs text-primary-500">Treasury balance</p>
+        <div class="flex items-start justify-between gap-2">
+          <p class="text-xs text-primary-500">Treasury balance</p>
+          <button
+            type="button"
+            class="btn-secondary btn-sm shrink-0 -mt-0.5 px-2 py-0.5 text-xs"
+            onclick={() => (showDeposit = true)}
+          >Deposit</button>
+        </div>
         <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.balance)}</p>
         <Fiat value={report.treasury.balance} block />
         <p class="text-[11px] text-primary-500 font-mono mt-1">
@@ -451,5 +471,66 @@
     {#if !$isAuthenticated}
       <p class="text-xs text-primary-400">Log in as a commander/controller to top up canisters or reconcile.</p>
     {/if}
+  {/if}
+
+  {#if showDeposit && report?.treasury}
+    <div class="fixed inset-0 z-40 flex items-center justify-center">
+      <button
+        type="button"
+        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
+        aria-label="Close deposit instructions"
+        onclick={() => (showDeposit = false)}
+      ></button>
+      <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 max-h-[90vh] overflow-y-auto">
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">Fund the treasury</h3>
+        <p class="text-sm text-primary-500 mb-4">
+          Send ICP or cycles to the Casals backend. Deposits are detected on the hourly sampler,
+          autopilot reconcile, and Cycles page refresh — and logged in Activity.
+        </p>
+
+        <div class="space-y-4 text-sm">
+          <section class="rounded-lg border border-[var(--color-border-primary)] p-4 space-y-2">
+            <h4 class="font-semibold text-primary-800">Option A — ICP (recommended)</h4>
+            <p class="text-primary-600">
+              Withdraw ICP from your exchange to this <strong>ledger account ID</strong>
+              (not the canister principal).{#if report.treasury.icp_autoconvert} Casals auto-converts ledger ICP to cycles.{/if}
+            </p>
+            {#if report.treasury.ledger_account_id}
+              <div class="flex items-center gap-2">
+                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{report.treasury.ledger_account_id}</code>
+                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('account ID', report.treasury.ledger_account_id!)}>
+                  {copiedField === 'account ID' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            {:else}
+              <p class="text-xs text-primary-400">Ledger account unavailable — refresh the page.</p>
+            {/if}
+          </section>
+
+          <section class="rounded-lg border border-[var(--color-border-primary)] p-4 space-y-2">
+            <h4 class="font-semibold text-primary-800">Option B — Cycles (TC)</h4>
+            <p class="text-primary-600">
+              Deposit cycles directly onto the backend canister from your CLI identity:
+            </p>
+            {#if report.treasury.backend_canister_id}
+              <div class="flex items-center gap-2">
+                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{report.treasury.backend_canister_id}</code>
+                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('canister ID', report.treasury.backend_canister_id!)}>
+                  {copiedField === 'canister ID' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <pre class="text-xs font-mono bg-primary-950 text-green-400 rounded-lg p-3 overflow-x-auto">icp canister deposit-cycles {report.treasury.backend_canister_id} --amount 0.5 --network ic</pre>
+              <p class="text-xs text-primary-400">Converts ICP from your identity and deposits cycles. Or use <code class="font-mono">--amount 1t</code> if your CLI accepts cycle units.</p>
+            {:else}
+              <p class="text-xs text-primary-400">Canister id unavailable — refresh the page.</p>
+            {/if}
+          </section>
+        </div>
+
+        <div class="flex justify-end pt-5">
+          <button type="button" class="btn-primary btn-sm" onclick={() => (showDeposit = false)}>Close</button>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>

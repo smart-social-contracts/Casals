@@ -25,7 +25,7 @@ from helpers import (
     _settings,
     unwrap_call_result,
 )
-from cycles import _status_cycles
+from cycles import _status_cycles, _sync_treasury_baseline
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
 
@@ -591,6 +591,7 @@ def _destroy_ic_canister_gen(cid: str, name: str = ""):
         "treasury_before": treasury_before,
         "treasury_after": treasury_after,
     })
+    _sync_treasury_baseline(cycles=treasury_after)
     return {
         "name": name or cid,
         "canister_id": cid,

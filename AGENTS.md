@@ -391,6 +391,12 @@ the backend's ledger account ID (shown on the Cycles page); autopilot or a manua
 `convert_treasury_icp` call mints cycles from it. Controllers can also trigger
 conversion on demand with `convert_treasury_icp`.
 
+**Treasury deposit watch.** The cycle sampler (hourly), autopilot reconcile, and
+`get_cycles` compare the backend's ICP ledger balance and cycle balance against
+stored baselines. External deposits log `treasury_icp_deposit` or
+`treasury_cycles_deposit` in Activity. The Cycles page **Deposit** button shows
+funding instructions (ledger account ID + `deposit-cycles` CLI).
+
 > ⚠️ Autopilot is **not always on** (it can be disabled per instance), and it only
 > funds — it does **not restart** a canister that already stopped from cycle
 > starvation. If a canister drains to a stop, top it up *and* call `start_canister`;

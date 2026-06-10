@@ -194,6 +194,8 @@ def _sampler_cb():
     """Cycle-sampler timer callback (generator; never raises). Also refreshes
     the fiat conversion factor on the same (slow) cadence."""
     try:
+        minted = yield from _treasury_watch_begin_gen()
+        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
         n = yield from _sample_all_gen(_now_secs())
         _log.info(f"cycle sampler: recorded {n} samples")
     except Exception as e:  # pragma: no cover - defensive
@@ -235,12 +237,13 @@ def _reconcile_all_gen():
     """
     list(Canister.instances())
     s = _settings()
-    yield from _maybe_convert_icp_to_cycles_gen()
+    minted = yield from _treasury_watch_begin_gen()
     reserve = int(s.treasury_reserve or 0)
     treasury = int(ic.canister_balance128())
     batch_ts = _now_secs()
     results = []
     topped = 0
+    topped_total = 0
     sampled = False
     for st in Canister.instances():
         if not st.canister_id:
@@ -264,6 +267,7 @@ def _reconcile_all_gen():
                 ).with_cycles(amount)
                 treasury -= amount
                 topped += 1
+                topped_total += amount
                 st.cycles_deposited = int(st.cycles_deposited or 0) + amount
                 _append_event("cycles_topup", st.canister_id,
                               {"amount": amount, "balance_before": bal})
@@ -287,6 +291,7 @@ def _reconcile_all_gen():
         _prune_cycle_samples(batch_ts)
         global _last_sample_ts
         _last_sample_ts = batch_ts
+    yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=topped_total)
     return {"treasury": treasury, "topped_up": topped, "checked": len(results), "results": results}
 
 
@@ -355,6 +360,9 @@ ICP_LEDGER_CANISTER_ID = "ryjl3-tyaaa-aaaaa-aaaba-cai"
 # Ledger memo for ICP→cycles conversion via the CMC (see ic-ledger-types).
 MEMO_TOP_UP_CANISTER = 1_347_768_404
 ICP_TRANSFER_FEE_E8S = 10_000
+# Ignore balance jitter below these thresholds when detecting deposits.
+ICP_DEPOSIT_DUST_E8S = 1_000
+CYCLES_DEPOSIT_DUST = 10_000_000  # 10M cycles
 
 
 def icp_convert_amount(icp_e8s: int, fee: int = ICP_TRANSFER_FEE_E8S):
@@ -371,6 +379,85 @@ def icp_autoconvert_enabled(s=None) -> bool:
     if raw is None:
         return True
     return bool(int(raw))
+
+
+def treasury_cycles_deposit_amount(
+    cycles_now: int,
+    prev_cycles: int,
+    minted: int = 0,
+    spent: int = 0,
+    dust: int = CYCLES_DEPOSIT_DUST,
+) -> int:
+    """Return external cycles deposited since last observation, or 0."""
+    expected = int(prev_cycles) + int(minted or 0) - int(spent or 0)
+    delta = int(cycles_now) - expected
+    return delta if delta > int(dust) else 0
+
+
+def _treasury_ledger_account_hex() -> str:
+    """64-char hex ledger account ID for this canister's default ICP account."""
+    return _ledger_account_bytes(ic.id().to_account_id()).hex()
+
+
+def _sync_treasury_baseline(cycles=None, icp_e8s=None) -> None:
+    """Refresh stored baselines after an internal treasury change (e.g. destroy)."""
+    s = _settings()
+    if cycles is not None:
+        s.treasury_last_cycles = int(cycles)
+    if icp_e8s is not None:
+        s.treasury_last_icp_e8s = int(icp_e8s)
+    s.treasury_watch_initialized = 1
+
+
+def _treasury_watch_begin_gen(force_convert: bool = False):
+    """Detect ICP deposits and optionally convert ledger ICP to cycles.
+
+    Returns minted cycles (int) from any conversion performed in this step.
+    """
+    s = _settings()
+    prev_icp = int(s.treasury_last_icp_e8s or 0)
+    initialized = bool(int(s.treasury_watch_initialized or 0))
+
+    icp_before = yield from _treasury_icp_e8s_gen()
+    if icp_before is not None:
+        icp_before = int(icp_before)
+        if initialized and icp_before > prev_icp + ICP_DEPOSIT_DUST_E8S:
+            _append_event("treasury_icp_deposit", "", {
+                "amount_e8s": icp_before - prev_icp,
+                "balance_e8s": icp_before,
+            })
+
+    convert = yield from _maybe_convert_icp_to_cycles_gen(force=force_convert)
+    if convert.get("converted"):
+        return int(convert.get("cycles") or 0)
+    return 0
+
+
+def _treasury_watch_end_gen(minted_cycles: int = 0, spent_cycles: int = 0):
+    """Detect cycles deposits and persist the latest treasury baselines."""
+    s = _settings()
+    prev_cycles = int(s.treasury_last_cycles or 0)
+    initialized = bool(int(s.treasury_watch_initialized or 0))
+
+    cycles_now = int(ic.canister_balance128())
+    icp_now = yield from _treasury_icp_e8s_gen()
+    icp_now = int(icp_now or 0) if icp_now is not None else int(s.treasury_last_icp_e8s or 0)
+
+    if initialized:
+        amount = treasury_cycles_deposit_amount(
+            cycles_now, prev_cycles, minted=minted_cycles, spent=spent_cycles,
+        )
+        if amount > 0:
+            _append_event("treasury_cycles_deposit", "", {
+                "amount": amount,
+                "balance": cycles_now,
+            })
+    else:
+        initialized = True
+
+    s.treasury_last_cycles = cycles_now
+    s.treasury_last_icp_e8s = icp_now
+    s.treasury_watch_initialized = 1
 
 
 def _subaccount_from_principal(principal) -> bytes:

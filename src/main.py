@@ -63,7 +63,10 @@ from cycles import (
     _status_cycles,
     _status_freezing,
     _ic_run_status,
-    _maybe_convert_icp_to_cycles_gen,
+    _sync_treasury_baseline,
+    _treasury_ledger_account_hex,
+    _treasury_watch_begin_gen,
+    _treasury_watch_end_gen,
     _treasury_icp_e8s_gen,
     icp_autoconvert_enabled,
 )
@@ -2038,7 +2041,7 @@ def get_cycles() -> Async[text]:
         list(Stand.instances())
         list(Canister.instances())
         s = _settings()
-        yield from _maybe_convert_icp_to_cycles_gen()
+        minted = yield from _treasury_watch_begin_gen()
         treasury = int(ic.canister_balance128())
         canisters_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
@@ -2133,6 +2136,8 @@ def get_cycles() -> Async[text]:
         }
         if icp_e8s is not None:
             treasury_obj["icp_e8s"] = icp_e8s
+        treasury_obj["backend_canister_id"] = str(ic.id())
+        treasury_obj["ledger_account_id"] = _treasury_ledger_account_hex()
 
         result = json.dumps({
             "treasury": treasury_obj,
@@ -2155,6 +2160,7 @@ def get_cycles() -> Async[text]:
             snap.save()
         except Exception as snap_err:
             _log.error(f"get_cycles: could not persist snapshot: {snap_err}")
+        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
         return result
     except Exception as e:
         _log.error(f"get_cycles error: {e}")
@@ -2278,10 +2284,12 @@ def convert_treasury_icp() -> Async[text]:
     """Controller only. Convert all ledger ICP on this canister to cycles via the CMC."""
     try:
         _require_admin()
-        summary = yield from _maybe_convert_icp_to_cycles_gen(force=True)
+        minted = yield from _treasury_watch_begin_gen(force_convert=True)
+        summary = {"converted": minted > 0, "cycles": minted} if minted > 0 else {"converted": False}
+        yield from _treasury_watch_end_gen(minted_cycles=minted, spent_cycles=0)
         if summary.get("converted"):
             return _ok(**summary)
-        return _ok(converted=False, **{k: v for k, v in summary.items() if k != "converted"})
+        return _ok(converted=False)
     except Exception as e:
         _log.error(f"convert_treasury_icp error: {e}")
         return _err(str(e))

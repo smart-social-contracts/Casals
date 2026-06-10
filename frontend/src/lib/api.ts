@@ -162,6 +162,10 @@ export interface Treasury {
   interval_secs: number;
   /** When true, ledger ICP is auto-converted to cycles during reconcile / get_cycles. */
   icp_autoconvert?: boolean;
+  /** Backend canister id — target for direct cycle deposits. */
+  backend_canister_id?: string;
+  /** 64-char hex ICP ledger account id for exchange withdrawals. */
+  ledger_account_id?: string;
   /** ICP ledger balance (10^-8 ICP) on the Casals backend account, when known. */
   icp_e8s?: number;
 }
