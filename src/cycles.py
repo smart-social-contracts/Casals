@@ -613,13 +613,14 @@ def _principal_bytes(principal) -> bytes:
     return bytes(raw)
 
 
-def _subaccount_from_principal(principal) -> bytes:
-    """CMC subaccount encoding: principal bytes right-aligned in 32 bytes."""
+def _cmc_subaccount_from_principal(principal) -> bytes:
+    """CMC top-up subaccount: ``[len(principal)] + principal bytes + zero pad``."""
     raw = _principal_bytes(principal)
-    if len(raw) > 32:
-        raise ValueError("principal too long for subaccount")
+    if len(raw) > 31:
+        raise ValueError("principal too long for CMC subaccount")
     sub = bytearray(32)
-    sub[32 - len(raw):] = raw
+    sub[0] = len(raw)
+    sub[1:1 + len(raw)] = raw
     return bytes(sub)
 
 
@@ -751,7 +752,7 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
     try:
         canister_id = ic.id()
         cid_str = str(canister_id)
-        sub = _subaccount_from_principal(canister_id)
+        sub = _cmc_subaccount_from_principal(canister_id)
         to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
         to_hex = _ledger_account_bytes(to_acct).hex()
         to_blob = _hex_to_blob_escaped(to_hex)

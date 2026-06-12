@@ -102,14 +102,15 @@ def test_icp_convert_amount():
     assert cycles_mod.icp_convert_amount(100_000_000) == 100_000_000 - 10_000
 
 
-def test_subaccount_from_principal_right_aligns():
+def test_cmc_subaccount_from_principal_length_prefix():
     import cycles as cycles_mod
     class P:
         _bytes = b"\x01\x02\x03"
-    sub = cycles_mod._subaccount_from_principal(P())
+    sub = cycles_mod._cmc_subaccount_from_principal(P())
     assert len(sub) == 32
-    assert sub[-3:] == b"\x01\x02\x03"
-    assert sub[:29] == b"\x00" * 29
+    assert sub[0] == 3
+    assert sub[1:4] == b"\x01\x02\x03"
+    assert sub[4:] == b"\x00" * 28
 
 
 def test_principal_bytes_uses_bytes_property():
