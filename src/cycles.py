@@ -623,22 +623,6 @@ def _subaccount_from_principal(principal) -> bytes:
     return bytes(sub)
 
 
-def _account_id_from_principal_and_subaccount(principal, subaccount: bytes) -> bytes:
-    """32-byte ICP ledger AccountIdentifier for a principal + 32-byte subaccount."""
-    import hashlib
-    import zlib
-
-    if len(subaccount) != 32:
-        raise ValueError("subaccount must be 32 bytes")
-    sha224 = hashlib.sha224()
-    sha224.update(b"\x0Aaccount-id")
-    sha224.update(_principal_bytes(principal))
-    sha224.update(subaccount)
-    digest = sha224.digest()
-    checksum = zlib.crc32(digest) & 0xFFFFFFFF
-    return checksum.to_bytes(4, byteorder="big") + digest
-
-
 def _variant_ok_first_number(decoded: str):
     """Extract the first numeric value from a Candid Ok variant."""
     marker = "Ok = "
@@ -722,9 +706,8 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
         canister_id = ic.id()
         cid_str = str(canister_id)
         sub = _subaccount_from_principal(canister_id)
-        to_hex = _account_id_from_principal_and_subaccount(
-            Principal.from_str(_CMC_CANISTER_ID), sub,
-        ).hex()
+        to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
+        to_hex = _ledger_account_bytes(to_acct).hex()
         to_blob = _hex_to_blob_escaped(to_hex)
         transfer_arg = (
             f"(record {{ memo = {MEMO_TOP_UP_CANISTER} : nat64; "
