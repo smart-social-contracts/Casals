@@ -636,6 +636,52 @@ def _variant_ok_first_number(decoded: str):
     num = rest[:end].replace("_", "")
     return int(num) if num else None
 
+
+def _ledger_transfer_block_index(decoded: str):
+    """Block index from an ICP ledger ``transfer`` reply (Ok or numeric variant)."""
+    if not decoded:
+        return None
+    for err in ("Err", "InsufficientFunds", "BadFee", "TxTooOld", "TxDuplicate",
+                "TxCreatedInFuture", "GenericError"):
+        if err in decoded:
+            return None
+    idx = _variant_ok_first_number(decoded)
+    if idx is not None:
+        return idx
+    vals = _nat64s_in(decoded)
+    return vals[0] if vals else None
+
+
+def _notify_top_up_gen(block_index: int):
+    """Generator: mint cycles for a completed ledger top-up block."""
+    canister_id = ic.id()
+    cid_str = str(canister_id)
+    notify_arg = (
+        f"(record {{ block_index = {int(block_index)} : nat64; "
+        f"canister_id = principal \"{cid_str}\" }})"
+    )
+    res = yield ic.call_raw(
+        Principal.from_str(_CMC_CANISTER_ID),
+        "notify_top_up",
+        ic.candid_encode(notify_arg),
+        0,
+    )
+    decoded = ic.candid_decode(unwrap_call_result(res))
+    cycles = _variant_ok_first_number(decoded)
+    if cycles is None:
+        vals = _nat64s_in(decoded)
+        cycles = vals[0] if vals and "Err" not in decoded else None
+    if cycles is None:
+        err = decoded[:300]
+        _log.error(f"notify_top_up failed: {err}")
+        return {"converted": False, "block_index": block_index, "error": err}
+    return {
+        "converted": True,
+        "cycles": cycles,
+        "block_index": block_index,
+        "source": "notify",
+    }
+
 def _hex_to_blob_escaped(hex_str: str) -> str:
     """Candid blob literal for raw bytes (``\\aa\\bb``, not ASCII hex digits)."""
     h = hex_str.strip()
@@ -722,28 +768,16 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
             0,
         )
         decoded = ic.candid_decode(unwrap_call_result(res))
-        block_index = _variant_ok_first_number(decoded)
+        block_index = _ledger_transfer_block_index(decoded)
         if block_index is None:
             err = decoded[:300]
             _log.error(f"icp transfer for mint failed: {err}")
             return {"converted": False, "icp_e8s": icp_e8s, "error": err}
 
-        notify_arg = (
-            f"(record {{ block_index = {block_index} : nat64; "
-            f"canister_id = principal \"{cid_str}\" }})"
-        )
-        res2 = yield ic.call_raw(
-            Principal.from_str(_CMC_CANISTER_ID),
-            "notify_top_up",
-            ic.candid_encode(notify_arg),
-            0,
-        )
-        decoded2 = ic.candid_decode(unwrap_call_result(res2))
-        cycles = _variant_ok_first_number(decoded2)
-        if cycles is None:
-            err = decoded2[:300]
-            _log.error(f"notify_top_up failed: {err}")
-            return {"converted": False, "block_index": block_index, "error": err}
+        notify = yield from _notify_top_up_gen(block_index)
+        if not notify.get("converted"):
+            return {**notify, "icp_e8s": amount_e8s}
+        cycles = int(notify["cycles"])
 
         _append_event("cycles_icp_convert", "", {
             "icp_e8s": amount_e8s,

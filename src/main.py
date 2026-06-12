@@ -73,6 +73,7 @@ from cycles import (
     FLOW_EVENT_BTYPES,
     _treasury_icp_e8s_gen,
     _fetch_icp_cycles_per_e8s_gen,
+    _notify_top_up_gen,
     icp_autoconvert_enabled,
 )
 from helpers import (
@@ -2381,10 +2382,33 @@ def top_up(args: text) -> Async[text]:
 
 
 @update
-def convert_treasury_icp() -> Async[text]:
-    """Controller only. Convert all ledger ICP on this canister to cycles via the CMC."""
+def convert_treasury_icp(args: text = "") -> Async[text]:
+    """Controller only. Convert all ledger ICP on this canister to cycles via the CMC.
+
+    Optional JSON: ``{"block_index": <nat>}`` to complete a prior transfer whose
+    ``notify_top_up`` was not recorded (recovery).
+    """
     try:
         _require_admin()
+        params = {}
+        if args:
+            try:
+                params = json.loads(args) if args else {}
+            except (json.JSONDecodeError, ValueError):
+                params = {}
+        if params.get("block_index") is not None:
+            convert = yield from _notify_top_up_gen(int(params["block_index"]))
+            yield from _sync_treasury_baseline_gen()
+            out = {"converted": bool(convert.get("converted"))}
+            if convert.get("converted"):
+                for key in ("cycles", "block_index"):
+                    if key in convert:
+                        out[key] = convert[key]
+            else:
+                for key in ("error", "block_index"):
+                    if key in convert:
+                        out[key] = convert[key]
+            return _ok(**out)
         convert = yield from _treasury_watch_begin_gen(force_convert=True)
         yield from _sync_treasury_baseline_gen()
         out = {"converted": bool(convert.get("converted"))}

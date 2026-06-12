@@ -127,6 +127,15 @@ def test_variant_ok_first_number():
     assert cycles_mod._variant_ok_first_number("(variant { Err = ...; })") is None
 
 
+def test_ledger_transfer_block_index_parses_numeric_ok_variant():
+    import cycles as cycles_mod
+    decoded = "(variant { 17_724 = 36_964_380 : nat64 })"
+    assert cycles_mod._ledger_transfer_block_index(decoded) == 36964380
+    assert cycles_mod._ledger_transfer_block_index(
+        "(variant { Err = variant { InsufficientFunds = record { balance = record { e8s = 1 : nat64 } } } })"
+    ) is None
+
+
 def test_treasury_cycles_deposit_amount():
     import cycles as cycles_mod
     assert cycles_mod.treasury_cycles_deposit_amount(1000, 500, minted=0, spent=0, dust=10) == 500
