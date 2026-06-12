@@ -112,6 +112,25 @@ def test_subaccount_from_principal_right_aligns():
     assert sub[:29] == b"\x00" * 29
 
 
+def test_principal_bytes_uses_bytes_property():
+    import cycles as cycles_mod
+    class P:
+        @property
+        def bytes(self):
+            return b"\xaa\xbb"
+    assert cycles_mod._principal_bytes(P()) == b"\xaa\xbb"
+
+
+def test_account_id_from_principal_and_subaccount_is_32_bytes():
+    import cycles as cycles_mod
+    class P:
+        _bytes = b"\x01" * 10
+    sub = b"\x02" * 32
+    acct = cycles_mod._account_id_from_principal_and_subaccount(P(), sub)
+    assert len(acct) == 32
+    assert acct == cycles_mod._account_id_from_principal_and_subaccount(P(), sub)
+
+
 def test_variant_ok_first_number():
     import cycles as cycles_mod
     assert cycles_mod._variant_ok_first_number("(variant { Ok = 42 : nat64; })") == 42

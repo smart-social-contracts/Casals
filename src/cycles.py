@@ -599,16 +599,44 @@ def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
     return rows, totals, icp_cycles_per_e8s
 
 
-def _subaccount_from_principal(principal) -> bytes:
-    """CMC subaccount encoding: principal bytes right-aligned in 32 bytes."""
+def _principal_bytes(principal) -> bytes:
+    """Raw principal bytes from Basilisk ``Principal`` objects."""
     raw = getattr(principal, "_bytes", None)
     if raw is None:
-        raw = bytes(principal)
+        b = getattr(principal, "bytes", None)
+        if callable(b):
+            raw = b()
+        elif b is not None:
+            raw = b
+    if raw is None:
+        raise ValueError(f"cannot get bytes from {type(principal).__name__}")
+    return bytes(raw)
+
+
+def _subaccount_from_principal(principal) -> bytes:
+    """CMC subaccount encoding: principal bytes right-aligned in 32 bytes."""
+    raw = _principal_bytes(principal)
     if len(raw) > 32:
         raise ValueError("principal too long for subaccount")
     sub = bytearray(32)
     sub[32 - len(raw):] = raw
     return bytes(sub)
+
+
+def _account_id_from_principal_and_subaccount(principal, subaccount: bytes) -> bytes:
+    """32-byte ICP ledger AccountIdentifier for a principal + 32-byte subaccount."""
+    import hashlib
+    import zlib
+
+    if len(subaccount) != 32:
+        raise ValueError("subaccount must be 32 bytes")
+    sha224 = hashlib.sha224()
+    sha224.update(b"\x0Aaccount-id")
+    sha224.update(_principal_bytes(principal))
+    sha224.update(subaccount)
+    digest = sha224.digest()
+    checksum = zlib.crc32(digest) & 0xFFFFFFFF
+    return checksum.to_bytes(4, byteorder="big") + digest
 
 
 def _variant_ok_first_number(decoded: str):
@@ -634,12 +662,16 @@ def _ledger_account_bytes(account) -> bytes:
     """Raw 32-byte ledger AccountIdentifier from a Principal.to_account_id() value."""
     raw = getattr(account, "_bytes", None)
     if raw is None:
-        raw = getattr(account, "bytes", None)
-        if callable(raw):
-            raw = raw()
-    if raw is None:
+        b = getattr(account, "bytes", None)
+        if callable(b):
+            raw = b()
+        elif b is not None:
+            raw = b
+    if raw is None and hasattr(account, "to_str"):
         s = account.to_str()
         raw = bytes.fromhex(s[2:] if s.startswith("0x") else s)
+    if raw is None:
+        raise ValueError(f"cannot get ledger account bytes from {type(account).__name__}")
     return bytes(raw)
 
 
@@ -690,8 +722,9 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
         canister_id = ic.id()
         cid_str = str(canister_id)
         sub = _subaccount_from_principal(canister_id)
-        to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
-        to_hex = _ledger_account_bytes(to_acct).hex()
+        to_hex = _account_id_from_principal_and_subaccount(
+            Principal.from_str(_CMC_CANISTER_ID), sub,
+        ).hex()
         to_blob = _hex_to_blob_escaped(to_hex)
         transfer_arg = (
             f"(record {{ memo = {MEMO_TOP_UP_CANISTER} : nat64; "
