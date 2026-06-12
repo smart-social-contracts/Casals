@@ -72,6 +72,7 @@ from cycles import (
     resolve_flow_window,
     FLOW_EVENT_BTYPES,
     _treasury_icp_e8s_gen,
+    _fetch_icp_cycles_per_e8s_gen,
     icp_autoconvert_enabled,
 )
 from helpers import (
@@ -2141,6 +2142,10 @@ def get_cycles() -> Async[text]:
         }
         if icp_e8s is not None:
             treasury_obj["icp_e8s"] = icp_e8s
+        try:
+            treasury_obj["icp_cycles_per_e8s"] = yield from _fetch_icp_cycles_per_e8s_gen()
+        except Exception as rate_err:
+            _log.error(f"get_cycles: CMC rate unavailable: {rate_err}")
         treasury_obj.update(treasury_deposit_fields())
 
         result = json.dumps({
@@ -2382,11 +2387,20 @@ def convert_treasury_icp() -> Async[text]:
         _require_admin()
         convert = yield from _treasury_watch_begin_gen(force_convert=True)
         yield from _sync_treasury_baseline_gen()
-        cycles = int(convert.get("cycles") or 0) if convert.get("converted") else 0
-        summary = {"converted": cycles > 0, "cycles": cycles} if cycles > 0 else {"converted": False}
-        if summary.get("converted"):
-            return _ok(**summary)
-        return _ok(converted=False)
+        out = {"converted": bool(convert.get("converted"))}
+        if convert.get("converted"):
+            for key in ("icp_e8s", "cycles", "block_index", "fee_e8s"):
+                if key in convert:
+                    out[key] = convert[key]
+        else:
+            for key in ("reason", "icp_e8s", "error"):
+                if key in convert:
+                    out[key] = convert[key]
+        try:
+            out["icp_cycles_per_e8s"] = yield from _fetch_icp_cycles_per_e8s_gen()
+        except Exception:
+            pass
+        return _ok(**out)
     except Exception as e:
         _log.error(f"convert_treasury_icp error: {e}")
         return _err(str(e))

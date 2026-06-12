@@ -77,6 +77,24 @@ def test_ic_run_status_parses_variant():
     assert cycles_mod._ic_run_status({}) == "unknown"
 
 
+def test_hex_to_blob_escaped():
+    import cycles as cycles_mod
+    assert cycles_mod._hex_to_blob_escaped("aabb01") == "\\aa\\bb\\01"
+
+
+def test_icp_cycles_per_e8s_from_permyriad():
+    import cycles as cycles_mod
+    assert cycles_mod.icp_cycles_per_e8s_from_permyriad(37_000) == 37_000
+
+
+def test_estimate_icp_convert_cycles():
+    import cycles as cycles_mod
+    rate = 37_000
+    assert cycles_mod.estimate_icp_convert_cycles(0, rate) == 0
+    assert cycles_mod.estimate_icp_convert_cycles(10_000, rate) == 0
+    assert cycles_mod.estimate_icp_convert_cycles(100_000_000, rate) == 99_990_000 * rate
+
+
 def test_icp_convert_amount():
     import cycles as cycles_mod
     assert cycles_mod.icp_convert_amount(10_000) is None

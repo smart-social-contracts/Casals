@@ -378,6 +378,23 @@ def icp_convert_amount(icp_e8s: int, fee: int = ICP_TRANSFER_FEE_E8S):
     return int(icp_e8s) - fee
 
 
+def icp_cycles_per_e8s_from_permyriad(permyriad: int) -> int:
+    """Cycles minted per 1 e8s at the CMC ``xdr_permyriad_per_icp`` rate."""
+    return int(permyriad)
+
+
+def estimate_icp_convert_cycles(
+    icp_e8s: int,
+    cycles_per_e8s: int,
+    fee: int = ICP_TRANSFER_FEE_E8S,
+) -> int:
+    """Estimate cycles from a treasury ICP balance at the current CMC rate."""
+    amount = icp_convert_amount(icp_e8s, fee)
+    if amount is None or cycles_per_e8s <= 0:
+        return 0
+    return int(amount) * int(cycles_per_e8s)
+
+
 def icp_autoconvert_enabled(s=None) -> bool:
     """True unless a Settings row explicitly disables ICP auto-convert."""
     s = s or _settings()
@@ -607,6 +624,12 @@ def _variant_ok_first_number(decoded: str):
     num = rest[:end].replace("_", "")
     return int(num) if num else None
 
+def _hex_to_blob_escaped(hex_str: str) -> str:
+    """Candid blob literal for raw bytes (``\\aa\\bb``, not ASCII hex digits)."""
+    h = hex_str.strip()
+    return "".join("\\" + h[i:i + 2] for i in range(0, len(h), 2))
+
+
 def _ledger_account_bytes(account) -> bytes:
     """Raw 32-byte ledger AccountIdentifier from a Principal.to_account_id() value."""
     raw = getattr(account, "_bytes", None)
@@ -624,7 +647,8 @@ def _treasury_icp_e8s_gen():
     """Generator: ICP ledger balance (e8s) held in this canister's default account."""
     try:
         acct_hex = _ledger_account_bytes(ic.id().to_account_id()).hex()
-        arg = ic.candid_encode(f'(record {{ account = blob "{acct_hex}" }})')
+        acct_blob = _hex_to_blob_escaped(acct_hex)
+        arg = ic.candid_encode(f'(record {{ account = blob "{acct_blob}" }})')
         res = yield ic.call_raw(
             Principal.from_str(ICP_LEDGER_CANISTER_ID),
             "account_balance",
@@ -668,11 +692,12 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
         sub = _subaccount_from_principal(canister_id)
         to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
         to_hex = _ledger_account_bytes(to_acct).hex()
+        to_blob = _hex_to_blob_escaped(to_hex)
         transfer_arg = (
             f"(record {{ memo = {MEMO_TOP_UP_CANISTER} : nat64; "
             f"amount = record {{ e8s = {amount_e8s} : nat64 }}; "
             f"fee = record {{ e8s = {ICP_TRANSFER_FEE_E8S} : nat64 }}; "
-            f"from_subaccount = null; to = blob \"{to_hex}\"; created_at_time = null }})"
+            f"from_subaccount = null; to = blob \"{to_blob}\"; created_at_time = null }})"
         )
         res = yield ic.call_raw(
             Principal.from_str(ICP_LEDGER_CANISTER_ID),
@@ -721,6 +746,12 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
     except Exception as e:  # pragma: no cover - on-chain failures
         _log.error(f"icp autoconvert: {e}")
         return {"converted": False, "error": str(e)[:255]}
+
+
+def _fetch_icp_cycles_per_e8s_gen():
+    """Generator: current CMC rate as cycles minted per 1 e8s of ICP."""
+    permyriad = yield from _fetch_xdr_permyriad_per_icp_gen()
+    return icp_cycles_per_e8s_from_permyriad(permyriad)
 
 
 def _fetch_xdr_permyriad_per_icp_gen():

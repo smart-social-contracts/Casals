@@ -172,6 +172,8 @@ export interface Treasury {
   ledger_account_id?: string;
   /** ICP ledger balance (10^-8 ICP) on the Casals backend account, when known. */
   icp_e8s?: number;
+  /** Current CMC rate: cycles minted per 1 e8s of ICP (for conversion quotes). */
+  icp_cycles_per_e8s?: number;
 }
 
 export interface PoolCanisterCycles {

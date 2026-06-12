@@ -7,6 +7,7 @@
     getTreasuryFlow,
     topUp,
     reconcile,
+    convertTreasuryIcp,
     formatCycles,
     formatIcp,
     formatFiat,
@@ -43,6 +44,9 @@
   let error = $state('');
   let busy = $state('');
   let showDeposit = $state(false);
+  let showConvert = $state(false);
+
+  const ICP_TRANSFER_FEE_E8S = 10_000;
   let copiedField = $state('');
   let meta = $state<Metadata | null>(null);
   let derivedLedgerId = $state('');
@@ -70,12 +74,23 @@
   });
 
   // ── chart controls ──
-  type Scope = 'total' | 'section' | 'stand' | 'canister';
-  type WindowKey = '1h' | '1d' | '1w' | '1month';
+  type Scope = 'all' | 'orchestra' | 'sections' | 'stands' | 'canisters';
+  type WindowKey = '1h' | '1d' | '1w' | '1month' | 'inception';
   type Metric = 'burn' | 'balance';
   type FlowUnit = 'tc' | 'icp' | 'usd';
-  const WINDOWS: Record<WindowKey, number> = { '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000 };
-  const WINDOW_LABELS: Record<WindowKey, string> = { '1h': '1 hour', '1d': '1 day', '1w': '1 week', '1month': '1 month' };
+  const WINDOWS: Record<WindowKey, number> = {
+    '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000, 'inception': 0,
+  };
+  const WINDOW_LABELS: Record<WindowKey, string> = {
+    '1h': '1 hour', '1d': '1 day', '1w': '1 week', '1month': '1 month', 'inception': 'inception',
+  };
+  const SCOPE_OPTIONS: [Scope, string][] = [
+    ['all', 'All'],
+    ['orchestra', 'Orchestra'],
+    ['sections', 'Sections'],
+    ['stands', 'Stands'],
+    ['canisters', 'Canisters'],
+  ];
   const FLOW_PERIODS: { key: TreasuryFlowPeriod; label: string }[] = [
     { key: 'hour', label: 'Hour' },
     { key: 'day', label: 'Day' },
@@ -90,8 +105,10 @@
     month: 'per month',
     inception: 'since inception',
   };
-  let scope = $state<Scope>('total');
+  let scope = $state<Scope>('all');
+  let scopeFilter = $state<Set<string>>(new Set());
   let windowKey = $state<WindowKey>('1d');
+  let treemapWindow = $state<WindowKey>('1month');
   let metric = $state<Metric>('burn');
   let flowPeriod = $state<TreasuryFlowPeriod>('day');
   let flowUnit = $state<FlowUnit>('tc');
@@ -173,10 +190,22 @@
   }
 
   const icpCyclesPerE8s = $derived(
-    treasuryFlow?.icp_cycles_per_e8s && treasuryFlow.icp_cycles_per_e8s > 0
-      ? treasuryFlow.icp_cycles_per_e8s
-      : 16175,
+    report?.treasury?.icp_cycles_per_e8s && report.treasury.icp_cycles_per_e8s > 0
+      ? report.treasury.icp_cycles_per_e8s
+      : treasuryFlow?.icp_cycles_per_e8s && treasuryFlow.icp_cycles_per_e8s > 0
+        ? treasuryFlow.icp_cycles_per_e8s
+        : 16175,
   );
+
+  const treasuryIcpE8s = $derived(report?.treasury?.icp_e8s ?? 0);
+  const convertibleIcpE8s = $derived(
+    treasuryIcpE8s > ICP_TRANSFER_FEE_E8S ? treasuryIcpE8s - ICP_TRANSFER_FEE_E8S : 0,
+  );
+  const estimatedConvertCycles = $derived(
+    convertibleIcpE8s > 0 ? convertibleIcpE8s * icpCyclesPerE8s : 0,
+  );
+  const tcPerIcp = $derived(icpCyclesPerE8s > 0 ? (icpCyclesPerE8s * 1e8) / 1e12 : 0);
+  const canConvertIcp = $derived($isAuthenticated && convertibleIcpE8s > 0);
 
   function flowBucketCycles(b: TreasuryFlowBucket, kind: 'deposited' | 'converted' | 'consumed'): number {
     const rate = icpCyclesPerE8s;
@@ -234,15 +263,77 @@
 
   const now = $derived(history?.now ?? Math.floor(Date.now() / 1000));
   const winSecs = $derived(WINDOWS[windowKey]);
-  const since = $derived(now - winSecs);
+  const since = $derived(windowKey === 'inception' ? 0 : now - winSecs);
   const samples = $derived(history?.samples ?? []);
-  const windowSamples = $derived(samples.filter((s) => s.ts >= since));
+  const windowSamples = $derived(
+    windowKey === 'inception' ? samples : samples.filter((s) => s.ts >= since),
+  );
+
+  const treemapWinSecs = $derived(WINDOWS[treemapWindow]);
+  const treemapSince = $derived(treemapWindow === 'inception' ? 0 : now - treemapWinSecs);
+  const treemapSamples = $derived(
+    treemapWindow === 'inception' ? samples : samples.filter((s) => s.ts >= treemapSince),
+  );
+
+  function setScope(next: Scope) {
+    scope = next;
+    scopeFilter = new Set();
+  }
+
+  function toggleScopeFilter(key: string) {
+    const next = new Set(scopeFilter);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    scopeFilter = next;
+  }
+
+  function selectAllScopeFilter(keys: string[]) {
+    scopeFilter = new Set(keys);
+  }
+
+  function clearScopeFilter() {
+    scopeFilter = new Set();
+  }
+
+  function scopeItemKey(s: CycleHistory['samples'][number], forScope: Scope): string {
+    if (forScope === 'sections' || forScope === 'orchestra') return s.section || '(none)';
+    if (forScope === 'stands') return s.stand || '(none)';
+    return s.canister || s.canister_id;
+  }
+
+  function passesScopeFilter(s: CycleHistory['samples'][number]): boolean {
+    if (scope === 'all' || scope === 'orchestra') return true;
+    if (scopeFilter.size === 0) return true;
+    return scopeFilter.has(scopeItemKey(s, scope));
+  }
+
+  const filterOptions = $derived.by<string[]>(() => {
+    const ss = windowSamples;
+    if (scope === 'sections' || scope === 'orchestra') {
+      return [...new Set(ss.map((s) => s.section || '(none)'))].sort();
+    }
+    if (scope === 'stands') {
+      return [...new Set(ss.map((s) => s.stand || '(none)'))].sort();
+    }
+    if (scope === 'canisters') {
+      return [...new Set(ss.map((s) => s.canister || s.canister_id))].sort();
+    }
+    return [];
+  });
+
+  const scopeSubtitle = $derived(
+    scope === 'all' ? 'all canisters combined'
+      : scope === 'orchestra' ? 'by section'
+      : scope === 'sections' ? 'selected sections'
+      : scope === 'stands' ? 'selected stands'
+      : 'selected canisters',
+  );
 
   // Over-time series for the selected scope (sum by ts for aggregated scopes).
   const lineSeries = $derived.by<Series[]>(() => {
-    const ss = windowSamples;
+    const ss = windowSamples.filter(passesScopeFilter);
     if (!ss.length) return [];
-    if (scope === 'canister') {
+    if (scope === 'canisters') {
       const byCan = new Map<string, { name: string; points: { t: number; v: number }[] }>();
       for (const s of ss) {
         let e = byCan.get(s.canister_id);
@@ -251,12 +342,15 @@
       }
       return [...byCan.values()].map((e, i) => ({ name: e.name, color: colorAt(i), points: e.points }));
     }
-    if (scope === 'total') {
+    if (scope === 'all') {
       const byTs = new Map<number, number>();
       for (const s of ss) byTs.set(s.ts, (byTs.get(s.ts) ?? 0) + s.cycles);
-      return [{ name: 'Total', color: colorAt(0), points: [...byTs.entries()].map(([t, v]) => ({ t, v })) }];
+      return [{ name: 'All', color: colorAt(0), points: [...byTs.entries()].map(([t, v]) => ({ t, v })) }];
     }
-    const keyOf = scope === 'section' ? (s: typeof ss[number]) => s.section : (s: typeof ss[number]) => s.stand;
+    const keyOf =
+      scope === 'orchestra' || scope === 'sections'
+        ? (s: typeof ss[number]) => s.section
+        : (s: typeof ss[number]) => s.stand;
     const byKey = new Map<string, Map<number, number>>();
     for (const s of ss) {
       const k = keyOf(s) || '(none)';
@@ -273,8 +367,8 @@
 
   // Section ⊃ stand ⊃ canister tree sized by balance (latest) or burn (window).
   const treemapRoot = $derived.by<TreemapInput>(() => {
-    const byCan = new Map<string, { section: string; stand: string; canister: string; canister_id: string; pts: typeof samples }>();
-    for (const s of samples) {
+    const byCan = new Map<string, { section: string; stand: string; canister: string; canister_id: string; pts: typeof treemapSamples }>();
+    for (const s of treemapSamples) {
       let e = byCan.get(s.canister_id);
       if (!e) { e = { section: s.section, stand: s.stand, canister: s.canister, canister_id: s.canister_id, pts: [] }; byCan.set(s.canister_id, e); }
       e.pts.push(s);
@@ -288,7 +382,7 @@
       if (metric === 'balance') {
         value = end.cycles;
       } else {
-        const start = [...e.pts].reverse().find((s) => s.ts <= since) ?? e.pts[0];
+        const start = [...e.pts].reverse().find((s) => s.ts <= treemapSince) ?? e.pts[0];
         value = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
       }
       const secName = e.section || '(none)';
@@ -319,6 +413,27 @@
       await load();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Reconcile failed');
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function runConvertIcp() {
+    busy = 'convert';
+    try {
+      const res = await convertTreasuryIcp();
+      if (res.converted && typeof res.cycles === 'number') {
+        const icpPart = typeof res.icp_e8s === 'number' ? formatIcp(res.icp_e8s) : 'ICP';
+        toasts.success(`Converted ${icpPart} → ${formatCycles(res.cycles)}`);
+        showConvert = false;
+        await load();
+        await reloadTreasuryFlow(flowPeriod);
+      } else {
+        const msg = (res.reason as string) || res.error || 'Nothing to convert';
+        toasts.error(msg);
+      }
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Conversion failed');
     } finally {
       busy = '';
     }
@@ -402,26 +517,39 @@
       <div class="card p-4">
         <div class="flex items-start justify-between gap-2">
           <p class="text-xs text-primary-500">Treasury balance</p>
-          <button
-            type="button"
-            class="btn-secondary btn-sm shrink-0 -mt-0.5 px-2 py-0.5 text-xs"
-            onclick={() => (showDeposit = true)}
-          >Deposit</button>
+          <div class="flex items-center gap-1 shrink-0 -mt-0.5">
+            {#if $isAuthenticated}
+              <button
+                type="button"
+                class="btn-secondary btn-sm px-2 py-0.5 text-xs"
+                title="Convert ledger ICP to cycles"
+                onclick={() => (showConvert = true)}
+              >Convert</button>
+            {/if}
+            <button
+              type="button"
+              class="btn-secondary btn-sm px-2 py-0.5 text-xs"
+              onclick={() => (showDeposit = true)}
+            >Deposit</button>
+          </div>
         </div>
-        <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.balance)}</p>
-        <Fiat value={report.treasury.balance} block />
-        <p class="text-[11px] text-primary-500 font-mono mt-1">
-          {#if report.treasury.icp_e8s !== undefined}
-            {formatIcp(report.treasury.icp_e8s)}
-          {:else if refreshing}
-            ICP: refreshing…
-          {:else}
-            ICP: —
-          {/if}
-          {#if report.treasury.icp_autoconvert}
-            <span class="text-primary-400"> · auto-converts</span>
-          {/if}
+        <p class="text-lg font-semibold text-primary-900 font-mono flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span>{formatCycles(report.treasury.balance)}</span>
+          <span class="text-primary-300 font-normal" aria-hidden="true">·</span>
+          <span>
+            {#if report.treasury.icp_e8s !== undefined}
+              {formatIcp(report.treasury.icp_e8s)} ICP
+            {:else if refreshing}
+              <span class="text-sm text-primary-400">ICP refreshing…</span>
+            {:else}
+              <span class="text-sm text-primary-400">ICP —</span>
+            {/if}
+          </span>
         </p>
+        <Fiat value={report.treasury.balance} block />
+        {#if report.treasury.icp_autoconvert}
+          <p class="text-[11px] text-primary-400 mt-1">ICP auto-converts on refresh and reconcile</p>
+        {/if}
       </div>
       <div class="card p-4">
         <p class="text-xs text-primary-500">Spendable</p>
@@ -468,17 +596,50 @@
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
         <div>
           <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
-          <p class="text-xs text-primary-400">Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scope}.</p>
+          <p class="text-xs text-primary-400">
+            Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
+          </p>
         </div>
         <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
-          {#each [['total', 'Total'], ['section', 'Section'], ['stand', 'Stand'], ['canister', 'Canister']] as opt (opt[0])}
+          {#each SCOPE_OPTIONS as opt (opt[0])}
             <button
               class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-              onclick={() => (scope = opt[0] as Scope)}
+              onclick={() => setScope(opt[0])}
             >{opt[1]}</button>
           {/each}
         </div>
       </div>
+      {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
+        <div class="flex flex-wrap items-center gap-2 mb-3">
+          <span class="text-xs text-primary-500">Show</span>
+          <button
+            type="button"
+            class="text-xs text-primary-600 hover:text-primary-900 underline"
+            onclick={() => selectAllScopeFilter(filterOptions)}
+          >all</button>
+          <span class="text-primary-300">·</span>
+          <button
+            type="button"
+            class="text-xs text-primary-600 hover:text-primary-900 underline"
+            onclick={clearScopeFilter}
+          >clear</button>
+          {#each filterOptions as key (key)}
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded-full text-xs border transition-colors
+                {scopeFilter.size === 0 || scopeFilter.has(key)
+                  ? 'bg-primary-100 border-primary-300 text-primary-800'
+                  : 'bg-white border-[var(--color-border-primary)] text-primary-400'}"
+              onclick={() => toggleScopeFilter(key)}
+            >{key}</button>
+          {/each}
+          {#if scopeFilter.size > 0}
+            <span class="text-xs text-primary-400">({scopeFilter.size} selected)</span>
+          {:else}
+            <span class="text-xs text-primary-400">(all)</span>
+          {/if}
+        </div>
+      {/if}
       <LineChart series={lineSeries} format={formatCycles} />
     </div>
 
@@ -510,7 +671,13 @@
           </div>
         </div>
       </div>
-      {#if flowTotals}
+      {#if !flowSeries.some((s) => s.points.length)}
+        <p class="text-sm text-primary-400 text-center py-8">
+          No treasury flow events in this range yet. Deposits (ICP or cycles), auto-conversions, and
+          autopilot top-ups are recorded in Activity — try <strong>Inception</strong>, or run
+          <strong>Reconcile</strong> after funding the treasury.
+        </p>
+      {:else if flowTotals}
         <div class="grid grid-cols-3 gap-3 mb-4 text-center">
           <div class="rounded-lg bg-emerald-50 px-3 py-2">
             <p class="text-[11px] text-emerald-700">Deposited</p>
@@ -526,7 +693,9 @@
           </div>
         </div>
       {/if}
-      <LineChart series={flowSeries} format={formatFlowValue} />
+      {#if flowSeries.some((s) => s.points.length)}
+        <LineChart series={flowSeries} format={formatFlowValue} />
+      {/if}
     </div>
 
     <!-- Treemap -->
@@ -535,16 +704,26 @@
         <div>
           <h2 class="text-sm font-semibold text-primary-900">Cycles by section / stand / canister</h2>
           <p class="text-xs text-primary-400">
-            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[windowKey]}` : 'Current balance'}, tiled by section ⊃ stand ⊃ canister.
+            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[treemapWindow]}` : 'Current balance'}, tiled by section ⊃ stand ⊃ canister.
           </p>
         </div>
-        <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
-          {#each [['burn', 'Burn'], ['balance', 'Balance']] as opt (opt[0])}
-            <button
-              class="px-3 py-1.5 text-xs font-medium {metric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-              onclick={() => (metric = opt[0] as Metric)}
-            >{opt[1]}</button>
-          {/each}
+        <div class="flex flex-wrap gap-2 self-start">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each Object.keys(WINDOWS) as w (w)}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {treemapWindow === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => (treemapWindow = w as WindowKey)}
+              >{w}</button>
+            {/each}
+          </div>
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each [['burn', 'Burn'], ['balance', 'Balance']] as opt (opt[0])}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {metric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => (metric = opt[0] as Metric)}
+              >{opt[1]}</button>
+            {/each}
+          </div>
         </div>
       </div>
       <Treemap root={treemapRoot} format={formatCycles} />
@@ -654,6 +833,85 @@
     {#if !$isAuthenticated}
       <p class="text-xs text-primary-400">Log in as a commander/controller to top up canisters or reconcile.</p>
     {/if}
+  {/if}
+
+  {#if showConvert && report?.treasury}
+    <div class="fixed inset-0 z-40 flex items-center justify-center">
+      <button
+        type="button"
+        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
+        aria-label="Close convert dialog"
+        onclick={() => (showConvert = false)}
+      ></button>
+      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">Convert ICP to cycles</h3>
+        <p class="text-sm text-primary-500 mb-4">
+          Burn ledger ICP on the Casals backend and mint cycles into the treasury via the CMC.
+          Works even when auto-convert is enabled.
+        </p>
+
+        <dl class="space-y-3 text-sm mb-5">
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Ledger ICP</dt>
+            <dd class="font-mono font-semibold text-primary-900">
+              {#if report.treasury.icp_e8s !== undefined}
+                {formatIcp(report.treasury.icp_e8s)}
+              {:else}
+                —
+              {/if}
+            </dd>
+          </div>
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Transfer fee</dt>
+            <dd class="font-mono text-primary-700">{formatIcp(ICP_TRANSFER_FEE_E8S)}</dd>
+          </div>
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Rate</dt>
+            <dd class="font-mono text-primary-700">
+              {#if tcPerIcp > 0}
+                1 ICP ≈ {tcPerIcp.toLocaleString(undefined, { maximumFractionDigits: 3 })} TC
+              {:else}
+                —
+              {/if}
+            </dd>
+          </div>
+          <div class="flex justify-between gap-4 border-t border-[var(--color-border-primary)] pt-3">
+            <dt class="text-primary-700 font-medium">You receive</dt>
+            <dd class="font-mono font-semibold text-primary-900">
+              {#if estimatedConvertCycles > 0}
+                {formatCycles(estimatedConvertCycles)}
+              {:else}
+                —
+              {/if}
+            </dd>
+          </div>
+        </dl>
+
+        {#if !canConvertIcp}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            {#if !$isAuthenticated}
+              Log in as a controller to convert ICP.
+            {:else if report.treasury.icp_e8s === undefined}
+              ICP balance unknown — refresh and try again.
+            {:else}
+              Not enough ICP to cover the ledger transfer fee ({formatIcp(ICP_TRANSFER_FEE_E8S)}).
+            {/if}
+          </p>
+        {/if}
+
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-secondary btn-sm" onclick={() => (showConvert = false)}>Cancel</button>
+          <button
+            type="button"
+            class="btn-primary btn-sm"
+            disabled={!canConvertIcp || busy === 'convert'}
+            onclick={runConvertIcp}
+          >
+            {busy === 'convert' ? 'Converting…' : 'Confirm conversion'}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if showDeposit && report?.treasury}
