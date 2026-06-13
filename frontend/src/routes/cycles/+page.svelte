@@ -455,21 +455,24 @@
 
   const hasHistory = $derived(samples.length > 0);
 
-  function cyclesInputDefault(n: number): string {
-    if (!n) return '1t';
-    if (n >= 1e12 && n % 1e12 === 0) return `${n / 1e12}t`;
-    if (n >= 1e9 && n % 1e9 === 0) return `${n / 1e9}b`;
-    return String(n);
+  function cyclesToTcInput(cycles: number): string {
+    return formatCycles(cycles).replace(/ TC$/, '');
   }
 
-  const topUpParsed = $derived(parseCycles(topUpAmount));
+  function parseTcAmount(s: string): number {
+    const trimmed = String(s).trim().toLowerCase().replace(/\s*tc$/, '');
+    if (!trimmed) return NaN;
+    return parseCycles(`${trimmed}tc`);
+  }
+
+  const topUpParsed = $derived(parseTcAmount(topUpAmount));
   const topUpValid = $derived(Number.isFinite(topUpParsed) && topUpParsed > 0);
   const topUpSpendable = $derived(report?.treasury?.spendable ?? 0);
   const topUpOverTreasury = $derived(topUpValid && topUpParsed > topUpSpendable);
 
   function openTopUp(canister: CanisterCycles) {
     topUpTarget = canister;
-    topUpAmount = cyclesInputDefault(
+    topUpAmount = cyclesToTcInput(
       canister.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000,
     );
   }
@@ -944,23 +947,26 @@
         </dl>
 
         <div class="mb-4">
-          <label class="label" for="topUpAmount">Amount</label>
-          <input
-            id="topUpAmount"
-            type="text"
-            class="input font-mono"
-            placeholder="1t"
-            bind:value={topUpAmount}
-          />
-          <p class="text-xs text-primary-400 mt-1.5">Suffixes: t or tc (trillion), b (billion), m (million).</p>
+          <label class="label" for="topUpAmount">Amount (TC)</label>
+          <div class="relative">
+            <input
+              id="topUpAmount"
+              type="text"
+              class="input font-mono pr-12"
+              placeholder="1.00"
+              bind:value={topUpAmount}
+            />
+            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
+          </div>
+          <p class="text-xs text-primary-400 mt-1.5">Trillion cycles (TC), same unit as balances above.</p>
         </div>
 
         <div class="flex flex-wrap gap-2 mb-4">
           {#each [
-            { label: 'Policy', value: cyclesInputDefault(topUpTarget.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
-            { label: '0.5 TC', value: '0.5t' },
-            { label: '1 TC', value: '1t' },
-            { label: '2 TC', value: '2t' },
+            { label: 'Policy', value: cyclesToTcInput(topUpTarget.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
+            { label: '0.5 TC', value: '0.5' },
+            { label: '1 TC', value: '1' },
+            { label: '2 TC', value: '2' },
           ] as preset (preset.label)}
             <button
               type="button"
@@ -972,7 +978,7 @@
 
         {#if topUpAmount && !topUpValid}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Enter a valid amount (e.g. 1t, 500b).
+            Enter a valid TC amount (e.g. 1 or 0.5).
           </p>
         {:else if topUpOverTreasury}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
