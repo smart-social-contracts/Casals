@@ -560,48 +560,57 @@ FLOW_EVENT_BTYPES = (
     "cycles_return",
 )
 
-# Audit rows loaded per page when building treasury-flow charts.  Large single
-# loads exceed the query instruction limit once the log grows (see get_events).
-FLOW_EVENT_PAGE = 120
+# Raw audit rows scanned per get_treasury_flow query page.  The frontend
+# stitches pages (like get_cycle_history) and aggregates locally.
+FLOW_EVENT_RAW_PAGE = 80
 
 
-def collect_treasury_flow_events(since: int):
-    """Collect flow-related audit events, walking the log backwards in pages."""
+def treasury_flow_events_page(since: int, before_id: int = 0):
+    """One backward page of the audit log; returns matching flow events.
+
+    Returns ``(events, has_more, next_before_id)``.
+    """
     from models import OrchestrationEvent
 
     flow_btypes = set(FLOW_EVENT_BTYPES)
     total = OrchestrationEvent.count()
     if not total:
-        return []
+        return [], False, 0
     max_oid = OrchestrationEvent.max_id()
-    end_id = max_oid
+    end_id = int(before_id) if before_id > 0 else max_oid
+    end_id = min(end_id, max_oid)
+    if end_id < 1:
+        return [], False, 0
+    fetch = min(FLOW_EVENT_RAW_PAGE, end_id)
+    start_id = end_id - fetch + 1
+    chunk = OrchestrationEvent.load_some(start_id, fetch)
     events = []
-    while end_id >= 1:
-        fetch = min(FLOW_EVENT_PAGE, end_id)
-        start_id = end_id - fetch + 1
-        chunk = OrchestrationEvent.load_some(start_id, fetch)
-        oldest_ts = None
-        for e in chunk:
-            ts = int(e.timestamp_secs or 0)
-            if ts > 0:
-                oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
-            if e.btype not in flow_btypes:
-                continue
-            if since and ts > 0 and ts < since:
-                continue
-            try:
-                payload = json.loads(e.payload_json or "{}")
-            except (json.JSONDecodeError, ValueError):
-                payload = {}
-            events.append({
-                "btype": e.btype,
-                "timestamp_secs": ts,
-                "payload": payload,
-            })
-        end_id = start_id - 1
-        if since and oldest_ts is not None and oldest_ts < since:
-            break
-    return events
+    oldest_ts = None
+    for e in chunk:
+        ts = int(e.timestamp_secs or 0)
+        if ts > 0:
+            oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
+        if e.btype not in flow_btypes:
+            continue
+        if since and ts > 0 and ts < since:
+            continue
+        try:
+            payload = json.loads(e.payload_json or "{}")
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+        events.append({
+            "btype": e.btype,
+            "timestamp_secs": ts,
+            "payload": payload,
+        })
+    next_before = start_id - 1 if start_id > 1 else 0
+    if not next_before:
+        has_more = False
+    elif since and oldest_ts is not None and oldest_ts < since:
+        has_more = False
+    else:
+        has_more = True
+    return events, has_more, next_before
 
 
 def resolve_flow_window(period: str, window_secs=None, now: int = 0) -> tuple:

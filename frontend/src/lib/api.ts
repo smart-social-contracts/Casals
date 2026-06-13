@@ -216,6 +216,24 @@ export interface CycleHistory {
 
 export type TreasuryFlowPeriod = 'hour' | 'day' | 'week' | 'month' | 'inception';
 
+export interface TreasuryFlowEvent {
+  btype: string;
+  timestamp_secs: number;
+  payload: Record<string, unknown>;
+}
+
+interface TreasuryFlowPage {
+  now: number;
+  period: TreasuryFlowPeriod;
+  since: number;
+  bucket_secs: number;
+  events: TreasuryFlowEvent[];
+  has_more: boolean;
+  before_id: number;
+  display_currency: string;
+  fx_micro_per_tcycle: number;
+}
+
 export interface TreasuryFlowBucket {
   ts: number;
   span_end?: number;
@@ -224,6 +242,101 @@ export interface TreasuryFlowBucket {
   converted_cycles: number;
   consumed_cycles: number;
   returned_cycles?: number;
+}
+
+function flowBucketTs(ts: number, bucketSecs: number): number {
+  const bs = Math.max(60, bucketSecs);
+  return Math.floor(ts / bs) * bs;
+}
+
+/** Mirror of cycles.aggregate_treasury_flow (frontend stitches paginated events). */
+export function aggregateTreasuryFlow(
+  events: TreasuryFlowEvent[],
+  since: number,
+  bucketSecs: number,
+  now: number,
+): { buckets: TreasuryFlowBucket[]; totals: TreasuryFlow['totals']; icp_cycles_per_e8s: number } {
+  const totals = {
+    deposited_cycles: 0,
+    deposited_icp_e8s: 0,
+    converted_cycles: 0,
+    consumed_cycles: 0,
+    returned_cycles: 0,
+  };
+  let icpCyclesPerE8s = 0;
+  const buckets = new Map<number, TreasuryFlowBucket>();
+  let earliest: number | null = null;
+
+  for (const ev of events) {
+    const ts = Number(ev.timestamp_secs || 0);
+    if (ts <= 0) continue;
+    if (earliest === null || ts < earliest) earliest = ts;
+    if (since && ts < since) continue;
+    const payload = (ev.payload ?? {}) as Record<string, unknown>;
+    const bucketKey = bucketSecs <= 0 ? 0 : flowBucketTs(ts, bucketSecs);
+    let b = buckets.get(bucketKey);
+    if (!b) {
+      b = {
+        ts: bucketSecs <= 0 ? ts : bucketKey,
+        deposited_cycles: 0,
+        deposited_icp_e8s: 0,
+        converted_cycles: 0,
+        consumed_cycles: 0,
+        returned_cycles: 0,
+      };
+      buckets.set(bucketKey, b);
+    }
+    const amt = (k: string) => Number(payload[k] || 0);
+    switch (ev.btype) {
+      case 'treasury_cycles_deposit':
+        totals.deposited_cycles += amt('amount');
+        b.deposited_cycles += amt('amount');
+        break;
+      case 'treasury_icp_deposit':
+        totals.deposited_icp_e8s += amt('amount_e8s');
+        b.deposited_icp_e8s += amt('amount_e8s');
+        break;
+      case 'cycles_icp_convert': {
+        const icp = amt('icp_e8s');
+        const cyc = amt('cycles');
+        if (icp > 0 && cyc > 0) icpCyclesPerE8s = Math.max(icpCyclesPerE8s, cyc / icp);
+        totals.converted_cycles += cyc;
+        b.converted_cycles += cyc;
+        break;
+      }
+      case 'cycles_topup':
+        totals.consumed_cycles += amt('amount');
+        b.consumed_cycles += amt('amount');
+        break;
+      case 'cycles_return':
+        totals.returned_cycles += amt('amount');
+        b.returned_cycles = (b.returned_cycles ?? 0) + amt('amount');
+        break;
+    }
+  }
+
+  if (bucketSecs <= 0 && earliest !== null) {
+    const spanEnd = now || Math.max(...[...buckets.values()].map((r) => r.ts), earliest);
+    return {
+      buckets: [{
+        ts: earliest,
+        span_end: spanEnd,
+        deposited_cycles: totals.deposited_cycles,
+        deposited_icp_e8s: totals.deposited_icp_e8s,
+        converted_cycles: totals.converted_cycles,
+        consumed_cycles: totals.consumed_cycles,
+        returned_cycles: totals.returned_cycles,
+      }],
+      totals,
+      icp_cycles_per_e8s: icpCyclesPerE8s,
+    };
+  }
+
+  return {
+    buckets: [...buckets.values()].sort((a, b) => a.ts - b.ts),
+    totals,
+    icp_cycles_per_e8s: icpCyclesPerE8s,
+  };
 }
 
 export interface TreasuryFlow {
@@ -575,7 +688,44 @@ export async function getTreasuryFlow(opts: {
   period?: TreasuryFlowPeriod;
   window_secs?: number;
 } = {}): Promise<TreasuryFlow> {
-  return _parseQuery<TreasuryFlow>(await (await _actor()).get_treasury_flow(JSON.stringify(opts)));
+  const actor = await _actor();
+  const all: TreasuryFlowEvent[] = [];
+  let before_id = 0;
+  let page: TreasuryFlowPage | null = null;
+  for (;;) {
+    const raw = _parseQuery<TreasuryFlowPage>(
+      await actor.get_treasury_flow(
+        JSON.stringify({
+          ...opts,
+          ...(before_id > 0 ? { before_id } : {}),
+        }),
+      ),
+    );
+    page = raw;
+    all.push(...(raw.events ?? []));
+    if (!raw.has_more || !raw.before_id) break;
+    before_id = raw.before_id;
+  }
+  if (!page) {
+    throw new Error('treasury flow: empty response');
+  }
+  const { buckets, totals, icp_cycles_per_e8s } = aggregateTreasuryFlow(
+    all,
+    page.since,
+    page.bucket_secs,
+    page.now,
+  );
+  return {
+    now: page.now,
+    period: page.period,
+    since: page.since,
+    bucket_secs: page.bucket_secs,
+    totals,
+    buckets,
+    icp_cycles_per_e8s,
+    display_currency: page.display_currency,
+    fx_micro_per_tcycle: page.fx_micro_per_tcycle,
+  };
 }
 
 export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {

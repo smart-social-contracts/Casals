@@ -68,7 +68,6 @@ from cycles import (
     treasury_deposit_fields,
     _treasury_watch_begin_gen,
     _sync_treasury_baseline_gen,
-    aggregate_treasury_flow,
     resolve_flow_window,
     _treasury_icp_e8s_gen,
     _fetch_icp_cycles_per_e8s_gen,
@@ -76,7 +75,6 @@ from cycles import (
     icp_autoconvert_enabled,
     overlay_treasury_settings,
     refresh_cycles_snapshot_settings,
-    collect_treasury_flow_events,
 )
 from helpers import (
     ANONYMOUS,
@@ -2288,16 +2286,16 @@ def _cycle_history_page(since: int, before_id: int, limit: int):
 
 @query
 def get_treasury_flow(args: text) -> text:
-    """Treasury inflow/outflow aggregated over time for charting.
+    """Treasury inflow/outflow events for charting (paginated).
 
     Args (JSON, optional): {
       "period": "hour"|"day"|"week"|"month"|"inception" (default day),
-      "window_secs": int — override look-back (ignored for inception)
+      "window_secs": int — override look-back (ignored for inception),
+      "before_id": int — paginate backward through the audit log (from prior page)
     }
 
-    Returns buckets of deposited / converted / consumed amounts plus window
-    totals. Amounts are raw cycles and icp_e8s; the frontend picks TC / ICP /
-    display currency using casals_metadata fx fields.
+    Returns one page of matching flow events plus ``has_more`` / ``before_id``.
+    The frontend stitches pages and aggregates into buckets (see api.ts).
     """
     try:
         params = json.loads(args) if args else {}
@@ -2311,18 +2309,16 @@ def get_treasury_flow(args: text) -> text:
         period, params.get("window_secs"), now=now,
     )
     s = _settings()
-    events = collect_treasury_flow_events(since)
-    buckets, totals, icp_rate = aggregate_treasury_flow(
-        events, since, bucket_secs, now=now,
-    )
+    before_id = int(params.get("before_id") or 0)
+    events, has_more, next_before = _cycles_mod.treasury_flow_events_page(since, before_id)
     return json.dumps({
         "now": now,
         "period": period,
         "since": since,
         "bucket_secs": bucket_secs,
-        "totals": totals,
-        "buckets": buckets,
-        "icp_cycles_per_e8s": icp_rate,
+        "events": events,
+        "has_more": has_more,
+        "before_id": next_before,
         "display_currency": (s.display_currency or "USD"),
         "fx_micro_per_tcycle": int(s.fx_micro_per_tcycle or 0),
     })
