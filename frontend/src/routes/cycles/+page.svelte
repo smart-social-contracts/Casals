@@ -528,11 +528,14 @@
         </svg>
         Refresh
       </button>
-      {#if $isAuthenticated}
-        <button class="btn-primary btn-sm" onclick={runReconcile} disabled={busy === 'reconcile'}>
-          {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile now'}
-        </button>
-      {/if}
+      <button
+        class="btn-primary btn-sm"
+        onclick={runReconcile}
+        disabled={!$isAuthenticated || busy === 'reconcile'}
+        title={!$isAuthenticated ? 'Log in with Internet Identity' : undefined}
+      >
+        {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile now'}
+      </button>
     </div>
   </div>
 
@@ -556,14 +559,13 @@
       <div class="flex items-start justify-between gap-2">
         <p class="text-xs text-primary-500">Treasury balance</p>
         <div class="flex items-center gap-1 shrink-0 -mt-0.5">
-          {#if $isAuthenticated}
-            <button
-              type="button"
-              class="btn-secondary btn-sm px-2 py-0.5 text-xs"
-              title="Convert ledger ICP to cycles"
-              onclick={() => (showConvert = true)}
-            >Convert</button>
-          {/if}
+          <button
+            type="button"
+            class="btn-secondary btn-sm px-2 py-0.5 text-xs"
+            title={!$isAuthenticated ? 'Log in with Internet Identity' : 'Convert ledger ICP to cycles'}
+            disabled={!$isAuthenticated}
+            onclick={() => (showConvert = true)}
+          >Convert</button>
           <button
             type="button"
             class="btn-secondary btn-sm px-2 py-0.5 text-xs"
@@ -576,7 +578,7 @@
         <span class="text-primary-300 font-normal" aria-hidden="true">·</span>
         <span>
           {#if report.treasury.icp_e8s !== undefined}
-            {formatIcp(report.treasury.icp_e8s)} ICP
+            {formatIcp(report.treasury.icp_e8s)}
           {:else if refreshing}
             <span class="text-sm text-primary-400">ICP refreshing…</span>
           {:else}
@@ -776,7 +778,7 @@
               <th class="text-right font-medium px-4 py-2.5">Cycles</th>
               <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell">Min policy</th>
               <th class="text-center font-medium px-4 py-2.5">Status</th>
-              {#if $isAuthenticated}<th class="px-4 py-2.5"></th>{/if}
+              <th class="px-4 py-2.5 text-right text-xs font-medium">Top up</th>
             </tr>
           </thead>
           <tbody>
@@ -796,17 +798,16 @@
                 <td class="px-4 py-2.5 text-center">
                   <span class="badge {cycleStatusBadge(s.status)}">{s.status}</span>
                 </td>
-                {#if $isAuthenticated}
-                  <td class="px-4 py-2.5 text-right">
-                    <button
-                      class="btn-secondary btn-sm"
-                      onclick={() => runTopUp(s)}
-                      disabled={busy === s.canister_id}
-                    >
-                      {busy === s.canister_id ? '…' : 'Top up'}
-                    </button>
-                  </td>
-                {/if}
+                <td class="px-4 py-2.5 text-right">
+                  <button
+                    class="btn-secondary btn-sm"
+                    onclick={() => runTopUp(s)}
+                    disabled={!$isAuthenticated || busy === s.canister_id}
+                    title={!$isAuthenticated ? 'Log in with Internet Identity' : undefined}
+                  >
+                    {busy === s.canister_id ? '…' : 'Top up'}
+                  </button>
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -862,10 +863,6 @@
           </table>
         {/if}
       </div>
-    {/if}
-
-    {#if !$isAuthenticated}
-      <p class="text-xs text-primary-400">Log in as a commander/controller to top up canisters or reconcile.</p>
     {/if}
   {/if}
 

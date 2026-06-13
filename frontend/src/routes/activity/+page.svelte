@@ -95,7 +95,7 @@
       case 'cycles_checked': return `Checked balance ${fmt(p.balance)} · ${p.status ?? 'ok'}`;
       case 'cycles_low': return 'Low cycles balance — treasury exhausted';
       case 'cycles_reconcile': return `Reconcile (${p.source ?? 'autopilot'}): checked ${p.checked ?? 0}, topped up ${p.topped_up ?? 0}`;
-      case 'cycles_icp_convert': return `Converted ${formatIcp(p.icp_e8s)} ICP → ${fmt(p.cycles)} cycles`;
+      case 'cycles_icp_convert': return `Converted ${formatIcp(p.icp_e8s)} → ${fmt(p.cycles)} cycles`;
       case 'treasury_icp_deposit': return `Treasury ICP deposit: +${formatIcp(p.amount_e8s)} (balance ${formatIcp(p.balance_e8s)})`;
       case 'treasury_cycles_deposit': return `Treasury cycles deposit: +${fmt(p.amount)} (balance ${fmt(p.balance)})`;
       case 'treasury_spent': return `Treasury spent: ${fmt(p.amount)} on top-ups (balance ${fmt(p.balance)})`;
