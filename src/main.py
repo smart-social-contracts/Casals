@@ -2226,21 +2226,12 @@ def get_cycle_history(args: text) -> text:
         since = int(params["since"])
     if params.get("window_secs"):
         since = max(since, now - int(params["window_secs"]))
-    # Load from the tail (most recent). Cap at 500 to stay well under the
-    # 5 B instruction query limit. 500 entries covers ~4 days at autopilot
-    # frequency (27 canisters × 4 runs/day = 108/day → 500/108 ≈ 4.6 days).
-    # For longer windows the frontend will see fewer points but won't crash.
-    total = CycleSample.count()
-    if not total:
-        return json.dumps({"now": now, "samples": []})
-    fetch = min(total, 500)
-    max_sid = CycleSample.max_id()
-    start_id = max(1, max_sid - fetch + 1)
-    samples = CycleSample.load_some(start_id, fetch)
+    # Return every retained sample in the requested window. Pruning keeps at most
+    # SAMPLE_MAX rows (~35 days), so scanning instances stays within query limits.
+    samples = [s for s in CycleSample.instances() if int(s.ts or 0) >= since]
+    samples.sort(key=lambda s: int(s.ts or 0))
     rows = []
     for s in samples:
-        if int(s.ts or 0) < since:
-            continue
         rows.append({
             "ts": int(s.ts or 0),
             "canister_id": s.canister_id,

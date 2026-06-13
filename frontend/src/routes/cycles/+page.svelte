@@ -135,10 +135,9 @@
     loading = true;
     error = '';
     try {
-      const MAX_WINDOW_SECS = 2592000; // 1 month
       const [cached, h, flow, md] = await Promise.all([
         getCyclesCached(),
-        getCycleHistory({ window_secs: MAX_WINDOW_SECS }),
+        getCycleHistory(),
         getTreasuryFlow({ period: flowPeriod }).catch(() => null),
         casalsMetadata().catch(() => null),
       ]);
@@ -157,12 +156,20 @@
     }
   }
 
+  async function reloadHistory() {
+    try {
+      history = await getCycleHistory();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Could not reload cycle history');
+    }
+  }
+
   async function refreshLive() {
     if (refreshing) return;
     refreshing = true;
     error = '';
     try {
-      const live = await getCycles();
+      const [live] = await Promise.all([getCycles(), reloadHistory()]);
       report = live;
       cachedAt = null;
       loadFx();
