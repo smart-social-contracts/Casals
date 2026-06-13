@@ -498,13 +498,6 @@
     return formatCycles(Math.max(0, c.deposited - c.cycles));
   }
 
-  function intervalLabel(secs: number): string {
-    if (!secs) return 'off';
-    if (secs % 86400 === 0) return `${secs / 86400}d`;
-    if (secs % 3600 === 0) return `${secs / 3600}h`;
-    if (secs % 60 === 0) return `${secs / 60}m`;
-    return `${secs}s`;
-  }
 </script>
 
 <svelte:head><title>Casals · Cycles</title></svelte:head>
@@ -546,72 +539,47 @@
 
   {#if (loading || refreshing) && !report}
     <div class="card p-6 space-y-4">
-      {#each [1, 2, 3, 4] as n (n)}
-        <div class="skeleton h-5 w-full"></div>
-      {/each}
+      <div class="skeleton h-5 w-2/3"></div>
+      <div class="skeleton h-8 w-1/2"></div>
     </div>
   {:else if report}
     <!-- Treasury summary -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <div class="card p-4">
-        <div class="flex items-start justify-between gap-2">
-          <p class="text-xs text-primary-500">Treasury balance</p>
-          <div class="flex items-center gap-1 shrink-0 -mt-0.5">
-            {#if $isAuthenticated}
-              <button
-                type="button"
-                class="btn-secondary btn-sm px-2 py-0.5 text-xs"
-                title="Convert ledger ICP to cycles"
-                onclick={() => (showConvert = true)}
-              >Convert</button>
-            {/if}
+    <div class="card p-4">
+      <div class="flex items-start justify-between gap-2">
+        <p class="text-xs text-primary-500">Treasury balance</p>
+        <div class="flex items-center gap-1 shrink-0 -mt-0.5">
+          {#if $isAuthenticated}
             <button
               type="button"
               class="btn-secondary btn-sm px-2 py-0.5 text-xs"
-              onclick={() => (showDeposit = true)}
-            >Deposit</button>
-          </div>
+              title="Convert ledger ICP to cycles"
+              onclick={() => (showConvert = true)}
+            >Convert</button>
+          {/if}
+          <button
+            type="button"
+            class="btn-secondary btn-sm px-2 py-0.5 text-xs"
+            onclick={() => (showDeposit = true)}
+          >Deposit</button>
         </div>
-        <p class="text-lg font-semibold text-primary-900 font-mono flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span>{formatCycles(report.treasury.balance)}</span>
-          <span class="text-primary-300 font-normal" aria-hidden="true">·</span>
-          <span>
-            {#if report.treasury.icp_e8s !== undefined}
-              {formatIcp(report.treasury.icp_e8s)} ICP
-            {:else if refreshing}
-              <span class="text-sm text-primary-400">ICP refreshing…</span>
-            {:else}
-              <span class="text-sm text-primary-400">ICP —</span>
-            {/if}
-          </span>
-        </p>
-        <Fiat value={report.treasury.balance} block />
-        {#if report.treasury.icp_autoconvert}
-          <p class="text-[11px] text-primary-400 mt-1">ICP auto-converts on refresh and reconcile</p>
-        {/if}
       </div>
-      <div class="card p-4">
-        <p class="text-xs text-primary-500">Spendable</p>
-        <p class="text-lg font-semibold text-primary-900 font-mono">{formatCycles(report.treasury.spendable)}</p>
-        <Fiat value={report.treasury.spendable} block />
-        <p class="text-[11px] text-primary-400">reserve {formatCycles(report.treasury.reserve)}</p>
-      </div>
-      <div class="card p-4">
-        <p class="text-xs text-primary-500">Autopilot</p>
-        <p class="text-lg font-semibold">
-          <span class="badge {report.treasury.autopilot ? 'badge-frontend' : 'badge-neutral'}">
-            {report.treasury.autopilot ? 'on' : 'off'}
-          </span>
-        </p>
-        <p class="text-[11px] text-primary-400">every {intervalLabel(report.treasury.interval_secs)}</p>
-      </div>
-      <div class="card p-4">
-        <p class="text-xs text-primary-500">Canisters</p>
-        <p class="text-lg font-semibold text-primary-900">{report.totals.canisters}</p>
-        <p class="text-[11px] text-primary-400">
-          {report.totals.low + report.totals.critical} low · {report.totals.frozen} frozen · {report.totals.error} err
-        </p>
-      </div>
+      <p class="text-lg font-semibold text-primary-900 font-mono flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span>{formatCycles(report.treasury.balance)}</span>
+        <span class="text-primary-300 font-normal" aria-hidden="true">·</span>
+        <span>
+          {#if report.treasury.icp_e8s !== undefined}
+            {formatIcp(report.treasury.icp_e8s)} ICP
+          {:else if refreshing}
+            <span class="text-sm text-primary-400">ICP refreshing…</span>
+          {:else}
+            <span class="text-sm text-primary-400">ICP —</span>
+          {/if}
+        </span>
+      </p>
+      <Fiat value={report.treasury.balance} block />
+      {#if report.treasury.icp_autoconvert}
+        <p class="text-[11px] text-primary-400 mt-1">ICP auto-converts on refresh and reconcile</p>
+      {/if}
     </div>
 
     <!-- Cycles over time -->
