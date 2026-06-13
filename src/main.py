@@ -2226,24 +2226,49 @@ def get_cycle_history(args: text) -> text:
         since = int(params["since"])
     if params.get("window_secs"):
         since = max(since, now - int(params["window_secs"]))
-    # Return every retained sample in the requested window. Pruning keeps at most
-    # SAMPLE_MAX rows (~35 days), so scanning instances stays within query limits.
-    samples = [s for s in CycleSample.instances() if int(s.ts or 0) >= since]
-    samples.sort(key=lambda s: int(s.ts or 0))
-    rows = []
-    for s in samples:
-        rows.append({
-            "ts": int(s.ts or 0),
-            "canister_id": s.canister_id,
-            "canister": s.canister_name,
-            "stand": s.stand_name,
-            "section": s.section_name,
-            "kind": s.kind,
-            "cycles": int(s.cycles or 0),
-            "deposited": int(s.deposited or 0),
-        })
-    rows.sort(key=lambda r: r["ts"])
+    rows = _cycle_history_rows(since)
     return json.dumps({"now": now, "samples": rows})
+
+
+def _cycle_history_rows(since: int) -> list:
+    """Load balance samples back to ``since`` without blowing the query budget.
+
+    Samples are append-only with monotonic ids, so we page backwards from the
+    tail in fixed-size chunks until we pass the time bound (or run out).
+    """
+    total = CycleSample.count()
+    if not total:
+        return []
+    batch = 400
+    end_id = CycleSample.max_id()
+    rows = []
+    while end_id >= 1:
+        start_id = max(1, end_id - batch + 1)
+        chunk = CycleSample.load_some(start_id, end_id - start_id + 1)
+        if not chunk:
+            break
+        oldest_ts = None
+        for s in chunk:
+            ts = int(s.ts or 0)
+            oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
+            if ts >= since:
+                rows.append({
+                    "ts": ts,
+                    "canister_id": s.canister_id,
+                    "canister": s.canister_name,
+                    "stand": s.stand_name,
+                    "section": s.section_name,
+                    "kind": s.kind,
+                    "cycles": int(s.cycles or 0),
+                    "deposited": int(s.deposited or 0),
+                })
+        if oldest_ts is not None and oldest_ts < since:
+            break
+        if start_id <= 1:
+            break
+        end_id = start_id - 1
+    rows.sort(key=lambda r: r["ts"])
+    return rows
 
 
 @query
