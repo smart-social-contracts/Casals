@@ -131,12 +131,10 @@
     }
   }
 
-  async function load() {
+  async function loadCached() {
     loading = true;
     error = '';
     try {
-      // Phase 1: show cached snapshot + history immediately (both fast).
-      // Pass the max window (1 month) so the backend pre-filters samples.
       const MAX_WINDOW_SECS = 2592000; // 1 month
       const [cached, h, flow, md] = await Promise.all([
         getCyclesCached(),
@@ -146,35 +144,43 @@
       ]);
       meta = md;
       treasuryFlow = flow;
+      history = h;
       if (cached?.treasury) {
         report = cached;
         cachedAt = cached.cached_at ?? null;
-        loading = false;
-        loadFx();
       }
-      history = h;
-      if (loading) { loading = false; loadFx(); }
-
-      // Phase 2: fetch live balances in background (takes ~1 min)
-      refreshing = true;
-      try {
-        const live = await getCycles();
-        report = live;
-        cachedAt = null; // now showing live data
-        loadFx();
-      } catch (e: any) {
-        // If live refresh fails but we have cached data, keep it shown
-        if (!report) error = e?.message ?? String(e);
-      } finally {
-        refreshing = false;
-      }
+      loadFx();
     } catch (e: any) {
       error = e?.message ?? String(e);
+    } finally {
       loading = false;
     }
   }
 
-  onMount(load);
+  async function refreshLive() {
+    if (refreshing) return;
+    refreshing = true;
+    error = '';
+    try {
+      const live = await getCycles();
+      report = live;
+      cachedAt = null;
+      loadFx();
+    } catch (e: any) {
+      if (!report) error = e?.message ?? String(e);
+      else toasts.error(e?.message ?? 'Refresh failed');
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  /** Load cached snapshot, then refresh live balances (~1 min). */
+  async function load() {
+    await loadCached();
+    await refreshLive();
+  }
+
+  onMount(loadCached);
 
   async function reloadTreasuryFlow(period: TreasuryFlowPeriod = flowPeriod) {
     try {
@@ -410,7 +416,7 @@
     try {
       const res = await reconcile();
       toasts.success(`Reconciled — topped up ${(res as any).topped_up ?? 0} of ${(res as any).checked ?? 0}`);
-      await load();
+      await refreshLive();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Reconcile failed');
     } finally {
@@ -426,7 +432,7 @@
         const icpPart = typeof res.icp_e8s === 'number' ? formatIcp(res.icp_e8s) : 'ICP';
         toasts.success(`Converted ${icpPart} → ${formatCycles(res.cycles)}`);
         showConvert = false;
-        await load();
+        await refreshLive();
         await reloadTreasuryFlow(flowPeriod);
       } else {
         const msg = (res.reason as string) || res.error || 'Nothing to convert';
@@ -444,7 +450,7 @@
     try {
       await topUp({ canister: canister.name });
       toasts.success(`Topped up ${canister.name}`);
-      await load();
+      await refreshLive();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Top-up failed');
     } finally {
@@ -477,12 +483,12 @@
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
     <div class="flex items-center gap-2 self-start flex-wrap justify-end">
-      {#if cachedAt}
-        <span class="text-xs text-primary-400 italic">snapshot from {fmtAge(cachedAt)} · refreshing…</span>
+      {#if cachedAt && !refreshing}
+        <span class="text-xs text-primary-400 italic">snapshot from {fmtAge(cachedAt)}</span>
       {:else if refreshing}
         <span class="text-xs text-primary-400 italic">refreshing live balances…</span>
       {/if}
-      <button class="btn-secondary btn-sm" onclick={load} disabled={loading}>
+      <button class="btn-secondary btn-sm" onclick={refreshLive} disabled={loading || refreshing}>
         <svg class="w-4 h-4 {loading || refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
         </svg>
