@@ -43,6 +43,7 @@ from auth import (
     _normalize_permissions,
     _parse_permissions,
 )
+from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
 from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
 from audit import _append_event, _last_event, find_canister_deployment
@@ -54,6 +55,7 @@ from cycles import (
     _arm_cycle_sampler,
     _now_secs,
     _policy_for,
+    _min_cycles_source,
     _reconcile_all_gen,
     _refresh_fx_gen,
     _resolve_canister_or_stand,
@@ -68,13 +70,13 @@ from cycles import (
     _sync_treasury_baseline_gen,
     aggregate_treasury_flow,
     resolve_flow_window,
-    FLOW_EVENT_BTYPES,
     _treasury_icp_e8s_gen,
     _fetch_icp_cycles_per_e8s_gen,
     _notify_top_up_gen,
     icp_autoconvert_enabled,
     overlay_treasury_settings,
     refresh_cycles_snapshot_settings,
+    collect_treasury_flow_events,
 )
 from helpers import (
     ANONYMOUS,
@@ -2077,6 +2079,8 @@ def get_cycles() -> Async[text]:
                 "canister_id": st.canister_id,
                 "kind": st.kind,
                 "min_cycles": min_c,
+                "min_cycles_override": int(st.min_cycles or 0),
+                "min_cycles_source": _min_cycles_source(st, s),
                 "topup_cycles": topup_c,
             }
             try:
@@ -2307,42 +2311,7 @@ def get_treasury_flow(args: text) -> text:
         period, params.get("window_secs"), now=now,
     )
     s = _settings()
-    total = OrchestrationEvent.count()
-    if not total:
-        return json.dumps({
-            "now": now,
-            "period": period,
-            "since": since,
-            "bucket_secs": bucket_secs,
-            "totals": {
-                "deposited_cycles": 0,
-                "deposited_icp_e8s": 0,
-                "converted_cycles": 0,
-                "consumed_cycles": 0,
-            },
-            "buckets": [],
-            "icp_cycles_per_e8s": 0,
-            "display_currency": (s.display_currency or "USD"),
-            "fx_micro_per_tcycle": int(s.fx_micro_per_tcycle or 0),
-        })
-    fetch = min(total, 2000)
-    max_oid = OrchestrationEvent.max_id()
-    start_id = max(1, max_oid - fetch + 1)
-    raw_evs = OrchestrationEvent.load_some(start_id, fetch)
-    flow_btypes = set(FLOW_EVENT_BTYPES)
-    events = []
-    for e in raw_evs:
-        if e.btype not in flow_btypes:
-            continue
-        try:
-            payload = json.loads(e.payload_json or "{}")
-        except (json.JSONDecodeError, ValueError):
-            payload = {}
-        events.append({
-            "btype": e.btype,
-            "timestamp_secs": int(e.timestamp_secs or 0),
-            "payload": payload,
-        })
+    events = collect_treasury_flow_events(since)
     buckets, totals, icp_rate = aggregate_treasury_flow(
         events, since, bucket_secs, now=now,
     )
@@ -2402,6 +2371,35 @@ def top_up(args: text) -> Async[text]:
         return _ok(topped_up=out, treasury=treasury)
     except Exception as e:
         _log.error(f"top_up error: {e}")
+        return _err(str(e))
+
+
+@update
+def return_cycles(args: text) -> Async[text]:
+    """Sweep cycles from a managed canister back into the Casals treasury.
+
+    Args (JSON): ``{"canister": str, "amount": int}``. Requires ``canister.topup``
+    on the target's stand/section. The amount must leave the canister above its
+    freezing threshold and configured policy headroom.
+    """
+    try:
+        params = json.loads(args)
+        name = (params.get("canister") or "").strip()
+        if not name:
+            return _err("expected 'canister'")
+        amount = params.get("amount")
+        if amount is None:
+            return _err("expected 'amount'")
+        list(Canister.instances())
+        st = Canister[name]
+        if st is None:
+            return _err(f"unknown canister '{name}'")
+        dk = st.stand
+        _require_commander(dk, "canister.topup")
+        out = yield from return_cycles_gen(st, int(amount))
+        return _ok(**out)
+    except Exception as e:
+        _log.error(f"return_cycles error: {e}")
         return _err(str(e))
 
 

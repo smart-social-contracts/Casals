@@ -76,6 +76,18 @@ def cycles_status(balance, freezing_threshold, min_cycles):
     return CYCLES_OK
 
 
+# Cycles kept on the canister for the temporary sweep wasm execution.
+SWEEP_EXEC_RESERVE = 200_000_000_000  # 200B
+
+
+def max_returnable_cycles(balance, freezing_threshold, min_cycles,
+                          exec_reserve=SWEEP_EXEC_RESERVE):
+    """Max cycles that can be swept to treasury without freezing the canister."""
+    floor = (int(freezing_threshold or 0) + max(0, int(min_cycles or 0))
+             + int(exec_reserve or 0))
+    return max(0, int(balance or 0) - floor)
+
+
 def decide_topup(balance, freezing_threshold, min_cycles, topup_cycles,
                  treasury_balance, treasury_reserve):
     """Decide how many cycles to deposit into a canister during reconciliation.

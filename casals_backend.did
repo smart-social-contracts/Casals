@@ -154,7 +154,8 @@ service : {
   "get_cycle_history" : (text) -> (text) query;
   "get_treasury_flow" : (text) -> (text) query;
   "top_up" : (text) -> (text);
-  "convert_treasury_icp" : () -> (text);
+  "return_cycles" : (text) -> (text);
+  "convert_treasury_icp" : (text) -> (text);
   "reconcile" : () -> (text);
   "set_cycle_policy" : (text) -> (text);
   "cycleops_monitored" : () -> (text) query;

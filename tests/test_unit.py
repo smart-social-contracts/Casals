@@ -213,6 +213,8 @@ def test_aggregate_treasury_flow():
          "payload": {"amount": 200_000_000_000}},
         {"btype": "cycles_topup", "timestamp_secs": now - 1800,
          "payload": {"amount": 100_000_000_000}},
+        {"btype": "cycles_return", "timestamp_secs": now - 900,
+         "payload": {"amount": 50_000_000_000}},
     ]
     buckets, totals, rate = cycles_mod.aggregate_treasury_flow(
         events, since=now - 86400, bucket_secs=3600, now=now,
@@ -221,6 +223,7 @@ def test_aggregate_treasury_flow():
     assert totals["converted_cycles"] == 8_000_000_000_000
     assert totals["deposited_cycles"] == 200_000_000_000
     assert totals["consumed_cycles"] == 100_000_000_000
+    assert totals["returned_cycles"] == 50_000_000_000
     assert rate > 0
     assert len(buckets) >= 2
 
@@ -287,6 +290,15 @@ def test_decide_topup_no_funds_returns_zero():
 
 def test_decide_topup_disabled_when_policy_zero():
     assert util.decide_topup(0, 0, 0, 0, 10_000, 0) == 0
+
+
+def test_max_returnable_cycles_respects_floor():
+    reserve = util.SWEEP_EXEC_RESERVE
+    bal = 8_000_000_000_000
+    assert util.max_returnable_cycles(bal, 500_000_000_000, 500_000_000_000) == (
+        bal - 500_000_000_000 - 500_000_000_000 - reserve
+    )
+    assert util.max_returnable_cycles(1_000_000_000_000, 500_000_000_000, 500_000_000_000) == 0
 
 
 # ── auth: permission constants ───────────────────────────────────────────────

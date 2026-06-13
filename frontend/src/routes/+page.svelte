@@ -397,6 +397,7 @@
       case 'canister_reinstalled': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
       case 'assets_uploaded': return `${p.bytes ?? 0} bytes`;
       case 'cycles_topup': return `+${p.amount ?? ''}`;
+      case 'cycles_return': return `−${p.amount ?? ''}`;
       case 'create_failed': return 'module hash mismatch';
       default: { const k = Object.keys(p); return k.length ? JSON.stringify(p).slice(0, 80) : ''; }
     }

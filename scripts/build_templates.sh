@@ -74,6 +74,16 @@ fi
 embed_candid "$RUST_WASM" "$REPO_ROOT/templates/hello-world-rust/hello_world_rust.did"
 emit "hello-world-rust" "$RUST_WASM"
 
+echo "==> Rust cycles-sweep"
+( cd "$REPO_ROOT/templates/cycles-sweep-rust" && \
+  cargo build --quiet --target wasm32-unknown-unknown --release )
+SWEEP_WASM="$REPO_ROOT/templates/cycles-sweep-rust/target/wasm32-unknown-unknown/release/cycles_sweep_rust.wasm"
+if command -v ic-wasm >/dev/null 2>&1; then
+  ic-wasm "$SWEEP_WASM" -o "$SWEEP_WASM" shrink >/dev/null 2>&1 || true
+fi
+embed_candid "$SWEEP_WASM" "$REPO_ROOT/templates/cycles-sweep-rust/cycles_sweep_rust.did"
+python3 "$REPO_ROOT/scripts/embed_cycle_sweep_wasm.py"
+
 echo "==> Motoko hello-world"
 ( cd "$REPO_ROOT/templates/hello-world-motoko" && \
   mops toolchain use moc 1.9.0 >/dev/null 2>&1 || true && \

@@ -92,6 +92,8 @@
       case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
       case 'create_failed': return 'Create failed: module hash mismatch';
       case 'cycles_topup': return `Topped up ${fmt(p.amount)} cycles${p.manual ? ' (manual)' : ''}`;
+      case 'cycles_return': return `Returned ${fmt(p.amount)} cycles to treasury`;
+      case 'cycle_policy_set': return `Cycle policy: min ${fmt(p.min_cycles)}${p.topup_cycles ? `, top-up ${fmt(p.topup_cycles)}` : ''}`;
       case 'cycles_checked': return `Checked balance ${fmt(p.balance)} · ${p.status ?? 'ok'}`;
       case 'cycles_low': return 'Low cycles balance — treasury exhausted';
       case 'cycles_reconcile': return `Reconcile (${p.source ?? 'autopilot'}): checked ${p.checked ?? 0}, topped up ${p.topped_up ?? 0}`;

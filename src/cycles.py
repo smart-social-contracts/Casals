@@ -103,6 +103,20 @@ def _policy_for(st: Canister, s=None):
     )
 
 
+def _min_cycles_source(st: Canister, s=None) -> str:
+    """Which policy level supplies the effective min_cycles for ``st``."""
+    s = s or _settings()
+    if int(st.min_cycles or 0):
+        return "canister"
+    dk = st.stand
+    if dk and int(dk.min_cycles or 0):
+        return "stand"
+    sec = dk.section if dk else None
+    if sec and int(sec.min_cycles or 0):
+        return "section"
+    return "default"
+
+
 def _resolve_canister_or_stand(params):
     """Return (targets, stand) for a {"canister": ...} or {"stand": ...}
     request."""
@@ -543,7 +557,51 @@ FLOW_EVENT_BTYPES = (
     "treasury_icp_deposit",
     "cycles_icp_convert",
     "cycles_topup",
+    "cycles_return",
 )
+
+# Audit rows loaded per page when building treasury-flow charts.  Large single
+# loads exceed the query instruction limit once the log grows (see get_events).
+FLOW_EVENT_PAGE = 120
+
+
+def collect_treasury_flow_events(since: int):
+    """Collect flow-related audit events, walking the log backwards in pages."""
+    from models import OrchestrationEvent
+
+    flow_btypes = set(FLOW_EVENT_BTYPES)
+    total = OrchestrationEvent.count()
+    if not total:
+        return []
+    max_oid = OrchestrationEvent.max_id()
+    end_id = max_oid
+    events = []
+    while end_id >= 1:
+        fetch = min(FLOW_EVENT_PAGE, end_id)
+        start_id = end_id - fetch + 1
+        chunk = OrchestrationEvent.load_some(start_id, fetch)
+        oldest_ts = None
+        for e in chunk:
+            ts = int(e.timestamp_secs or 0)
+            if ts > 0:
+                oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
+            if e.btype not in flow_btypes:
+                continue
+            if since and ts > 0 and ts < since:
+                continue
+            try:
+                payload = json.loads(e.payload_json or "{}")
+            except (json.JSONDecodeError, ValueError):
+                payload = {}
+            events.append({
+                "btype": e.btype,
+                "timestamp_secs": ts,
+                "payload": payload,
+            })
+        end_id = start_id - 1
+        if since and oldest_ts is not None and oldest_ts < since:
+            break
+    return events
 
 
 def resolve_flow_window(period: str, window_secs=None, now: int = 0) -> tuple:
@@ -575,6 +633,7 @@ def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
         "deposited_icp_e8s": 0,
         "converted_cycles": 0,
         "consumed_cycles": 0,
+        "returned_cycles": 0,
     }
     icp_cycles_per_e8s = 0.0
     buckets: dict = {}
@@ -606,6 +665,7 @@ def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
             "deposited_icp_e8s": 0,
             "converted_cycles": 0,
             "consumed_cycles": 0,
+            "returned_cycles": 0,
         })
 
         if btype == "treasury_cycles_deposit":
@@ -627,6 +687,10 @@ def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
             amt = int(payload.get("amount") or 0)
             totals["consumed_cycles"] += amt
             b["consumed_cycles"] += amt
+        elif btype == "cycles_return":
+            amt = int(payload.get("amount") or 0)
+            totals["returned_cycles"] += amt
+            b["returned_cycles"] += amt
 
     if bucket_secs <= 0 and earliest is not None:
         # Inception: one bucket spanning all recorded activity.
@@ -636,7 +700,7 @@ def aggregate_treasury_flow(events, since: int, bucket_secs: int, now: int = 0):
             "span_end": span_end,
             **{k: totals[k] for k in (
                 "deposited_cycles", "deposited_icp_e8s",
-                "converted_cycles", "consumed_cycles",
+                "converted_cycles", "consumed_cycles", "returned_cycles",
             )},
         }]
         return rows, totals, icp_cycles_per_e8s

@@ -181,6 +181,14 @@ class TestCyclesManagement:
         res = call_canister("top_up", json.dumps({"canister": "ghost"}))
         assert res.get("ok") is False
 
+    def test_return_cycles_requires_amount(self, canister):
+        res = call_canister("return_cycles", json.dumps({"canister": "ghost"}))
+        assert res.get("ok") is False
+
+    def test_return_cycles_unknown_target(self, canister):
+        res = call_canister("return_cycles", json.dumps({"canister": "ghost", "amount": 1}))
+        assert res.get("ok") is False
+
     def test_get_cycles_shape(self, canister):
         rep = call_canister("get_cycles")
         assert "treasury" in rep and "totals" in rep and "canisters" in rep

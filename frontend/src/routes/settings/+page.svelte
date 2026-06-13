@@ -38,8 +38,23 @@
   let treasuryReserve = $state('');
   // Fiat display
   let displayCurrency = $state('USD');
+  let openHelp = $state<string | null>(null);
 
   const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
+
+  function cyclesToTcInput(cycles: number): string {
+    return formatCycles(cycles).replace(/ TC$/, '');
+  }
+
+  function parseTcAmount(s: string): number {
+    const trimmed = String(s).trim().toLowerCase().replace(/\s*tc$/, '');
+    if (!trimmed) return NaN;
+    return parseCycles(`${trimmed}tc`);
+  }
+
+  function toggleHelp(id: string) {
+    openHelp = openHelp === id ? null : id;
+  }
 
   async function load() {
     loading = true;
@@ -54,9 +69,9 @@
       cyclesAutopilot = meta.cycles_autopilot;
       cyclesIcpAutoconvert = meta.cycles_icp_autoconvert ?? true;
       cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 3600) / 3600));
-      defaultMinCycles = formatCycles(meta.default_min_cycles);
-      defaultTopupCycles = formatCycles(meta.default_topup_cycles);
-      treasuryReserve = formatCycles(meta.treasury_reserve);
+      defaultMinCycles = cyclesToTcInput(meta.default_min_cycles);
+      defaultTopupCycles = cyclesToTcInput(meta.default_topup_cycles);
+      treasuryReserve = cyclesToTcInput(meta.treasury_reserve);
       displayCurrency = meta.display_currency || 'USD';
     } catch (e: any) {
       error = e?.message ?? String(e);
@@ -82,9 +97,9 @@
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
         display_currency: displayCurrency,
       };
-      const minC = parseCycles(defaultMinCycles);
-      const topupC = parseCycles(defaultTopupCycles);
-      const reserveC = parseCycles(treasuryReserve);
+      const minC = parseTcAmount(defaultMinCycles);
+      const topupC = parseTcAmount(defaultTopupCycles);
+      const reserveC = parseTcAmount(treasuryReserve);
       if (!Number.isNaN(minC)) patch.default_min_cycles = minC;
       if (!Number.isNaN(topupC)) patch.default_topup_cycles = topupC;
       if (!Number.isNaN(reserveC)) patch.treasury_reserve = reserveC;
@@ -283,95 +298,245 @@
             <span class="text-xs text-primary-400">— let any logged-in principal add sections/stands</span>
           </label>
 
-          <div>
-            <label class="label" for="fileRegistry">File registry backend canister id</label>
-            <input
-              id="fileRegistry"
-              type="text"
-              class="input font-mono"
-              placeholder="aaaaa-aa"
-              bind:value={fileRegistryId}
-            />
-            <p class="text-xs text-primary-400 mt-1">WASM and asset storage — used by Casals to install bundles.</p>
+          <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
+            <div>
+              <h3 class="text-sm font-semibold text-primary-800">File registry</h3>
+              <p class="text-xs text-primary-400 mt-0.5">WASM and frontend asset storage for installs and upgrades.</p>
+            </div>
+
+            <div>
+              <label class="label" for="fileRegistry">Backend canister id</label>
+              <input
+                id="fileRegistry"
+                type="text"
+                class="input font-mono"
+                placeholder="aaaaa-aa"
+                bind:value={fileRegistryId}
+              />
+              <p class="text-xs text-primary-400 mt-1">Casals pulls WASM bundles and assets from here when deploying canisters.</p>
+            </div>
+
+            <div>
+              <label class="label" for="fileRegistryFrontend">Frontend canister id</label>
+              <input
+                id="fileRegistryFrontend"
+                type="text"
+                class="input font-mono"
+                placeholder="aaaaa-aa"
+                bind:value={fileRegistryFrontendId}
+              />
+              {#if fileRegistryFrontendId.trim()}
+                <a
+                  href={canisterUrl(fileRegistryFrontendId.trim())}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center gap-1 mt-1.5 text-xs text-primary-600 hover:text-primary-900 transition-colors"
+                >
+                  Browse files in registry
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+                  </svg>
+                </a>
+              {:else}
+                <p class="text-xs text-primary-400 mt-1">Optional browse UI — leave blank if the backend serves HTTP directly.</p>
+              {/if}
+            </div>
           </div>
 
-          <div>
-            <label class="label" for="fileRegistryFrontend">File registry frontend canister id</label>
-            <input
-              id="fileRegistryFrontend"
-              type="text"
-              class="input font-mono"
-              placeholder="aaaaa-aa"
-              bind:value={fileRegistryFrontendId}
-            />
-            {#if fileRegistryFrontendId.trim()}
-              <a
-                href={canisterUrl(fileRegistryFrontendId.trim())}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center gap-1 mt-1.5 text-xs text-primary-600 hover:text-primary-900 transition-colors"
-              >
-                Browse files in registry
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
-                </svg>
-              </a>
-            {:else}
-              <p class="text-xs text-primary-400 mt-1">Optional browse UI — leave blank if the backend serves HTTP directly.</p>
-            {/if}
-          </div>
+          <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
+            <div>
+              <h3 class="text-sm font-semibold text-primary-800">CycleOps</h3>
+              <p class="text-xs text-primary-400 mt-0.5">External cycle monitoring integration (optional).</p>
+            </div>
 
-          <label class="flex items-center gap-2.5 cursor-pointer">
-            <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cycleopsEnabled} />
-            <span class="text-sm font-medium text-primary-700">CycleOps enabled</span>
-            <span class="text-xs text-primary-400">— auto top-up monitoring</span>
-          </label>
+            <label class="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cycleopsEnabled} />
+              <span class="text-sm font-medium text-primary-700">CycleOps enabled</span>
+              <span class="text-xs text-primary-400">— grant CycleOps controller access for monitoring</span>
+            </label>
 
-          <div>
-            <label class="label" for="cycleopsPrincipal">CycleOps principal</label>
-            <input
-              id="cycleopsPrincipal"
-              type="text"
-              class="input font-mono"
-              placeholder="aaaaa-aa"
-              bind:value={cycleopsPrincipal}
-            />
+            <div>
+              <label class="label" for="cycleopsPrincipal">CycleOps principal</label>
+              <input
+                id="cycleopsPrincipal"
+                type="text"
+                class="input font-mono"
+                placeholder="aaaaa-aa"
+                bind:value={cycleopsPrincipal}
+              />
+            </div>
           </div>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-5">
-            <div>
-              <h3 class="text-sm font-semibold text-primary-800">Native cycles management</h3>
-              <p class="text-xs text-primary-400">Casals tops up canisters from its own treasury. Amounts accept suffixes (e.g. 1t, 500b).</p>
+            <div class="flex items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <h3 class="text-sm font-semibold text-primary-800">Native cycles management</h3>
+                <p class="text-xs text-primary-400 mt-0.5">
+                  Casals tops up managed canisters from its treasury. All amounts below are in TC (trillion cycles).
+                </p>
+              </div>
+              <div class="relative shrink-0">
+                <button
+                  type="button"
+                  class="p-1 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+                  aria-label="About native cycles management"
+                  aria-expanded={openHelp === 'cycles-section'}
+                  onclick={() => toggleHelp('cycles-section')}
+                >
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path stroke-linecap="round" d="M12 16v-4m0-4h.01" />
+                  </svg>
+                </button>
+                {#if openHelp === 'cycles-section'}
+                  <div
+                    class="absolute right-0 top-full mt-2 z-20 w-80 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600 leading-relaxed"
+                    role="dialog"
+                    aria-label="Native cycles management help"
+                  >
+                    <p class="font-medium text-primary-800 mb-1.5">How it works</p>
+                    <p class="mb-2">
+                      Casals keeps a <strong>treasury</strong> of cycles. Each managed canister has a
+                      <strong>min policy</strong> (headroom above its freezing threshold). When a balance
+                      falls below that, Casals deposits a <strong>top-up amount</strong> from the treasury.
+                    </p>
+                    <p>
+                      Defaults here apply orchestra-wide; section, stand, and canister policies override
+                      them. Manual top-ups on the Cycles page always work; autopilot automates the checks.
+                    </p>
+                    <button type="button" class="mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                  </div>
+                {/if}
+              </div>
             </div>
 
             <label class="flex items-center gap-2.5 cursor-pointer">
               <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesAutopilot} />
               <span class="text-sm font-medium text-primary-700">Autopilot</span>
-              <span class="text-xs text-primary-400">— periodically reconcile balances</span>
+              <span class="text-xs text-primary-400">— periodically top up low canisters</span>
+              <div class="relative shrink-0 ml-auto">
+                <button
+                  type="button"
+                  class="p-1 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+                  aria-label="Autopilot help"
+                  aria-expanded={openHelp === 'autopilot'}
+                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); toggleHelp('autopilot'); }}
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" />
+                  </svg>
+                </button>
+                {#if openHelp === 'autopilot'}
+                  <div class="absolute right-0 top-full mt-1 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600 leading-relaxed" role="dialog">
+                    <p>On the check interval, Casals reads every managed canister’s balance and tops up those below their min policy. Treasury reserve is never spent.</p>
+                    <button type="button" class="mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                  </div>
+                {/if}
+              </div>
             </label>
 
             <label class="flex items-center gap-2.5 cursor-pointer">
               <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesIcpAutoconvert} />
               <span class="text-sm font-medium text-primary-700">ICP auto-convert</span>
-              <span class="text-xs text-primary-400">— mint cycles from ledger ICP during reconcile / refresh</span>
+              <span class="text-xs text-primary-400">— mint cycles from ledger ICP during checks and refresh</span>
+              <div class="relative shrink-0 ml-auto">
+                <button
+                  type="button"
+                  class="p-1 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+                  aria-label="ICP auto-convert help"
+                  aria-expanded={openHelp === 'icp-convert'}
+                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); toggleHelp('icp-convert'); }}
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" />
+                  </svg>
+                </button>
+                {#if openHelp === 'icp-convert'}
+                  <div class="absolute right-0 top-full mt-1 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600 leading-relaxed" role="dialog">
+                    <p>When ICP sits on Casals’ ledger account, it is converted to cycles via the Cycles Minting Canister during autopilot runs and live balance refresh — no manual convert step needed.</p>
+                    <button type="button" class="mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                  </div>
+                {/if}
+              </div>
             </label>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label class="label" for="cyclesInterval">Check interval (hours)</label>
+                <div class="flex items-center gap-1.5 mb-1">
+                  <label class="label mb-0" for="cyclesInterval">Check interval (hours)</label>
+                  <div class="relative">
+                    <button type="button" class="p-0.5 rounded-full text-primary-400 hover:text-primary-700" aria-label="Check interval help" aria-expanded={openHelp === 'interval'} onclick={() => toggleHelp('interval')}>
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" /></svg>
+                    </button>
+                    {#if openHelp === 'interval'}
+                      <div class="absolute left-0 top-full mt-1 z-20 w-64 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600" role="dialog">
+                        How often autopilot checks canister balances and tops up low ones. Ignored when autopilot is off.
+                        <button type="button" class="block mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
                 <input id="cyclesInterval" type="number" min="1" class="input" bind:value={cyclesIntervalHours} />
               </div>
               <div>
-                <label class="label" for="treasuryReserve">Treasury reserve</label>
-                <input id="treasuryReserve" type="text" class="input font-mono" placeholder="1t" bind:value={treasuryReserve} />
+                <div class="flex items-center gap-1.5 mb-1">
+                  <label class="label mb-0" for="treasuryReserve">Treasury reserve</label>
+                  <div class="relative">
+                    <button type="button" class="p-0.5 rounded-full text-primary-400 hover:text-primary-700" aria-label="Treasury reserve help" aria-expanded={openHelp === 'reserve'} onclick={() => toggleHelp('reserve')}>
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" /></svg>
+                    </button>
+                    {#if openHelp === 'reserve'}
+                      <div class="absolute right-0 top-full mt-1 z-20 w-64 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600" role="dialog">
+                        Cycles Casals never spends on top-ups. Spendable treasury = balance − reserve.
+                        <button type="button" class="block mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+                <div class="relative">
+                  <input id="treasuryReserve" type="text" class="input font-mono pr-12" placeholder="0.05" bind:value={treasuryReserve} />
+                  <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
+                </div>
               </div>
               <div>
-                <label class="label" for="defaultMin">Default min balance</label>
-                <input id="defaultMin" type="text" class="input font-mono" placeholder="500b" bind:value={defaultMinCycles} />
+                <div class="flex items-center gap-1.5 mb-1">
+                  <label class="label mb-0" for="defaultMin">Default min balance</label>
+                  <div class="relative">
+                    <button type="button" class="p-0.5 rounded-full text-primary-400 hover:text-primary-700" aria-label="Default min balance help" aria-expanded={openHelp === 'min'} onclick={() => toggleHelp('min')}>
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" /></svg>
+                    </button>
+                    {#if openHelp === 'min'}
+                      <div class="absolute left-0 top-full mt-1 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600" role="dialog">
+                        Minimum headroom <em>above</em> a canister’s freezing threshold before it is considered low. Override per canister on the Cycles page.
+                        <button type="button" class="block mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+                <div class="relative">
+                  <input id="defaultMin" type="text" class="input font-mono pr-12" placeholder="0.5" bind:value={defaultMinCycles} />
+                  <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
+                </div>
               </div>
               <div>
-                <label class="label" for="defaultTopup">Default top-up amount</label>
-                <input id="defaultTopup" type="text" class="input font-mono" placeholder="1t" bind:value={defaultTopupCycles} />
+                <div class="flex items-center gap-1.5 mb-1">
+                  <label class="label mb-0" for="defaultTopup">Default top-up amount</label>
+                  <div class="relative">
+                    <button type="button" class="p-0.5 rounded-full text-primary-400 hover:text-primary-700" aria-label="Default top-up amount help" aria-expanded={openHelp === 'topup'} onclick={() => toggleHelp('topup')}>
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 16v-4m0-4h.01" /></svg>
+                    </button>
+                    {#if openHelp === 'topup'}
+                      <div class="absolute right-0 top-full mt-1 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600" role="dialog">
+                        Cycles deposited from the treasury when a canister needs topping up (autopilot or manual). Override per section, stand, or canister.
+                        <button type="button" class="block mt-2 text-primary-500 hover:text-primary-800 underline" onclick={() => (openHelp = null)}>Got it</button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+                <div class="relative">
+                  <input id="defaultTopup" type="text" class="input font-mono pr-12" placeholder="1" bind:value={defaultTopupCycles} />
+                  <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
+                </div>
               </div>
             </div>
           </div>

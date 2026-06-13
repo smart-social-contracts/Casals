@@ -143,6 +143,10 @@ export interface CanisterCycles {
   canister_id: string;
   kind: CanisterKind;
   min_cycles: number;
+  /** Canister-level override; 0 means inherit from stand/section/default. */
+  min_cycles_override?: number;
+  /** Level that supplies the effective min_cycles when override is 0. */
+  min_cycles_source?: 'canister' | 'stand' | 'section' | 'default';
   topup_cycles: number;
   cycles?: number;
   freezing_threshold?: number;
@@ -219,6 +223,7 @@ export interface TreasuryFlowBucket {
   deposited_icp_e8s: number;
   converted_cycles: number;
   consumed_cycles: number;
+  returned_cycles?: number;
 }
 
 export interface TreasuryFlow {
@@ -231,6 +236,7 @@ export interface TreasuryFlow {
     deposited_icp_e8s: number;
     converted_cycles: number;
     consumed_cycles: number;
+    returned_cycles?: number;
   };
   buckets: TreasuryFlowBucket[];
   icp_cycles_per_e8s: number;
@@ -574,6 +580,10 @@ export async function getTreasuryFlow(opts: {
 
 export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
+}
+
+export async function returnCycles(args: { canister: string; amount: number }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).return_cycles(JSON.stringify(args)));
 }
 
 export async function reconcile(): Promise<UpdateResult> {

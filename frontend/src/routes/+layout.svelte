@@ -10,11 +10,11 @@
 
   const navLinks = [
     { href: '/', label: 'Orchestra' },
-    { href: '/sheet', label: 'Sheet' },
+    { href: '/wasms', label: 'WASMs' },
+    { href: '/commanders', label: 'Commanders' },
     { href: '/cycles', label: 'Cycles' },
     { href: '/activity', label: 'Activity' },
-    { href: '/commanders', label: 'Commanders' },
-    { href: '/wasms', label: 'Authorized WASMs' },
+    { href: '/sheet', label: 'Sheet' },
     { href: '/settings', label: 'Settings' },
   ];
 
