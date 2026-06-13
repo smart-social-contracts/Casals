@@ -41,7 +41,7 @@
   function severity(btype: string): Severity {
     if (btype.includes('failed')) return 'fail';
     if (btype === 'revert' || btype === 'cycles_low') return 'warn';
-    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile|cycles_checked|canister_destroyed/.test(btype))
+    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile|cycles_checked|canister_destroyed|arrangement/.test(btype))
       return 'ok';
     return 'neutral';
   }
@@ -110,6 +110,12 @@
       case 'settings_changed': return `Settings changed: ${Object.keys(p).join(', ')}`;
       case 'sheet_deployed': return 'Sheet deployed';
       case 'sheet_edited': return `Sheet edited (${p.sections ?? 0} sections)`;
+      case 'arrangement_set': return `Arrangement ${p.name ?? ''} ${p.created ? 'created' : 'updated'}${p.active ? ' (active)' : ''}`;
+      case 'arrangement_activated': return `Arrangement activated: ${p.name ?? ''}`;
+      case 'arrangement_deleted': return `Arrangement deleted: ${p.name ?? ''}`;
+      case 'arrangement_applied': return `Arrangement applied: ${p.applied ?? 0} step(s) ok, ${p.failed ?? 0} failed`;
+      case 'arrangement_step': return `Arrangement step ${p.step ?? '?'}: ${p.method ?? ''}`;
+      case 'arrangement_step_failed': return `Arrangement step failed: ${p.method ?? ''} — ${p.error ?? ''}`;
       case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_canister ? ` (was ${p.was_canister})` : ''}`;
       default: return Object.keys(p).length ? JSON.stringify(p) : '';
     }

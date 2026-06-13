@@ -589,6 +589,138 @@ export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
 }
 
 // ---------------------------------------------------------------------------
+// Arrangements (post-deploy environment config)
+// ---------------------------------------------------------------------------
+
+export interface ArrangementSummary {
+  name: string;
+  description: string;
+  active: boolean;
+  parameter_count: number;
+  step_count: number;
+}
+
+export interface ArrangementStep {
+  target: string;
+  method: string;
+  args?: unknown;
+}
+
+export interface Arrangement {
+  name: string;
+  description: string;
+  active: boolean;
+  parameters: Record<string, unknown>;
+  steps: ArrangementStep[];
+}
+
+export interface ArrangementApplyResult extends UpdateResult {
+  arrangement?: string;
+  steps_total?: number;
+  offset?: number;
+  next_offset?: number;
+  done?: boolean;
+  applied?: number;
+  failed?: number;
+  results?: Array<{
+    step: number;
+    target: string;
+    method: string;
+    ok: boolean;
+    canister_id?: string;
+    error?: string;
+    reply?: string;
+  }>;
+}
+
+export interface ArrangementApplyProgress {
+  offset: number;
+  stepsTotal: number;
+  applied: number;
+  failed: number;
+}
+
+const ARRANGEMENT_APPLY_BATCH = 4;
+
+export async function listArrangements(): Promise<ArrangementSummary[]> {
+  return _parseQuery<ArrangementSummary[]>(await (await _actor()).list_arrangements());
+}
+
+export async function getArrangement(name?: string): Promise<Arrangement> {
+  const raw = _parseQuery<Arrangement & { ok?: boolean }>(
+    await (await _actor()).get_arrangement(JSON.stringify(name ? { name } : {})),
+  );
+  return {
+    name: raw.name,
+    description: raw.description ?? '',
+    active: !!raw.active,
+    parameters: raw.parameters ?? {},
+    steps: raw.steps ?? [],
+  };
+}
+
+export async function setArrangement(arr: {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  steps?: ArrangementStep[];
+  active?: boolean;
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_arrangement(JSON.stringify(arr)));
+}
+
+export async function setActiveArrangement(name: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_active_arrangement(JSON.stringify({ name })));
+}
+
+export async function deleteArrangement(name: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).delete_arrangement(JSON.stringify({ name })));
+}
+
+export async function applyArrangement(opts: {
+  name?: string;
+  offset?: number;
+  limit?: number;
+} = {}): Promise<ArrangementApplyResult> {
+  return _parseUpdate(
+    await (await _actor(true)).apply_arrangement(JSON.stringify(opts)),
+  ) as ArrangementApplyResult;
+}
+
+/** Walk apply_arrangement in batches until done (long arrangements exceed one message budget). */
+export async function applyArrangementAll(
+  opts: {
+    name?: string;
+    batch?: number;
+    onProgress?: (info: ArrangementApplyProgress) => void;
+  } = {},
+): Promise<{ arrangement: string; steps_total: number | null; applied: number; failed: number }> {
+  const batch = opts.batch ?? ARRANGEMENT_APPLY_BATCH;
+  let offset = 0;
+  let applied = 0;
+  let failed = 0;
+  let stepsTotal: number | null = null;
+  let arrangement = '';
+  for (let i = 0; i < 1000; i++) {
+    const res = await applyArrangement({ name: opts.name, offset, limit: batch });
+    arrangement = String(res.arrangement ?? arrangement);
+    applied += Number(res.applied ?? 0);
+    failed += Number(res.failed ?? 0);
+    if (res.steps_total != null) stepsTotal = Number(res.steps_total);
+    opts.onProgress?.({
+      offset: Number(res.offset ?? offset),
+      stepsTotal: stepsTotal ?? 0,
+      applied,
+      failed,
+    });
+    const nextOffset = Number(res.next_offset ?? offset);
+    if (res.done || batch <= 0 || nextOffset <= offset) break;
+    offset = nextOffset;
+  }
+  return { arrangement, steps_total: stepsTotal, applied, failed };
+}
+
+// ---------------------------------------------------------------------------
 // Sheet (persistent desired-orchestra) + canister pool
 // ---------------------------------------------------------------------------
 

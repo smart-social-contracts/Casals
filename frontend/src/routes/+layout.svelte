@@ -15,6 +15,7 @@
     { href: '/cycles', label: 'Cycles' },
     { href: '/activity', label: 'Activity' },
     { href: '/sheet', label: 'Sheet' },
+    { href: '/arrangements', label: 'Arrangements' },
     { href: '/settings', label: 'Settings' },
   ];
 

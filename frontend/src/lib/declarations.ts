@@ -18,6 +18,12 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     cycleops_monitored:    IDL.Func([], [IDL.Text], ['query']),
     get_sheet:             IDL.Func([], [IDL.Text], ['query']),
     list_pool:             IDL.Func([], [IDL.Text], ['query']),
+    list_arrangements:     IDL.Func([], [IDL.Text], ['query']),
+    get_arrangement:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    set_arrangement:       IDL.Func([IDL.Text], [IDL.Text], []),
+    set_active_arrangement: IDL.Func([IDL.Text], [IDL.Text], []),
+    delete_arrangement:    IDL.Func([IDL.Text], [IDL.Text], []),
+    apply_arrangement:     IDL.Func([IDL.Text], [IDL.Text], []),
 
     // ── cycles management ──
     get_cycles:            IDL.Func([], [IDL.Text], []),
