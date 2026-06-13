@@ -43,6 +43,8 @@
   let history = $state<CycleHistory | null>(null);
   let treasuryFlow = $state<TreasuryFlow | null>(null);
   let flowError = $state('');
+  let flowLoading = $state(false);
+  let flowRequest = 0;
   let loading = $state(true);
   let refreshing = $state(false); // live refresh running in background
   let historyLoading = $state(false); // chart history fetch or scope re-aggregation
@@ -160,19 +162,14 @@
   async function loadCached() {
     loading = true;
     error = '';
+    void reloadTreasuryFlow(flowPeriod);
     try {
-      const [cached, h, flow, md] = await Promise.all([
+      const [cached, h, md] = await Promise.all([
         getCyclesCached(),
         getCycleHistory({ window_secs: WINDOWS[windowKey] }),
-        getTreasuryFlow({ period: flowPeriod }).catch((e) => {
-          flowError = e?.message ?? 'Treasury flow unavailable';
-          return null;
-        }),
         casalsMetadata().catch(() => null),
       ]);
       meta = md;
-      treasuryFlow = flow;
-      if (flow) flowError = '';
       history = h;
       if (cached?.treasury) {
         if (md) {
@@ -252,12 +249,19 @@
   onMount(loadCached);
 
   async function reloadTreasuryFlow(period: TreasuryFlowPeriod = flowPeriod) {
+    const req = ++flowRequest;
+    flowLoading = true;
+    flowError = '';
     try {
-      treasuryFlow = await getTreasuryFlow({ period });
-      flowError = '';
+      const flow = await getTreasuryFlow({ period });
+      if (req !== flowRequest) return;
+      treasuryFlow = flow;
     } catch (e: any) {
+      if (req !== flowRequest) return;
       treasuryFlow = null;
       flowError = e?.message ?? 'Treasury flow unavailable';
+    } finally {
+      if (req === flowRequest) flowLoading = false;
     }
   }
 
@@ -975,7 +979,14 @@
           </div>
         </div>
       </div>
-      {#if flowError}
+      {#if flowLoading}
+        <div class="flex items-center justify-center gap-2 text-sm text-primary-500 py-8" aria-live="polite" aria-busy="true">
+          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Loading treasury flow…
+        </div>
+      {:else if flowError}
         <p class="text-sm text-red-600 text-center py-8">
           Could not load treasury flow: {flowError}
         </p>
@@ -1000,7 +1011,7 @@
           </div>
         </div>
       {/if}
-      {#if flowSeries.some((s) => s.points.length)}
+      {#if !flowLoading && flowSeries.some((s) => s.points.length)}
         <LineChart series={flowSeries} format={formatFlowValue} />
       {/if}
     </div>

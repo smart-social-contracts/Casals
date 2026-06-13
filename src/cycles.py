@@ -562,7 +562,8 @@ FLOW_EVENT_BTYPES = (
 
 # Raw audit rows scanned per get_treasury_flow query page.  The frontend
 # stitches pages (like get_cycle_history) and aggregates locally.
-FLOW_EVENT_RAW_PAGE = 80
+# 300 keeps queries well under the 5B instruction cap while cutting round-trips.
+FLOW_EVENT_RAW_PAGE = 300
 
 
 def treasury_flow_events_page(since: int, before_id: int = 0):

@@ -693,7 +693,7 @@ export async function getTreasuryFlow(opts: {
   let before_id = 0;
   let page: TreasuryFlowPage | null = null;
   for (;;) {
-    const raw = _parseQuery<TreasuryFlowPage>(
+    const raw = _parseQuery<TreasuryFlowPage & Partial<TreasuryFlow>>(
       await actor.get_treasury_flow(
         JSON.stringify({
           ...opts,
@@ -701,6 +701,10 @@ export async function getTreasuryFlow(opts: {
         }),
       ),
     );
+    // Older backends returned pre-aggregated buckets in one response.
+    if (Array.isArray(raw.buckets) && raw.totals) {
+      return raw as TreasuryFlow;
+    }
     page = raw;
     all.push(...(raw.events ?? []));
     if (!raw.has_more || !raw.before_id) break;
