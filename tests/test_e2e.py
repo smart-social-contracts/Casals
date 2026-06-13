@@ -199,10 +199,9 @@ class TestCycleHistory:
     the lifecycle canisters are still live to be sampled."""
 
     def test_history_records_samples(self, env):
-        # reconcile() sweeps every canister reading canister_status and records a
-        # sample per canister (no throttle), so history is populated deterministically.
-        rec = call_canister("reconcile")
-        assert isinstance(rec, dict) and rec.get("ok") is True, rec
+        # History is recorded by get_cycles / the hourly sampler (reconcile does not sample).
+        rep = call_canister("get_cycles")
+        assert isinstance(rep, dict) and rep.get("treasury"), rep
 
         hist = call_canister("get_cycle_history", json.dumps({}))
         assert isinstance(hist, dict) and "samples" in hist and "now" in hist, hist

@@ -164,11 +164,29 @@ def _prune_cycle_samples(now: int) -> None:
         _log.error(f"prune cycle samples failed: {e}")
 
 
+def should_record_cycle_sample(ts: int = None) -> bool:
+    """True when cycle sampling is enabled and the min gap since the last batch elapsed."""
+    s = _settings()
+    if not s.cycles_sampling:
+        return False
+    now = int(ts if ts is not None else _now_secs())
+    return now - int(_last_sample_ts or 0) >= SAMPLE_MIN_GAP_SECS
+
+
+def finalize_cycle_sample_batch(ts: int) -> None:
+    """Mark a sample batch complete and prune old history rows."""
+    global _last_sample_ts
+    _prune_cycle_samples(int(ts))
+    _last_sample_ts = int(ts)
+
+
 # ── Sampler timer ─────────────────────────────────────────────────────────────
 
 def _sample_all_gen(ts: int):
     """Generator: read every canister's balance and record a sample (no
     top-ups)."""
+    if not should_record_cycle_sample(ts):
+        return 0
     list(Canister.instances())
     n = 0
     for st in Canister.instances():
@@ -184,9 +202,7 @@ def _sample_all_gen(ts: int):
         except Exception as e:  # pragma: no cover - per-canister, keep going
             _log.error(f"sample {st.name} failed: {e}")
     if n:
-        _prune_cycle_samples(ts)
-        global _last_sample_ts
-        _last_sample_ts = ts
+        finalize_cycle_sample_batch(ts)
     return n
 
 
@@ -240,11 +256,9 @@ def _reconcile_all_gen():
     yield from _treasury_watch_begin_gen()
     reserve = int(s.treasury_reserve or 0)
     treasury = int(ic.canister_balance128())
-    batch_ts = _now_secs()
     results = []
     topped = 0
     topped_total = 0
-    sampled = False
     for st in Canister.instances():
         if not st.canister_id:
             continue
@@ -285,12 +299,6 @@ def _reconcile_all_gen():
                 _append_event("cycles_checked", st.canister_id,
                               {"balance": bal, "status": label})
             results.append({"canister": st.name, "balance": bal, "status": label})
-        _record_cycle_sample(st, batch_ts, bal)
-        sampled = True
-    if sampled:
-        _prune_cycle_samples(batch_ts)
-        global _last_sample_ts
-        _last_sample_ts = batch_ts
     if topped_total > 0:
         _append_event("treasury_spent", "", {
             "amount": topped_total,

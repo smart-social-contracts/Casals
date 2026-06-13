@@ -781,7 +781,7 @@ class TestCyclesStructure:
         f = tmp_path / "cyc.json"
         f.write_text(json.dumps(sheet))
         _cli("sheet", "deploy", str(f))
-        call_canister("reconcile")  # populate per-canister samples
+        call_canister("get_cycles")  # refresh balances; records history when due
 
         data, _ = _cli("cycles")
         for entry in data["canisters"]:

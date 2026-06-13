@@ -50,12 +50,10 @@ import cycles as _cycles_mod
 from cycles import (
     FX_MIN_REFRESH_SECS,
     FX_SUPPORTED_CURRENCIES,
-    SAMPLE_MIN_GAP_SECS,
     _arm_autopilot,
     _arm_cycle_sampler,
     _now_secs,
     _policy_for,
-    _prune_cycle_samples,
     _reconcile_all_gen,
     _refresh_fx_gen,
     _resolve_canister_or_stand,
@@ -2056,7 +2054,7 @@ def get_cycles() -> Async[text]:
         # Opportunistically record a history sample from the balances we read
         # here, but throttle so frequent refreshes don't flood the history.
         batch_ts = _now_secs()
-        do_sample = bool(s.cycles_sampling) and (batch_ts - int(_cycles_mod._last_sample_ts or 0) >= SAMPLE_MIN_GAP_SECS)
+        do_sample = _cycles_mod.should_record_cycle_sample(batch_ts)
         sampled = False
         for st in Canister.instances():
             if not st.canister_id:
@@ -2094,8 +2092,7 @@ def get_cycles() -> Async[text]:
                 counts["error"] += 1
             canisters_out.append(row)
         if sampled:
-            _prune_cycle_samples(batch_ts)
-            _cycles_mod._last_sample_ts = batch_ts
+            _cycles_mod.finalize_cycle_sample_batch(batch_ts)
 
         # Pool view: every canister Casals ever created, its status, and current
         # balance. Reuses balances already read above; only fetches for pooled

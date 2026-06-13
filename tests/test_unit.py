@@ -95,6 +95,26 @@ def test_estimate_icp_convert_cycles():
     assert cycles_mod.estimate_icp_convert_cycles(100_000_000, rate) == 99_990_000 * rate
 
 
+def test_should_record_cycle_sample_respects_gap(monkeypatch):
+    import cycles as cycles_mod
+    import models as models_mod
+
+    class S:
+        cycles_sampling = True
+
+    monkeypatch.setattr(cycles_mod, "_settings", lambda: S())
+    monkeypatch.setattr(cycles_mod, "_last_sample_ts", 1000)
+    monkeypatch.setattr(cycles_mod, "SAMPLE_MIN_GAP_SECS", 120)
+    assert cycles_mod.should_record_cycle_sample(1119) is False
+    assert cycles_mod.should_record_cycle_sample(1120) is True
+    assert cycles_mod.should_record_cycle_sample(2000) is True
+
+    class Off(S):
+        cycles_sampling = False
+    monkeypatch.setattr(cycles_mod, "_settings", lambda: Off())
+    assert cycles_mod.should_record_cycle_sample(2000) is False
+
+
 def test_icp_convert_amount():
     import cycles as cycles_mod
     assert cycles_mod.icp_convert_amount(10_000) is None
