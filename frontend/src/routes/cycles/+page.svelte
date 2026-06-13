@@ -49,6 +49,7 @@
   let showConvert = $state(false);
   let topUpTarget = $state<CanisterCycles | null>(null);
   let topUpAmount = $state('');
+  let showRefreshHelp = $state(false);
 
   const ICP_TRANSFER_FEE_E8S = 10_000;
   let copiedField = $state('');
@@ -558,12 +559,50 @@
       {:else if refreshing}
         <span class="text-xs text-primary-400 italic">refreshing live balances…</span>
       {/if}
-      <button class="btn-secondary btn-sm" onclick={refreshLive} disabled={loading || refreshing}>
-        <svg class="w-4 h-4 {loading || refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
-        </svg>
-        Refresh
-      </button>
+      <div class="relative flex items-center gap-1">
+        <button class="btn-secondary btn-sm" onclick={refreshLive} disabled={loading || refreshing}>
+          <svg class="w-4 h-4 {loading || refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+          </svg>
+          Refresh
+        </button>
+        <button
+          type="button"
+          class="p-1 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+          aria-label="What does Refresh do?"
+          aria-expanded={showRefreshHelp}
+          onclick={() => (showRefreshHelp = !showRefreshHelp)}
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <path stroke-linecap="round" d="M12 16v-4m0-4h.01" />
+          </svg>
+        </button>
+        {#if showRefreshHelp}
+          <div
+            class="absolute right-0 top-full mt-2 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600 leading-relaxed"
+            role="dialog"
+            aria-label="Refresh help"
+          >
+            <p class="font-medium text-primary-800 mb-1.5">About Refresh</p>
+            <p class="mb-2">
+              Opening this page loads a <strong>cached snapshot</strong> so balances appear instantly.
+              The “snapshot from … ago” label shows how old that data is.
+            </p>
+            <p>
+              <strong>Refresh</strong> fetches live balances from the IC for every canister and the treasury
+              (including ledger ICP). It can take about a minute, updates the table and charts, and saves a new snapshot.
+              It does not top up canisters.
+            </p>
+            <button
+              type="button"
+              class="mt-2 text-primary-500 hover:text-primary-800 underline"
+              onclick={() => (showRefreshHelp = false)}
+            >Got it</button>
+          </div>
+        {/if}
+      </div>
+      <!-- Reconcile now — hidden for now; may restore later
       <button
         class="btn-primary btn-sm"
         onclick={runReconcile}
@@ -572,6 +611,7 @@
       >
         {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile now'}
       </button>
+      -->
     </div>
   </div>
 
