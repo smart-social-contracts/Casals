@@ -2233,14 +2233,38 @@ def get_cycle_history(args: text) -> text:
 def _cycle_history_rows(since: int) -> list:
     """Load balance samples back to ``since`` without blowing the query budget.
 
-    Samples are append-only with monotonic ids, so we page backwards from the
-    tail in fixed-size chunks until we pass the time bound (or run out).
+    Bounded windows page backwards from the tail in fixed-size chunks until the
+    time bound is crossed. Inception returns the newest retained slice in one
+    read (full scans exceed the 5 B instruction query limit).
     """
     total = CycleSample.count()
     if not total:
         return []
+    max_sid = CycleSample.max_id()
+
+    def _row(s) -> dict:
+        return {
+            "ts": int(s.ts or 0),
+            "canister_id": s.canister_id,
+            "canister": s.canister_name,
+            "stand": s.stand_name,
+            "section": s.section_name,
+            "kind": s.kind,
+            "cycles": int(s.cycles or 0),
+            "deposited": int(s.deposited or 0),
+        }
+
+    if since <= 0:
+        # ~1500 rows ≈ several days at hourly sampling; one load_some stays
+        # under the replica instruction cap (see cycles.SAMPLE_MAX).
+        fetch = min(total, 1500)
+        start_id = max(1, max_sid - fetch + 1)
+        rows = [_row(s) for s in CycleSample.load_some(start_id, fetch)]
+        rows.sort(key=lambda r: r["ts"])
+        return rows
+
     batch = 400
-    end_id = CycleSample.max_id()
+    end_id = max_sid
     rows = []
     while end_id >= 1:
         start_id = max(1, end_id - batch + 1)
@@ -2252,16 +2276,7 @@ def _cycle_history_rows(since: int) -> list:
             ts = int(s.ts or 0)
             oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
             if ts >= since:
-                rows.append({
-                    "ts": ts,
-                    "canister_id": s.canister_id,
-                    "canister": s.canister_name,
-                    "stand": s.stand_name,
-                    "section": s.section_name,
-                    "kind": s.kind,
-                    "cycles": int(s.cycles or 0),
-                    "deposited": int(s.deposited or 0),
-                })
+                rows.append(_row(s))
         if oldest_ts is not None and oldest_ts < since:
             break
         if start_id <= 1:

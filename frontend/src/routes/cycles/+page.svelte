@@ -131,13 +131,19 @@
     }
   }
 
+  async function loadHistoryForWindow(w: WindowKey = windowKey) {
+    history = await getCycleHistory(
+      w === 'inception' ? {} : { window_secs: WINDOWS[w] },
+    );
+  }
+
   async function loadCached() {
     loading = true;
     error = '';
     try {
       const [cached, h, flow, md] = await Promise.all([
         getCyclesCached(),
-        getCycleHistory(),
+        getCycleHistory({ window_secs: WINDOWS[windowKey] }),
         getTreasuryFlow({ period: flowPeriod }).catch(() => null),
         casalsMetadata().catch(() => null),
       ]);
@@ -158,9 +164,21 @@
 
   async function reloadHistory() {
     try {
-      history = await getCycleHistory();
+      await loadHistoryForWindow();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Could not reload cycle history');
+    }
+  }
+
+  async function setWindow(w: WindowKey) {
+    windowKey = w;
+    loading = true;
+    try {
+      await loadHistoryForWindow(w);
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Could not load cycle history');
+    } finally {
+      loading = false;
     }
   }
 
@@ -595,7 +613,7 @@
         {#each Object.keys(WINDOWS) as w (w)}
           <button
             class="px-3 py-1.5 text-xs font-medium {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-            onclick={() => (windowKey = w as WindowKey)}
+            onclick={() => setWindow(w as WindowKey)}
           >{w}</button>
         {/each}
       </div>
