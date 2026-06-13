@@ -11,6 +11,7 @@
     formatCycles,
     formatIcp,
     formatFiat,
+    parseCycles,
     cycleStatusBadge,
     shortPrincipal,
     casalsMetadata,
@@ -46,6 +47,8 @@
   let busy = $state('');
   let showDeposit = $state(false);
   let showConvert = $state(false);
+  let topUpTarget = $state<CanisterCycles | null>(null);
+  let topUpAmount = $state('');
 
   const ICP_TRANSFER_FEE_E8S = 10_000;
   let copiedField = $state('');
@@ -452,6 +455,30 @@
 
   const hasHistory = $derived(samples.length > 0);
 
+  function cyclesInputDefault(n: number): string {
+    if (!n) return '1t';
+    if (n >= 1e12 && n % 1e12 === 0) return `${n / 1e12}t`;
+    if (n >= 1e9 && n % 1e9 === 0) return `${n / 1e9}b`;
+    return String(n);
+  }
+
+  const topUpParsed = $derived(parseCycles(topUpAmount));
+  const topUpValid = $derived(Number.isFinite(topUpParsed) && topUpParsed > 0);
+  const topUpSpendable = $derived(report?.treasury?.spendable ?? 0);
+  const topUpOverTreasury = $derived(topUpValid && topUpParsed > topUpSpendable);
+
+  function openTopUp(canister: CanisterCycles) {
+    topUpTarget = canister;
+    topUpAmount = cyclesInputDefault(
+      canister.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000,
+    );
+  }
+
+  function closeTopUp() {
+    topUpTarget = null;
+    topUpAmount = '';
+  }
+
   async function runReconcile() {
     busy = 'reconcile';
     try {
@@ -486,11 +513,17 @@
     }
   }
 
-  async function runTopUp(canister: CanisterCycles) {
-    busy = canister.canister_id;
+  async function confirmTopUp() {
+    if (!topUpTarget || !topUpValid) return;
+    if (topUpOverTreasury) {
+      toasts.error(`Treasury only has ${formatCycles(topUpSpendable)} spendable`);
+      return;
+    }
+    busy = topUpTarget.canister_id;
     try {
-      await topUp({ canister: canister.name });
-      toasts.success(`Topped up ${canister.name}`);
+      await topUp({ canister: topUpTarget.name, amount: topUpParsed });
+      toasts.success(`Topped up ${topUpTarget.name} with ${formatCycles(topUpParsed)}`);
+      closeTopUp();
       await refreshLive();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Top-up failed');
@@ -814,7 +847,7 @@
                 <td class="px-4 py-2.5 text-right">
                   <button
                     class="btn-secondary btn-sm"
-                    onclick={() => runTopUp(s)}
+                    onclick={() => openTopUp(s)}
                     disabled={!$isAuthenticated || busy === s.canister_id}
                     title={!$isAuthenticated ? 'Log in with Internet Identity' : undefined}
                   >
@@ -877,6 +910,89 @@
         {/if}
       </div>
     {/if}
+  {/if}
+
+  {#if topUpTarget && report}
+    <div class="fixed inset-0 z-40 flex items-center justify-center">
+      <button
+        type="button"
+        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
+        aria-label="Close top-up dialog"
+        onclick={closeTopUp}
+      ></button>
+      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">Top up {topUpTarget.name}</h3>
+        <p class="text-sm text-primary-500 mb-4">
+          Deposit cycles from the Casals treasury into this canister.
+        </p>
+
+        <dl class="space-y-3 text-sm mb-5">
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Current balance</dt>
+            <dd class="font-mono font-semibold text-primary-900">
+              {topUpTarget.cycles !== undefined ? formatCycles(topUpTarget.cycles) : '—'}
+            </dd>
+          </div>
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Policy top-up</dt>
+            <dd class="font-mono text-primary-700">{formatCycles(topUpTarget.topup_cycles)}</dd>
+          </div>
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Treasury spendable</dt>
+            <dd class="font-mono text-primary-700">{formatCycles(topUpSpendable)}</dd>
+          </div>
+        </dl>
+
+        <div class="mb-4">
+          <label class="label" for="topUpAmount">Amount</label>
+          <input
+            id="topUpAmount"
+            type="text"
+            class="input font-mono"
+            placeholder="1t"
+            bind:value={topUpAmount}
+          />
+          <p class="text-xs text-primary-400 mt-1.5">Suffixes: t or tc (trillion), b (billion), m (million).</p>
+        </div>
+
+        <div class="flex flex-wrap gap-2 mb-4">
+          {#each [
+            { label: 'Policy', value: cyclesInputDefault(topUpTarget.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
+            { label: '0.5 TC', value: '0.5t' },
+            { label: '1 TC', value: '1t' },
+            { label: '2 TC', value: '2t' },
+          ] as preset (preset.label)}
+            <button
+              type="button"
+              class="px-2.5 py-1 text-xs rounded-full border border-[var(--color-border-primary)] text-primary-600 hover:bg-primary-50"
+              onclick={() => (topUpAmount = preset.value)}
+            >{preset.label}</button>
+          {/each}
+        </div>
+
+        {#if topUpAmount && !topUpValid}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Enter a valid amount (e.g. 1t, 500b).
+          </p>
+        {:else if topUpOverTreasury}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Exceeds treasury spendable balance ({formatCycles(topUpSpendable)}).
+          </p>
+        {/if}
+
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-secondary btn-sm" onclick={closeTopUp}>Cancel</button>
+          <button
+            type="button"
+            class="btn-primary btn-sm"
+            disabled={!topUpValid || topUpOverTreasury || busy === topUpTarget.canister_id}
+            onclick={confirmTopUp}
+          >
+            {busy === topUpTarget.canister_id ? 'Topping up…' : 'Confirm top-up'}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if showConvert && report?.treasury}
