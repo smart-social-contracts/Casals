@@ -254,6 +254,13 @@
   );
 
   const treasuryIcpE8s = $derived(report?.treasury?.icp_e8s ?? 0);
+  const treasuryIcpAsCycles = $derived(
+    report?.treasury?.icp_e8s !== undefined && treasuryIcpE8s > 0
+      ? treasuryIcpE8s * icpCyclesPerE8s
+      : report?.treasury?.icp_e8s !== undefined
+        ? 0
+        : null,
+  );
   const convertibleIcpE8s = $derived(
     treasuryIcpE8s > ICP_TRANSFER_FEE_E8S ? treasuryIcpE8s - ICP_TRANSFER_FEE_E8S : 0,
   );
@@ -672,6 +679,9 @@
               <span class="text-base text-amber-700/70">—</span>
             {/if}
           </p>
+          {#if treasuryIcpAsCycles !== null}
+            <Fiat value={treasuryIcpAsCycles} block class="text-amber-800/70" />
+          {/if}
           {#if report.treasury.icp_autoconvert}
             <p class="text-[11px] text-amber-800/70 mt-1">Auto-converts on refresh and reconcile</p>
           {:else}
