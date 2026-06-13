@@ -2208,13 +2208,15 @@ def get_cycles_cached() -> text:
 def get_cycle_history(args: text) -> text:
     """Per-canister cycle-balance samples over time, for charting.
 
-    Args (JSON, optional): {"since": int (unix secs), "window_secs": int}. Either
-    bounds how far back to return; omit both for the full retained history.
+    Args (JSON, optional): {"since": int (unix secs), "window_secs": int,
+    "before_id": int, "limit": int}. Either since/window_secs bounds how far
+    back to return. Paginate with before_id (returned from the prior page) to
+    walk older samples without exceeding the query instruction limit.
 
-    Returns {"now": int, "samples": [{ts, canister_id, canister, stand, section,
-    kind, cycles, deposited}]}. The frontend aggregates these into the
-    over-time chart (sum by total / section / stand / canister) and the treemap
-    (balance = latest cycles; burn over a window = Δdeposited − Δcycles).
+    Returns {"now": int, "samples": [...], "has_more": bool, "before_id": int}.
+    The frontend aggregates samples into the over-time chart (sum by total /
+    section / stand / canister) and the treemap (balance = latest cycles;
+    burn over a window = Δdeposited − Δcycles).
     """
     try:
         params = json.loads(args) if args else {}
@@ -2226,30 +2228,34 @@ def get_cycle_history(args: text) -> text:
         since = int(params["since"])
     if params.get("window_secs"):
         since = max(since, now - int(params["window_secs"]))
-    rows = _cycle_history_rows(since, now)
-    return json.dumps({"now": now, "samples": rows})
+    before_id = int(params["before_id"]) if params.get("before_id") else 0
+    limit = int(params.get("limit") or 400)
+    limit = max(1, min(limit, 400))
+    rows, has_more, next_before = _cycle_history_page(since, before_id, limit)
+    return json.dumps({
+        "now": now,
+        "samples": rows,
+        "has_more": has_more,
+        "before_id": next_before,
+    })
 
 
-def _cycle_history_rows(since: int, now: int) -> list:
-    """Return the newest retained samples back to ``since``.
-
-    One ``load_some`` tail read stays under the 5 B instruction query cap; the
-    old 500-row cap only covered ~11 hours once hourly sampling began.
-    """
+def _cycle_history_page(since: int, before_id: int, limit: int):
+    """One page of samples, walking backwards from ``before_id`` (or the tail)."""
     total = CycleSample.count()
     if not total:
-        return []
+        return [], False, 0
     max_sid = CycleSample.max_id()
-    if since <= 0:
-        fetch = min(total, 1500)
-    else:
-        hours = max(1, (now - since + 3599) // 3600)
-        # ~50 rows per hourly batch (18 canisters + occasional duplicates).
-        fetch = min(total, max(400, min(1500, hours * 50)))
-    start_id = max(1, max_sid - fetch + 1)
+    end_id = before_id if before_id > 0 else max_sid
+    end_id = min(end_id, max_sid)
+    fetch = min(limit, end_id)
+    start_id = max(1, end_id - fetch + 1)
+    chunk = CycleSample.load_some(start_id, fetch)
     rows = []
-    for s in CycleSample.load_some(start_id, fetch):
+    chunk_oldest = None
+    for s in chunk:
         ts = int(s.ts or 0)
+        chunk_oldest = ts if chunk_oldest is None else min(chunk_oldest, ts)
         if ts >= since:
             rows.append({
                 "ts": ts,
@@ -2262,7 +2268,9 @@ def _cycle_history_rows(since: int, now: int) -> list:
                 "deposited": int(s.deposited or 0),
             })
     rows.sort(key=lambda r: r["ts"])
-    return rows
+    next_before = start_id - 1 if start_id > 1 else 0
+    has_more = bool(next_before and chunk_oldest is not None and chunk_oldest > since)
+    return rows, has_more, next_before
 
 
 @query

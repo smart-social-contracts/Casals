@@ -206,6 +206,8 @@ export interface CycleSamplePoint {
 export interface CycleHistory {
   now: number; // unix seconds
   samples: CycleSamplePoint[];
+  has_more?: boolean;
+  before_id?: number;
 }
 
 export type TreasuryFlowPeriod = 'hour' | 'day' | 'week' | 'month' | 'inception';
@@ -534,8 +536,33 @@ export async function getCyclesCached(): Promise<(CyclesReport & { cached_at?: n
 // Per-canister balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.
-export async function getCycleHistory(opts: { since?: number; window_secs?: number } = {}): Promise<CycleHistory> {
-  return _parseQuery<CycleHistory>(await (await _actor()).get_cycle_history(JSON.stringify(opts)));
+export async function getCycleHistory(opts: {
+  since?: number;
+  window_secs?: number;
+  before_id?: number;
+  limit?: number;
+} = {}): Promise<CycleHistory> {
+  const all: CycleSamplePoint[] = [];
+  let before_id = opts.before_id;
+  let now = Math.floor(Date.now() / 1000);
+  for (let page = 0; page < 25; page++) {
+    const raw = await _parseQuery<CycleHistory>(
+      await (await _actor()).get_cycle_history(
+        JSON.stringify({
+          since: opts.since,
+          window_secs: opts.window_secs,
+          ...(before_id ? { before_id } : {}),
+          ...(opts.limit ? { limit: opts.limit } : {}),
+        }),
+      ),
+    );
+    now = raw.now;
+    all.push(...raw.samples);
+    if (!raw.has_more || !raw.before_id) break;
+    before_id = raw.before_id;
+  }
+  all.sort((a, b) => a.ts - b.ts);
+  return { now, samples: all };
 }
 
 export async function getTreasuryFlow(opts: {
