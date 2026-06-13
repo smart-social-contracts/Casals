@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     getCycles,
     getCyclesCached,
@@ -40,6 +40,7 @@
   let treasuryFlow = $state<TreasuryFlow | null>(null);
   let loading = $state(true);
   let refreshing = $state(false); // live refresh running in background
+  let historyLoading = $state(false); // chart history fetch or scope re-aggregation
   let cachedAt = $state<number | null>(null);
   let error = $state('');
   let busy = $state('');
@@ -171,15 +172,27 @@
   }
 
   async function setWindow(w: WindowKey) {
+    if (w === windowKey || historyLoading) return;
     windowKey = w;
-    loading = true;
+    historyLoading = true;
+    await tick();
     try {
       await loadHistoryForWindow(w);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Could not load cycle history');
     } finally {
-      loading = false;
+      historyLoading = false;
     }
+  }
+
+  async function setScope(next: Scope) {
+    if (next === scope || historyLoading) return;
+    historyLoading = true;
+    await tick();
+    scope = next;
+    scopeFilter = new Set();
+    await tick();
+    historyLoading = false;
   }
 
   async function refreshLive() {
@@ -305,11 +318,6 @@
   const treemapSamples = $derived(
     treemapWindow === 'inception' ? samples : samples.filter((s) => s.ts >= treemapSince),
   );
-
-  function setScope(next: Scope) {
-    scope = next;
-    scopeFilter = new Set();
-  }
 
   function toggleScopeFilter(key: string) {
     const next = new Set(scopeFilter);
@@ -613,24 +621,28 @@
           <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
           <p class="text-xs text-primary-400">
             Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
-            {#if !hasHistory}
+            {#if historyLoading}
+              <span class="text-primary-500">Loading chart…</span>
+            {:else if !hasHistory}
               History fills in as the sampler runs (hourly) or after a reconcile.
             {/if}
           </p>
         </div>
         <div class="flex flex-wrap gap-2 self-start">
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyLoading ? 'opacity-60' : ''}">
             {#each Object.keys(WINDOWS) as w (w)}
               <button
-                class="px-3 py-1.5 text-xs font-medium {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                class="px-3 py-1.5 text-xs font-medium disabled:cursor-wait {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                disabled={historyLoading}
                 onclick={() => setWindow(w as WindowKey)}
               >{w}</button>
             {/each}
           </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyLoading ? 'opacity-60' : ''}">
             {#each SCOPE_OPTIONS as opt (opt[0])}
               <button
-                class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                class="px-3 py-1.5 text-xs font-medium disabled:cursor-wait {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                disabled={historyLoading}
                 onclick={() => setScope(opt[0])}
               >{opt[1]}</button>
             {/each}
@@ -668,7 +680,25 @@
           {/if}
         </div>
       {/if}
-      <LineChart series={lineSeries} format={formatCycles} />
+      <div class="relative min-h-[260px]">
+        {#if historyLoading}
+          <div
+            class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/75"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div class="flex items-center gap-2 text-sm text-primary-600">
+              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Loading chart…
+            </div>
+          </div>
+        {/if}
+        <div class="transition-opacity duration-150 {historyLoading ? 'opacity-40 pointer-events-none' : ''}">
+          <LineChart series={lineSeries} format={formatCycles} />
+        </div>
+      </div>
     </div>
 
     <!-- Treasury flow -->
