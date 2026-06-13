@@ -606,22 +606,6 @@
       </div>
     </div>
 
-    <!-- Window selector (shared by both charts) -->
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="text-xs text-primary-500">Window</span>
-      <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-        {#each Object.keys(WINDOWS) as w (w)}
-          <button
-            class="px-3 py-1.5 text-xs font-medium {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-            onclick={() => setWindow(w as WindowKey)}
-          >{w}</button>
-        {/each}
-      </div>
-      {#if !hasHistory}
-        <span class="text-xs text-primary-400">· History fills in as the sampler runs (hourly) or after a reconcile.</span>
-      {/if}
-    </div>
-
     <!-- Cycles over time -->
     <div class="card p-5">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
@@ -629,15 +613,28 @@
           <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
           <p class="text-xs text-primary-400">
             Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
+            {#if !hasHistory}
+              History fills in as the sampler runs (hourly) or after a reconcile.
+            {/if}
           </p>
         </div>
-        <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
-          {#each SCOPE_OPTIONS as opt (opt[0])}
-            <button
-              class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-              onclick={() => setScope(opt[0])}
-            >{opt[1]}</button>
-          {/each}
+        <div class="flex flex-wrap gap-2 self-start">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each Object.keys(WINDOWS) as w (w)}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => setWindow(w as WindowKey)}
+              >{w}</button>
+            {/each}
+          </div>
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each SCOPE_OPTIONS as opt (opt[0])}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => setScope(opt[0])}
+              >{opt[1]}</button>
+            {/each}
+          </div>
         </div>
       </div>
       {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
