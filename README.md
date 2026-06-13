@@ -6,7 +6,9 @@
 
 **Canister lifecycle orchestrator for the Internet Computer.**
 
-Casals lets a project **create, upgrade, roll back, and retire its canisters** under a single coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to its own commander (a vote, a committee, or nothing). Casals provides the structure and executes; it never embeds the voting logic.
+Casals is **fully on-chain**: the conductor is a canister that creates, upgrades, snapshots, and rolls back other canisters by calling the IC management canister directly. Sheets, arrangements, WASM catalog, cycles policy, and audit history all live in Casals' stable state — there is no off-chain worker in the deploy path. The CLI and frontend are thin clients that submit update calls; execution and rollback logic run inside the conductor.
+
+Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to its own commander (a vote, a committee, or nothing). Casals provides the structure and executes; it never embeds the voting logic.
 
 > **Live demo** — https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io
 
@@ -19,7 +21,7 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 | **Section** | A logical group of stands with a shared role (e.g. "Application", "Infra"). |
 | **Stand** | A logical unit inside a section — typically one deployed application instance. |
 | **Canister** | An actual canister. Stands contain one or more canisters. |
-| **Conductor** | The Casals orchestrator — sole controller of all canisters. |
+| **Conductor** | The Casals orchestrator canister — controller of managed canisters; runs all lifecycle calls on-chain. |
 | **Commander** | The principal a section/stand authorizes to command changes (its governance canister). |
 
 ---
