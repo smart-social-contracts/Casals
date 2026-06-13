@@ -95,6 +95,31 @@ def test_estimate_icp_convert_cycles():
     assert cycles_mod.estimate_icp_convert_cycles(100_000_000, rate) == 99_990_000 * rate
 
 
+def test_overlay_treasury_settings_refreshes_cached_flags():
+    import cycles as cycles_mod
+
+    class S:
+        treasury_reserve = 50_000_000_000
+        cycles_autopilot = 0
+        cycles_check_interval_secs = 7200
+        cycles_icp_autoconvert = 0
+
+    treasury = {
+        "balance": 200_000_000_000,
+        "reserve": 1_000_000_000_000,
+        "spendable": 0,
+        "autopilot": True,
+        "interval_secs": 3600,
+        "icp_autoconvert": True,
+    }
+    cycles_mod.overlay_treasury_settings(treasury, S())
+    assert treasury["autopilot"] is False
+    assert treasury["icp_autoconvert"] is False
+    assert treasury["interval_secs"] == 7200
+    assert treasury["reserve"] == 50_000_000_000
+    assert treasury["spendable"] == 150_000_000_000
+
+
 def test_should_record_cycle_sample_respects_gap(monkeypatch):
     import cycles as cycles_mod
     import models as models_mod

@@ -152,6 +152,14 @@
       treasuryFlow = flow;
       history = h;
       if (cached?.treasury) {
+        if (md) {
+          cached.treasury.autopilot = md.cycles_autopilot;
+          cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
+          cached.treasury.interval_secs = md.cycles_check_interval_secs;
+          const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
+          cached.treasury.reserve = reserve;
+          cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
+        }
         report = cached;
         cachedAt = cached.cached_at ?? null;
       }

@@ -73,6 +73,8 @@ from cycles import (
     _fetch_icp_cycles_per_e8s_gen,
     _notify_top_up_gen,
     icp_autoconvert_enabled,
+    overlay_treasury_settings,
+    refresh_cycles_snapshot_settings,
 )
 from helpers import (
     ANONYMOUS,
@@ -766,6 +768,12 @@ def set_settings(args: text) -> text:
             _arm_autopilot()
         if sampler_touched:
             _arm_cycle_sampler()
+        if (
+            autopilot_touched
+            or "cycles_icp_autoconvert" in params
+            or "treasury_reserve" in params
+        ):
+            refresh_cycles_snapshot_settings()
         return _ok()
     except Exception as e:
         return _err(str(e))
@@ -2199,6 +2207,7 @@ def get_cycles_cached() -> text:
         if isinstance(treasury, dict):
             for k, v in treasury_deposit_fields().items():
                 treasury.setdefault(k, v)
+            overlay_treasury_settings(treasury, _settings())
         return json.dumps(data)
     except Exception:
         return raw

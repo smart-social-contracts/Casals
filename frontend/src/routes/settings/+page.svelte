@@ -91,6 +91,23 @@
       const currencyChanged = displayCurrency !== (meta?.display_currency || 'USD');
       await setSettings(patch);
       toasts.success('Settings saved');
+      if (meta) {
+        meta = {
+          ...meta,
+          open_access: openAccess,
+          file_registry_canister_id: fileRegistryId.trim(),
+          file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
+          cycleops_enabled: cycleopsEnabled,
+          cycleops_principal: cycleopsPrincipal.trim(),
+          cycles_autopilot: cyclesAutopilot,
+          cycles_icp_autoconvert: cyclesIcpAutoconvert,
+          cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
+          display_currency: displayCurrency,
+          ...( !Number.isNaN(minC) ? { default_min_cycles: minC } : {} ),
+          ...( !Number.isNaN(topupC) ? { default_topup_cycles: topupC } : {} ),
+          ...( !Number.isNaN(reserveC) ? { treasury_reserve: reserveC } : {} ),
+        };
+      }
       // Re-fetch the rate when the currency changed so the new units take effect.
       if (currencyChanged) await ensureFx();
       await load();

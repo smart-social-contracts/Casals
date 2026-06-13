@@ -412,6 +412,44 @@ def icp_autoconvert_enabled(s=None) -> bool:
     return bool(int(raw))
 
 
+def overlay_treasury_settings(treasury: dict, s=None) -> dict:
+    """Refresh settings-derived treasury fields on a cached cycles snapshot."""
+    s = s or _settings()
+    balance = int(treasury.get("balance") or 0)
+    reserve = int(s.treasury_reserve or 0)
+    treasury["reserve"] = reserve
+    treasury["spendable"] = max(0, balance - reserve)
+    treasury["autopilot"] = bool(s.cycles_autopilot)
+    treasury["interval_secs"] = int(s.cycles_check_interval_secs or 0)
+    treasury["icp_autoconvert"] = icp_autoconvert_enabled(s)
+    return treasury
+
+
+def refresh_cycles_snapshot_settings() -> None:
+    """Patch settings-derived treasury fields in the persisted cycles snapshot."""
+    global _cycles_cache
+    try:
+        from models import CyclesSnapshot
+        snap = CyclesSnapshot["singleton"]
+        raw = (snap.snapshot_json if snap else None) or _cycles_cache
+        if not raw:
+            return
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return
+        treasury = data.get("treasury")
+        if not isinstance(treasury, dict):
+            return
+        overlay_treasury_settings(treasury)
+        patched = json.dumps(data)
+        _cycles_cache = patched
+        if snap:
+            snap.snapshot_json = patched
+            snap.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"refresh cycles snapshot settings failed: {e}")
+
+
 def treasury_cycles_deposit_amount(
     cycles_now: int,
     prev_cycles: int,
