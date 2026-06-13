@@ -369,14 +369,38 @@ writes a deployment-specific `/canister_ids.js` wiring the SPA to its backend.
 ## Cycle history & charts
 
 The IC keeps no balance history, so Casals samples each canister's balance itself —
-a `CycleSample` (denormalized with section/stand/canister) written by a sampler timer
-(`cycles_sampling` / `cycles_sample_interval_secs`, default on/hourly), plus
-opportunistically on `reconcile` and (throttled) on `get_cycles`. Old samples are
-pruned (retention window + hard cap). Each top-up also bumps `Canister.cycles_deposited`
+a `CycleSample` (denormalized with section/stand/canister) written by a **sampler
+timer** (`cycles_sampling` / `cycles_sample_interval_secs`, default on / hourly).
+`get_cycles` may also append samples when throttled (≥120s since the last batch);
+`reconcile` does **not** sample (avoids double-counting). Old samples are pruned
+(retention window + hard cap). Each top-up also bumps `Canister.cycles_deposited`
 so true consumption can be derived: `burn = Δdeposited − Δbalance`. `get_cycle_history`
-returns the raw samples; the frontend **Cycles** page aggregates them into a
-cycles-over-time line chart (total / section / stand / canister) and a
+returns the raw samples (paginated on the frontend); the **Cycles** page aggregates
+them into a cycles-over-time line chart (total / section / stand / canister) and a
 section⊃stand⊃canister treemap sized by burn-over-window or current balance.
+
+### Cycles page: cached balances vs chart samples
+
+Two different mechanisms — easy to confuse:
+
+| What | Stored as | Updated when | Cycles UI |
+|------|-----------|--------------|-----------|
+| **Treasury + table balances** | `CyclesSnapshot` (`get_cycles_cached`) | Something runs live **`get_cycles`** (~1 min IC reads) | Shown on load; label *“snapshot from … ago”* |
+| **Chart history** | `CycleSample` rows (`get_cycle_history`) | **Sampler timer** (default hourly), plus throttled samples from **`get_cycles`** | **Cycles over time** chart / treemap |
+
+**Frontend behaviour (Cycles page):**
+
+- **On visit** — instant `get_cycles_cached` only (no automatic live refresh).
+- **Refresh** — user-triggered live `get_cycles`; updates treasury, table, ICP,
+  saves a new `CyclesSnapshot`, and may add chart samples if the throttle allows.
+  Read-only — does not top up canisters.
+- **Reconcile** — tops up low canisters per policy *and* runs a full balance read;
+  may be hidden in the UI but still exists on the backend. Independent of the sampler.
+
+The hourly sampler records **chart samples** and watches for treasury ICP/cycles
+deposits; it does **not** refresh `get_cycles_cached`. Disabling **autopilot**
+stops automatic reconcile/top-ups only — **not** the sampler (unless
+`cycles_sampling` is turned off in settings).
 
 **Autopilot top-up.** When `cycles_autopilot` is on, a timer
 (`cycles_check_interval_secs`) runs `reconcile`, which tops up any canister below
