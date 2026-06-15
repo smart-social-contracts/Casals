@@ -7,6 +7,7 @@
     getTreasuryFlow,
     topUp,
     returnCycles,
+    refreshCanisters,
     setCyclePolicy,
     reconcile,
     convertTreasuryIcp,
@@ -49,18 +50,22 @@
   let refreshing = $state(false); // live refresh running in background
   let historyLoading = $state(false); // chart history fetch or scope re-aggregation
   let cachedAt = $state<number | null>(null);
+  let snapshotPartial = $state(false);
+  let liveSynced = $state(false);
   let error = $state('');
   let busy = $state('');
   let showDeposit = $state(false);
   let showConvert = $state(false);
-  let topUpTarget = $state<CanisterCycles | null>(null);
+  let topUpTargets = $state<CanisterCycles[]>([]);
   let topUpAmount = $state('');
-  let returnTarget = $state<CanisterCycles | null>(null);
+  let returnTargets = $state<CanisterCycles[]>([]);
   let returnAmount = $state('');
-  let policyTarget = $state<CanisterCycles | null>(null);
+  let policyTargets = $state<CanisterCycles[]>([]);
   let policyAmount = $state('');
   let policyInherit = $state(false);
   let showRefreshHelp = $state(false);
+  let canisterFilterText = $state('');
+  let selectedCanisterIds = $state<Set<string>>(new Set());
   type CanisterSortKey = 'canister' | 'sectionStand' | 'cycles' | 'minPolicy' | 'status';
   let canisterSortKey = $state<CanisterSortKey>('canister');
   let canisterSortAsc = $state(true);
@@ -230,7 +235,9 @@
     try {
       const [live] = await Promise.all([getCycles(), reloadHistory(), reloadTreasuryFlow()]);
       report = live;
-      cachedAt = null;
+      cachedAt = live.cached_at ?? null;
+      snapshotPartial = false;
+      liveSynced = true;
       loadFx();
     } catch (e: any) {
       if (!report) error = e?.message ?? String(e);
@@ -240,13 +247,18 @@
     }
   }
 
-  /** Load cached snapshot, then refresh live balances (~1 min). */
+  /** Load cached snapshot, then refresh live balances in the background. */
   async function load() {
     await loadCached();
     await refreshLive();
   }
 
-  onMount(loadCached);
+  onMount(() => {
+    void (async () => {
+      await loadCached();
+      void refreshLive();
+    })();
+  });
 
   async function reloadTreasuryFlow(period: TreasuryFlowPeriod = flowPeriod) {
     const req = ++flowRequest;
@@ -529,6 +541,34 @@
     return rows;
   });
 
+  const filteredCanisters = $derived.by(() => {
+    const q = canisterFilterText.trim().toLowerCase();
+    if (!q) return sortedCanisters;
+    return sortedCanisters.filter((s) =>
+      s.name.toLowerCase().includes(q)
+      || (s.section || '').toLowerCase().includes(q)
+      || (s.stand || '').toLowerCase().includes(q)
+      || s.canister_id.toLowerCase().includes(q),
+    );
+  });
+
+  const selectedCanisters = $derived(
+    sortedCanisters.filter((s) => selectedCanisterIds.has(s.canister_id)),
+  );
+
+  const allVisibleSelected = $derived(
+    filteredCanisters.length > 0
+      && filteredCanisters.every((s) => selectedCanisterIds.has(s.canister_id)),
+  );
+
+  const someVisibleSelected = $derived(
+    filteredCanisters.some((s) => selectedCanisterIds.has(s.canister_id)),
+  );
+
+  const bulkBusy = $derived(
+    busy === 'bulk:refresh' || busy === 'bulk:topup' || busy === 'bulk:return' || busy === 'bulk:policy',
+  );
+
   function toggleCanisterSort(key: CanisterSortKey) {
     if (canisterSortKey === key) canisterSortAsc = !canisterSortAsc;
     else {
@@ -555,7 +595,17 @@
   const topUpParsed = $derived(parseTcAmount(topUpAmount));
   const topUpValid = $derived(Number.isFinite(topUpParsed) && topUpParsed > 0);
   const topUpSpendable = $derived(report?.treasury?.spendable ?? 0);
-  const topUpOverTreasury = $derived(topUpValid && topUpParsed > topUpSpendable);
+  const topUpTotalCost = $derived(topUpValid ? topUpParsed * topUpTargets.length : 0);
+  const topUpOverTreasury = $derived(topUpValid && topUpTotalCost > topUpSpendable);
+  const balancesStale = $derived(
+    snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing),
+  );
+  const topUpExpectedBalance = $derived.by(() => {
+    if (!topUpValid || topUpTargets.length !== 1) return null;
+    const current = topUpTargets[0].cycles;
+    if (current === undefined) return null;
+    return current + topUpParsed;
+  });
 
   function maxReturnable(canister: CanisterCycles): number {
     if (canister.cycles === undefined) return 0;
@@ -563,10 +613,29 @@
     return Math.max(0, headroom - (canister.min_cycles ?? 0) - SWEEP_EXEC_RESERVE);
   }
 
+  const selectedReturnableCount = $derived(
+    selectedCanisters.filter((s) => maxReturnable(s) > 0).length,
+  );
+
   const returnParsed = $derived(parseTcAmount(returnAmount));
   const returnValid = $derived(Number.isFinite(returnParsed) && returnParsed > 0);
-  const returnMax = $derived(returnTarget ? maxReturnable(returnTarget) : 0);
-  const returnOverMax = $derived(returnValid && returnParsed > returnMax);
+  const returnMaxSingle = $derived(
+    returnTargets.length === 1 ? maxReturnable(returnTargets[0]) : 0,
+  );
+  const returnOverMaxSingle = $derived(returnValid && returnParsed > returnMaxSingle);
+  const returnAnyCapped = $derived(
+    returnValid
+      && returnTargets.some((c) => returnParsed > maxReturnable(c) && maxReturnable(c) > 0),
+  );
+  const returnBulkValid = $derived(
+    returnValid && returnTargets.some((c) => Math.min(returnParsed, maxReturnable(c)) > 0),
+  );
+  const returnBulkTotal = $derived(
+    returnTargets.reduce(
+      (sum, c) => sum + Math.min(returnParsed, maxReturnable(c)),
+      0,
+    ),
+  );
 
   const policyParsed = $derived(parseTcAmount(policyAmount));
   const policyValid = $derived(policyInherit || (Number.isFinite(policyParsed) && policyParsed > 0));
@@ -586,40 +655,90 @@
     }
   }
 
-  function openTopUp(canister: CanisterCycles) {
-    topUpTarget = canister;
-    topUpAmount = cyclesToTcInput(
-      canister.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000,
-    );
+  function toggleCanisterSelected(canisterId: string) {
+    const next = new Set(selectedCanisterIds);
+    if (next.has(canisterId)) next.delete(canisterId);
+    else next.add(canisterId);
+    selectedCanisterIds = next;
+  }
+
+  function toggleAllVisibleSelected() {
+    if (allVisibleSelected) {
+      const visible = new Set(filteredCanisters.map((s) => s.canister_id));
+      selectedCanisterIds = new Set(
+        [...selectedCanisterIds].filter((id) => !visible.has(id)),
+      );
+    } else {
+      selectedCanisterIds = new Set([
+        ...selectedCanisterIds,
+        ...filteredCanisters.map((s) => s.canister_id),
+      ]);
+    }
+  }
+
+  function canisterByName(name: string): CanisterCycles | undefined {
+    return report?.canisters.find((c) => c.name === name);
+  }
+
+  function applyReport(live: CyclesReport) {
+    report = live;
+    cachedAt = live.cached_at ?? null;
+    snapshotPartial = live.partial_refresh === true;
+    loadFx();
+  }
+
+  async function openTopUpForSelection() {
+    if (!selectedCanisters.length) return;
+    const names = selectedCanisters.map((c) => c.name);
+    busy = 'prefetch-topup';
+    try {
+      try {
+        await refreshSelectedCanisters(names);
+      } catch {
+        // Fall back to cached rows; modal shows stale warning.
+      }
+      topUpTargets = names.map((n) => canisterByName(n)).filter((c): c is CanisterCycles => !!c);
+      if (!topUpTargets.length) topUpTargets = [...selectedCanisters];
+      const first = topUpTargets[0];
+      if (!first) return;
+      topUpAmount = cyclesToTcInput(
+        first.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000,
+      );
+    } finally {
+      busy = '';
+    }
   }
 
   function closeTopUp() {
-    topUpTarget = null;
+    topUpTargets = [];
     topUpAmount = '';
   }
 
-  function openReturn(canister: CanisterCycles) {
-    returnTarget = canister;
-    const max = maxReturnable(canister);
-    returnAmount = max > 0 ? cyclesToTcInput(max) : '';
+  function openReturnForSelection() {
+    if (!selectedCanisters.length) return;
+    returnTargets = [...selectedCanisters];
+    const maxAcross = Math.max(0, ...returnTargets.map((c) => maxReturnable(c)));
+    returnAmount = maxAcross > 0 ? cyclesToTcInput(maxAcross) : '';
   }
 
   function closeReturn() {
-    returnTarget = null;
+    returnTargets = [];
     returnAmount = '';
   }
 
-  function openPolicyEdit(canister: CanisterCycles) {
-    policyTarget = canister;
-    const override = canister.min_cycles_override ?? 0;
+  function openPolicyForSelection() {
+    if (!selectedCanisters.length) return;
+    policyTargets = [...selectedCanisters];
+    const first = policyTargets[0];
+    const override = first.min_cycles_override ?? 0;
     policyInherit = override === 0;
     policyAmount = override > 0
       ? cyclesToTcInput(override)
-      : cyclesToTcInput(canister.min_cycles);
+      : cyclesToTcInput(first.min_cycles);
   }
 
   function closePolicyEdit() {
-    policyTarget = null;
+    policyTargets = [];
     policyAmount = '';
     policyInherit = false;
   }
@@ -659,58 +778,169 @@
   }
 
   async function confirmTopUp() {
-    if (!topUpTarget || !topUpValid) return;
+    if (!topUpTargets.length || !topUpValid) return;
     if (topUpOverTreasury) {
       toasts.error(`Treasury only has ${formatCycles(topUpSpendable)} spendable`);
       return;
     }
-    busy = `topup:${topUpTarget.canister_id}`;
+    busy = 'bulk:topup';
+    const targets = [...topUpTargets];
+    let ok = 0;
+    let lastErr = '';
     try {
-      await topUp({ canister: topUpTarget.name, amount: topUpParsed });
-      toasts.success(`Topped up ${topUpTarget.name} with ${formatCycles(topUpParsed)}`);
+      for (const target of targets) {
+        try {
+          const res = await topUp({ canister: target.name, amount: topUpParsed });
+          ok += 1;
+          if (report && typeof res.treasury === 'number') {
+            const treasuryBal = res.treasury as number;
+            const reserve = report.treasury?.reserve ?? 0;
+            report = {
+              ...report,
+              treasury: report.treasury
+                ? {
+                    ...report.treasury,
+                    balance: treasuryBal,
+                    spendable: Math.max(0, treasuryBal - reserve),
+                  }
+                : report.treasury,
+              canisters: report.canisters.map((c) =>
+                c.name === target.name && c.cycles !== undefined
+                  ? {
+                      ...c,
+                      cycles: c.cycles + topUpParsed,
+                      headroom: (c.headroom ?? c.cycles - (c.freezing_threshold ?? 0)) + topUpParsed,
+                    }
+                  : c,
+              ),
+            };
+          }
+        } catch (e: any) {
+          lastErr = e?.message ?? 'Top-up failed';
+        }
+      }
+      if (ok === targets.length) {
+        if (targets.length === 1) {
+          const before = targets[0].cycles ?? 0;
+          toasts.success(
+            `Topped up ${targets[0].name} with ${formatCycles(topUpParsed)} → ~${formatCycles(before + topUpParsed)}`,
+          );
+        } else {
+          toasts.success(`Topped up ${ok} canisters with ${formatCycles(topUpParsed)} each`);
+        }
+      } else if (ok > 0) {
+        toasts.error(`Topped up ${ok} of ${targets.length}. ${lastErr}`);
+      } else {
+        toasts.error(lastErr || 'Top-up failed');
+      }
       closeTopUp();
-      await refreshLive();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Top-up failed');
+      if (ok > 0) {
+        void refreshLive();
+      }
     } finally {
       busy = '';
     }
   }
 
   async function confirmReturn() {
-    if (!returnTarget || !returnValid) return;
-    if (returnOverMax) {
-      toasts.error(`Can only return up to ${formatCycles(returnMax)}`);
+    if (!returnTargets.length || !returnBulkValid) return;
+    if (returnTargets.length === 1 && returnOverMaxSingle) {
+      toasts.error(`Can only return up to ${formatCycles(returnMaxSingle)}`);
       return;
     }
-    busy = `return:${returnTarget.canister_id}`;
+    busy = 'bulk:return';
+    const targets = [...returnTargets];
+    let ok = 0;
+    let returnedTotal = 0;
+    let lastErr = '';
     try {
-      await returnCycles({ canister: returnTarget.name, amount: returnParsed });
-      toasts.success(`Returned ${formatCycles(returnParsed)} from ${returnTarget.name} to treasury`);
+      for (const target of targets) {
+        const amount = Math.min(returnParsed, maxReturnable(target));
+        if (amount <= 0) continue;
+        try {
+          await returnCycles({ canister: target.name, amount });
+          ok += 1;
+          returnedTotal += amount;
+        } catch (e: any) {
+          lastErr = e?.message ?? 'Return failed';
+        }
+      }
+      if (ok > 0) {
+        toasts.success(
+          targets.length === 1
+            ? `Returned ${formatCycles(returnedTotal)} from ${targets[0].name} to treasury`
+            : `Returned ${formatCycles(returnedTotal)} from ${ok} canister${ok === 1 ? '' : 's'} to treasury`,
+        );
+      } else {
+        toasts.error(lastErr || 'Return failed');
+      }
       closeReturn();
-      await refreshLive();
+      if (ok > 0) {
+        void refreshLive();
+      }
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function refreshSelectedCanisters(names: string[]) {
+    if (!names.length) return;
+    try {
+      const live = await refreshCanisters({ canisters: names });
+      applyReport(live);
     } catch (e: any) {
-      toasts.error(e?.message ?? 'Return failed');
+      toasts.error(e?.message ?? 'Refresh failed');
+      throw e;
+    }
+  }
+
+  async function refreshSelection() {
+    const names = selectedCanisters.map((c) => c.name);
+    if (!names.length) return;
+    busy = 'bulk:refresh';
+    try {
+      await refreshSelectedCanisters(names);
+      toasts.success(`Refreshed ${names.length} canister${names.length === 1 ? '' : 's'}`);
     } finally {
       busy = '';
     }
   }
 
   async function confirmPolicyEdit() {
-    if (!policyTarget || !policyValid) return;
-    busy = `policy:${policyTarget.canister_id}`;
+    if (!policyTargets.length || !policyValid) return;
+    busy = 'bulk:policy';
+    const targets = [...policyTargets];
+    const min_cycles = policyInherit ? 0 : policyParsed;
+    let ok = 0;
+    let lastErr = '';
     try {
-      const min_cycles = policyInherit ? 0 : policyParsed;
-      await setCyclePolicy({ canister: policyTarget.name, min_cycles });
-      toasts.success(
-        policyInherit
-          ? `${policyTarget.name} now inherits min policy`
-          : `Min policy for ${policyTarget.name} set to ${formatCycles(min_cycles)}`,
-      );
+      for (const target of targets) {
+        try {
+          await setCyclePolicy({ canister: target.name, min_cycles });
+          ok += 1;
+        } catch (e: any) {
+          lastErr = e?.message ?? 'Could not update min policy';
+        }
+      }
+      if (ok === targets.length) {
+        toasts.success(
+          policyInherit
+            ? targets.length === 1
+              ? `${targets[0].name} now inherits min policy`
+              : `${ok} canisters now inherit min policy`
+            : targets.length === 1
+              ? `Min policy for ${targets[0].name} set to ${formatCycles(min_cycles)}`
+              : `Min policy set to ${formatCycles(min_cycles)} on ${ok} canisters`,
+        );
+      } else if (ok > 0) {
+        toasts.error(`Updated ${ok} of ${targets.length}. ${lastErr}`);
+      } else {
+        toasts.error(lastErr || 'Could not update min policy');
+      }
       closePolicyEdit();
-      await refreshLive();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Could not update min policy');
+      if (ok > 0) {
+        void refreshLive();
+      }
     } finally {
       busy = '';
     }
@@ -728,14 +958,27 @@
 <svelte:head><title>Casals · Cycles</title></svelte:head>
 
 <div class="space-y-6 animate-fade-in">
+  {#if report && balancesStale && !refreshing}
+    <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      {#if snapshotPartial}
+        Only {report.refreshed_canisters?.length ?? 'some'} canister{report.refreshed_canisters?.length === 1 ? '' : 's'} have live balances;
+        other rows may be outdated.
+      {:else if cachedAt}
+        Balances are from a snapshot taken {fmtAge(cachedAt)} — live refresh is running or use Refresh.
+      {/if}
+    </div>
+  {/if}
+
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Cycles</h1>
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
     <div class="flex items-center gap-2 self-start flex-wrap justify-end">
-      {#if cachedAt && !refreshing}
-        <span class="text-xs text-primary-400 italic">snapshot from {fmtAge(cachedAt)}</span>
+      {#if cachedAt && !refreshing && !snapshotPartial}
+        <span class="text-xs text-primary-400 italic">live snapshot · {fmtAge(cachedAt)}</span>
+      {:else if cachedAt && !refreshing && snapshotPartial}
+        <span class="text-xs text-amber-700 italic">partial snapshot · {fmtAge(cachedAt)}</span>
       {:else if refreshing}
         <span class="text-xs text-primary-400 italic">refreshing live balances…</span>
       {/if}
@@ -1052,9 +1295,80 @@
       {#if report.canisters.length === 0}
         <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
       {:else}
+        <div class="flex flex-col gap-3 px-4 py-3 border-b border-[var(--color-border-primary)]">
+          <div class="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+            <div class="relative w-full sm:max-w-xs">
+              <input
+                type="search"
+                class="input text-sm w-full pl-9"
+                placeholder="Filter by name, section, stand, or ID…"
+                bind:value={canisterFilterText}
+                aria-label="Filter canisters"
+              />
+              <svg class="w-4 h-4 text-primary-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8" /><path stroke-linecap="round" d="M21 21l-4.35-4.35" />
+              </svg>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 self-end sm:self-auto">
+              {#if selectedCanisterIds.size > 0}
+                <span class="text-xs text-primary-500">{selectedCanisterIds.size} selected</span>
+              {/if}
+              <button
+                type="button"
+                class="btn-secondary btn-sm"
+                onclick={refreshSelection}
+                disabled={!selectedCanisterIds.size || bulkBusy || loading || refreshing}
+                title={!selectedCanisterIds.size ? 'Select canisters first' : undefined}
+              >
+                {busy === 'bulk:refresh' ? 'Refreshing…' : 'Refresh'}
+              </button>
+              <button
+                type="button"
+                class="btn-secondary btn-sm"
+                onclick={openTopUpForSelection}
+                disabled={!selectedCanisterIds.size || !$isAuthenticated || bulkBusy || busy === 'prefetch-topup'}
+                title={!$isAuthenticated ? 'Log in with Internet Identity' : !selectedCanisterIds.size ? 'Select canisters first' : undefined}
+              >
+                {busy === 'prefetch-topup' ? 'Loading…' : 'Top up'}
+              </button>
+              <button
+                type="button"
+                class="btn-secondary btn-sm"
+                onclick={openReturnForSelection}
+                disabled={!selectedReturnableCount || !$isAuthenticated || bulkBusy}
+                title={!$isAuthenticated ? 'Log in with Internet Identity' : !selectedReturnableCount ? 'No excess cycles to return in selection' : undefined}
+              >
+                Return
+              </button>
+              <button
+                type="button"
+                class="btn-secondary btn-sm"
+                onclick={openPolicyForSelection}
+                disabled={!selectedCanisterIds.size || !$isAuthenticated || bulkBusy}
+                title={!$isAuthenticated ? 'Log in with Internet Identity (controller required)' : !selectedCanisterIds.size ? 'Select canisters first' : undefined}
+              >
+                Min policy
+              </button>
+            </div>
+          </div>
+          {#if canisterFilterText.trim() && filteredCanisters.length === 0}
+            <p class="text-xs text-primary-400">No canisters match this filter.</p>
+          {/if}
+        </div>
         <table class="w-full text-sm">
           <thead class="bg-primary-50 text-primary-500 text-xs">
             <tr>
+              <th class="w-10 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  class="w-4 h-4 rounded border-primary-300"
+                  checked={allVisibleSelected}
+                  indeterminate={someVisibleSelected && !allVisibleSelected}
+                  onchange={toggleAllVisibleSelected}
+                  disabled={filteredCanisters.length === 0}
+                  aria-label="Select all visible canisters"
+                />
+              </th>
               <th class="text-left font-medium px-4 py-2.5" aria-sort={canisterSortKey === 'canister' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
                 <button
                   type="button"
@@ -1100,12 +1414,20 @@
                   Status <span class="text-[10px] opacity-70">{canisterSortMark('status')}</span>
                 </button>
               </th>
-              <th class="px-4 py-2.5 text-right text-xs font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {#each sortedCanisters as s (s.canister_id)}
-              <tr class="border-t border-[var(--color-border-primary)]">
+            {#each filteredCanisters as s (s.canister_id)}
+              <tr class="border-t border-[var(--color-border-primary)] {selectedCanisterIds.has(s.canister_id) ? 'bg-primary-50/40' : ''}">
+                <td class="px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    class="w-4 h-4 rounded border-primary-300"
+                    checked={selectedCanisterIds.has(s.canister_id)}
+                    onchange={() => toggleCanisterSelected(s.canister_id)}
+                    aria-label="Select {s.name}"
+                  />
+                </td>
                 <td class="px-4 py-2.5">
                   <div class="font-medium text-primary-900">{s.name}</div>
                   <div class="font-mono text-[11px] text-primary-400" title={s.canister_id}>{shortPrincipal(s.canister_id)}</div>
@@ -1116,42 +1438,11 @@
                   <Fiat value={s.cycles} block class="text-right" />
                   {#if s.error}<div class="text-[11px] text-red-500" title={s.error}>error</div>{/if}
                 </td>
-                <td class="px-4 py-2.5 text-right hidden md:table-cell">
-                  <div class="flex items-center justify-end gap-1.5">
-                    <span class="font-mono text-primary-500">{formatCycles(s.min_cycles)}</span>
-                    <button
-                      type="button"
-                      class="btn-secondary btn-sm shrink-0"
-                      onclick={() => openPolicyEdit(s)}
-                      disabled={!$isAuthenticated || busy.startsWith(`policy:${s.canister_id}`)}
-                      title={!$isAuthenticated ? 'Log in with Internet Identity (controller required)' : 'Edit min policy for this canister'}
-                    >
-                      {busy === `policy:${s.canister_id}` ? '…' : 'Edit'}
-                    </button>
-                  </div>
+                <td class="px-4 py-2.5 text-right hidden md:table-cell font-mono text-primary-500">
+                  {formatCycles(s.min_cycles)}
                 </td>
                 <td class="px-4 py-2.5 text-center">
                   <span class="badge {cycleStatusBadge(s.status)}">{s.status}</span>
-                </td>
-                <td class="px-4 py-2.5 text-right">
-                  <div class="flex flex-wrap justify-end gap-1.5">
-                    <button
-                      class="btn-secondary btn-sm"
-                      onclick={() => openReturn(s)}
-                      disabled={!$isAuthenticated || maxReturnable(s) <= 0 || busy.startsWith(`return:${s.canister_id}`) || busy.startsWith(`topup:${s.canister_id}`)}
-                      title={!$isAuthenticated ? 'Log in with Internet Identity' : maxReturnable(s) <= 0 ? 'No excess cycles to return' : undefined}
-                    >
-                      {busy === `return:${s.canister_id}` ? '…' : 'Return'}
-                    </button>
-                    <button
-                      class="btn-secondary btn-sm"
-                      onclick={() => openTopUp(s)}
-                      disabled={!$isAuthenticated || busy.startsWith(`topup:${s.canister_id}`) || busy.startsWith(`return:${s.canister_id}`)}
-                      title={!$isAuthenticated ? 'Log in with Internet Identity' : undefined}
-                    >
-                      {busy === `topup:${s.canister_id}` ? '…' : 'Top up'}
-                    </button>
-                  </div>
                 </td>
               </tr>
             {/each}
@@ -1211,7 +1502,7 @@
     {/if}
   {/if}
 
-  {#if topUpTarget && report}
+  {#if topUpTargets.length && report}
     <div class="fixed inset-0 z-40 flex items-center justify-center">
       <button
         type="button"
@@ -1220,26 +1511,51 @@
         onclick={closeTopUp}
       ></button>
       <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">Top up {topUpTarget.name}</h3>
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">
+          Top up {topUpTargets.length === 1 ? topUpTargets[0].name : `${topUpTargets.length} canisters`}
+        </h3>
         <p class="text-sm text-primary-500 mb-4">
-          Deposit cycles from the Casals treasury into this canister.
+          Deposit cycles from the Casals treasury into {topUpTargets.length === 1 ? 'this canister' : 'each selected canister'}.
         </p>
 
+        {#if topUpTargets.length > 1}
+          <p class="text-xs text-primary-500 mb-4">
+            {topUpTargets.map((c) => c.name).join(', ')}
+          </p>
+        {/if}
+
         <dl class="space-y-3 text-sm mb-5">
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Current balance</dt>
-            <dd class="font-mono font-semibold text-primary-900">
-              {topUpTarget.cycles !== undefined ? formatCycles(topUpTarget.cycles) : '—'}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Policy top-up</dt>
-            <dd class="font-mono text-primary-700">{formatCycles(topUpTarget.topup_cycles)}</dd>
-          </div>
+          {#if topUpTargets.length === 1}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Current balance</dt>
+              <dd class="font-mono font-semibold text-primary-900">
+                {topUpTargets[0].cycles !== undefined ? formatCycles(topUpTargets[0].cycles) : '—'}
+                {#if snapshotPartial && topUpTargets[0].name && report?.refreshed_canisters?.includes(topUpTargets[0].name)}
+                  <span class="block text-[11px] font-normal text-emerald-700">live</span>
+                {/if}
+              </dd>
+            </div>
+            {#if topUpExpectedBalance !== null}
+              <div class="flex justify-between gap-4">
+                <dt class="text-primary-500">Expected after top-up</dt>
+                <dd class="font-mono font-semibold text-primary-900">{formatCycles(topUpExpectedBalance)}</dd>
+              </div>
+            {/if}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Policy top-up</dt>
+              <dd class="font-mono text-primary-700">{formatCycles(topUpTargets[0].topup_cycles)}</dd>
+            </div>
+          {/if}
           <div class="flex justify-between gap-4">
             <dt class="text-primary-500">Treasury spendable</dt>
             <dd class="font-mono text-primary-700">{formatCycles(topUpSpendable)}</dd>
           </div>
+          {#if topUpTargets.length > 1 && topUpValid}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Total ({topUpTargets.length} × {formatCycles(topUpParsed)})</dt>
+              <dd class="font-mono font-semibold text-primary-900">{formatCycles(topUpTotalCost)}</dd>
+            </div>
+          {/if}
         </dl>
 
         <div class="mb-4">
@@ -1259,7 +1575,7 @@
 
         <div class="flex flex-wrap gap-2 mb-4">
           {#each [
-            { label: 'Policy', value: cyclesToTcInput(topUpTarget.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
+            { label: 'Policy', value: cyclesToTcInput(topUpTargets[0].topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
             { label: '0.5 TC', value: '0.5' },
             { label: '1 TC', value: '1' },
             { label: '2 TC', value: '2' },
@@ -1287,17 +1603,17 @@
           <button
             type="button"
             class="btn-primary btn-sm"
-            disabled={!topUpValid || topUpOverTreasury || busy === `topup:${topUpTarget.canister_id}`}
+            disabled={!topUpValid || topUpOverTreasury || busy === 'bulk:topup'}
             onclick={confirmTopUp}
           >
-            {busy === `topup:${topUpTarget.canister_id}` ? 'Topping up…' : 'Confirm top-up'}
+            {busy === 'bulk:topup' ? 'Topping up…' : topUpTargets.length === 1 ? 'Confirm top-up' : `Top up ${topUpTargets.length} canisters`}
           </button>
         </div>
       </div>
     </div>
   {/if}
 
-  {#if returnTarget && report}
+  {#if returnTargets.length && report}
     <div class="fixed inset-0 z-40 flex items-center justify-center">
       <button
         type="button"
@@ -1306,26 +1622,41 @@
         onclick={closeReturn}
       ></button>
       <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">Return cycles from {returnTarget.name}</h3>
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">
+          Return cycles from {returnTargets.length === 1 ? returnTargets[0].name : `${returnTargets.length} canisters`}
+        </h3>
         <p class="text-sm text-primary-500 mb-4">
-          Sweep cycles from this canister back into the Casals treasury. The canister keeps its policy headroom and freezing reserve.
+          Sweep cycles from {returnTargets.length === 1 ? 'this canister' : 'each selected canister'} back into the Casals treasury. Each canister keeps its policy headroom and freezing reserve.
         </p>
 
+        {#if returnTargets.length > 1}
+          <p class="text-xs text-primary-500 mb-4">
+            {returnTargets.map((c) => c.name).join(', ')}
+          </p>
+        {/if}
+
         <dl class="space-y-3 text-sm mb-5">
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Current balance</dt>
-            <dd class="font-mono font-semibold text-primary-900">
-              {returnTarget.cycles !== undefined ? formatCycles(returnTarget.cycles) : '—'}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Min policy headroom</dt>
-            <dd class="font-mono text-primary-700">{formatCycles(returnTarget.min_cycles)}</dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Max returnable</dt>
-            <dd class="font-mono text-primary-700">{formatCycles(returnMax)}</dd>
-          </div>
+          {#if returnTargets.length === 1}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Current balance</dt>
+              <dd class="font-mono font-semibold text-primary-900">
+                {returnTargets[0].cycles !== undefined ? formatCycles(returnTargets[0].cycles) : '—'}
+              </dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Min policy headroom</dt>
+              <dd class="font-mono text-primary-700">{formatCycles(returnTargets[0].min_cycles)}</dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Max returnable</dt>
+              <dd class="font-mono text-primary-700">{formatCycles(returnMaxSingle)}</dd>
+            </div>
+          {:else if returnValid}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Estimated total return</dt>
+              <dd class="font-mono font-semibold text-primary-900">{formatCycles(returnBulkTotal)}</dd>
+            </div>
+          {/if}
         </dl>
 
         <div class="mb-4">
@@ -1344,11 +1675,15 @@
         </div>
 
         <div class="flex flex-wrap gap-2 mb-4">
-          {#each [
-            { label: 'Max', value: returnMax > 0 ? cyclesToTcInput(returnMax) : '' },
-            { label: 'Policy', value: cyclesToTcInput(returnTarget.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
+          {#each returnTargets.length === 1 ? [
+            { label: 'Max', value: returnMaxSingle > 0 ? cyclesToTcInput(returnMaxSingle) : '' },
+            { label: 'Policy', value: cyclesToTcInput(returnTargets[0].topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
             { label: '0.5 TC', value: '0.5' },
             { label: '1 TC', value: '1' },
+          ] : [
+            { label: '0.5 TC', value: '0.5' },
+            { label: '1 TC', value: '1' },
+            { label: '2 TC', value: '2' },
           ] as preset (preset.label)}
             {#if preset.value}
               <button
@@ -1364,9 +1699,13 @@
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
             Enter a valid TC amount (e.g. 1 or 0.5).
           </p>
-        {:else if returnOverMax}
+        {:else if returnTargets.length === 1 && returnOverMaxSingle}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Exceeds max returnable ({formatCycles(returnMax)}).
+            Exceeds max returnable ({formatCycles(returnMaxSingle)}).
+          </p>
+        {:else if returnAnyCapped}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Some canisters will return less than {formatCycles(returnParsed)} (capped at each canister’s max returnable).
           </p>
         {/if}
 
@@ -1375,17 +1714,17 @@
           <button
             type="button"
             class="btn-primary btn-sm"
-            disabled={!returnValid || returnOverMax || returnMax <= 0 || busy === `return:${returnTarget.canister_id}`}
+            disabled={!returnBulkValid || (returnTargets.length === 1 && returnOverMaxSingle) || busy === 'bulk:return'}
             onclick={confirmReturn}
           >
-            {busy === `return:${returnTarget.canister_id}` ? 'Returning…' : 'Confirm return'}
+            {busy === 'bulk:return' ? 'Returning…' : returnTargets.length === 1 ? 'Confirm return' : `Return from ${returnTargets.length} canisters`}
           </button>
         </div>
       </div>
     </div>
   {/if}
 
-  {#if policyTarget && report}
+  {#if policyTargets.length && report}
     <div class="fixed inset-0 z-40 flex items-center justify-center">
       <button
         type="button"
@@ -1394,20 +1733,30 @@
         onclick={closePolicyEdit}
       ></button>
       <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">Min policy for {policyTarget.name}</h3>
+        <h3 class="text-lg font-semibold text-primary-900 mb-1">
+          Min policy for {policyTargets.length === 1 ? policyTargets[0].name : `${policyTargets.length} canisters`}
+        </h3>
         <p class="text-sm text-primary-500 mb-4">
-          Minimum headroom above the freezing threshold before autopilot treats this canister as low.
+          Minimum headroom above the freezing threshold before autopilot treats {policyTargets.length === 1 ? 'this canister' : 'each selected canister'} as low.
         </p>
 
+        {#if policyTargets.length > 1}
+          <p class="text-xs text-primary-500 mb-4">
+            {policyTargets.map((c) => c.name).join(', ')}
+          </p>
+        {/if}
+
         <dl class="space-y-3 text-sm mb-5">
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Effective today</dt>
-            <dd class="font-mono font-semibold text-primary-900">{formatCycles(policyTarget.min_cycles)}</dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Source</dt>
-            <dd class="text-primary-700 text-right">{policySourceLabel(policyTarget)}</dd>
-          </div>
+          {#if policyTargets.length === 1}
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Effective today</dt>
+              <dd class="font-mono font-semibold text-primary-900">{formatCycles(policyTargets[0].min_cycles)}</dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="text-primary-500">Source</dt>
+              <dd class="text-primary-700 text-right">{policySourceLabel(policyTargets[0])}</dd>
+            </div>
+          {/if}
         </dl>
 
         <label class="flex items-center gap-2.5 cursor-pointer mb-4">
@@ -1432,7 +1781,9 @@
               />
               <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
             </div>
-            <p class="text-xs text-primary-400 mt-1.5">Trillion cycles (TC). Applies only to this canister.</p>
+            <p class="text-xs text-primary-400 mt-1.5">
+              Trillion cycles (TC). Same amount applied to {policyTargets.length === 1 ? 'this canister' : 'each selected canister'}.
+            </p>
           </div>
 
           <div class="flex flex-wrap gap-2 mb-4">
@@ -1464,10 +1815,10 @@
           <button
             type="button"
             class="btn-primary btn-sm"
-            disabled={!policyValid || busy === `policy:${policyTarget.canister_id}`}
+            disabled={!policyValid || busy === 'bulk:policy'}
             onclick={confirmPolicyEdit}
           >
-            {busy === `policy:${policyTarget.canister_id}` ? 'Saving…' : 'Confirm'}
+            {busy === 'bulk:policy' ? 'Saving…' : policyTargets.length === 1 ? 'Confirm' : `Apply to ${policyTargets.length} canisters`}
           </button>
         </div>
       </div>

@@ -195,6 +195,14 @@ class TestCyclesManagement:
         assert "balance" in rep["treasury"]
         assert isinstance(rep["canisters"], list)
 
+    def test_refresh_canisters_requires_names(self, canister):
+        res = call_canister("refresh_canisters", json.dumps({"canisters": []}))
+        assert res.get("ok") is False
+
+    def test_refresh_canisters_unknown(self, canister):
+        res = call_canister("refresh_canisters", json.dumps({"canisters": ["ghost"]}))
+        assert res.get("ok") is False
+
     def test_reconcile_runs(self, canister):
         # With no created canisters, reconcile is a no-op but must succeed.
         res = call_canister("reconcile")

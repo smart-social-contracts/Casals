@@ -194,6 +194,10 @@ export interface CyclesReport {
   totals: { canisters: number; ok: number; low: number; critical: number; frozen: number; error: number };
   canisters: CanisterCycles[];
   pool?: { total: number; free: number; in_use: number; canisters: PoolCanisterCycles[] };
+  cached_at?: number;
+  /** True when only ``refreshed_canisters`` have live balances; other rows may be stale. */
+  partial_refresh?: boolean;
+  refreshed_canisters?: string[];
 }
 
 export interface CycleSamplePoint {
@@ -776,12 +780,19 @@ export async function getCycles(): Promise<CyclesReport> {
 
 // Instant query returning the last stored get_cycles result (may be stale).
 // Returns null if no snapshot exists yet (first load after upgrade).
-export async function getCyclesCached(): Promise<(CyclesReport & { cached_at?: number }) | null> {
-  const raw = _parseQuery<CyclesReport & { cached_at?: number }>(
+export async function getCyclesCached(): Promise<CyclesReport | null> {
+  const raw = _parseQuery<CyclesReport>(
     await (await _actor()).get_cycles_cached()
   );
-  if (!raw || !(raw as any).treasury) return null;
+  if (!raw || !raw.treasury) return null;
   return raw;
+}
+
+/** Live balance refresh for named canisters only (faster than get_cycles). */
+export async function refreshCanisters(args: { canisters: string[] }): Promise<CyclesReport> {
+  return _parseQuery<CyclesReport>(
+    await (await _actor()).refresh_canisters(JSON.stringify(args)),
+  );
 }
 
 // Per-canister balance samples over time (public; recorded on-chain by a sampler

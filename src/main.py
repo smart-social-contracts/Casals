@@ -2215,6 +2215,200 @@ def get_cycles_cached() -> text:
         return raw
 
 
+def _recompute_cycle_totals(canisters_out):
+    counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
+    for row in canisters_out:
+        label = row.get("status") or "error"
+        if label in counts:
+            counts[label] += 1
+        else:
+            counts["error"] += 1
+    return {"canisters": len(canisters_out), **counts}
+
+
+def _load_cycles_snapshot_data():
+    raw = ""
+    try:
+        snap = CyclesSnapshot["singleton"]
+        if snap and snap.snapshot_json:
+            raw = snap.snapshot_json
+    except Exception:
+        pass
+    if not raw:
+        raw = _cycles_mod._cycles_cache or ""
+    if not raw:
+        return {
+            "treasury": treasury_deposit_fields(),
+            "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
+            "canisters": [],
+            "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
+        }
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {
+                "treasury": treasury_deposit_fields(),
+                "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
+                "canisters": [],
+                "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
+            }
+        treasury = data.setdefault("treasury", {})
+        if isinstance(treasury, dict):
+            for k, v in treasury_deposit_fields().items():
+                treasury.setdefault(k, v)
+            overlay_treasury_settings(treasury, _settings())
+        data.setdefault("canisters", [])
+        data.setdefault("totals", {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0})
+        data.setdefault("pool", {"total": 0, "free": 0, "in_use": 0, "canisters": []})
+        return data
+    except Exception:
+        return {
+            "treasury": treasury_deposit_fields(),
+            "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
+            "canisters": [],
+            "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
+        }
+
+
+@update
+def refresh_canisters(args: text) -> Async[text]:
+    """Fetch live balances from the IC for named canisters only.
+
+    Args (JSON): ``{"canisters": ["name", ...]}``. Merges into the cached
+    get_cycles snapshot and returns the full report shape. The treasury
+    balance is always refreshed; unlisted canister rows are left as in the
+    last snapshot. Response includes ``partial_refresh: true`` and
+    ``refreshed_canisters`` so the UI can warn that other rows may be stale.
+    """
+    try:
+        params = json.loads(args) if args else {}
+        names = params.get("canisters")
+        if not isinstance(names, list) or not names:
+            return _err("expected 'canisters': [str, ...]")
+        list(Canister.instances())
+        targets = []
+        for raw_name in names:
+            name = str(raw_name).strip()
+            if not name:
+                continue
+            st = Canister[name]
+            if st is None:
+                return _err(f"unknown canister '{name}'")
+            if not st.canister_id:
+                return _err(f"canister '{name}' has no principal yet")
+            targets.append(st)
+        if not targets:
+            return _err("no canisters to refresh")
+
+        data = _load_cycles_snapshot_data()
+        s = _settings()
+        canisters_out = list(data.get("canisters") or [])
+        by_id = {c["canister_id"]: c for c in canisters_out if c.get("canister_id")}
+        bal_by_cid = {}
+        batch_ts = _now_secs()
+        do_sample = _cycles_mod.should_record_cycle_sample(batch_ts)
+        sampled = False
+
+        for st in targets:
+            dk = st.stand
+            sec = dk.section if dk else None
+            min_c, topup_c = _policy_for(st, s)
+            row = by_id.get(st.canister_id)
+            if row is None:
+                row = {
+                    "section": sec.name if sec else "",
+                    "stand": dk.name if dk else "",
+                    "name": st.name,
+                    "canister_id": st.canister_id,
+                    "kind": st.kind,
+                    "min_cycles": min_c,
+                    "min_cycles_override": int(st.min_cycles or 0),
+                    "min_cycles_source": _min_cycles_source(st, s),
+                    "topup_cycles": topup_c,
+                }
+            else:
+                row["min_cycles"] = min_c
+                row["min_cycles_override"] = int(st.min_cycles or 0)
+                row["min_cycles_source"] = _min_cycles_source(st, s)
+                row["topup_cycles"] = topup_c
+            try:
+                status_res = yield management_canister.canister_status(
+                    {"canister_id": Principal.from_str(st.canister_id)}
+                )
+                status = unwrap_call_result(status_res)
+                bal = _status_cycles(status)
+                frz = _status_freezing(status)
+                label = cycles_status(bal, frz, min_c)
+                row.update({
+                    "cycles": bal,
+                    "freezing_threshold": frz,
+                    "headroom": bal - frz,
+                    "status": label,
+                    "runtime_status": _ic_run_status(status),
+                })
+                row.pop("error", None)
+                bal_by_cid[st.canister_id] = bal
+                if do_sample:
+                    _record_cycle_sample(st, batch_ts, bal)
+                    sampled = True
+            except Exception as e:
+                row.update({"status": "error", "error": str(e)})
+            by_id[st.canister_id] = row
+
+        if sampled:
+            _cycles_mod.finalize_cycle_sample_batch(batch_ts)
+
+        # Preserve list order; append any newly added rows at the end.
+        seen = set()
+        merged = []
+        for c in canisters_out:
+            cid = c.get("canister_id")
+            if cid and cid in by_id:
+                merged.append(by_id[cid])
+                seen.add(cid)
+        for cid, row in by_id.items():
+            if cid not in seen:
+                merged.append(row)
+        data["canisters"] = merged
+        data["totals"] = _recompute_cycle_totals(merged)
+
+        treasury = int(ic.canister_balance128())
+        reserve = int(s.treasury_reserve or 0)
+        treasury_obj = dict(data.get("treasury") or {})
+        treasury_obj.update({
+            "balance": treasury,
+            "reserve": reserve,
+            "spendable": max(0, treasury - reserve),
+            "autopilot": bool(s.cycles_autopilot),
+            "interval_secs": int(s.cycles_check_interval_secs or 0),
+            "icp_autoconvert": icp_autoconvert_enabled(s),
+        })
+        data["treasury"] = treasury_obj
+
+        pool = data.get("pool") or {}
+        pool_cans = list(pool.get("canisters") or [])
+        for prow in pool_cans:
+            cid = prow.get("canister_id")
+            bal = bal_by_cid.get(cid)
+            if bal is not None:
+                prow["cycles"] = bal
+                prow.pop("error", None)
+        pool["canisters"] = pool_cans
+        data["pool"] = pool
+
+        data["cached_at"] = _now_secs()
+        data["partial_refresh"] = True
+        data["refreshed_canisters"] = [st.name for st in targets]
+        result = json.dumps(data)
+        # Do not persist partial snapshots — they mix live and stale rows and
+        # overwrite the last full get_cycles snapshot in stable memory.
+        _cycles_mod._cycles_cache = result
+        return result
+    except Exception as e:
+        _log.error(f"refresh_canisters error: {e}")
+        return _err(str(e))
+
+
 @query
 def get_cycle_history(args: text) -> text:
     """Per-canister cycle-balance samples over time, for charting.

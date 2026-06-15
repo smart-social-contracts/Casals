@@ -151,6 +151,7 @@ service : {
   "canister_exec" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;
+  "refresh_canisters" : (text) -> (text);
   "get_cycle_history" : (text) -> (text) query;
   "get_treasury_flow" : (text) -> (text) query;
   "top_up" : (text) -> (text);
