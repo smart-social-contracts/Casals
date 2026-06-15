@@ -93,6 +93,13 @@ jobs:
       - name: Build backend + registry WASMs
         run: make build
 
+      - name: Ensure canisters are running (stopped canisters block asset sync)
+        run: |
+          for c in casals_backend casals_frontend ic_file_registry; do
+            echo "Ensuring $c is running…"
+            icp canister start "$c" -e ic --identity casals -f || true
+          done
+
       - name: Deploy to IC mainnet
         run: icp deploy -e ic --identity casals --mode ${{ inputs.mode }} -y
 
