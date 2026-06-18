@@ -2200,7 +2200,7 @@ def get_cycles_cached() -> text:
     if not raw:
         raw = _cycles_mod._cycles_cache or ""
     if not raw:
-        return json.dumps({"treasury": treasury_deposit_fields()})
+        return json.dumps(_build_cycles_stub_report())
     try:
         data = json.loads(raw)
         if not isinstance(data, dict):
@@ -2210,6 +2210,9 @@ def get_cycles_cached() -> text:
             for k, v in treasury_deposit_fields().items():
                 treasury.setdefault(k, v)
             overlay_treasury_settings(treasury, _settings())
+        data.setdefault("canisters", [])
+        data.setdefault("totals", {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0})
+        data.setdefault("pool", {"total": 0, "free": 0, "in_use": 0, "canisters": []})
         return json.dumps(data)
     except Exception:
         return raw
@@ -2226,6 +2229,75 @@ def _recompute_cycle_totals(canisters_out):
     return {"canisters": len(canisters_out), **counts}
 
 
+def _build_cycles_stub_report():
+    """Orchestra canister rows without live IC balances (query-safe).
+
+    Used when no get_cycles snapshot exists yet so the Cycles page can list
+    canisters immediately while the ~minute-long live refresh runs.
+    """
+    list(Section.instances())
+    list(Stand.instances())
+    list(Canister.instances())
+    s = _settings()
+    canisters_out = []
+    for st in Canister.instances():
+        if not st.canister_id:
+            continue
+        dk = st.stand
+        sec = dk.section if dk else None
+        min_c, topup_c = _policy_for(st, s)
+        canisters_out.append({
+            "section": sec.name if sec else "",
+            "stand": dk.name if dk else "",
+            "name": st.name,
+            "canister_id": st.canister_id,
+            "kind": st.kind,
+            "min_cycles": min_c,
+            "min_cycles_override": int(st.min_cycles or 0),
+            "min_cycles_source": _min_cycles_source(st, s),
+            "topup_cycles": topup_c,
+        })
+    canisters_out.sort(key=lambda x: (x["section"], x["stand"], x["name"]))
+
+    pool_out = []
+    pool_free = 0
+    list(PooledCanister.instances())
+    for p in PooledCanister.instances():
+        if not p.canister_id:
+            continue
+        prow = {
+            "canister_id": p.canister_id,
+            "status": p.status,
+            "canister_name": p.canister_name,
+        }
+        if p.status == "free":
+            pool_free += 1
+        pool_out.append(prow)
+    pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
+
+    treasury_obj = dict(treasury_deposit_fields())
+    overlay_treasury_settings(treasury_obj, s)
+    return {
+        "treasury": treasury_obj,
+        "totals": {
+            "canisters": len(canisters_out),
+            "ok": 0,
+            "low": 0,
+            "critical": 0,
+            "frozen": 0,
+            "error": 0,
+        },
+        "canisters": canisters_out,
+        "pool": {
+            "total": len(pool_out),
+            "free": pool_free,
+            "in_use": len(pool_out) - pool_free,
+            "canisters": pool_out,
+        },
+        "snapshot_incomplete": True,
+    }
+
+
 def _load_cycles_snapshot_data():
     raw = ""
     try:
@@ -2237,21 +2309,11 @@ def _load_cycles_snapshot_data():
     if not raw:
         raw = _cycles_mod._cycles_cache or ""
     if not raw:
-        return {
-            "treasury": treasury_deposit_fields(),
-            "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
-            "canisters": [],
-            "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
-        }
+        return _build_cycles_stub_report()
     try:
         data = json.loads(raw)
         if not isinstance(data, dict):
-            return {
-                "treasury": treasury_deposit_fields(),
-                "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
-                "canisters": [],
-                "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
-            }
+            return _build_cycles_stub_report()
         treasury = data.setdefault("treasury", {})
         if isinstance(treasury, dict):
             for k, v in treasury_deposit_fields().items():

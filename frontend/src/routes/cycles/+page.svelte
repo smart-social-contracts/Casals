@@ -240,6 +240,31 @@
       liveSynced = true;
       loadFx();
     } catch (e: any) {
+      const names = [
+        ...new Set([
+          ...(report?.canisters ?? []).map((c) => c.name),
+          ...(history?.samples ?? []).map((s) => s.canister_name),
+        ].filter(Boolean)),
+      ];
+      if (names.length) {
+        try {
+          let merged = report!;
+          const batchSize = 4;
+          for (let i = 0; i < names.length; i += batchSize) {
+            merged = await refreshCanisters({ canisters: names.slice(i, i + batchSize) });
+            report = merged;
+          }
+          cachedAt = merged.cached_at ?? null;
+          snapshotPartial = merged.partial_refresh === true;
+          liveSynced = true;
+          loadFx();
+          return;
+        } catch (batchErr: any) {
+          if (!report) error = batchErr?.message ?? String(batchErr);
+          else toasts.error(batchErr?.message ?? 'Refresh failed');
+          return;
+        }
+      }
       if (!report) error = e?.message ?? String(e);
       else toasts.error(e?.message ?? 'Refresh failed');
     } finally {
@@ -502,6 +527,11 @@
 
   const hasHistory = $derived(samples.length > 0);
 
+  const canistersAwaitingBalances = $derived(
+    (report?.canisters ?? []).length > 0
+    && (report?.canisters ?? []).every((c) => c.cycles === undefined),
+  );
+
   const STATUS_SORT_ORDER: Record<CycleStatus, number> = {
     frozen: 0,
     critical: 1,
@@ -512,7 +542,7 @@
 
   const sortedCanisters = $derived.by(() => {
     if (!report) return [];
-    const rows = [...report.canisters];
+    const rows = [...(report.canisters ?? [])];
     const dir = canisterSortAsc ? 1 : -1;
     rows.sort((a, b) => {
       let cmp = 0;
@@ -1292,9 +1322,22 @@
 
     <!-- Per-canister table -->
     <div class="card p-0 overflow-hidden">
-      {#if report.canisters.length === 0}
-        <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
+      {#if (report.canisters ?? []).length === 0}
+        {#if refreshing}
+          <p class="text-sm text-primary-400 p-5">Fetching live balances from the IC… this can take about a minute.</p>
+        {:else if hasHistory}
+          <p class="text-sm text-primary-400 p-5">
+            Charts use stored history, but live balances are not loaded yet. Click <strong>Refresh</strong> above.
+          </p>
+        {:else}
+          <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
+        {/if}
       {:else}
+        {#if canistersAwaitingBalances && refreshing}
+          <p class="text-xs text-primary-500 px-4 py-2 border-b border-[var(--color-border-primary)] bg-primary-50/50">
+            Canister list loaded — fetching live balances…
+          </p>
+        {/if}
         <div class="flex flex-col gap-3 px-4 py-3 border-b border-[var(--color-border-primary)]">
           <div class="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
             <div class="relative w-full sm:max-w-xs">
@@ -1442,7 +1485,7 @@
                   {formatCycles(s.min_cycles)}
                 </td>
                 <td class="px-4 py-2.5 text-center">
-                  <span class="badge {cycleStatusBadge(s.status)}">{s.status}</span>
+                  <span class="badge {cycleStatusBadge(s.status)}">{s.status ?? (s.cycles === undefined ? '…' : '—')}</span>
                 </td>
               </tr>
             {/each}

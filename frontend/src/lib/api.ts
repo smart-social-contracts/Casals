@@ -775,23 +775,43 @@ export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
 // no special caller, so we call it anonymously — the solvency snapshot is
 // public (only top-up / reconcile / policy changes need authentication).
 export async function getCycles(): Promise<CyclesReport> {
-  return _parseQuery<CyclesReport>(await (await _actor()).get_cycles());
+  return normalizeCyclesReport(
+    _parseQuery<CyclesReport>(await (await _actor()).get_cycles()),
+  );
 }
 
 // Instant query returning the last stored get_cycles result (may be stale).
 // Returns null if no snapshot exists yet (first load after upgrade).
+const EMPTY_CYCLE_TOTALS: CyclesReport['totals'] = {
+  canisters: 0, ok: 0, low: 0, critical: 0, frozen: 0, error: 0,
+};
+
+/** Backend may return a treasury-only stub before the first full get_cycles snapshot. */
+export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
+  return {
+    ...raw,
+    canisters: raw.canisters ?? [],
+    totals: raw.totals ?? EMPTY_CYCLE_TOTALS,
+    pool: raw.pool
+      ? { ...raw.pool, canisters: raw.pool.canisters ?? [] }
+      : raw.pool,
+  };
+}
+
 export async function getCyclesCached(): Promise<CyclesReport | null> {
   const raw = _parseQuery<CyclesReport>(
     await (await _actor()).get_cycles_cached()
   );
   if (!raw || !raw.treasury) return null;
-  return raw;
+  return normalizeCyclesReport(raw);
 }
 
 /** Live balance refresh for named canisters only (faster than get_cycles). */
 export async function refreshCanisters(args: { canisters: string[] }): Promise<CyclesReport> {
-  return _parseQuery<CyclesReport>(
-    await (await _actor()).refresh_canisters(JSON.stringify(args)),
+  return normalizeCyclesReport(
+    _parseQuery<CyclesReport>(
+      await (await _actor()).refresh_canisters(JSON.stringify(args)),
+    ),
   );
 }
 
