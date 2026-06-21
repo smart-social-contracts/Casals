@@ -1473,7 +1473,25 @@
                 </td>
                 <td class="px-4 py-2.5">
                   <div class="font-medium text-primary-900">{s.name}</div>
-                  <div class="font-mono text-[11px] text-primary-400" title={s.canister_id}>{shortPrincipal(s.canister_id)}</div>
+                  <div class="flex items-center gap-1">
+                    <span class="font-mono text-[11px] text-primary-400" title={s.canister_id}>{shortPrincipal(s.canister_id)}</span>
+                    <button
+                      type="button"
+                      class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
+                      title="Copy principal"
+                      onclick={() => copyText(s.canister_id, s.canister_id)}
+                    >
+                      {#if copiedField === s.canister_id}
+                        <svg class="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      {:else}
+                        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                        </svg>
+                      {/if}
+                    </button>
+                  </div>
                 </td>
                 <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.stand}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-primary-900">
@@ -1524,7 +1542,27 @@
             <tbody>
               {#each report.pool.canisters as c (c.canister_id)}
                 <tr class="border-t border-[var(--color-border-primary)]">
-                  <td class="px-4 py-2.5 font-mono text-[12px] text-primary-700" title={c.canister_id}>{shortPrincipal(c.canister_id)}</td>
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-1">
+                      <span class="font-mono text-[12px] text-primary-700" title={c.canister_id}>{shortPrincipal(c.canister_id)}</span>
+                      <button
+                        type="button"
+                        class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
+                        title="Copy principal"
+                        onclick={() => copyText(c.canister_id, c.canister_id)}
+                      >
+                        {#if copiedField === c.canister_id}
+                          <svg class="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        {:else}
+                          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                          </svg>
+                        {/if}
+                      </button>
+                    </div>
+                  </td>
                   <td class="px-4 py-2.5 text-primary-600">{c.canister_name || '—'}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-900">
                     {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
