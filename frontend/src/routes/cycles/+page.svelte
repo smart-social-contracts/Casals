@@ -31,7 +31,7 @@
     Metadata,
     CycleStatus,
   } from '$lib/api';
-  import { isAuthenticated } from '$lib/auth';
+  import { isAuthenticated, isController } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
@@ -330,7 +330,19 @@
     convertibleIcpE8s > 0 ? convertibleIcpE8s * icpCyclesPerE8s : 0,
   );
   const tcPerIcp = $derived(icpCyclesPerE8s > 0 ? (icpCyclesPerE8s * 1e8) / 1e12 : 0);
-  const canConvertIcp = $derived($isAuthenticated && convertibleIcpE8s > 0);
+  const canConvertIcp = $derived(
+    $isAuthenticated && $isController === true && convertibleIcpE8s > 0,
+  );
+  const convertBlockedReason = $derived.by(() => {
+    if (!$isAuthenticated) return 'Log in with Internet Identity as a Casals controller.';
+    if ($isController === null) return 'Checking controller access…';
+    if ($isController === false) return 'Your principal is not a Casals controller.';
+    if (report?.treasury?.icp_e8s === undefined) return 'ICP balance unknown — refresh and try again.';
+    if (convertibleIcpE8s <= 0) {
+      return `Not enough ICP to cover the ledger transfer fee (${formatIcp(ICP_TRANSFER_FEE_E8S)}).`;
+    }
+    return '';
+  });
 
   function flowBucketCycles(b: TreasuryFlowBucket, kind: 'deposited' | 'converted' | 'consumed'): number {
     const rate = icpCyclesPerE8s;
@@ -1097,8 +1109,14 @@
           <button
             type="button"
             class="btn-secondary btn-sm px-2.5 py-1 text-xs"
-            title={!$isAuthenticated ? 'Log in with Internet Identity' : 'Convert ledger ICP to cycles'}
-            disabled={!$isAuthenticated}
+            title={!$isAuthenticated
+              ? 'Log in with Internet Identity'
+              : $isController === false
+                ? 'Requires a Casals controller principal'
+                : $isController === null
+                  ? 'Checking controller access…'
+                  : 'Convert ledger ICP to cycles'}
+            disabled={!$isAuthenticated || $isController !== true}
             onclick={() => (showConvert = true)}
           >Convert</button>
           <button
@@ -1958,15 +1976,9 @@
           </div>
         </dl>
 
-        {#if !canConvertIcp}
+        {#if !canConvertIcp && convertBlockedReason}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            {#if !$isAuthenticated}
-              Log in as a controller to convert ICP.
-            {:else if report.treasury.icp_e8s === undefined}
-              ICP balance unknown — refresh and try again.
-            {:else}
-              Not enough ICP to cover the ledger transfer fee ({formatIcp(ICP_TRANSFER_FEE_E8S)}).
-            {/if}
+            {convertBlockedReason}
           </p>
         {/if}
 

@@ -1,10 +1,13 @@
 import { AuthClient } from '@dfinity/auth-client';
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import type { Identity } from '@dfinity/agent';
+import { checkIsCanisterController } from './controllerAccess';
 
 export const identity = writable<Identity | null>(null);
 export const isAuthenticated = writable(false);
 export const principal = writable('');
+/** null while checking; true/false once resolved for the current session. */
+export const isController = writable<boolean | null>(null);
 
 let _authClient: AuthClient | null = null;
 
@@ -17,6 +20,16 @@ function _applyIdentity(id: Identity) {
   identity.set(id);
   isAuthenticated.set(true);
   principal.set(id.getPrincipal().toText());
+}
+
+export async function refreshControllerAccess(backendCanisterId?: string) {
+  const id = get(identity);
+  if (!id || !backendCanisterId) {
+    isController.set(false);
+    return;
+  }
+  isController.set(null);
+  isController.set(await checkIsCanisterController(id, backendCanisterId));
 }
 
 export async function initAuth() {
@@ -48,4 +61,5 @@ export async function logout() {
   identity.set(null);
   isAuthenticated.set(false);
   principal.set('');
+  isController.set(false);
 }
