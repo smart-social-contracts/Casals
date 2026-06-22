@@ -41,14 +41,21 @@ def _principals_in(s: str) -> list:
     return out
 
 
-def _nat64s_in(s: str) -> list:
-    """Extract every `<number> : nat64` value from a decoded-candid string.
-    Underscores in the rendered number are stripped."""
+def _candid_number_at(s: str, start: int):
+    """Parse a Candid-rendered integer (underscores allowed) at ``start``."""
+    end = start
+    while end < len(s) and (s[end].isdigit() or s[end] == '_'):
+        end += 1
+    num = s[start:end].replace('_', '')
+    return int(num) if num else None
+
+
+def _typed_nats_in(s: str, type_marker: str) -> list:
+    """Extract every ``<number> : <type_marker>`` value from decoded candid."""
     out = []
-    marker = ": nat64"
     i = 0
     while True:
-        j = s.find(marker, i)
+        j = s.find(type_marker, i)
         if j < 0:
             break
         k = j - 1
@@ -64,8 +71,47 @@ def _nat64s_in(s: str) -> list:
                 out.append(int(num))
             except ValueError:
                 pass
-        i = j + len(marker)
+        i = j + len(type_marker)
     return out
+
+
+def _nat64s_in(s: str) -> list:
+    """Extract every `<number> : nat64` value from a decoded-candid string."""
+    return _typed_nats_in(s, ": nat64")
+
+
+def _nats_in(s: str) -> list:
+    """Extract every `<number> : nat` value from a decoded-candid string."""
+    return _typed_nats_in(s, ": nat")
+
+
+_VARIANT_ERR_MARKERS = (
+    "Err", "InsufficientFunds", "BadFee", "TxTooOld", "TxDuplicate",
+    "TxCreatedInFuture", "GenericError",
+)
+
+
+def _variant_first_number(decoded: str):
+    """First numeric payload from a Candid variant (``Ok =``, numeric tag, or nat/nat64)."""
+    if not decoded:
+        return None
+    for err in _VARIANT_ERR_MARKERS:
+        if err in decoded:
+            return None
+    marker = "Ok = "
+    j = decoded.find(marker)
+    if j >= 0:
+        return _candid_number_at(decoded, j + len(marker))
+    eq = decoded.find(" = ")
+    if eq >= 0 and "variant" in decoded:
+        val = _candid_number_at(decoded, eq + 3)
+        if val is not None:
+            return val
+    vals = _nat64s_in(decoded)
+    if vals:
+        return vals[0]
+    vals = _nats_in(decoded)
+    return vals[0] if vals else None
 
 
 # ── Response helpers ─────────────────────────────────────────────────────────

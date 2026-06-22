@@ -182,6 +182,12 @@ def test_ledger_transfer_block_index_parses_numeric_ok_variant():
     ) is None
 
 
+def test_notify_top_up_parses_numeric_ok_variant_with_nat():
+    import cycles as cycles_mod
+    decoded = "(variant { 17_724 = 8_370_832_580_000 : nat })"
+    assert cycles_mod._variant_ok_first_number(decoded) == 8_370_832_580_000
+
+
 def test_treasury_cycles_deposit_amount():
     import cycles as cycles_mod
     assert cycles_mod.treasury_cycles_deposit_amount(1000, 500, minted=0, spent=0, dust=10) == 500

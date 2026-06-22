@@ -20,7 +20,7 @@ from ic_python_logging import get_logger
 from models import Canister, CycleSample
 from util import cycles_status, decide_topup, resolve_cycle_policy
 from audit import _append_event
-from helpers import _settings, unwrap_call_result, _nat64s_in
+from helpers import _settings, unwrap_call_result, _nat64s_in, _nats_in, _variant_first_number
 
 _log = get_logger("casals")
 
@@ -745,32 +745,13 @@ def _cmc_subaccount_from_principal(principal) -> bytes:
 
 
 def _variant_ok_first_number(decoded: str):
-    """Extract the first numeric value from a Candid Ok variant."""
-    marker = "Ok = "
-    j = decoded.find(marker)
-    if j < 0:
-        return None
-    rest = decoded[j + len(marker):]
-    end = 0
-    while end < len(rest) and (rest[end].isdigit() or rest[end] == "_"):
-        end += 1
-    num = rest[:end].replace("_", "")
-    return int(num) if num else None
+    """Backward-compatible alias for ``_variant_first_number``."""
+    return _variant_first_number(decoded)
 
 
 def _ledger_transfer_block_index(decoded: str):
     """Block index from an ICP ledger ``transfer`` reply (Ok or numeric variant)."""
-    if not decoded:
-        return None
-    for err in ("Err", "InsufficientFunds", "BadFee", "TxTooOld", "TxDuplicate",
-                "TxCreatedInFuture", "GenericError"):
-        if err in decoded:
-            return None
-    idx = _variant_ok_first_number(decoded)
-    if idx is not None:
-        return idx
-    vals = _nat64s_in(decoded)
-    return vals[0] if vals else None
+    return _variant_first_number(decoded)
 
 
 def _notify_top_up_gen(block_index: int):
@@ -788,10 +769,7 @@ def _notify_top_up_gen(block_index: int):
         0,
     )
     decoded = ic.candid_decode(unwrap_call_result(res))
-    cycles = _variant_ok_first_number(decoded)
-    if cycles is None:
-        vals = _nat64s_in(decoded)
-        cycles = vals[0] if vals and "Err" not in decoded else None
+    cycles = _variant_first_number(decoded)
     if cycles is None:
         err = decoded[:300]
         _log.error(f"notify_top_up failed: {err}")
