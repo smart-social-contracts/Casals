@@ -124,4 +124,16 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 
 ---
 
-[MIT](LICENSE)
+## Disclaimer
+
+**This software is not production-ready.** Do not deploy to mainnet or use with real canisters, cycles, or governance authority you cannot afford to lose.
+
+Casals is in early development (alpha). It may contain bugs, breaking changes, and unknown security vulnerabilities. It has not undergone an independent security audit. **Use at your own risk.**
+
+- Not recommended for production deployments on the Internet Computer
+- No guarantee of correctness, availability, or security
+- APIs and behavior may change without notice
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,9 +1,11 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { page } from '$app/stores';
-  import { initAuth, login, logout, isAuthenticated, principal, refreshControllerAccess } from '$lib/auth';
+  import { initAuth, login, logout, isAuthenticated, principal, authError } from '$lib/auth';
   import { backendCanisterId, initLocalNetworkHints } from '$lib/api';
+  import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
 
   let { children } = $props();
@@ -21,12 +23,17 @@
 
   let currentPath = $derived($page.url.pathname);
 
-  async function afterAuth() {
-    await refreshControllerAccess(backendCanisterId());
+  async function handleLogin() {
+    const ok = await login(backendCanisterId());
+    const err = get(authError);
+    if (!ok && err) toasts.error(err);
   }
 
   onMount(() => {
-    void initAuth().then(afterAuth);
+    void initAuth(backendCanisterId()).then(() => {
+      const err = get(authError);
+      if (err) toasts.error(err);
+    });
     void initLocalNetworkHints();
   });
 </script>
@@ -78,7 +85,7 @@
             <span class="hidden sm:inline">Log out</span>
           </button>
         {:else}
-          <button class="btn-primary btn-sm" onclick={() => login().then(afterAuth)}>
+          <button class="btn-primary btn-sm" onclick={handleLogin}>
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0" />
             </svg>

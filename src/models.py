@@ -244,6 +244,9 @@ class Settings(Entity):
     # restarts/upgrades. Seeded from the bundled default the first time only;
     # thereafter edits survive. Empty => not yet seeded (load the default).
     sheet_json = String(max_length=65536, default="")
+    # JSON array of subnet principals allowed for new canister placement.
+    # Empty "[]" => no restriction (all CMC-default subnets allowed).
+    subnet_whitelist_json = String(max_length=8192, default="")
     # ── Fiat display (cycles → currency equivalent, shown next to cycle counts) ──
     # The currency every cycle count is also rendered in (small, gray). Cycles
     # are pegged 1T = 1 XDR, so the equivalent is fetched as the currency value

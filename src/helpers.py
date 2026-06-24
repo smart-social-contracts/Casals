@@ -41,6 +41,21 @@ def _principals_in(s: str) -> list:
     return out
 
 
+def _parse_principal_subnet_auth_map(decoded: str) -> dict:
+    """Map principal -> subnet ids from CMC ``get_principals_authorized…`` output."""
+    out = {}
+    data_idx = decoded.find("data = vec")
+    if data_idx < 0:
+        return out
+    segment = decoded[data_idx:]
+    for part in segment.split("record {")[1:]:
+        principals = _principals_in(part)
+        if not principals:
+            continue
+        out[principals[0]] = principals[1:]
+    return out
+
+
 def _candid_number_at(s: str, start: int):
     """Parse a Candid-rendered integer (underscores allowed) at ``start``."""
     end = start

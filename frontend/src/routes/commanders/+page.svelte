@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getTree, setCommander, setPermissions, listPermissions } from '$lib/api';
+  import { get } from 'svelte/store';
+  import { getTree, setCommander, setPermissions, listPermissions, backendCanisterId } from '$lib/api';
   import type { Tree, Permission } from '$lib/api';
-  import { isAuthenticated } from '$lib/auth';
+  import { identity, isAuthenticated } from '$lib/auth';
+  import { listCanisterControllers } from '$lib/controllerAccess';
   import { toasts } from '$lib/stores/toast';
 
   interface CommanderRow {
-    scope: 'section' | 'stand';
+    scope: 'section' | 'stand' | 'controller';
     section: string;
     stand?: string;
     principal: string;
@@ -17,15 +19,33 @@
 
   let tree = $state<Tree | null>(null);
   let catalog = $state<Permission[]>([]);
+  let controllerPrincipals = $state<string[]>([]);
   let loading = $state(true);
   let error = $state('');
   let filterQuery = $state('');
+
+  async function loadControllers() {
+    const canisterId = backendCanisterId();
+    const id = get(identity);
+    if (!canisterId || !id) {
+      controllerPrincipals = [];
+      return;
+    }
+    try {
+      controllerPrincipals = await listCanisterControllers(canisterId, id);
+    } catch {
+      controllerPrincipals = [];
+    }
+  }
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const [t, perms] = await Promise.all([getTree(), listPermissions().catch(() => [])]);
+      const [t, perms] = await Promise.all([
+        getTree(),
+        listPermissions().catch(() => []),
+      ]);
       tree = t;
       if (perms.length) catalog = perms;
     } catch (e: any) {
@@ -33,9 +53,15 @@
     } finally {
       loading = false;
     }
+    void loadControllers();
   }
 
-  onMount(load);
+  onMount(() => {
+    void load();
+    return identity.subscribe((id) => {
+      if (id && !loading) void loadControllers();
+    });
+  });
 
   // Catalog grouped by group, in declaration order.
   const groupedCatalog = $derived.by(() => {
@@ -50,10 +76,20 @@
 
   const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
 
-  // Flatten tree into commander rows.
+  // Flatten tree + Casals backend controllers into commander rows.
   const rows = $derived.by((): CommanderRow[] => {
-    if (!tree) return [];
     const out: CommanderRow[] = [];
+    for (const principal of controllerPrincipals) {
+      out.push({
+        scope: 'controller',
+        section: '',
+        principal,
+        label: 'Casals backend',
+        permissions: [],
+        allPermissions: true,
+      });
+    }
+    if (!tree) return out;
     for (const sec of tree.sections) {
       if (sec.commander_principal) {
         out.push({
@@ -199,7 +235,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Commanders</h1>
-      <p class="text-sm text-primary-500 mt-1">Principals that govern sections and stands, and their permissions</p>
+      <p class="text-sm text-primary-500 mt-1">Section and stand commanders, Casals controllers, and their permissions</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -281,7 +317,12 @@
               </svg>
             </div>
             <div class="min-w-0 flex-1">
-              <div class="font-mono text-sm text-primary-800 truncate" title={principal}>{principal}</div>
+              <div class="flex items-center gap-2 min-w-0">
+                <div class="font-mono text-sm text-primary-800 truncate" title={principal}>{principal}</div>
+                {#if pRows.some((r) => r.scope === 'controller')}
+                  <span class="badge shrink-0 bg-amber-50 text-amber-800 border border-amber-200">controller</span>
+                {/if}
+              </div>
               <div class="text-xs text-primary-400 mt-0.5">{pRows.length} role{pRows.length !== 1 ? 's' : ''}</div>
             </div>
             <button class="icon-btn shrink-0" title="Copy principal" onclick={() => copyToClipboard(principal)}>
@@ -293,18 +334,23 @@
 
           <!-- Roles list -->
           <div class="divide-y divide-primary-50">
-            {#each pRows as row (row.label)}
+            {#each pRows as row (`${row.scope}:${row.label}:${row.section}:${row.stand ?? ''}`)}
               <div class="px-4 py-3 pl-6">
                 <div class="flex items-center gap-3">
-                  <span class="badge {row.scope === 'section' ? 'badge-primary' : 'badge-neutral'} shrink-0">{row.scope}</span>
+                  <span class="badge shrink-0 {row.scope === 'controller'
+                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                    : row.scope === 'section' ? 'badge-primary' : 'badge-neutral'}">{row.scope}</span>
                   <span class="text-sm text-primary-800 flex-1 truncate">
-                    {#if row.stand}
+                    {#if row.scope === 'controller'}
+                      <span class="font-medium">{row.label}</span>
+                      <span class="text-primary-400 ml-1">· full Casals admin</span>
+                    {:else if row.stand}
                       <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.stand}</span>
                     {:else}
                       <span class="font-medium">{row.section}</span>
                     {/if}
                   </span>
-                  {#if $isAuthenticated}
+                  {#if $isAuthenticated && row.scope !== 'controller'}
                     <button class="btn-ghost btn-sm text-xs shrink-0" onclick={() => openPerms(row)}>Permissions</button>
                   {/if}
                 </div>

@@ -34,6 +34,7 @@
     deleteStand,
     deleteCanister,
     destroyCanister,
+    backendCanisterId,
   } from '$lib/api';
   import type {
     Tree, Status, Section, Stand, Canister, UpdateResult,
@@ -44,6 +45,8 @@
   import { toasts } from '$lib/stores/toast';
   import FormModal from '$lib/components/FormModal.svelte';
   import OrchestraDiagram from '$lib/components/OrchestraDiagram.svelte';
+  import SubnetFlags from '$lib/components/SubnetFlags.svelte';
+  import { warmSubnetGeoCache } from '$lib/subnetGeo';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type OrchestraView = 'tree' | 'diagram';
@@ -163,6 +166,21 @@
     if (_logPollTimer !== null) { clearInterval(_logPollTimer); _logPollTimer = null; }
   }
 
+  function collectSubnetIds(t: Tree | null): string[] {
+    if (!t) return [];
+    const ids = new Set<string>();
+    for (const sec of t.sections) {
+      if (sec.subnet) ids.add(sec.subnet);
+      for (const stand of sec.stands) {
+        if (stand.subnet) ids.add(stand.subnet);
+        for (const c of stand.canisters) {
+          if (c.subnet) ids.add(c.subnet);
+        }
+      }
+    }
+    return [...ids];
+  }
+
   async function load() {
     loading = true;
     error = '';
@@ -173,6 +191,7 @@
         getStatus(),
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
       ]);
+      void warmSubnetGeoCache(collectSubnetIds(tree));
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -850,6 +869,13 @@
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Events</span>
             <span class="font-semibold text-primary-900">{status.events}</span>
           </div>
+          <div class="flex flex-col gap-0.5 sm:col-span-2">
+            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Conductor hosting</span>
+            <span class="inline-flex items-center gap-2 text-sm text-primary-700">
+              <span class="font-mono text-xs text-primary-500">{shortId(backendCanisterId())}</span>
+              <SubnetFlags canisterId={backendCanisterId()} size="md" />
+            </span>
+          </div>
         </div>
       {/if}
     </div>
@@ -919,8 +945,11 @@
                   </div>
                 {/if}
                 {#if placementLabel(section)}
-                  <div class="text-xs text-primary-400 mt-1 font-mono" title={section.subnet || section.subnet_type}>
-                    ⬡ {placementLabel(section)}
+                  <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-1 font-mono" title={section.subnet || section.subnet_type}>
+                    <span>⬡ {placementLabel(section)}</span>
+                    {#if section.subnet}
+                      <SubnetFlags subnetId={section.subnet} />
+                    {/if}
                   </div>
                 {/if}
               </div>
@@ -971,8 +1000,11 @@
                           </div>
                         {/if}
                         {#if placementLabel(stand)}
-                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
-                            ⬡ {placementLabel(stand)}
+                          <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
+                            <span>⬡ {placementLabel(stand)}</span>
+                            {#if stand.subnet}
+                              <SubnetFlags subnetId={stand.subnet} />
+                            {/if}
                           </div>
                         {/if}
                       </div>
@@ -1018,8 +1050,11 @@
                                 {#if canister.status}
                                   <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
-                                {#if canister.subnet}
-                                  <span class="badge badge-neutral font-mono" title="subnet {canister.subnet}">⬡ {shortId(canister.subnet)}</span>
+                                {#if canister.subnet || canister.canister_id}
+                                  <span class="badge badge-neutral font-mono inline-flex items-center gap-1" title="subnet {canister.subnet || 'lookup…'}">
+                                    ⬡ {canister.subnet ? shortId(canister.subnet) : 'subnet'}
+                                    <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
+                                  </span>
                                 {/if}
                               </div>
                               <div class="flex items-center gap-2 text-xs">
@@ -1123,7 +1158,10 @@
                                 {#if canister.snapshot_id}
                                   <span class="font-mono" title={canister.snapshot_id}>snapshot {shortHash(canister.snapshot_id)}</span>
                                 {/if}
-                                <span class="font-mono" title={canister.subnet || 'default (conductor subnet)'}>subnet {canister.subnet ? shortId(canister.subnet) : '— default'}</span>
+                                <span class="font-mono inline-flex items-center gap-1.5 flex-wrap" title={canister.subnet || 'default (conductor subnet)'}>
+                                  subnet {canister.subnet ? shortId(canister.subnet) : '— default'}
+                                  <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
+                                </span>
                               </div>
                               {#if canisterDetailsErr[canister.canister_id]}
                                 <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">

@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, cycleopsMonitored, setSettings, shortPrincipal, formatCycles, parseCycles, formatFiat, canisterUrl } from '$lib/api';
+  import { casalsMetadata, cycleopsMonitored, setSettings, getTree, shortPrincipal, formatCycles, parseCycles, formatFiat, canisterUrl } from '$lib/api';
   import type { Metadata, CycleOpsInfo, SettingsPatch } from '$lib/api';
-  import { isAuthenticated, principal } from '$lib/auth';
+  import { isAuthenticated, principal, isController } from '$lib/auth';
+  import { get } from 'svelte/store';
   import { ensureFx } from '$lib/fx.svelte';
+  import { canManageSubnetWhitelist } from '$lib/subnetAccess';
+  import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
+  import { toasts } from '$lib/stores/toast';
 
   let copied = $state(false);
   async function copyPrincipal() {
@@ -12,7 +16,6 @@
     copied = true;
     setTimeout(() => { copied = false; }, 1500);
   }
-  import { toasts } from '$lib/stores/toast';
 
   const FALLBACK_CURRENCIES = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY', 'CAD', 'AUD'];
 
@@ -39,6 +42,8 @@
   // Fiat display
   let displayCurrency = $state('USD');
   let openHelp = $state<string | null>(null);
+  let subnetWhitelist = $state<string[]>([]);
+  let canEditSubnetWhitelist = $state(false);
 
   const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
 
@@ -54,6 +59,25 @@
 
   function toggleHelp(id: string) {
     openHelp = openHelp === id ? null : id;
+  }
+
+  async function refreshSubnetEditAccess() {
+    if (!get(isAuthenticated)) {
+      canEditSubnetWhitelist = false;
+      return;
+    }
+    const caller = get(principal);
+    if (!caller) {
+      canEditSubnetWhitelist = false;
+      return;
+    }
+    if (get(isController) === true) {
+      canEditSubnetWhitelist = true;
+      return;
+    }
+    // Commander path — do not wait for the controller probe to finish.
+    const tree = await getTree().catch(() => null);
+    canEditSubnetWhitelist = canManageSubnetWhitelist(tree, caller);
   }
 
   async function load() {
@@ -73,6 +97,8 @@
       defaultTopupCycles = cyclesToTcInput(meta.default_topup_cycles);
       treasuryReserve = cyclesToTcInput(meta.treasury_reserve);
       displayCurrency = meta.display_currency || 'USD';
+      subnetWhitelist = meta.subnet_whitelist ?? [];
+      await refreshSubnetEditAccess();
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -81,6 +107,15 @@
   }
 
   onMount(load);
+
+  // Re-check when auth or controller probe completes.
+  $effect(() => {
+    if ($isAuthenticated && $principal) {
+      void refreshSubnetEditAccess();
+    } else {
+      canEditSubnetWhitelist = false;
+    }
+  });
 
   async function save(event: Event) {
     event.preventDefault();
@@ -136,7 +171,7 @@
 
 <svelte:head><title>Casals · Settings</title></svelte:head>
 
-<div class="space-y-6 animate-fade-in max-w-3xl">
+<div class="space-y-6 animate-fade-in w-full">
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Settings</h1>
@@ -585,6 +620,17 @@
           </div>
         </form>
       {/if}
+    </div>
+
+    <div class="card p-5 pb-0 w-full">
+      <SubnetWhitelistPanel
+        whitelist={subnetWhitelist}
+        canEdit={canEditSubnetWhitelist}
+        onsaved={(wl) => {
+          subnetWhitelist = wl;
+          if (meta) meta = { ...meta, subnet_whitelist: wl };
+        }}
+      />
     </div>
 
     <!-- CycleOps monitored canisters -->

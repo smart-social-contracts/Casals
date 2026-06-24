@@ -84,6 +84,8 @@ export interface Metadata {
   fx_updated?: number;
   fx_error?: string;
   fx_currencies?: string[];
+  /** Subnet principals allowed for new canister placement; empty = unrestricted. */
+  subnet_whitelist?: string[];
   canister_type: string;
   /** Backend canister id — target for direct cycle deposits. */
   backend_canister_id?: string;
@@ -754,8 +756,18 @@ export async function resetSheet(): Promise<UpdateResult> {
 }
 
 // Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
+export type SubnetListResult = UpdateResult & {
+  subnets?: string[];
+  creatable_subnets?: string[];
+  whitelist_active?: boolean;
+};
+
+export async function listSubnetPlacement(): Promise<SubnetListResult> {
+  return _parseUpdate(await (await _actor()).list_subnets()) as SubnetListResult;
+}
+
 export async function listSubnets(): Promise<string[]> {
-  const r = (await _parseUpdate(await (await _actor()).list_subnets())) as UpdateResult & { subnets?: string[] };
+  const r = await listSubnetPlacement();
   return r.subnets ?? [];
 }
 
@@ -942,6 +954,12 @@ export interface SettingsPatch {
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
+}
+
+export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResult & { subnet_whitelist?: string[] }> {
+  return _parseUpdate(
+    await (await _actor(true)).set_subnet_whitelist(JSON.stringify({ subnets })),
+  ) as UpdateResult & { subnet_whitelist?: string[] };
 }
 
 // Refresh (and cache, server-side) the cycles→currency rate for the configured

@@ -321,7 +321,7 @@ def test_all_expected_permission_keys_present():
         "canister.snapshot", "canister.revert", "canister.lifecycle",
         "canister.topup", "canister.shell",
         "stand.create", "stand.rename", "stand.delete",
-        "commander.assign",
+        "commander.assign", "subnet.whitelist",
     ]:
         assert expected in keys, f"missing key: {expected}"
 
@@ -427,6 +427,12 @@ def test_has_permission_multi_grant():
     assert auth._has_permission(stored, "canister.create") is True
     assert auth._has_permission(stored, "canister.deploy") is True
     assert auth._has_permission(stored, "canister.delete") is False
+
+
+def test_has_permission_commander_assign_grants_subnet_whitelist():
+    stored = "canister.create,commander.assign"
+    assert auth._has_permission(stored, "subnet.whitelist") is True
+    assert auth._has_permission(stored, "canister.create") is True
 
 
 # ── wasm_helpers: _split_key ─────────────────────────────────────────────────
@@ -720,3 +726,60 @@ def test_normalize_parameters_rejects_list():
 def test_normalize_parameters_rejects_bad_json():
     with pytest.raises(ValueError):
         arrangement_helpers.normalize_parameters("{bad")
+
+
+# ── subnets: whitelist ─────────────────────────────────────────────────────
+
+def test_parse_subnet_whitelist_empty():
+    import subnets
+    assert subnets.parse_subnet_whitelist("") == []
+    assert subnets.parse_subnet_whitelist("[]") == []
+
+
+def test_parse_subnet_whitelist_dedupes():
+    import subnets
+    raw = '["aaaaa-aa", "bbbbb-bb", "aaaaa-aa"]'
+    assert subnets.parse_subnet_whitelist(raw) == ["aaaaa-aa", "bbbbb-bb"]
+
+
+def test_serialize_subnet_whitelist_stable():
+    import subnets
+    assert subnets.serialize_subnet_whitelist(["b", "a", "b"]) == '["b", "a"]'
+
+
+def test_assert_subnet_allowed_empty_whitelist():
+    import subnets
+    subnets.assert_subnet_allowed("", "")  # no-op when inactive
+
+
+def test_assert_subnet_allowed_rejects_unknown(monkeypatch):
+    import subnets
+    from helpers import _settings
+
+    class S:
+        subnet_whitelist_json = '["known-subnet"]'
+
+    monkeypatch.setattr(subnets, "_settings", lambda: S())
+    with pytest.raises(Exception, match="not on the whitelist"):
+        subnets.assert_subnet_allowed("other-subnet", "")
+
+
+def test_parse_principal_subnet_auth_map():
+    import helpers
+    decoded = """
+    record {
+      data = vec {
+        record {
+          principal "aaaaa-aa";
+          vec { principal "subnet-a"; principal "subnet-b"; };
+        };
+        record {
+          principal "bbbbb-bb";
+          vec { principal "subnet-c"; };
+        };
+      };
+    }
+    """
+    m = helpers._parse_principal_subnet_auth_map(decoded)
+    assert m["aaaaa-aa"] == ["subnet-a", "subnet-b"]
+    assert m["bbbbb-bb"] == ["subnet-c"]

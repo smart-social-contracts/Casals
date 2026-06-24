@@ -17,6 +17,8 @@ from models import Canister, CanisterKind, CanisterStatus, PooledCanister
 from services import AssetCanisterService
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
+from subnets import assert_subnet_allowed
+
 from helpers import (
     _caller,
     _file_registry,
@@ -481,6 +483,7 @@ def _provision_canister(dk, name: str, kind: str, w):
     propagates.
     """
     subnet, subnet_type = _target_subnet(dk)
+    assert_subnet_allowed(subnet, subnet_type)
     _append_event("allocating_canister", "", {"stand": dk.name, "name": name,
                                               "wasm_key": w.key, "subnet": subnet or "default"})
     cid, reused = yield from _allocate_canister(subnet, subnet_type)

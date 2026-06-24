@@ -87,6 +87,7 @@ from helpers import (
     _nat64s_in,
     _ok,
     _principals_in,
+    _parse_principal_subnet_auth_map,
     _settings,
     unwrap_call_result,
 )
@@ -125,6 +126,12 @@ from models import (
     CanisterStatus,
 )
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
+from subnets import (
+    assert_subnet_allowed,
+    parse_subnet_whitelist,
+    serialize_subnet_whitelist,
+    subnet_whitelist,
+)
 from services import (
     AssetPermission,
     GrantPermissionArg,
@@ -212,6 +219,37 @@ def _section_commander_can(sec, permission: str) -> bool:
     commander = (getattr(sec, "commander_principal", "") or "").strip()
     return bool(commander and _caller() == commander
                 and _has_permission(getattr(sec, "permissions", ""), permission))
+
+
+def _stand_permissions_for(stand) -> str:
+    """Permission string governing a stand commander (stand grant, else section's)."""
+    p = (getattr(stand, "permissions", "") or "").strip()
+    if p:
+        return p
+    sec = getattr(stand, "section", None)
+    return (getattr(sec, "permissions", "") or "").strip() if sec else ""
+
+
+def _caller_can_manage_subnet_whitelist() -> bool:
+    """Controllers, or a section/stand commander holding ``subnet.whitelist``."""
+    if _is_controller():
+        return True
+    list(Section.instances())
+    for sec in Section.instances():
+        if _section_commander_can(sec, "subnet.whitelist"):
+            return True
+    list(Stand.instances())
+    for stand in Stand.instances():
+        sc = (stand.commander_principal or "").strip()
+        if sc and _caller() == sc:
+            if _has_permission(_stand_permissions_for(stand), "subnet.whitelist"):
+                return True
+    return False
+
+
+def _require_subnet_whitelist_auth() -> None:
+    if not _caller_can_manage_subnet_whitelist():
+        raise Exception("unauthorized: caller lacks subnet.whitelist permission")
 
 
 def _require_can_add_in_section(sec, permission: str) -> None:
@@ -331,6 +369,7 @@ def casals_metadata() -> text:
         "fx_updated": int(s.fx_updated or 0),
         "fx_error": (s.fx_error or ""),
         "fx_currencies": FX_SUPPORTED_CURRENCIES,
+        "subnet_whitelist": subnet_whitelist(),
         "canister_type": "orchestrator",
         **treasury_deposit_fields(),
     })
@@ -794,6 +833,7 @@ def create_section(args: text) -> text:
         sec.commander_principal = (params.get("commander_principal") or "").strip()
         sec.subnet = (params.get("subnet") or "").strip()
         sec.subnet_type = (params.get("subnet_type") or "").strip()
+        assert_subnet_allowed(sec.subnet, sec.subnet_type)
         sec.created_by = _caller()
         _append_event("section_created", "", {"name": name})
         return _ok(name=name)
@@ -825,6 +865,7 @@ def create_stand(args: text) -> text:
         dk.commander_principal = (params.get("commander_principal") or "").strip()
         dk.subnet = (params.get("subnet") or "").strip()
         dk.subnet_type = (params.get("subnet_type") or "").strip()
+        assert_subnet_allowed(dk.subnet, dk.subnet_type)
         dk.created_by = _caller()
         _append_event("stand_created", "", {"section": section_name, "name": name})
         return _ok(name=name)
@@ -1335,6 +1376,10 @@ def deploy_sheet(args: text) -> Async[text]:
             # (Existing canisters aren't moved; this only affects new canisters.)
             sec.subnet = (sec_spec.get("subnet") or "").strip()
             sec.subnet_type = (sec_spec.get("subnet_type") or "").strip()
+            try:
+                assert_subnet_allowed(sec.subnet, sec.subnet_type)
+            except Exception as e:
+                result["errors"].append(f"section '{sname}': {e}")
             for stand_spec in sec_spec.get("stands", []):
                 dname = (stand_spec.get("name") or "").strip()
                 if not dname:
@@ -1358,6 +1403,10 @@ def deploy_sheet(args: text) -> Async[text]:
                 # affects newly created canisters; existing canisters aren't moved).
                 dk.subnet = (stand_spec.get("subnet") or "").strip()
                 dk.subnet_type = (stand_spec.get("subnet_type") or "").strip()
+                try:
+                    assert_subnet_allowed(dk.subnet, dk.subnet_type)
+                except Exception as e:
+                    result["errors"].append(f"stand '{dname}': {e}")
                 for canister_spec in stand_spec.get("canisters", []):
                     stname = (canister_spec.get("name") or "").strip()
                     if not stname:
@@ -1486,15 +1535,64 @@ def apply_arrangement(args: text) -> Async[text]:
 
 
 @update
-def list_subnets() -> Async[text]:
-    """Return the subnet ids the CMC creates on by default, so the sheet editor
-    can offer valid `subnet` targets. Relayed to the CMC's get_default_subnets
-    query (which Casals can only reach as a replicated inter-canister call)."""
+def set_subnet_whitelist(args: text) -> Async[text]:
+    """Set the platform subnet whitelist. Args (JSON): {subnets: [id, ...]}.
+
+    When non-empty, only listed subnets may be targeted for new canister
+    placement. Authorized for Casals controllers or a section commander
+    holding the ``subnet.whitelist`` permission."""
     try:
-        res = yield ic.call_raw(
-            Principal.from_str(CMC_CANISTER_ID), "get_default_subnets", ic.candid_encode("()"), 0)
-        decoded = ic.candid_decode(unwrap_call_result(res))
-        return _ok(subnets=_principals_in(decoded))
+        _require_subnet_whitelist_auth()
+        params = json.loads(args) if args else {}
+        encoded = serialize_subnet_whitelist(params.get("subnets"))
+        requested = parse_subnet_whitelist(encoded)
+        creatable_list = yield from _fetch_cmc_creatable_subnets()
+        creatable = set(creatable_list)
+        unavailable = [sid for sid in requested if sid not in creatable]
+        if unavailable:
+            sample = ", ".join(unavailable[:3])
+            extra = f" (+{len(unavailable) - 3} more)" if len(unavailable) > 3 else ""
+            raise Exception(
+                f"subnet(s) not available for Casals canister creation: {sample}{extra}"
+            )
+        s = _settings()
+        s.subnet_whitelist_json = encoded
+        _append_event("subnet_whitelist_changed", "", {"count": len(subnet_whitelist())})
+        return _ok(subnet_whitelist=subnet_whitelist())
+    except Exception as e:
+        return _err(str(e))
+
+
+def _fetch_cmc_creatable_subnets():
+    """Subnet ids where this Casals instance may create canisters via the CMC."""
+    res = yield ic.call_raw(
+        Principal.from_str(CMC_CANISTER_ID), "get_default_subnets", ic.candid_encode("()"), 0)
+    ids = set(_principals_in(ic.candid_decode(unwrap_call_result(res))))
+
+    res = yield ic.call_raw(
+        Principal.from_str(CMC_CANISTER_ID),
+        "get_principals_authorized_to_create_canisters_to_subnets",
+        ic.candid_encode("()"),
+        0,
+    )
+    auth_map = _parse_principal_subnet_auth_map(ic.candid_decode(unwrap_call_result(res)))
+    ids.update(auth_map.get(ic.id().to_str(), []))
+    return sorted(ids)
+
+
+@update
+def list_subnets() -> Async[text]:
+    """Return subnet ids the CMC creates on by default. When a whitelist is
+    active, only whitelisted ids are returned. Also returns ``creatable_subnets``:
+    all subnets this Casals instance may create canisters on (default + any
+    explicitly authorized for the Casals principal)."""
+    try:
+        creatable = yield from _fetch_cmc_creatable_subnets()
+        ids = list(creatable)
+        allowed = set(subnet_whitelist())
+        if allowed:
+            ids = [sid for sid in ids if sid in allowed]
+        return _ok(subnets=ids, creatable_subnets=creatable, whitelist_active=bool(allowed))
     except Exception as e:
         return _err(str(e))
 

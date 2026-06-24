@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSheet, setSheet, resetSheet, deploySheet, listPool, listSubnets, estimateDeploy, formatCycles } from '$lib/api';
+  import { getSheet, setSheet, resetSheet, deploySheet, listPool, estimateDeploy, formatCycles } from '$lib/api';
   import type { Sheet, DeployResult, PoolReport, DeployEstimate } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import SubnetFlags from '$lib/components/SubnetFlags.svelte';
 
   let text = $state('');
   let loading = $state(true);
@@ -11,8 +12,6 @@
   let busy = $state(false);
   let pool = $state<PoolReport | null>(null);
   let lastDeploy = $state<DeployResult | null>(null);
-  let subnets = $state<string[] | null>(null);
-  let subnetsBusy = $state(false);
   let estimate = $state<DeployEstimate | null>(null);
   let estimateErr = $state('');
   let estTimer: ReturnType<typeof setTimeout> | undefined;
@@ -39,17 +38,6 @@
     estTimer = setTimeout(() => runEstimate(sheet), 400);
     return () => clearTimeout(estTimer);
   });
-
-  async function loadSubnets() {
-    subnetsBusy = true;
-    try {
-      subnets = await listSubnets();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed to list subnets');
-    } finally {
-      subnetsBusy = false;
-    }
-  }
 
   async function copy(s: string) {
     try {
@@ -184,10 +172,10 @@
         before creating new ones.
       </p>
       <p class="text-xs text-primary-400 mt-1 max-w-2xl">
+        Subnet placement is configured in <strong>Settings → Subnet whitelist</strong>.
         A section or stand may set <code class="font-mono">"subnet": "&lt;subnet-id&gt;"</code>
-        (or <code class="font-mono">"subnet_type": "fiduciary"</code>) to place its new
-        canisters on a specific subnet (stand overrides section). Existing canisters are
-        never moved — placement applies to canisters created on the next deploy.
+        (or <code class="font-mono">"subnet_type": "fiduciary"</code> when no whitelist is active).
+        Stand overrides section. Existing canisters are never moved.
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0">
@@ -316,9 +304,12 @@
               {#each pool.canisters as c (c.canister_id)}
                 <li class="flex items-center justify-between gap-2 text-xs">
                   <span class="font-mono text-primary-600 truncate">{c.canister_id}</span>
-                  <span class="flex items-center gap-1 shrink-0">
+                  <span class="flex items-center gap-1.5 shrink-0">
                     {#if c.subnet}
+                      <SubnetFlags subnetId={c.subnet} />
                       <span class="badge badge-neutral font-mono" title="subnet {c.subnet}">⬡ {c.subnet.slice(0, 5)}…</span>
+                    {:else if c.canister_id}
+                      <SubnetFlags canisterId={c.canister_id} />
                     {/if}
                     <span class="badge {c.status === 'free' ? 'badge-frontend' : 'badge-backend'}">
                       {c.status === 'free' ? 'free' : c.canister_name || 'in use'}
@@ -330,29 +321,6 @@
           {/if}
         {:else}
           <div class="skeleton h-12 w-full"></div>
-        {/if}
-      </div>
-
-      <div class="card p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="text-sm font-semibold text-primary-900">Available subnets</h2>
-          <button class="btn-secondary btn-sm" onclick={loadSubnets} disabled={subnetsBusy}>
-            {subnetsBusy ? 'Loading…' : subnets ? 'Refresh' : 'Load'}
-          </button>
-        </div>
-        <p class="text-xs text-primary-400">Default subnets the CMC will create on — usable as <code class="font-mono">subnet</code> targets.</p>
-        {#if subnets}
-          {#if subnets.length === 0}
-            <p class="text-xs text-primary-400 mt-2">None reported.</p>
-          {:else}
-            <ul class="mt-2 space-y-1 max-h-48 overflow-y-auto">
-              {#each subnets as s (s)}
-                <li>
-                  <button class="font-mono text-xs text-primary-600 hover:text-primary-900 truncate w-full text-left" title="Copy {s}" onclick={() => copy(s)}>{s}</button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
         {/if}
       </div>
 

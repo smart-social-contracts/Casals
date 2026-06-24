@@ -30,6 +30,7 @@ PERMISSIONS = [
     ("stand.rename",       "Rename stand",               "Stand"),
     ("stand.delete",       "Delete stand",               "Stand"),
     ("commander.assign",   "Appoint sub-commanders",     "Governance"),
+    ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
@@ -71,4 +72,12 @@ def _has_permission(stored: str, permission: str) -> bool:
     """Return True if `stored` grants `permission` (empty permission always True)."""
     if not permission:
         return True
-    return permission in _parse_permissions(stored)
+    granted = _parse_permissions(stored)
+    if permission in granted:
+        return True
+    # Governance commanders (can appoint sub-commanders) may manage the
+    # platform-wide subnet whitelist even on legacy permission rows that
+    # pre-date the ``subnet.whitelist`` key.
+    if permission == "subnet.whitelist" and "commander.assign" in granted:
+        return True
+    return False
