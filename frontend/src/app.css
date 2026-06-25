@@ -146,49 +146,51 @@ html::-webkit-scrollbar-thumb:hover { background-color: #A3A3A3; }
   color: #171717;
 }
 
-/* Compact icon button that slides open to reveal its title on hover */
+/* Compact icon button with a floating tooltip on hover/focus */
 .icon-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   height: 1.75rem;       /* 28px — matches h-7 */
-  min-width: 1.75rem;
-  padding: 0 0.25rem;
+  width: 1.75rem;
+  padding: 0;
   border-radius: 0.25rem;
-  overflow: hidden;
-  white-space: nowrap;
   color: #a3a3a3;
-  /* Only background + color transition at normal speed */
   transition: background 0.15s ease, color 0.15s ease;
 }
 .icon-btn:hover {
   background: #f5f5f5;
   color: #404040;
 }
-/* Keep the SVG from squishing when the label expands */
 .icon-btn > svg {
   flex-shrink: 0;
 }
-/* The label is read from the title attribute — no template changes needed */
 .icon-btn::after {
-  content: attr(title);
+  content: attr(aria-label);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.25rem;
+  background: #262626;
+  color: #fff;
   font-size: 0.688rem;  /* ~11px */
   font-weight: 500;
   letter-spacing: 0.01em;
-  overflow: hidden;
+  line-height: 1.2;
   white-space: nowrap;
-  max-width: 0;
+  pointer-events: none;
   opacity: 0;
-  margin-left: 0;
-  /* Slow, smooth reveal */
-  transition:
-    max-width  0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity    0.35s ease,
-    margin-left 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s ease;
+  z-index: 50;
 }
-.icon-btn:hover::after {
-  max-width: 12rem;
+.icon-btn:hover::after,
+.icon-btn:focus-visible::after {
   opacity: 1;
-  margin-left: 0.3rem;
+  visibility: visible;
 }
 
 .card {

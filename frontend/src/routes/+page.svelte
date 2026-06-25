@@ -956,16 +956,16 @@
             </button>
             {#if $isAuthenticated}
               <div class="flex items-center gap-0.5 shrink-0">
-                <button class="icon-btn" title="Add stand" onclick={() => openCreateStand(section)}>
+                <button class="icon-btn" aria-label="Add stand" onclick={() => openCreateStand(section)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                 </button>
-                <button class="icon-btn" title="Set commander" onclick={() => openSetCommander({ section: section.name }, section.commander_principal)}>
+                <button class="icon-btn" aria-label="Set commander" onclick={() => openSetCommander({ section: section.name }, section.commander_principal)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                 </button>
-                <button class="icon-btn" title="Rename section" onclick={() => openRenameSection(section)}>
+                <button class="icon-btn" aria-label="Rename section" onclick={() => openRenameSection(section)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                 </button>
-                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete section" onclick={() => openDeleteSection(section)}>
+                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete section" onclick={() => openDeleteSection(section)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                 </button>
               </div>
@@ -1011,22 +1011,22 @@
                     </button>
                     {#if $isAuthenticated}
                       <div class="flex items-center gap-0.5 shrink-0">
-                        <button class="icon-btn" title="Add canister" onclick={() => openCreateCanister(stand)}>
+                        <button class="icon-btn" aria-label="Add canister" onclick={() => openCreateCanister(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                         </button>
-                        <button class="icon-btn" title="Register existing canister" onclick={() => openRegisterCanister(stand)}>
+                        <button class="icon-btn" aria-label="Register existing canister" onclick={() => openRegisterCanister(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/></svg>
                         </button>
-                        <button class="icon-btn" title="Deploy all canisters in stand" onclick={() => openUpgradeStand(stand)}>
+                        <button class="icon-btn" aria-label="Deploy all canisters in stand" onclick={() => openUpgradeStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                         </button>
-                        <button class="icon-btn" title="Set commander" onclick={() => openSetCommander({ stand: stand.name }, stand.commander_principal)}>
+                        <button class="icon-btn" aria-label="Set commander" onclick={() => openSetCommander({ stand: stand.name }, stand.commander_principal)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                         </button>
-                        <button class="icon-btn" title="Rename stand" onclick={() => openRenameStand(stand)}>
+                        <button class="icon-btn" aria-label="Rename stand" onclick={() => openRenameStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                         </button>
-                        <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete stand" onclick={() => openDeleteStand(stand)}>
+                        <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete stand" onclick={() => openDeleteStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                         </button>
                       </div>
@@ -1075,7 +1075,7 @@
                             </div>
                             <div class="flex items-center gap-0.5 shrink-0">
                               <!-- Details toggle -->
-                              <button class="icon-btn" title="Toggle details" onclick={() => toggleCanister(canister)}>
+                              <button class="icon-btn" aria-label="Toggle details" onclick={() => toggleCanister(canister)}>
                                 <svg class="w-4 h-4 transition-transform {expandedCanisters[canister.canister_id] ? 'rotate-180' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/>
                                 </svg>
@@ -1086,7 +1086,7 @@
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 class="icon-btn"
-                                title={canister.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
+                                aria-label={canister.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
                               >
                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
@@ -1094,31 +1094,31 @@
                               </a>
                               {#if $isAuthenticated}
                                 <!-- Deploy -->
-                                <button class="icon-btn" title="Deploy (upgrade WASM)" onclick={() => openUpgradeCanister(canister)}>
+                                <button class="icon-btn" aria-label="Deploy (upgrade WASM)" onclick={() => openUpgradeCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                                 </button>
                                 <!-- Snapshot -->
-                                <button class="icon-btn" title="Create snapshot" onclick={() => runCanisterAction('Snapshot', () => createSnapshot(canister.name))}>
+                                <button class="icon-btn" aria-label="Create snapshot" onclick={() => runCanisterAction('Snapshot', () => createSnapshot(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.776 48.776 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"/></svg>
                                 </button>
                                 <!-- Revert -->
-                                <button class="icon-btn" title="Revert to snapshot" onclick={() => runCanisterAction('Revert', () => revertSnapshot(canister.name))}>
+                                <button class="icon-btn" aria-label="Revert to snapshot" onclick={() => runCanisterAction('Revert', () => revertSnapshot(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"/></svg>
                                 </button>
                                 <!-- Stop -->
-                                <button class="icon-btn" title="Stop canister" onclick={() => runCanisterAction('Stop', () => stopCanister(canister.name))}>
+                                <button class="icon-btn" aria-label="Stop canister" onclick={() => runCanisterAction('Stop', () => stopCanister(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 </button>
                                 <!-- Start -->
-                                <button class="icon-btn" title="Start canister" onclick={() => runCanisterAction('Start', () => startCanister(canister.name))}>
+                                <button class="icon-btn" aria-label="Start canister" onclick={() => runCanisterAction('Start', () => startCanister(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"/></svg>
                                 </button>
                                 <!-- Rename -->
-                                <button class="icon-btn" title="Rename canister" onclick={() => openRenameCanister(canister)}>
+                                <button class="icon-btn" aria-label="Rename canister" onclick={() => openRenameCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                                 </button>
                                 <!-- Delete (retire to pool) -->
-                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" title="Delete canister (return to pool)" onclick={() => openDeleteCanister(canister)}>
+                                <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete canister (return to pool)" onclick={() => openDeleteCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                                 </button>
                                 <!-- Destroy (permanent) -->

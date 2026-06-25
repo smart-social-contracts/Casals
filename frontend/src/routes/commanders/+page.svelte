@@ -325,7 +325,7 @@
               </div>
               <div class="text-xs text-primary-400 mt-0.5">{pRows.length} role{pRows.length !== 1 ? 's' : ''}</div>
             </div>
-            <button class="icon-btn shrink-0" title="Copy principal" onclick={() => copyToClipboard(principal)}>
+            <button class="icon-btn shrink-0" aria-label="Copy principal" onclick={() => copyToClipboard(principal)}>
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.185a9.064 9.064 0 0 0-1.5.124" />
               </svg>
