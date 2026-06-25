@@ -117,6 +117,7 @@
       case 'arrangement_step': return `Arrangement step ${p.step ?? '?'}: ${p.method ?? ''}`;
       case 'arrangement_step_failed': return `Arrangement step failed: ${p.method ?? ''} — ${p.error ?? ''}`;
       case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_canister ? ` (was ${p.was_canister})` : ''}`;
+      case 'pool_assigned': return `Assigned pool canister to ${p.name ?? ''} on stand ${p.stand ?? ''}`;
       default: return Object.keys(p).length ? JSON.stringify(p) : '';
     }
   }

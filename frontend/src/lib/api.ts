@@ -568,6 +568,27 @@ export async function getTree(): Promise<Tree> {
   return _parseQuery<Tree>(await (await _actor()).get_tree());
 }
 
+/** Canister ids currently linked in the orchestra tree. */
+export function orchestraCanisterIds(tree: Tree): Set<string> {
+  const ids = new Set<string>();
+  for (const sec of tree.sections) {
+    for (const st of sec.stands) {
+      for (const c of st.canisters) {
+        if (c.canister_id) ids.add(c.canister_id);
+      }
+    }
+  }
+  return ids;
+}
+
+/** True when a pool entry is not backing any live orchestra canister. */
+export function isPoolUnassigned(
+  canisterId: string,
+  orchestraIds: Set<string>,
+): boolean {
+  return !orchestraIds.has(canisterId);
+}
+
 export async function listSections(): Promise<SectionSummary[]> {
   return _parseQuery<SectionSummary[]>(await (await _actor()).list_sections());
 }
@@ -1071,6 +1092,16 @@ export async function createCanister(args: {
   wasm_key: string;
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).create_canister(JSON.stringify(args)));
+}
+
+export async function assignPoolCanister(args: {
+  canister_id: string;
+  stand: string;
+  name: string;
+  kind?: CanisterKind;
+  wasm_key?: string;
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).assign_pool_canister(JSON.stringify(args)));
 }
 
 export async function upgradeTo(args: {

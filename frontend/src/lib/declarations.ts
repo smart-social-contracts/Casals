@@ -18,6 +18,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     cycleops_monitored:    IDL.Func([], [IDL.Text], ['query']),
     get_sheet:             IDL.Func([], [IDL.Text], ['query']),
     list_pool:             IDL.Func([], [IDL.Text], ['query']),
+    pool_remove:           IDL.Func([IDL.Text], [IDL.Text], []),
     list_arrangements:     IDL.Func([], [IDL.Text], ['query']),
     get_arrangement:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
     set_arrangement:       IDL.Func([IDL.Text], [IDL.Text], []),
@@ -62,6 +63,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     remove_authorized_wasm: IDL.Func([IDL.Text], [IDL.Text], []),
 
     // ── lifecycle (management-canister orchestration) ──
+    assign_pool_canister:   IDL.Func([IDL.Text], [IDL.Text], []),
     create_canister:          IDL.Func([IDL.Text], [IDL.Text], []),
     upgrade_to:            IDL.Func([IDL.Text], [IDL.Text], []),
     create_snapshot:       IDL.Func([IDL.Text], [IDL.Text], []),

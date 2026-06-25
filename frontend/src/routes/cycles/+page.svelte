@@ -19,6 +19,9 @@
     shortPrincipal,
     casalsMetadata,
     backendCanisterId,
+    getTree,
+    orchestraCanisterIds,
+    isPoolUnassigned,
   } from '$lib/api';
   import type {
     CyclesReport,
@@ -30,6 +33,7 @@
     PoolCanisterCycles,
     Metadata,
     CycleStatus,
+    Tree,
   } from '$lib/api';
   import { isAuthenticated, isController } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
@@ -37,6 +41,7 @@
   import { toasts } from '$lib/stores/toast';
   import LineChart from '$lib/components/LineChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
+  import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
   import { colorAt, type Series, type TreemapInput } from '$lib/charts';
 
@@ -69,6 +74,28 @@
   type CanisterSortKey = 'canister' | 'sectionStand' | 'cycles' | 'minPolicy' | 'status';
   let canisterSortKey = $state<CanisterSortKey>('canister');
   let canisterSortAsc = $state(true);
+  let assignPoolTarget = $state<string | null>(null);
+  let tree = $state<Tree | null>(null);
+
+  const orchestraCanisterIdSet = $derived.by(() => {
+    const ids = orchestraCanisterIds(tree ?? { sections: [] });
+    for (const c of report?.canisters ?? []) {
+      if (c.canister_id) ids.add(c.canister_id);
+    }
+    return ids;
+  });
+
+  function closeAssignPool() {
+    assignPoolTarget = null;
+  }
+
+  async function onAssignPoolSuccess() {
+    assignPoolTarget = null;
+    await Promise.all([
+      refreshLive(),
+      getTree().then((t) => { tree = t; }).catch(() => {}),
+    ]);
+  }
 
   /** Must match util.SWEEP_EXEC_RESERVE on the backend. */
   const SWEEP_EXEC_RESERVE = 200_000_000_000;
@@ -282,6 +309,7 @@
     void (async () => {
       await loadCached();
       void refreshLive();
+      getTree().then((t) => { tree = t; }).catch(() => {});
     })();
   });
 
@@ -1555,10 +1583,14 @@
                 <th class="text-right font-medium px-4 py-2.5 hidden sm:table-cell">Funded</th>
                 <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell">Used</th>
                 <th class="text-center font-medium px-4 py-2.5">Status</th>
+                {#if $isAuthenticated}
+                  <th class="text-right font-medium px-4 py-2.5">Actions</th>
+                {/if}
               </tr>
             </thead>
             <tbody>
               {#each report.pool.canisters as c (c.canister_id)}
+                {@const unassigned = isPoolUnassigned(c.canister_id, orchestraCanisterIdSet)}
                 <tr class="border-t border-[var(--color-border-primary)]">
                   <td class="px-4 py-2.5">
                     <div class="flex items-center gap-1">
@@ -1592,6 +1624,21 @@
                   <td class="px-4 py-2.5 text-center">
                     <span class="badge {c.status === 'free' ? 'badge-neutral' : 'badge-frontend'}">{c.status}</span>
                   </td>
+                  {#if $isAuthenticated}
+                    <td class="px-4 py-2.5 text-right">
+                      {#if unassigned}
+                        <button
+                          type="button"
+                          class="btn-secondary btn-sm"
+                          onclick={() => { assignPoolTarget = c.canister_id; }}
+                        >
+                          Assign
+                        </button>
+                      {:else}
+                        <span class="text-xs text-primary-400">—</span>
+                      {/if}
+                    </td>
+                  {/if}
                 </tr>
               {/each}
             </tbody>
@@ -2056,5 +2103,13 @@
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if assignPoolTarget}
+    <AssignPoolCanisterModal
+      canisterId={assignPoolTarget}
+      onsuccess={onAssignPoolSuccess}
+      oncancel={closeAssignPool}
+    />
   {/if}
 </div>

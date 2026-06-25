@@ -96,6 +96,7 @@ from lifecycle import (
     CREATE_CYCLES,
     _add_controllers,
     _allocate_canister,
+    _assign_pool_canister,
     _install_arg_for,
     _maybe_provision_assets,
     _provision_canister,
@@ -567,6 +568,45 @@ def pool_remove(args: text) -> text:
         return _ok(canister_id=cid, was_status=was_status)
     except Exception as e:
         return _err(str(e))
+
+
+@update
+def assign_pool_canister(args: text) -> Async[text]:
+    """Assign a pooled canister to a stand, creating a Canister record in the
+    orchestra. Optionally reinstall an authorized WASM on the canister first.
+
+    Args (JSON): {canister_id, stand, name, kind?, wasm_key?}
+      - ``wasm_key`` omitted => register only, keep existing on-chain code
+      - ``wasm_key`` set => reinstall that WASM before recording
+
+    Authorized like ``create_canister`` (stand commander with ``canister.create``).
+    """
+    try:
+        params = json.loads(args)
+        cid = (params.get("canister_id") or "").strip()
+        if not cid:
+            return _err("canister_id required")
+        list(Stand.instances())
+        dk = Stand[(params.get("stand") or "").strip()]
+        if dk is None:
+            return _err(f"unknown stand '{params.get('stand')}'")
+        _require_commander(dk, "canister.create")
+
+        name = (params.get("name") or "").strip()
+        if not name:
+            return _err("name required")
+        kind = params.get("kind") or CanisterKind.BACKEND
+        list(Canister.instances())
+        if Canister[name] is not None:
+            return _err(f"canister '{name}' already exists")
+
+        wasm_key = (params.get("wasm_key") or "").strip()
+        w = _resolve_authorized_wasm(wasm_key, dk.section) if wasm_key else None
+        st = yield from _assign_pool_canister(dk, name, kind, cid, w)
+        return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash or None)
+    except Exception as e:
+        _log.error(f"assign_pool_canister error: {e}")
+        return _err(f"{e} :: {traceback.format_exc()[-600:]}")
 
 
 # ── Governance / registration update endpoints ──────────────────────────────
@@ -1191,6 +1231,9 @@ def register_canister(args: text) -> text:
         st.kind = params.get("kind") or CanisterKind.BACKEND
         st.status = CanisterStatus.REGISTERED
         st.created_by = _caller()
+        list(PooledCanister.instances())
+        if PooledCanister[st.canister_id] is not None:
+            _pool_mark_in_use(st.canister_id, name)
         _append_event("canister_registered", st.canister_id, {"stand": dk.name, "name": name})
         return _ok(name=name)
     except Exception as e:

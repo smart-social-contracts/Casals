@@ -10,19 +10,24 @@ Casals executes. Casals never embeds voting logic.
 ## Repository layout
 
 ```
-src/main.py          — Basilisk (Python) conductor canister
-src/models.py        — ic_python_db entities (Section, Stand, Canister, CycleSample, PooledCanister, Arrangement, …)
-src/arrangement.py   — apply an arrangement's post-deploy steps (text-in/text-out calls)
+src/main.py          — Basilisk (Python) conductor canister; decorated endpoints
+src/models.py        — ic_python_db entities (Section, Stand, Canister, PooledCanister, …)
+src/lifecycle.py     — create/install/upgrade/snapshot + asset provisioning + pool assign
+src/pool.py          — canister pool (reuse before create)
+src/subnets.py       — subnet whitelist parse/enforce
+src/sheet.py         — live sheet load/save
+src/views.py         — pure tree serialization helpers
+src/auth.py          — commander permission checks
 src/cycles.py        — native cycles management (sampler + autopilot reconcile)
-src/lifecycle.py     — create/install/upgrade/snapshot + asset provisioning
+src/arrangement.py   — apply an arrangement's post-deploy steps (text-in/text-out calls)
 src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
-src/util.py          — pure helpers (audit hash, canister URL)
+src/util.py          — pure helpers (audit hash, canister URL, cycle policy)
 casals_cli.py        — CLI module (pip install ic-casals → `casals` command)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
 pyproject.toml       — package metadata; entry point casals = casals_cli:main
 icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
 Makefile             — build / deploy / seed / test / cli targets
-frontend/            — SvelteKit UI (Orchestra, Sheet, Cycles, Authorized WASMs, Settings)
+frontend/            — SvelteKit UI (see Frontend pages below)
 file_registry/       — git submodule: the file-registry canister (WASM store)
 templates/           — hello-world template sources (basilisk / rust / motoko)
 seed/templates.json  — default template catalog (what to upload + authorize)
@@ -32,6 +37,7 @@ seed/assets/         — frontend asset files (index.html) uploaded into fronten
 scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper)
 tests/               — pytest unit + integration + e2e suites (incl. test_cli_unit.py)
 .icp/data/           — committed canister-ID mappings for the demo deployment (do NOT delete)
+dist/                  — SvelteKit static build output (repo root; consumed by icp.yaml)
 ```
 
 `file_registry` is a **git submodule** of the public
@@ -57,7 +63,28 @@ for development and demonstration purposes. They are **not a production service*
 | casals_frontend   | `igz53-6qaaa-aaaao-bbapa-cai`  | https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io/ |
 | ic_file_registry  | `iby3p-tiaaa-aaaao-bbapq-cai`  | https://iby3p-tiaaa-aaaao-bbapq-cai.icp0.io/ |
 
-Deploy identity principal: `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2wn-uhjcc-xqe`
+| Identity | Principal | Role |
+|----------|-----------|------|
+| Deploy (`casals`) | `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2wn-uhjcc-xqe` | Owns/deploys canisters; controller of backend + registry |
+| Conductor | `nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae` | Added as controller of backend + frontend after deploy so the UI can run admin endpoints without the deploy PEM |
+
+## Frontend pages
+
+SvelteKit app; nav in `frontend/src/routes/+layout.svelte`:
+
+| Route | Purpose |
+|-------|---------|
+| `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
+| `/wasms` | Authorized WASM catalog |
+| `/commanders` | Section/stand commanders and granular permissions |
+| `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, reconcile |
+| `/activity` | Hash-chained audit log |
+| `/sheet` | Live sheet JSON editor; Save / Reset / Deploy; pool list + **Assign** |
+| `/arrangements` | Post-deploy step sets |
+| `/settings` | Instance settings; **subnet whitelist** matrix |
+
+Login uses Internet Identity. Only principals listed as commanders (or canister
+controllers) may authenticate.
 
 ## Local development
 
@@ -85,9 +112,9 @@ Re-deploy after code changes: `make deploy && python3 scripts/seed.py -e local -
 
 **`icp.yaml` — asset sync path must be a top-level `dist`.**
 The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths like
-`frontend/dist`. So the SvelteKit static adapter is configured to build into the
-repo-root `dist` (`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), and
-`icp.yaml` uses `dir: dist`. Do not change `dir` to `frontend/dist`.
+`frontend/dist`. The SvelteKit static adapter builds into the repo-root `dist`
+(`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), and `icp.yaml`
+uses `dir: dist`. Do not change `dir` to `frontend/dist`.
 
 **`deploy_sheet` needs a well-funded treasury.**
 `casals_backend` acts as the cycles treasury — it creates canisters and sends
@@ -145,37 +172,113 @@ pytest tests/ -v    # spins up its own replica and tears it down automatically
 > listed above). If you are a project deploying your own Casals instance, the
 > same steps apply — substitute your own canister IDs and identity.
 
-### One-time setup
-1. The `casals` icp-cli identity is stored in `~/.local/share/icp-cli/identity/keys/casals.pem`.
-2. Its PEM is kept as the `CASALS_IDENTITY_PEM` secret in the GitHub repo.
-3. The deploy identity must hold cycles. To top up:
-   ```bash
-   icp token balance --identity casals -e ic          # check ICP balance
-   icp cycles mint --icp <amount> --identity casals -e ic
-   ```
+### Prerequisites
 
-### From your machine
+1. **`icp-cli`** installed and configured for IC mainnet.
+2. **`casals` deploy identity** — PEM at `~/.local/share/icp-cli/identity/keys/casals.pem`
+   (also stored as the `CASALS_IDENTITY_PEM` GitHub secret).
+3. Deploy identity must hold **cycles** (and usually some ICP for topping up):
+   ```bash
+   icp token balance --identity casals -e ic
+   icp cycles balance --identity casals -e ic
+   icp cycles mint --icp <amount> --identity casals -e ic   # if needed
+   ```
+4. **`.icp/data/`** committed in the repo — maps canister names to existing mainnet
+   IDs so `icp deploy` upgrades in place instead of creating new canisters.
+
+### Standard deploy (all three canisters)
+
+`icp.yaml` defines three canisters: `casals_backend`, `ic_file_registry`,
+`casals_frontend`. The frontend recipe runs `npm --prefix frontend ci` and
+`npm run build` during deploy, writing to repo-root `dist/`.
+
 ```bash
-make build
+make build                                    # build backend + registry WASMs into .basilisk/
+
+# Stopped canisters block asset sync — start them first (safe no-op if running)
+for c in casals_backend casals_frontend ic_file_registry; do
+  icp canister start "$c" -e ic --identity casals -f || true
+done
+
 icp deploy -e ic --identity casals --mode upgrade -y
 ```
 
+Or via Makefile (uses default icp identity — pass `--identity casals` if needed):
+
+```bash
+make deploy-ic    # equivalent to: make build && icp deploy -e ic
+```
+
+**After every mainnet deploy**, add the conductor as a controller so the UI can
+call admin endpoints without the deploy PEM (CI does this automatically):
+
+```bash
+CONDUCTOR=nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae
+icp canister settings update casals_backend  --add-controller "$CONDUCTOR" -e ic --identity casals -f
+icp canister settings update casals_frontend --add-controller "$CONDUCTOR" -e ic --identity casals -f
+```
+
+### Partial deploy (backend and/or frontend only)
+
+When the file-registry WASM did not change, skip it to save time/cycles:
+
+```bash
+make build-backend                            # backend only
+icp deploy -e ic --identity casals --mode upgrade -y casals_backend casals_frontend
+```
+
+Frontend-only (after validating the build locally):
+
+```bash
+npm --prefix frontend ci && npm --prefix frontend run build   # optional pre-check
+icp deploy -e ic --identity casals --mode upgrade -y casals_frontend
+icp canister start casals_frontend -e ic --identity casals -f   # if sync left it stopped
+```
+
+Backend-only:
+
+```bash
+make build-backend
+icp deploy -e ic --identity casals --mode upgrade -y casals_backend
+```
+
+### Install modes
+
+| Mode | Effect |
+|------|--------|
+| `upgrade` | **Default.** Preserves stable state (orchestra, sheet, pool, settings). |
+| `reinstall` | **Wipes** backend + registry stable state. Use only when intentional. Frontend asset canister is re-synced from `dist/`. |
+
 Use `--mode reinstall` only if you intend to **wipe all backend state**.
 
+### Post-deploy seeding (optional)
+
+Upload + authorize catalog WASMs and optionally stand up the demo orchestra:
+
+```bash
+python3 scripts/seed.py -e ic --identity casals              # catalog only
+python3 scripts/seed.py -e ic --identity casals --deploy      # catalog + deploy_sheet
+```
+
+Or via Makefile: `make seed-ic` (catalog only).
+
 ### Via GitHub Actions (recommended)
-Trigger the **"Deploy to IC mainnet"** workflow from the Actions tab:
 
-- **commit_sha** — the commit to deploy (blank = latest `main`)
-- **mode** — `upgrade` (safe, preserves state) or `reinstall` (wipes state)
-- **seed** — upload + authorize the template catalog after deploy (idempotent)
-- **deploy_sheet** — also deploy the live sheet (stand up the orchestra;
-  creates/reuses canisters)
+Trigger **"Deploy to IC mainnet"** (`.github/workflows/deploy-ic.yml`):
 
-The workflow checks out submodules, imports the `CASALS_IDENTITY_PEM` secret,
-builds both Basilisk WASMs (`make build`), and runs `icp deploy -e ic` (which
-deploys `casals_backend`, `ic_file_registry`, and `casals_frontend`). Canister
-IDs are read from `.icp/data/` (committed), so every run targets the same
-demo-deployment canisters.
+| Input | Purpose |
+|-------|---------|
+| `commit_sha` | Commit to deploy (blank = latest `main`) |
+| `mode` | `upgrade` (default) or `reinstall` |
+| `seed` | Upload + authorize template catalog after deploy |
+| `deploy_sheet` | Also run `deploy_sheet` (implies seed) |
+
+The workflow: checkout + submodules → `make build` → start canisters →
+`icp deploy -e ic --identity casals` → add conductor controller → optional seed.
+
+```bash
+gh workflow run deploy-ic.yml -f mode=upgrade -f seed=true -f deploy_sheet=true
+```
 
 ## Open access
 
@@ -220,14 +323,6 @@ python3 scripts/casals.py [-e ENV] [--identity ID] <command>
 make cli ARGS="<command>"
 ```
 
-### Source layout
-
-| File | Role |
-|---|---|
-| `casals_cli.py` | Canonical module — imported by the installed `casals` entry point |
-| `scripts/casals.py` | Thin wrapper for direct script invocation from a checkout |
-| `pyproject.toml` | Package metadata; entry point `casals = casals_cli:main` |
-
 ### Commands
 
 | Command | Backend method |
@@ -241,61 +336,92 @@ make cli ARGS="<command>"
 | `sheet get` | `get_sheet` |
 | `sheet set FILE` | `set_sheet` |
 | `sheet deploy [FILE]` | `set_sheet` (if FILE given) then `deploy_sheet` |
+| `arrangement list/get/set/activate/apply/delete` | arrangement endpoints |
 
 Common flags on every command: `-e local|ic` (default `local`), `--identity <id>`.
 
-### Examples
-
-```bash
-casals status
-casals -e ic --identity casals tree
-casals sheet deploy seed/sheets/demo.json
-casals sheet deploy        # deploy the current live sheet
-casals cycles -e ic
-```
-
-### Tests
-
-CLI unit tests (no replica needed) live in `tests/test_cli_unit.py` and run on
-every PR via the `cli-unit` job in `.github/workflows/ci.yml`. Integration
-tests that run the CLI against a live replica are in
-`tests/test_cli_integration.py` (picked up by `integration.yml`).
+There is no CLI wrapper yet for `assign_pool_canister` — use the UI or a direct
+canister call.
 
 ## Backend API (JSON-in / JSON-out)
 
-All methods accept and return a `text` containing JSON. Key endpoints:
+All methods accept and return a `text` containing JSON. Grouped by area:
 
-| Method | Kind | Purpose |
-|--------|------|---------|
-| `get_status` | query | version + object counts |
-| `get_tree` | query | full Section → Stand → Canister tree |
-| `casals_metadata` | query | settings snapshot |
-| `get_events` | query | append-only audit log |
-| `create_section` | update | add a Section |
-| `create_stand` | update | add a Stand to a Section |
-| `register_canister` | update | register an existing canister as a Canister |
-| `add_authorized_wasm` | update | authorize a WASM from the file-registry |
-| `create_canister` | update | create/reuse canister + install WASM + verify hash |
-| `upgrade_to` | update | snapshot → upgrade → verify (all-or-nothing) |
-| `create_snapshot` | update | snapshot a Canister |
-| `revert_snapshot` | update | roll a Canister back to its snapshot |
-| `stop_canister` | update | stop a Canister |
-| `start_canister` | update | start a Canister |
-| `get_sheet` | query | the live (persisted) sheet |
-| `set_sheet` | update | replace + persist the live sheet (nothing on-chain yet) |
-| `reset_sheet` | update | reset the live sheet to the bundled default (persisted) |
-| `estimate_deploy` | query | idempotent-aware cycles top-up estimate for a deploy |
-| `list_subnets` | update | default subnet ids the CMC can place canisters on |
-| `refresh_fx` | update | refresh + cache the cycles→`display_currency` rate (throttled) |
-| `deploy_sheet` | update | idempotently reconcile the orchestra to the live sheet |
-| `provision_assets` | update | (re)upload a frontend bundle from the registry into its asset canister (batched via `offset`/`limit`) |
-| `list_pool` | query | every canister Casals ever created + its pool status |
-| `get_cycles` | update | live treasury + per-canister solvency (reads canister_status) |
-| `reconcile` / `top_up` / `convert_treasury_icp` / `set_cycle_policy` | update | native cycles management |
-| `get_cycle_history` | query | per-canister balance samples over time (Cycles charts) |
-| `list_arrangements` / `get_arrangement` | query | stored arrangements (post-deploy step sets) |
-| `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | update | manage arrangements |
-| `apply_arrangement` | update | run an arrangement's steps against their targets (batched via `offset`/`limit`) |
+### Queries
+
+| Method | Purpose |
+|--------|---------|
+| `get_status` | version + object counts |
+| `get_tree` | full Section → Stand → Canister tree |
+| `list_sections` | section summaries |
+| `casals_metadata` / `get_settings` | settings snapshot (incl. `subnet_whitelist`, fx) |
+| `get_events` | append-only audit log |
+| `get_canister_deployment` | deployment metadata for a canister id |
+| `list_authorized_wasms` | authorized WASM catalog |
+| `list_permissions` | assignable commander permission keys |
+| `get_sheet` | the live (persisted) sheet |
+| `list_pool` | every canister Casals ever created + pool status |
+| `list_arrangements` / `get_arrangement` | stored arrangements |
+| `estimate_deploy` | idempotent-aware cycles cost estimate for a deploy |
+| `get_cycles_cached` | last `get_cycles` snapshot (instant; may be stale) |
+| `get_cycle_history` | per-canister balance samples (Cycles charts) |
+| `get_treasury_flow` | aggregated treasury deposit/convert/consume buckets |
+| `cycleops_monitored` | CycleOps integration status |
+| `icrc10_supported_standards` | ICRC-120 / ICRC-121 |
+
+### Orchestra structure & governance
+
+| Method | Purpose |
+|--------|---------|
+| `create_section` / `create_stand` | add Section / Stand |
+| `rename_section` / `rename_stand` / `rename_canister` | rename entities |
+| `delete_section` / `delete_stand` / `delete_canister` | delete (canisters → pool) |
+| `destroy_canister` | stop + delete IC canister (irreversible) |
+| `register_canister` | register an existing IC canister as a Canister |
+| `set_commander` / `set_permissions` | commander principal + permission keys |
+| `set_settings` | instance settings |
+
+### Lifecycle & sheet
+
+| Method | Purpose |
+|--------|---------|
+| `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
+| `create_canister` | allocate (reuse pool) + install WASM + verify |
+| `assign_pool_canister` | link a **pooled** IC canister to a stand (`wasm_key` optional) |
+| `upgrade_to` | snapshot → upgrade → verify |
+| `create_snapshot` / `revert_snapshot` | snapshot management |
+| `stop_canister` / `start_canister` | IC lifecycle |
+| `set_canister_controllers` / `set_log_visibility` | IC settings |
+| `canister_browse` / `canister_exec` | inspect / call target canisters |
+| `provision_assets` | (re)upload frontend bundle from registry (batched) |
+| `set_sheet` / `reset_sheet` | edit persisted desired orchestra |
+| `deploy_sheet` | idempotently reconcile orchestra to live sheet |
+| `apply_arrangement` | run arrangement steps (batched) |
+| `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | manage arrangements |
+
+### Subnets & pool admin
+
+| Method | Purpose |
+|--------|---------|
+| `list_subnets` | CMC-creatable subnets (+ `creatable_subnets`; filtered by whitelist) |
+| `set_subnet_whitelist` | restrict which subnets new canisters may use (`subnet.whitelist` permission) |
+| `pool_remove` | controller-only: evict a canister from the pool |
+
+Sections, stands, and canisters may carry `subnet` / `subnet_type` desired
+placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
+
+### Cycles & treasury
+
+| Method | Purpose |
+|--------|---------|
+| `get_cycles` | live treasury + per-canister balances (~1 min; reads `canister_status`) |
+| `refresh_canisters` | partial live refresh for named canisters only |
+| `reconcile` | autopilot top-up pass + full balance read |
+| `top_up` / `return_cycles` | manual cycle transfer to/from orchestra canisters |
+| `convert_treasury_icp` | burn ledger ICP → cycles via CMC |
+| `set_cycle_policy` | per-entity min/topup overrides |
+| `refresh_fx` | refresh cached cycles→fiat rate (throttled) |
+| `sync_controllers` | sync Casals as controller on managed canisters |
 
 ## Sheets & the canister pool
 
@@ -317,12 +443,45 @@ edits + persists it; nothing changes on-chain until `deploy_sheet`, which
   create a new one;
 - reinstall a canister whose authorized WASM no longer matches the sheet;
 - **retire** any canister not in the sheet: its canister is stopped and returned to
-  the pool (never deleted), ready to be reused.
+  the pool (never deleted), ready to be reused;
+- **self-heal orphans**: pool entries marked `in_use` with no live Canister record
+  are freed before provisioning.
 
 The pool (`PooledCanister` entity, stable memory) is the list of every canister
 Casals has ever created. Because creation is expensive, canisters are recycled,
-not discarded. The frontend **Sheet** page renders the live sheet in an editable
-JSON box with **Save** / **Reset** / **Deploy** and shows the pool.
+not discarded.
+
+### Manual pool assign (`assign_pool_canister`)
+
+When pool canisters exist but are not linked to the orchestra tree (e.g. after
+state loss or partial deploy), use **`assign_pool_canister`** or the UI **Assign**
+button on **Cycles** / **Sheet**:
+
+- Args: `{canister_id, stand, name, kind?, wasm_key?}`
+- **`wasm_key` omitted** → register only; keep existing on-chain code (`REGISTERED`)
+- **`wasm_key` set** → reinstall WASM, then record (`INSTALLED`)
+- Requires `canister.create` on the target stand's commander chain
+- If no stands exist, the UI creates a stand inline (section + stand name) via
+  `create_stand` before assigning
+
+## Commanders & permissions
+
+Each section (and optionally stand) has a `commander_principal`. Permissions are
+granular keys (e.g. `canister.create`, `canister.deploy`, `stand.create`,
+`subnet.whitelist`) configured on the **Commanders** page or via
+`set_permissions`. Empty / `*` = full access. The deploy/conductor principal is
+also a canister controller and bypasses commander checks for admin operations.
+
+## Subnet whitelist
+
+Settings stores `subnet_whitelist_json` (empty = unrestricted). When set, only
+listed subnet principals may be used for new canister creation. Managed on
+**Settings** via the subnet matrix UI (`set_subnet_whitelist`; requires
+`subnet.whitelist` or legacy `commander.assign`). `list_subnets` returns
+creatable subnets filtered by the active whitelist.
+
+Section / stand / sheet JSON may also specify `subnet` (explicit principal) or
+`subnet_type` (e.g. `fiduciary`) as desired placement for new canisters.
 
 ## Arrangements (declarative post-deploy config)
 
@@ -376,8 +535,9 @@ timer** (`cycles_sampling` / `cycles_sample_interval_secs`, default on / hourly)
 (retention window + hard cap). Each top-up also bumps `Canister.cycles_deposited`
 so true consumption can be derived: `burn = Δdeposited − Δbalance`. `get_cycle_history`
 returns the raw samples (paginated on the frontend); the **Cycles** page aggregates
-them into a cycles-over-time line chart (total / section / stand / canister) and a
-section⊃stand⊃canister treemap sized by burn-over-window or current balance.
+them into a cycles-over-time line chart (total / section / stand / canister), a
+**Treasury flow** chart (`get_treasury_flow`), and a section⊃stand⊃canister
+treemap sized by burn-over-window or current balance.
 
 ### Cycles page: cached balances vs chart samples
 
@@ -385,17 +545,18 @@ Two different mechanisms — easy to confuse:
 
 | What | Stored as | Updated when | Cycles UI |
 |------|-----------|--------------|-----------|
-| **Treasury + table balances** | `CyclesSnapshot` (`get_cycles_cached`) | Something runs live **`get_cycles`** (~1 min IC reads) | Shown on load; label *“snapshot from … ago”* |
+| **Treasury + table balances** | `CyclesSnapshot` (`get_cycles_cached`) | Live **`get_cycles`** or **`refresh_canisters`** (~1 min IC reads) | Loaded instantly; background refresh on visit |
 | **Chart history** | `CycleSample` rows (`get_cycle_history`) | **Sampler timer** (default hourly), plus throttled samples from **`get_cycles`** | **Cycles over time** chart / treemap |
 
 **Frontend behaviour (Cycles page):**
 
-- **On visit** — instant `get_cycles_cached` only (no automatic live refresh).
+- **On visit** — instant `get_cycles_cached`, then **background `get_cycles`**
+  (shows “Fetching live balances…” while running).
 - **Refresh** — user-triggered live `get_cycles`; updates treasury, table, ICP,
   saves a new `CyclesSnapshot`, and may add chart samples if the throttle allows.
   Read-only — does not top up canisters.
-- **Reconcile** — tops up low canisters per policy *and* runs a full balance read;
-  may be hidden in the UI but still exists on the backend. Independent of the sampler.
+- **Reconcile now** — visible button; tops up low canisters per policy *and* runs
+  a full balance read. Independent of the sampler.
 
 The hourly sampler records **chart samples** and watches for treasury ICP/cycles
 deposits; it does **not** refresh `get_cycles_cached`. Disabling **autopilot**

@@ -535,6 +535,75 @@ def _provision_canister(dk, name: str, kind: str, w):
     return st
 
 
+def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
+    """Generator: link a pooled IC canister to a stand as a new Canister record.
+
+    When ``w`` is provided the WASM is reinstalled on the chosen canister first.
+    When omitted the existing on-chain module is kept and the record is
+    registered as ``REGISTERED`` (useful for orphan pool entries that already
+    have code).
+    """
+    list(PooledCanister.instances())
+    list(Canister.instances())
+    p = PooledCanister[cid]
+    if p is None:
+        raise Exception(f"canister_id '{cid}' not in pool")
+    for st in Canister.instances():
+        if st.canister_id == cid:
+            raise Exception(
+                f"canister_id '{cid}' already assigned to canister '{st.name}'")
+
+    wasm_key = ""
+    wasm_hash = ""
+    status = CanisterStatus.REGISTERED
+    if w is not None:
+        wasm_key = w.key
+        _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
+                                               "wasm_key": w.key, "reused": True})
+        try:
+            yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
+                                         w.wasm_hash, {"reinstall": None}, _install_arg_for(w))
+            try:
+                yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
+            except Exception:
+                pass
+            ok, actual = yield from _verify_module_hash(cid, w.wasm_hash)
+        except Exception:
+            raise
+        if not ok:
+            _append_event("assign_failed", cid, {"expected": w.wasm_hash, "actual": actual})
+            raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
+        wasm_hash = actual
+        status = CanisterStatus.INSTALLED
+        s = _settings()
+        if s.cycleops_enabled and s.cycleops_principal:
+            yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
+        try:
+            yield from _set_log_visibility(cid, True)
+        except Exception as lv:
+            _log.error(f"could not set log_visibility for {cid}: {lv}")
+        yield from _maybe_provision_assets(cid, w, dk)
+    else:
+        try:
+            yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
+        except Exception:
+            pass
+
+    st = Canister(name=name)
+    st.stand = dk
+    st.canister_id = cid
+    st.kind = kind
+    st.wasm_key = wasm_key
+    st.wasm_hash = wasm_hash
+    st.status = status
+    st.created_by = _caller()
+    st.subnet = p.subnet or ""
+    _pool_mark_in_use(cid, name)
+    _append_event("pool_assigned", cid,
+                  {"stand": dk.name, "name": name, "wasm_key": wasm_key or None})
+    return st
+
+
 def _maybe_provision_assets(canister_id: str, w, stand=None):
     """Generator: provision a WASM's asset(s) if it has any, swallowing errors
     so a failed upload never aborts canister creation (it is logged + audited

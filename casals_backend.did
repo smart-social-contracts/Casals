@@ -110,6 +110,7 @@ service : {
   "get_sheet" : () -> (text) query;
   "list_pool" : () -> (text) query;
   "pool_remove" : (text) -> (text);
+  "assign_pool_canister" : (text) -> (text);
   "set_sheet" : (text) -> (text);
   "reset_sheet" : () -> (text);
   "list_arrangements" : () -> (text) query;

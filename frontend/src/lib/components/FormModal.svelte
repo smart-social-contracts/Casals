@@ -26,6 +26,7 @@
     submitLabel?: string;
     danger?: boolean;
     busy?: boolean;
+    submitDisabled?: boolean;
     logLines?: string[];
     onsubmit?: (values: Values) => void;
     oncancel?: () => void;
@@ -38,6 +39,7 @@
     submitLabel = 'Submit',
     danger = false,
     busy = false,
+    submitDisabled = false,
     logLines = [],
     onsubmit,
     oncancel,
@@ -180,7 +182,7 @@
         <button
           type="submit"
           class="{(danger || values['reinstall'] ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500' : '') + ' btn-primary btn-sm'}"
-          disabled={busy}
+          disabled={busy || submitDisabled}
         >
           {#if busy}
             <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">

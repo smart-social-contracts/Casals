@@ -1,16 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSheet, setSheet, resetSheet, deploySheet, listPool, estimateDeploy, formatCycles } from '$lib/api';
-  import type { Sheet, DeployResult, PoolReport, DeployEstimate } from '$lib/api';
+  import { getSheet, setSheet, resetSheet, deploySheet, listPool, estimateDeploy, formatCycles, getTree, orchestraCanisterIds, isPoolUnassigned } from '$lib/api';
+  import type { Sheet, DeployResult, PoolReport, DeployEstimate, Tree } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
+  import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
 
   let text = $state('');
   let loading = $state(true);
   let error = $state('');
   let busy = $state(false);
   let pool = $state<PoolReport | null>(null);
+  let tree = $state<Tree | null>(null);
+  let assignPoolTarget = $state<string | null>(null);
   let lastDeploy = $state<DeployResult | null>(null);
   let estimate = $state<DeployEstimate | null>(null);
   let estimateErr = $state('');
@@ -78,13 +81,22 @@
     return { sections: (s.sections ?? []).length, stands, canisters };
   });
 
+  const orchestraCanisterIdSet = $derived.by(() =>
+    tree ? orchestraCanisterIds(tree) : new Set<string>(),
+  );
+
   async function load() {
     loading = true;
     error = '';
     try {
-      const [sheet, poolReport] = await Promise.all([getSheet(), listPool()]);
+      const [sheet, poolReport, treeData] = await Promise.all([
+        getSheet(),
+        listPool(),
+        getTree().catch(() => null),
+      ]);
       text = JSON.stringify(sheet, null, 2);
       pool = poolReport;
+      tree = treeData;
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -302,6 +314,7 @@
           {#if pool.canisters.length > 0}
             <ul class="mt-3 space-y-1 max-h-48 overflow-y-auto">
               {#each pool.canisters as c (c.canister_id)}
+                {@const unassigned = isPoolUnassigned(c.canister_id, orchestraCanisterIdSet)}
                 <li class="flex items-center justify-between gap-2 text-xs">
                   <span class="font-mono text-primary-600 truncate">{c.canister_id}</span>
                   <span class="flex items-center gap-1.5 shrink-0">
@@ -314,6 +327,15 @@
                     <span class="badge {c.status === 'free' ? 'badge-frontend' : 'badge-backend'}">
                       {c.status === 'free' ? 'free' : c.canister_name || 'in use'}
                     </span>
+                    {#if $isAuthenticated && unassigned}
+                      <button
+                        type="button"
+                        class="btn-secondary btn-sm px-2 py-0.5 text-[11px]"
+                        onclick={() => { assignPoolTarget = c.canister_id; }}
+                      >
+                        Assign
+                      </button>
+                    {/if}
                   </span>
                 </li>
               {/each}
@@ -350,3 +372,16 @@
     </div>
   </div>
 </div>
+
+{#if assignPoolTarget}
+  <AssignPoolCanisterModal
+    canisterId={assignPoolTarget}
+    onsuccess={async () => {
+      assignPoolTarget = null;
+      const [poolReport, treeData] = await Promise.all([listPool(), getTree().catch(() => null)]);
+      pool = poolReport;
+      tree = treeData;
+    }}
+    oncancel={() => { assignPoolTarget = null; }}
+  />
+{/if}

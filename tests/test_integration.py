@@ -75,6 +75,28 @@ class TestStructure:
         assert canisters["fe-1"]["url"] == "https://bbbbb-bb.icp0.io"
         assert "id=aaaaa-aa" in canisters["be-1"]["url"]
 
+    def test_assign_pool_canister_not_in_pool(self, canister):
+        _ok("create_section", {"name": "sec-pool"})
+        _ok("create_stand", {"section": "sec-pool", "name": "stand-pool"})
+        res = call_canister("assign_pool_canister", json.dumps({
+            "canister_id": "aaaaa-aa",
+            "stand": "stand-pool",
+            "name": "orphan-be",
+            "kind": "backend",
+        }))
+        assert res.get("ok") is False
+        assert "not in pool" in res.get("error", "")
+
+    def test_assign_pool_canister_unknown_stand(self, canister):
+        res = call_canister("assign_pool_canister", json.dumps({
+            "canister_id": "aaaaa-aa",
+            "stand": "missing-stand",
+            "name": "orphan-be",
+            "kind": "backend",
+        }))
+        assert res.get("ok") is False
+        assert "unknown stand" in res.get("error", "")
+
 
 class TestAuthorizedWasms:
     def test_add_list_remove(self, canister):
