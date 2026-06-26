@@ -15,6 +15,7 @@
     formatCycles,
     formatIcp,
     formatFiat,
+    formatRelativeTime,
     parseCycles,
     cycleStatusBadge,
     shortPrincipal,
@@ -43,6 +44,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
+  import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
   import { colorAt, type Series, type TreemapInput } from '$lib/charts';
 
@@ -175,11 +177,31 @@
   let flowUnit = $state<FlowUnit>('tc');
 
   function fmtAge(secs: number): string {
-    const age = Math.floor(Date.now() / 1000) - secs;
-    if (age < 60) return `${age}s ago`;
-    if (age < 3600) return `${Math.floor(age / 60)}m ago`;
-    return `${Math.floor(age / 3600)}h ago`;
+    return formatRelativeTime(secs);
   }
+
+  function treasuryCalculatedAt(t = report?.treasury): number | null {
+    if (!t) return null;
+    return t.refreshed_at ?? cachedAt;
+  }
+
+  function canisterCalculatedAt(c: CanisterCycles | PoolCanisterCycles): number | null {
+    if (c.cycles === undefined) return null;
+    return c.refreshed_at ?? cachedAt;
+  }
+
+  const historyCalculatedAt = $derived(history?.now ?? null);
+  const flowCalculatedAt = $derived(treasuryFlow?.now ?? null);
+  const treemapCalculatedAt = $derived.by(() => {
+    if (metric === 'burn') return history?.now ?? null;
+    let latest = cachedAt;
+    for (const c of report?.canisters ?? []) {
+      if (c.refreshed_at && (latest == null || c.refreshed_at > latest)) {
+        latest = c.refreshed_at;
+      }
+    }
+    return latest;
+  });
 
   async function copyText(label: string, text: string) {
     try {
@@ -1196,14 +1218,18 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3.5">
           <p class="text-[11px] font-medium uppercase tracking-wide text-indigo-600">Cycles</p>
-          <p class="text-2xl font-semibold font-mono text-indigo-950 mt-1">{formatCycles(report.treasury.balance)}</p>
+          <p class="text-2xl font-semibold font-mono text-indigo-950 mt-1 inline-flex items-center gap-1">
+            {formatCycles(report.treasury.balance)}
+            <CalculatedAtHint at={treasuryCalculatedAt()} label="Treasury cycles calculated" />
+          </p>
           <Fiat value={report.treasury.balance} block class="text-indigo-700/80" />
         </div>
         <div class="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3.5">
           <p class="text-[11px] font-medium uppercase tracking-wide text-amber-700">ICP on ledger</p>
-          <p class="text-2xl font-semibold font-mono text-amber-950 mt-1">
+          <p class="text-2xl font-semibold font-mono text-amber-950 mt-1 inline-flex items-center gap-1">
             {#if report.treasury.icp_e8s !== undefined}
               {formatIcp(report.treasury.icp_e8s)}
+              <CalculatedAtHint at={treasuryCalculatedAt()} label="Ledger ICP calculated" />
             {:else if refreshing}
               <span class="text-base text-amber-700/70">Refreshing…</span>
             {:else}
@@ -1226,7 +1252,10 @@
     <div class="card p-5">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
         <div>
-          <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
+          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
+            Cycles over time
+            <CalculatedAtHint at={historyCalculatedAt} label="Chart data fetched" />
+          </h2>
           <p class="text-xs text-primary-400">
             Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
             {#if historyLoading}
@@ -1313,7 +1342,10 @@
     <div class="card p-5">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
         <div>
-          <h2 class="text-sm font-semibold text-primary-900">Treasury flow</h2>
+          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
+            Treasury flow
+            <CalculatedAtHint at={flowCalculatedAt} label="Treasury flow calculated" />
+          </h2>
           <p class="text-xs text-primary-400">
             Deposited, converted, and consumed {FLOW_PERIOD_LABELS[flowPeriod]} ({flowUnitLabel}).
           </p>
@@ -1378,7 +1410,10 @@
     <div class="card p-5">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
         <div>
-          <h2 class="text-sm font-semibold text-primary-900">Cycles by section / stand / canister</h2>
+          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
+            Cycles by section / stand / canister
+            <CalculatedAtHint at={treemapCalculatedAt} label="Treemap calculated" />
+          </h2>
           <p class="text-xs text-primary-400">
             {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[treemapWindow]}` : 'Current balance'}, tiled by section ⊃ stand ⊃ canister.
           </p>
@@ -1580,7 +1615,10 @@
                 </td>
                 <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.stand}</td>
                 <td class="px-4 py-2.5 text-right font-mono text-primary-900">
-                  {formatCycles(s.cycles)}
+                  <span class="inline-flex items-center justify-end gap-1">
+                    {formatCycles(s.cycles)}
+                    <CalculatedAtHint at={canisterCalculatedAt(s)} label="Balance calculated" />
+                  </span>
                   <Fiat value={s.cycles} block class="text-right" />
                   {#if s.error}<div class="text-[11px] text-red-500" title={s.error}>error</div>{/if}
                 </td>
@@ -1654,7 +1692,10 @@
                   </td>
                   <td class="px-4 py-2.5 text-primary-600">{c.canister_name || '—'}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-900">
-                    {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
+                    <span class="inline-flex items-center justify-end gap-1">
+                      {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
+                      <CalculatedAtHint at={canisterCalculatedAt(c)} label="Balance calculated" />
+                    </span>
                     {#if c.cycles !== undefined}<Fiat value={c.cycles} block class="text-right" />{/if}
                     {#if c.error}<div class="text-[11px] text-red-500" title={c.error}>error</div>{/if}
                   </td>

@@ -484,6 +484,7 @@ def patch_cycles_snapshot_treasury(cycles: int, icp_e8s=None) -> None:
             treasury["icp_e8s"] = int(icp_e8s)
         overlay_treasury_settings(treasury, s)
         data["cached_at"] = _now_secs()
+        treasury["refreshed_at"] = int(data["cached_at"])
         patched = json.dumps(data)
         _cycles_cache = patched
         if snap:
@@ -610,6 +611,7 @@ def _build_treasury_obj_gen(force_convert: bool = False):
         _log.error(f"treasury refresh: CMC rate unavailable: {rate_err}")
     treasury_obj.update(treasury_deposit_fields())
     overlay_treasury_settings(treasury_obj, s)
+    treasury_obj["refreshed_at"] = _now_secs()
     return treasury_obj
 
 

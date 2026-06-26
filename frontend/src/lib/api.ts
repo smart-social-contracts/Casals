@@ -156,6 +156,8 @@ export interface CanisterCycles {
   status: CycleStatus;
   runtime_status?: IcRunStatus;
   error?: string;
+  /** Unix seconds when this canister's balance was last read live. */
+  refreshed_at?: number;
 }
 
 export interface CanisterDeployment {
@@ -180,6 +182,8 @@ export interface Treasury {
   icp_e8s?: number;
   /** Current CMC rate: cycles minted per 1 e8s of ICP (for conversion quotes). */
   icp_cycles_per_e8s?: number;
+  /** Unix seconds when treasury cycles / ledger ICP were last read live. */
+  refreshed_at?: number;
 }
 
 export interface PoolCanisterCycles {
@@ -189,6 +193,7 @@ export interface PoolCanisterCycles {
   cycles?: number; // current balance
   deposited?: number; // cumulative cycles Casals deposited (canisters only)
   error?: string;
+  refreshed_at?: number;
 }
 
 export interface CyclesReport {
@@ -1220,6 +1225,25 @@ export function shortHash(hash: string, len = 8): string {
 export function shortPrincipal(p: string): string {
   if (!p) return '';
   return p.length > 12 ? `${p.slice(0, 5)}…${p.slice(-5)}` : p;
+}
+
+/** Relative time from a unix-seconds timestamp (e.g. "3m ago"). */
+export function formatRelativeTime(secs: number, nowSecs = Math.floor(Date.now() / 1000)): string {
+  const age = Math.max(0, nowSecs - secs);
+  if (age < 60) return `${age}s ago`;
+  if (age < 3600) return `${Math.floor(age / 60)}m ago`;
+  if (age < 86400) return `${Math.floor(age / 3600)}h ago`;
+  return `${Math.floor(age / 86400)}d ago`;
+}
+
+/** Tooltip text: exact local datetime plus relative age. */
+export function formatCalculatedAt(secs: number | null | undefined): string | null {
+  if (secs == null || secs <= 0) return null;
+  const exact = new Date(secs * 1000).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  });
+  return `${exact} (${formatRelativeTime(secs)})`;
 }
 
 // Render a raw cycles count in TC (1 TC = 1e12 cycles).

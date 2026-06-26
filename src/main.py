@@ -2235,7 +2235,8 @@ def get_cycles() -> Async[text]:
                 label = cycles_status(bal, frz, min_c)
                 row.update({"cycles": bal, "freezing_threshold": frz,
                             "headroom": bal - frz, "status": label,
-                            "runtime_status": _ic_run_status(status)})
+                            "runtime_status": _ic_run_status(status),
+                            "refreshed_at": batch_ts})
                 counts[label] = counts.get(label, 0) + 1
                 bal_by_cid[st.canister_id] = bal
                 if do_sample:
@@ -2280,6 +2281,7 @@ def get_cycles() -> Async[text]:
                     prow["error"] = str(e)
             if bal is not None:
                 prow["cycles"] = bal
+                prow["refreshed_at"] = batch_ts
             pool_out.append(prow)
         pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
 
@@ -2298,6 +2300,7 @@ def get_cycles() -> Async[text]:
             treasury_obj["icp_cycles_per_e8s"] = yield from _fetch_icp_cycles_per_e8s_gen()
         except Exception as rate_err:
             _log.error(f"get_cycles: CMC rate unavailable: {rate_err}")
+        treasury_obj["refreshed_at"] = batch_ts
         treasury_obj.update(treasury_deposit_fields())
 
         result = json.dumps({
@@ -2592,6 +2595,7 @@ def refresh_canisters(args: text) -> Async[text]:
                     "headroom": bal - frz,
                     "status": label,
                     "runtime_status": _ic_run_status(status),
+                    "refreshed_at": batch_ts,
                 })
                 row.pop("error", None)
                 bal_by_cid[st.canister_id] = bal
@@ -2623,6 +2627,7 @@ def refresh_canisters(args: text) -> Async[text]:
             "autopilot": bool(s.cycles_autopilot),
             "interval_secs": int(s.cycles_check_interval_secs or 0),
             "icp_autoconvert": icp_autoconvert_enabled(s),
+            "refreshed_at": batch_ts,
         })
         data["treasury"] = treasury_obj
 
@@ -2633,6 +2638,7 @@ def refresh_canisters(args: text) -> Async[text]:
             bal = bal_by_cid.get(cid)
             if bal is not None:
                 prow["cycles"] = bal
+                prow["refreshed_at"] = batch_ts
                 prow.pop("error", None)
         pool["canisters"] = pool_cans
         data["pool"] = pool
