@@ -439,6 +439,61 @@ def overlay_treasury_settings(treasury: dict, s=None) -> dict:
     return treasury
 
 
+def overlay_treasury_baselines(treasury: dict, s=None) -> dict:
+    """Apply last-synced treasury baselines on cached reads (instant query path)."""
+    s = s or _settings()
+    overlay_treasury_settings(treasury, s)
+    if not int(s.treasury_watch_initialized or 0):
+        return treasury
+    last_cycles = int(s.treasury_last_cycles or 0)
+    last_icp = int(s.treasury_last_icp_e8s or 0)
+    if last_cycles > 0:
+        reserve = int(s.treasury_reserve or 0)
+        treasury["balance"] = last_cycles
+        treasury["spendable"] = max(0, last_cycles - reserve)
+    if "icp_e8s" not in treasury:
+        treasury["icp_e8s"] = last_icp
+    return treasury
+
+
+# Per-call cap keeps refresh_canisters under the IC message instruction limit.
+REFRESH_CANISTERS_BATCH_MAX = 3
+
+
+def patch_cycles_snapshot_treasury(cycles: int, icp_e8s=None) -> None:
+    """Update treasury fields in the persisted cycles snapshot after baseline sync."""
+    global _cycles_cache
+    try:
+        from models import CyclesSnapshot
+        snap = CyclesSnapshot["singleton"]
+        raw = (snap.snapshot_json if snap else None) or _cycles_cache
+        if not raw:
+            return
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return
+        treasury = data.setdefault("treasury", {})
+        if not isinstance(treasury, dict):
+            return
+        s = _settings()
+        reserve = int(s.treasury_reserve or 0)
+        treasury["balance"] = int(cycles)
+        treasury["reserve"] = reserve
+        treasury["spendable"] = max(0, int(cycles) - reserve)
+        if icp_e8s is not None:
+            treasury["icp_e8s"] = int(icp_e8s)
+        overlay_treasury_settings(treasury, s)
+        data["cached_at"] = _now_secs()
+        patched = json.dumps(data)
+        _cycles_cache = patched
+        if snap:
+            snap.snapshot_json = patched
+            snap.updated_at = _now_secs()
+            snap.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"patch cycles snapshot treasury failed: {e}")
+
+
 def refresh_cycles_snapshot_settings() -> None:
     """Patch settings-derived treasury fields in the persisted cycles snapshot."""
     global _cycles_cache
@@ -532,6 +587,32 @@ def _treasury_watch_begin_gen(force_convert: bool = False):
     return (yield from _maybe_convert_icp_to_cycles_gen(force=force_convert))
 
 
+def _build_treasury_obj_gen(force_convert: bool = False):
+    """Generator: read live treasury cycles + ledger ICP (no orchestra scan)."""
+    yield from _treasury_watch_begin_gen(force_convert=force_convert)
+    s = _settings()
+    treasury = int(ic.canister_balance128())
+    reserve = int(s.treasury_reserve or 0)
+    treasury_obj = {
+        "balance": treasury,
+        "reserve": reserve,
+        "spendable": max(0, treasury - reserve),
+        "autopilot": bool(s.cycles_autopilot),
+        "interval_secs": int(s.cycles_check_interval_secs or 0),
+        "icp_autoconvert": icp_autoconvert_enabled(s),
+    }
+    icp_e8s = yield from _treasury_icp_e8s_gen()
+    if icp_e8s is not None:
+        treasury_obj["icp_e8s"] = int(icp_e8s)
+    try:
+        treasury_obj["icp_cycles_per_e8s"] = yield from _fetch_icp_cycles_per_e8s_gen()
+    except Exception as rate_err:
+        _log.error(f"treasury refresh: CMC rate unavailable: {rate_err}")
+    treasury_obj.update(treasury_deposit_fields())
+    overlay_treasury_settings(treasury_obj, s)
+    return treasury_obj
+
+
 def _sync_treasury_baseline_gen():
     """Persist the latest treasury balances after internal activity completes."""
     s = _settings()
@@ -541,6 +622,7 @@ def _sync_treasury_baseline_gen():
     s.treasury_last_cycles = cycles_now
     s.treasury_last_icp_e8s = icp_now
     s.treasury_watch_initialized = 1
+    patch_cycles_snapshot_treasury(cycles_now, icp_now)
 
 
 # Treasury-flow chart: bucket width and default look-back per granularity.

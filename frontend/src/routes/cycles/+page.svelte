@@ -8,6 +8,7 @@
     topUp,
     returnCycles,
     refreshCanisters,
+    refreshTreasury,
     setCyclePolicy,
     reconcile,
     convertTreasuryIcp,
@@ -53,6 +54,12 @@
   let flowRequest = 0;
   let loading = $state(true);
   let refreshing = $state(false); // live refresh running in background
+  let refreshProgress = $state(''); // e.g. "treasury" or "6/18 canisters"
+
+  /** Max canisters per refresh_canisters call (must match backend REFRESH_CANISTERS_BATCH_MAX). */
+  const CANISTER_REFRESH_BATCH = 3;
+  /** Only attempt monolithic get_cycles below this orchestra size. */
+  const FULL_GET_CYCLES_MAX = 10;
   let historyLoading = $state(false); // chart history fetch or scope re-aggregation
   let cachedAt = $state<number | null>(null);
   let snapshotPartial = $state(false);
@@ -258,44 +265,66 @@
   async function refreshLive() {
     if (refreshing) return;
     refreshing = true;
+    refreshProgress = '';
     error = '';
+    void reloadHistory();
+    void reloadTreasuryFlow();
     try {
-      const [live] = await Promise.all([getCycles(), reloadHistory(), reloadTreasuryFlow()]);
-      report = live;
-      cachedAt = live.cached_at ?? null;
-      snapshotPartial = false;
-      liveSynced = true;
+      // Phase 1: treasury only (fast; avoids IC instruction limit on large orchestras).
+      refreshProgress = 'treasury';
+      let merged = await refreshTreasury();
+      report = merged;
+      cachedAt = merged.cached_at ?? null;
+      snapshotPartial = true;
+      liveSynced = false;
       loadFx();
-    } catch (e: any) {
+
       const names = [
         ...new Set([
-          ...(report?.canisters ?? []).map((c) => c.name),
+          ...(merged.canisters ?? []).map((c) => c.name),
           ...(history?.samples ?? []).map((s) => s.canister_name),
         ].filter(Boolean)),
       ];
-      if (names.length) {
+      if (names.length === 0) {
+        snapshotPartial = false;
+        liveSynced = true;
+        return;
+      }
+
+      // Phase 2: small orchestras can still use one-shot get_cycles.
+      if (names.length <= FULL_GET_CYCLES_MAX) {
+        refreshProgress = 'all canisters';
         try {
-          let merged = report!;
-          const batchSize = 4;
-          for (let i = 0; i < names.length; i += batchSize) {
-            merged = await refreshCanisters({ canisters: names.slice(i, i + batchSize) });
-            report = merged;
-          }
-          cachedAt = merged.cached_at ?? null;
-          snapshotPartial = merged.partial_refresh === true;
+          const live = await getCycles();
+          report = live;
+          cachedAt = live.cached_at ?? null;
+          snapshotPartial = false;
           liveSynced = true;
           loadFx();
           return;
-        } catch (batchErr: any) {
-          if (!report) error = batchErr?.message ?? String(batchErr);
-          else toasts.error(batchErr?.message ?? 'Refresh failed');
-          return;
+        } catch {
+          // Fall through to batched refresh.
         }
       }
+
+      // Phase 3: batched canister refresh (≤ CANISTER_REFRESH_BATCH per update).
+      for (let i = 0; i < names.length; i += CANISTER_REFRESH_BATCH) {
+        refreshProgress = `${Math.min(i + CANISTER_REFRESH_BATCH, names.length)}/${names.length} canisters`;
+        merged = await refreshCanisters({
+          canisters: names.slice(i, i + CANISTER_REFRESH_BATCH),
+        });
+        report = merged;
+      }
+      cachedAt = merged.cached_at ?? null;
+      snapshotPartial = true;
+      liveSynced = true;
+      loadFx();
+    } catch (e: any) {
       if (!report) error = e?.message ?? String(e);
       else toasts.error(e?.message ?? 'Refresh failed');
     } finally {
       refreshing = false;
+      refreshProgress = '';
     }
   }
 
@@ -1050,7 +1079,9 @@
       {:else if cachedAt && !refreshing && snapshotPartial}
         <span class="text-xs text-amber-700 italic">partial snapshot · {fmtAge(cachedAt)}</span>
       {:else if refreshing}
-        <span class="text-xs text-primary-400 italic">refreshing live balances…</span>
+        <span class="text-xs text-primary-400 italic">
+          refreshing live balances…{#if refreshProgress} ({refreshProgress}){/if}
+        </span>
       {/if}
       <div class="relative flex items-center gap-1">
         <button class="btn-secondary btn-sm" onclick={refreshLive} disabled={loading || refreshing}>
@@ -1083,9 +1114,9 @@
               The “snapshot from … ago” label shows how old that data is.
             </p>
             <p>
-              <strong>Refresh</strong> fetches live balances from the IC for every canister and the treasury
-              (including ledger ICP). It can take about a minute, updates the table and charts, and saves a new snapshot.
-              It does not top up canisters.
+              <strong>Refresh</strong> first updates the treasury (cycles + ledger ICP), then refreshes
+              orchestra canisters in small batches. Large orchestras skip the old one-shot scan that
+              could exceed IC limits. It does not top up canisters.
             </p>
             <button
               type="button"

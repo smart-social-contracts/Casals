@@ -225,6 +225,11 @@ class TestCyclesManagement:
         res = call_canister("refresh_canisters", json.dumps({"canisters": ["ghost"]}))
         assert res.get("ok") is False
 
+    def test_refresh_treasury_shape(self, canister):
+        rep = call_canister("refresh_treasury")
+        assert "treasury" in rep and "balance" in rep["treasury"]
+        assert rep.get("refreshed_treasury") is True
+
     def test_reconcile_runs(self, canister):
         # With no created canisters, reconcile is a no-op but must succeed.
         res = call_canister("reconcile")

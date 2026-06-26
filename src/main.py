@@ -74,7 +74,10 @@ from cycles import (
     _notify_top_up_gen,
     icp_autoconvert_enabled,
     overlay_treasury_settings,
+    overlay_treasury_baselines,
     refresh_cycles_snapshot_settings,
+    REFRESH_CANISTERS_BATCH_MAX,
+    _build_treasury_obj_gen,
 )
 from helpers import (
     ANONYMOUS,
@@ -2350,7 +2353,7 @@ def get_cycles_cached() -> text:
         if isinstance(treasury, dict):
             for k, v in treasury_deposit_fields().items():
                 treasury.setdefault(k, v)
-            overlay_treasury_settings(treasury, _settings())
+            overlay_treasury_baselines(treasury, _settings())
         data.setdefault("canisters", [])
         data.setdefault("totals", {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0})
         data.setdefault("pool", {"total": 0, "free": 0, "in_use": 0, "canisters": []})
@@ -2417,7 +2420,7 @@ def _build_cycles_stub_report():
     pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
 
     treasury_obj = dict(treasury_deposit_fields())
-    overlay_treasury_settings(treasury_obj, s)
+    overlay_treasury_baselines(treasury_obj, s)
     return {
         "treasury": treasury_obj,
         "totals": {
@@ -2459,7 +2462,7 @@ def _load_cycles_snapshot_data():
         if isinstance(treasury, dict):
             for k, v in treasury_deposit_fields().items():
                 treasury.setdefault(k, v)
-            overlay_treasury_settings(treasury, _settings())
+            overlay_treasury_baselines(treasury, _settings())
         data.setdefault("canisters", [])
         data.setdefault("totals", {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0})
         data.setdefault("pool", {"total": 0, "free": 0, "in_use": 0, "canisters": []})
@@ -2471,6 +2474,43 @@ def _load_cycles_snapshot_data():
             "canisters": [],
             "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
         }
+
+
+def _persist_cycles_snapshot(result: str) -> None:
+    """Write a get_cycles-shaped JSON snapshot to volatile + stable memory."""
+    _cycles_mod._cycles_cache = result
+    try:
+        snap = CyclesSnapshot["singleton"] or CyclesSnapshot(key="singleton")
+        snap.snapshot_json = result
+        snap.updated_at = _now_secs()
+        snap.save()
+    except Exception as snap_err:
+        _log.error(f"could not persist cycles snapshot: {snap_err}")
+
+
+@update
+def refresh_treasury(args: text = "") -> Async[text]:
+    """Lightweight treasury refresh: cycles balance + ledger ICP (+ optional auto-convert).
+
+    Does not scan orchestra canisters — safe for large deployments where ``get_cycles``
+    exceeds the IC instruction limit. Merges into the cached snapshot and persists it.
+    """
+    try:
+        treasury_obj = yield from _build_treasury_obj_gen(force_convert=False)
+        data = _load_cycles_snapshot_data()
+        merged_treasury = dict(data.get("treasury") or {})
+        merged_treasury.update(treasury_obj)
+        data["treasury"] = merged_treasury
+        data["cached_at"] = _now_secs()
+        data["partial_refresh"] = True
+        data["refreshed_treasury"] = True
+        result = json.dumps(data)
+        _persist_cycles_snapshot(result)
+        yield from _sync_treasury_baseline_gen()
+        return result
+    except Exception as e:
+        _log.error(f"refresh_treasury error: {e}")
+        return _err(str(e))
 
 
 @update
@@ -2488,7 +2528,6 @@ def refresh_canisters(args: text) -> Async[text]:
         names = params.get("canisters")
         if not isinstance(names, list) or not names:
             return _err("expected 'canisters': [str, ...]")
-        list(Canister.instances())
         targets = []
         for raw_name in names:
             name = str(raw_name).strip()
@@ -2502,6 +2541,11 @@ def refresh_canisters(args: text) -> Async[text]:
             targets.append(st)
         if not targets:
             return _err("no canisters to refresh")
+        if len(targets) > REFRESH_CANISTERS_BATCH_MAX:
+            return _err(
+                f"refresh at most {REFRESH_CANISTERS_BATCH_MAX} canisters per call; "
+                "batch on the client"
+            )
 
         data = _load_cycles_snapshot_data()
         s = _settings()
@@ -2509,8 +2553,7 @@ def refresh_canisters(args: text) -> Async[text]:
         by_id = {c["canister_id"]: c for c in canisters_out if c.get("canister_id")}
         bal_by_cid = {}
         batch_ts = _now_secs()
-        do_sample = _cycles_mod.should_record_cycle_sample(batch_ts)
-        sampled = False
+        # Partial refresh must stay cheap — skip history sampling here.
 
         for st in targets:
             dk = st.stand
@@ -2551,15 +2594,9 @@ def refresh_canisters(args: text) -> Async[text]:
                 })
                 row.pop("error", None)
                 bal_by_cid[st.canister_id] = bal
-                if do_sample:
-                    _record_cycle_sample(st, batch_ts, bal)
-                    sampled = True
             except Exception as e:
                 row.update({"status": "error", "error": str(e)})
             by_id[st.canister_id] = row
-
-        if sampled:
-            _cycles_mod.finalize_cycle_sample_batch(batch_ts)
 
         # Preserve list order; append any newly added rows at the end.
         seen = set()

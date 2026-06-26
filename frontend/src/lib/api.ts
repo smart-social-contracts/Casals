@@ -848,6 +848,15 @@ export async function refreshCanisters(args: { canisters: string[] }): Promise<C
   );
 }
 
+/** Treasury-only live refresh (cycles + ledger ICP). Does not scan orchestra canisters. */
+export async function refreshTreasury(): Promise<CyclesReport> {
+  return normalizeCyclesReport(
+    _parseQuery<CyclesReport>(
+      await (await _actor()).refresh_treasury(''),
+    ),
+  );
+}
+
 // Per-canister balance samples over time (public; recorded on-chain by a sampler
 // timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
 // time and the burn/balance treemap.
