@@ -2443,15 +2443,16 @@ def _build_cycles_stub_report():
 
 
 def _load_cycles_snapshot_data():
-    raw = ""
-    try:
-        snap = CyclesSnapshot["singleton"]
-        if snap and snap.snapshot_json:
-            raw = snap.snapshot_json
-    except Exception:
-        pass
+    # Prefer the volatile cache: batched refresh_canisters merges into it between
+    # calls. Stable memory may still hold an older snapshot (e.g. treasury-only).
+    raw = _cycles_mod._cycles_cache or ""
     if not raw:
-        raw = _cycles_mod._cycles_cache or ""
+        try:
+            snap = CyclesSnapshot["singleton"]
+            if snap and snap.snapshot_json:
+                raw = snap.snapshot_json
+        except Exception:
+            pass
     if not raw:
         return _build_cycles_stub_report()
     try:
@@ -2637,12 +2638,16 @@ def refresh_canisters(args: text) -> Async[text]:
         data["pool"] = pool
 
         data["cached_at"] = _now_secs()
-        data["partial_refresh"] = True
-        data["refreshed_canisters"] = [st.name for st in targets]
+        prev_refreshed = list(data.get("refreshed_canisters") or [])
+        batch_names = [st.name for st in targets]
+        data["refreshed_canisters"] = list(dict.fromkeys(prev_refreshed + batch_names))
+        live = sum(
+            1 for row in merged
+            if row.get("cycles") is not None and row.get("status") != "error"
+        )
+        data["partial_refresh"] = live < len(merged)
         result = json.dumps(data)
-        # Do not persist partial snapshots — they mix live and stale rows and
-        # overwrite the last full get_cycles snapshot in stable memory.
-        _cycles_mod._cycles_cache = result
+        _persist_cycles_snapshot(result)
         return result
     except Exception as e:
         _log.error(f"refresh_canisters error: {e}")

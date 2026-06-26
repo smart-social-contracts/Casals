@@ -262,6 +262,10 @@
     historyLoading = false;
   }
 
+  function liveBalanceCountFrom(canisters: CanisterCycles[] | undefined): number {
+    return (canisters ?? []).filter((c) => c.cycles !== undefined).length;
+  }
+
   async function refreshLive() {
     if (refreshing) return;
     refreshing = true;
@@ -316,7 +320,7 @@
         report = merged;
       }
       cachedAt = merged.cached_at ?? null;
-      snapshotPartial = true;
+      snapshotPartial = liveBalanceCountFrom(merged.canisters) < names.length;
       liveSynced = true;
       loadFx();
     } catch (e: any) {
@@ -696,6 +700,10 @@
   const topUpSpendable = $derived(report?.treasury?.spendable ?? 0);
   const topUpTotalCost = $derived(topUpValid ? topUpParsed * topUpTargets.length : 0);
   const topUpOverTreasury = $derived(topUpValid && topUpTotalCost > topUpSpendable);
+  const liveBalanceCount = $derived(
+    (report?.canisters ?? []).filter((c) => c.cycles !== undefined).length,
+  );
+  const totalCanisterCount = $derived(report?.canisters?.length ?? 0);
   const balancesStale = $derived(
     snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing),
   );
@@ -1059,9 +1067,9 @@
 <div class="space-y-6 animate-fade-in">
   {#if report && balancesStale && !refreshing}
     <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      {#if snapshotPartial}
-        Only {report.refreshed_canisters?.length ?? 'some'} canister{report.refreshed_canisters?.length === 1 ? '' : 's'} have live balances;
-        other rows may be outdated.
+      {#if snapshotPartial && liveBalanceCount < totalCanisterCount}
+        Only {liveBalanceCount} of {totalCanisterCount} canister{totalCanisterCount === 1 ? '' : 's'} have live balances;
+        click Refresh to update the rest.
       {:else if cachedAt}
         Balances are from a snapshot taken {fmtAge(cachedAt)} — live refresh is running or use Refresh.
       {/if}
