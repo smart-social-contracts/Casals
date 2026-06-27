@@ -508,8 +508,20 @@ def _provision_canister(dk, name: str, kind: str, w):
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
     s = _settings()
+    controllers = [ic.id().to_str()]
     if s.cycleops_enabled and s.cycleops_principal:
-        yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
+        controllers.append(s.cycleops_principal)
+    # Co-controller: the stand's commander (stand-level overrides section-level,
+    # mirroring _commander_for). This lets a commander — e.g. a capital realm —
+    # manage canisters minted into its own stand, which quarter scaling relies on
+    # (the capital provisions and then configures its own quarters).
+    commander = (getattr(dk, "commander_principal", "") or "").strip()
+    if not commander and getattr(dk, "section", None) is not None:
+        commander = (dk.section.commander_principal or "").strip()
+    if commander and commander not in controllers:
+        controllers.append(commander)
+    if len(controllers) > 1:
+        yield from _add_controllers(cid, controllers)
 
     try:
         yield from _set_log_visibility(cid, True)
