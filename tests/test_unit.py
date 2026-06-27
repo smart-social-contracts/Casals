@@ -783,3 +783,25 @@ def test_parse_principal_subnet_auth_map():
     m = helpers._parse_principal_subnet_auth_map(decoded)
     assert m["aaaaa-aa"] == ["subnet-a", "subnet-b"]
     assert m["bbbbb-bb"] == ["subnet-c"]
+
+
+# ── lifecycle controller inheritance ─────────────────────────────────────────
+
+import lifecycle  # noqa: E402
+
+
+def test_merge_controllers_dedupes_and_preserves_order():
+    assert lifecycle._merge_controllers(
+        ["casals", "cycleops"],
+        ["commander", "cycleops", "deployer"],
+    ) == ["casals", "cycleops", "commander", "deployer"]
+    assert lifecycle._merge_controllers(["a"], ["", "  ", "a", "b"]) == ["a", "b"]
+
+
+def test_commander_for_stand_prefers_stand_over_section():
+    section = types.SimpleNamespace(commander_principal="section-cmd")
+    stand = types.SimpleNamespace(commander_principal="stand-cmd", section=section)
+    assert lifecycle._commander_for_stand(stand) == "stand-cmd"
+
+    stand_no = types.SimpleNamespace(commander_principal="", section=section)
+    assert lifecycle._commander_for_stand(stand_no) == "section-cmd"

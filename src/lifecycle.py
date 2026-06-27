@@ -371,6 +371,76 @@ def _add_controllers(canister_id: str, controllers: list):
     })
 
 
+def _commander_for_stand(dk) -> str:
+    """Resolve the stand commander (stand-level overrides section-level)."""
+    commander = (getattr(dk, "commander_principal", "") or "").strip()
+    if not commander and getattr(dk, "section", None) is not None:
+        commander = (getattr(dk.section, "commander_principal", "") or "").strip()
+    return commander
+
+
+def _merge_controllers(*groups: list) -> list:
+    """Union controller principal lists, preserving order and dropping blanks."""
+    seen = set()
+    out = []
+    for group in groups:
+        for p in group or []:
+            p = (p or "").strip()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
+def _fetch_canister_controllers(canister_id: str):
+    """Generator: IC controller principals for ``canister_id``, or [] on failure."""
+    try:
+        status_res = yield management_canister.canister_status(
+            {"canister_id": Principal.from_str(canister_id)}
+        )
+        status = unwrap_call_result(status_res)
+        raw_settings = (
+            status.get("settings") if isinstance(status, dict)
+            else getattr(status, "settings", None)
+        )
+        raw_ctls = []
+        if raw_settings is not None:
+            raw_ctls = (
+                raw_settings.get("controllers") if isinstance(raw_settings, dict)
+                else getattr(raw_settings, "controllers", [])
+            )
+        return [
+            c.to_str() if hasattr(c, "to_str") else str(c)
+            for c in (raw_ctls or [])
+        ]
+    except Exception as e:
+        _log.warning(f"could not fetch controllers for {canister_id}: {e}")
+        return []
+
+
+def _resolve_provision_controllers(dk):
+    """Generator: controller set for a canister Casals is provisioning.
+
+    Always includes Casals and CycleOps (when enabled), the stand commander,
+    and — by default — every IC controller of the commander principal/canister.
+    That mirrors ops access from a parent realm (e.g. capital deploy key on
+    auto-scaled quarters) without a separate post-provision step.
+    """
+    s = _settings()
+    self_id = ic.id().to_str()
+    base = [self_id]
+    if s.cycleops_enabled and s.cycleops_principal:
+        base.append(s.cycleops_principal.strip())
+
+    inherited = []
+    commander = _commander_for_stand(dk)
+    if commander:
+        inherited.append(commander)
+        inherited.extend((yield from _fetch_canister_controllers(commander)))
+
+    return _merge_controllers(base, inherited)
+
+
 def _set_log_visibility(canister_id: str, public: bool):
     """Generator: set a canister's log_visibility via a hand-encoded management
     call. The stock Basilisk binding's settings record omits log_visibility, so
@@ -507,19 +577,7 @@ def _provision_canister(dk, name: str, kind: str, w):
         _append_event("create_failed", cid, {"expected": w.wasm_hash, "actual": actual})
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
-    s = _settings()
-    controllers = [ic.id().to_str()]
-    if s.cycleops_enabled and s.cycleops_principal:
-        controllers.append(s.cycleops_principal)
-    # Co-controller: the stand's commander (stand-level overrides section-level,
-    # mirroring _commander_for). This lets a commander — e.g. a capital realm —
-    # manage canisters minted into its own stand, which quarter scaling relies on
-    # (the capital provisions and then configures its own quarters).
-    commander = (getattr(dk, "commander_principal", "") or "").strip()
-    if not commander and getattr(dk, "section", None) is not None:
-        commander = (dk.section.commander_principal or "").strip()
-    if commander and commander not in controllers:
-        controllers.append(commander)
+    controllers = yield from _resolve_provision_controllers(dk)
     if len(controllers) > 1:
         yield from _add_controllers(cid, controllers)
 
@@ -587,9 +645,9 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
             raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
         wasm_hash = actual
         status = CanisterStatus.INSTALLED
-        s = _settings()
-        if s.cycleops_enabled and s.cycleops_principal:
-            yield from _add_controllers(cid, [ic.id().to_str(), s.cycleops_principal])
+        controllers = yield from _resolve_provision_controllers(dk)
+        if len(controllers) > 1:
+            yield from _add_controllers(cid, controllers)
         try:
             yield from _set_log_visibility(cid, True)
         except Exception as lv:
