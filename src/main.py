@@ -861,6 +861,8 @@ def set_settings(args: text) -> text:
             autopilot_touched
             or "cycles_icp_autoconvert" in params
             or "treasury_reserve" in params
+            or "default_min_cycles" in params
+            or "default_topup_cycles" in params
         ):
             refresh_cycles_snapshot_settings()
         return _ok()

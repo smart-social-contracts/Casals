@@ -120,6 +120,79 @@ def test_overlay_treasury_settings_refreshes_cached_flags():
     assert treasury["spendable"] == 150_000_000_000
 
 
+def test_patch_snapshot_canister_policies_updates_default_inheritors():
+    import cycles as cycles_mod
+
+    old_default = 500_000_000_000
+    new_default = 2_000_000_000_000
+    manual = 750_000_000_000
+    snapshot = [
+        {
+            "name": "agora-backend",
+            "canister_id": "aaaaa-aa",
+            "min_cycles": old_default,
+            "min_cycles_override": 0,
+            "min_cycles_source": "default",
+            "topup_cycles": 1_000_000_000_000,
+            "cycles": 3_000_000_000_000,
+            "freezing_threshold": 100_000_000_000,
+            "status": "ok",
+        },
+        {
+            "name": "special-backend",
+            "canister_id": "bbbbb-bb",
+            "min_cycles": manual,
+            "min_cycles_override": manual,
+            "min_cycles_source": "canister",
+            "topup_cycles": 1_000_000_000_000,
+            "cycles": 3_000_000_000_000,
+            "freezing_threshold": 100_000_000_000,
+            "status": "ok",
+        },
+    ]
+    live = {
+        "aaaaa-aa": {
+            "canister_id": "aaaaa-aa",
+            "name": "agora-backend",
+            "section": "realms",
+            "stand": "agora",
+            "kind": "backend",
+            "min_cycles": new_default,
+            "topup_cycles": 1_000_000_000_000,
+            "min_cycles_source": "default",
+            "min_cycles_override": 0,
+        },
+        "bbbbb-bb": {
+            "canister_id": "bbbbb-bb",
+            "name": "special-backend",
+            "section": "realms",
+            "stand": "agora",
+            "kind": "backend",
+            "min_cycles": manual,
+            "topup_cycles": 1_000_000_000_000,
+            "min_cycles_source": "canister",
+            "min_cycles_override": manual,
+        },
+        "ccccc-cc": {
+            "canister_id": "ccccc-cc",
+            "name": "agora-quarter-1",
+            "section": "realms",
+            "stand": "agora",
+            "kind": "backend",
+            "min_cycles": new_default,
+            "topup_cycles": 1_000_000_000_000,
+            "min_cycles_source": "default",
+            "min_cycles_override": 0,
+        },
+    }
+    merged = cycles_mod.patch_snapshot_canister_policies(snapshot, live)
+    by_name = {r["name"]: r for r in merged}
+    assert by_name["agora-backend"]["min_cycles"] == new_default
+    assert by_name["special-backend"]["min_cycles"] == manual
+    assert by_name["agora-quarter-1"]["min_cycles"] == new_default
+    assert len(merged) == 3
+
+
 def test_should_record_cycle_sample_respects_gap(monkeypatch):
     import cycles as cycles_mod
     import models as models_mod

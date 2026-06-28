@@ -495,11 +495,104 @@ def patch_cycles_snapshot_treasury(cycles: int, icp_e8s=None) -> None:
         _log.error(f"patch cycles snapshot treasury failed: {e}")
 
 
+def _recompute_cycle_totals(canisters_out):
+    """Recount status labels after a policy-only snapshot patch."""
+    counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
+    for row in canisters_out:
+        label = row.get("status") or "error"
+        if label in counts:
+            counts[label] += 1
+        else:
+            counts["error"] += 1
+    return {"canisters": len(canisters_out), **counts}
+
+
+def patch_snapshot_canister_policies(canisters_out, live_policies):
+    """Pure: merge live policy rows into a cycles snapshot's canister list.
+
+    ``live_policies`` maps ``canister_id`` → dict with at least
+    ``min_cycles``, ``topup_cycles``, ``min_cycles_source``, and identity
+    fields. Canisters with a manual ``min_cycles`` override on the live
+    entity keep their effective policy (via ``_policy_for`` upstream);
+    inheriting canisters pick up a changed Settings default. Rows present in
+    ``live_policies`` but missing from the snapshot are appended (e.g.
+    auto-provisioned quarters). Existing balance fields are preserved; status
+    labels are recomputed when balance + freezing are available.
+    """
+    by_id = {c["canister_id"]: dict(c) for c in (canisters_out or []) if c.get("canister_id")}
+    for cid, live in live_policies.items():
+        row = by_id.get(cid)
+        if row is None:
+            row = {"canister_id": cid}
+            by_id[cid] = row
+        for key in ("section", "stand", "name", "kind", "canister_id"):
+            if key in live and live[key] is not None:
+                row[key] = live[key]
+        row["min_cycles"] = int(live["min_cycles"])
+        row["topup_cycles"] = int(live["topup_cycles"])
+        row["min_cycles_source"] = live.get("min_cycles_source") or "default"
+        row["min_cycles_override"] = int(live.get("min_cycles_override") or 0)
+        if row.get("cycles") is not None and row.get("freezing_threshold") is not None:
+            bal = int(row["cycles"])
+            frz = int(row["freezing_threshold"])
+            min_c = int(row["min_cycles"])
+            row["headroom"] = bal - frz
+            row["status"] = cycles_status(bal, frz, min_c)
+
+    seen = set()
+    merged = []
+    for c in canisters_out or []:
+        cid = c.get("canister_id")
+        if cid and cid in by_id:
+            merged.append(by_id[cid])
+            seen.add(cid)
+    for cid, row in by_id.items():
+        if cid not in seen:
+            merged.append(row)
+    merged.sort(key=lambda x: (x.get("section") or "", x.get("stand") or "", x.get("name") or ""))
+    return merged
+
+
+def _live_canister_policies(s=None):
+    """Build the policy map for every registered Canister from live entities."""
+    s = s or _settings()
+    list(Canister.instances())
+    out = {}
+    for st in Canister.instances():
+        cid = (st.canister_id or "").strip()
+        if not cid:
+            continue
+        dk = st.stand
+        sec = dk.section if dk else None
+        min_c, topup_c = _policy_for(st, s)
+        out[cid] = {
+            "canister_id": cid,
+            "section": sec.name if sec else "",
+            "stand": dk.name if dk else "",
+            "name": st.name or "",
+            "kind": st.kind or "",
+            "min_cycles": min_c,
+            "topup_cycles": topup_c,
+            "min_cycles_source": _min_cycles_source(st, s),
+            "min_cycles_override": int(st.min_cycles or 0),
+        }
+    return out
+
+
 def refresh_cycles_snapshot_settings() -> None:
-    """Patch settings-derived treasury fields in the persisted cycles snapshot."""
+    """Patch treasury + per-canister policy in the persisted cycles snapshot.
+
+    Called when Settings change (defaults, treasury reserve, autopilot flags).
+    Recomputes ``min_cycles`` / ``topup_cycles`` from live Canister entities
+    so inheriting canisters pick up a new default while manually overridden
+    canisters keep their effective policy. Also adds canisters missing from
+    the snapshot (e.g. quarters provisioned after the last full ``get_cycles``).
+    """
     global _cycles_cache
     try:
         from models import CyclesSnapshot
+
+        s = _settings()
         snap = CyclesSnapshot["singleton"]
         raw = (snap.snapshot_json if snap else None) or _cycles_cache
         if not raw:
@@ -508,13 +601,19 @@ def refresh_cycles_snapshot_settings() -> None:
         if not isinstance(data, dict):
             return
         treasury = data.get("treasury")
-        if not isinstance(treasury, dict):
-            return
-        overlay_treasury_settings(treasury)
+        if isinstance(treasury, dict):
+            overlay_treasury_settings(treasury, s)
+        live = _live_canister_policies(s)
+        if live:
+            data["canisters"] = patch_snapshot_canister_policies(
+                data.get("canisters") or [], live
+            )
+            data["totals"] = _recompute_cycle_totals(data["canisters"])
         patched = json.dumps(data)
         _cycles_cache = patched
         if snap:
             snap.snapshot_json = patched
+            snap.updated_at = _now_secs()
             snap.save()
     except Exception as e:  # pragma: no cover - defensive
         _log.error(f"refresh cycles snapshot settings failed: {e}")
