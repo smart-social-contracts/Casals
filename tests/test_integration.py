@@ -134,6 +134,19 @@ class TestSettingsAndCommander:
         # reset open_access so later assertions are stable
         _ok("set_settings", {"open_access": False})
 
+    def test_monitor_settings_roundtrip(self, canister):
+        _ok("set_settings", {
+            "monitor_enabled": True,
+            "monitor_principal": "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6-2ae",
+            "monitor_service_url": "https://casals.example.org",
+        })
+        md = call_canister("casals_metadata")
+        assert md["monitor_enabled"] is True
+        assert md["monitor_principal"].startswith("ah6ac-")
+        assert md["monitor_service_url"] == "https://casals.example.org"
+        # disable so the off-chain monitor isn't wired into unrelated tests
+        _ok("set_settings", {"monitor_enabled": False})
+
     def test_set_commander_on_section(self, canister):
         _ok("create_section", {"name": "sec-cmd"})
         _ok("set_commander", {"section": "sec-cmd", "commander_principal": "ryjl3-tyaaa-aaaaa-aaaba-cai"})

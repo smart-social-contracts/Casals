@@ -70,6 +70,11 @@ export interface Metadata {
   file_registry_frontend_canister_id?: string;
   cycleops_enabled: boolean;
   cycleops_principal: string;
+  /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
+   * and history from monitor_service_url instead of calling the conductor. */
+  monitor_enabled?: boolean;
+  monitor_principal?: string;
+  monitor_service_url?: string;
   default_min_cycles: number;
   default_topup_cycles: number;
   treasury_reserve: number;
@@ -561,8 +566,38 @@ export async function getStatus(): Promise<Status> {
   return _parseQuery<Status>(await (await _actor()).get_status());
 }
 
+let _metadataCache: Metadata | null = null;
+let _metadataInflight: Promise<Metadata | null> | null = null;
+
 export async function casalsMetadata(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await (await _actor()).casals_metadata());
+  const md = _parseQuery<Metadata>(await (await _actor()).casals_metadata());
+  _metadataCache = md;
+  return md;
+}
+
+/** Per-instance base URL of the off-chain monitor (casals-monitor), e.g.
+ *  ``https://<host>/v1/<instance>``. Empty string when monitoring is on-chain. */
+async function _monitorBase(): Promise<string> {
+  if (_metadataCache) return (_metadataCache.monitor_service_url || '').trim();
+  if (!_metadataInflight) _metadataInflight = casalsMetadata().catch(() => null);
+  const md = await _metadataInflight;
+  return ((md?.monitor_service_url) || '').trim();
+}
+
+/** GET a path under the off-chain monitor base. Returns null when monitoring is
+ *  on-chain or the service is unreachable, so callers can fall back to the canister. */
+async function _monitorGet<T>(path: string): Promise<T | null> {
+  const base = await _monitorBase();
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base.replace(/\/$/, '')}${path}`, {
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
 }
 
 export async function getSettings(): Promise<Metadata> {
@@ -837,6 +872,10 @@ export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
 }
 
 export async function getCyclesCached(): Promise<CyclesReport | null> {
+  // Prefer the off-chain monitor (no conductor cycle cost); fall back to the
+  // on-chain cached snapshot when monitoring is on-chain or the service is down.
+  const off = await _monitorGet<CyclesReport>('/cycles');
+  if (off && off.treasury) return normalizeCyclesReport(off);
   const raw = _parseQuery<CyclesReport>(
     await (await _actor()).get_cycles_cached()
   );
@@ -871,6 +910,15 @@ export async function getCycleHistory(opts: {
   before_id?: number;
   limit?: number;
 } = {}): Promise<CycleHistory> {
+  // Off-chain monitor returns the whole window in one response (no on-chain paging).
+  const off = await _monitorGet<CycleHistory>(
+    `/history?window_secs=${opts.window_secs ?? 0}`,
+  );
+  if (off && Array.isArray(off.samples)) {
+    const samples = [...off.samples].sort((a, b) => a.ts - b.ts);
+    return { now: off.now ?? Math.floor(Date.now() / 1000), samples };
+  }
+
   const all: CycleSamplePoint[] = [];
   let before_id = opts.before_id;
   let now = Math.floor(Date.now() / 1000);

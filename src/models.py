@@ -213,6 +213,14 @@ class Settings(Entity):
     # backstop alongside Casals' own native cycles management (below).
     cycleops_enabled = Integer(default=0)
     cycleops_principal = String(max_length=64, default="")
+    # Off-chain monitor (casals-monitor): when enabled, its principal is added as
+    # a co-controller of managed canisters so it can read canister_status and
+    # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot
+    # reads. monitor_service_url tells clients (the frontend) where to fetch the
+    # off-chain cycle telemetry instead of calling the conductor.
+    monitor_enabled = Integer(default=0)
+    monitor_principal = String(max_length=64, default="")
+    monitor_service_url = String(max_length=128, default="")
     # ── Native cycles management (the conductor as the orchestra's paymaster) ──
     # Platform-default cycle policy, used when a canister/stand/section sets no
     # override. min_cycles: top up when a canister's balance (above its freezing

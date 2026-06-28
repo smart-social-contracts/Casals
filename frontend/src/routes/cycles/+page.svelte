@@ -363,7 +363,10 @@
   onMount(() => {
     void (async () => {
       await loadCached();
-      void refreshLive();
+      // With the off-chain monitor configured, loadCached() already returns live
+      // balances — skip the per-visit on-chain refresh (the cost we moved off
+      // the conductor). The Refresh button still forces a live read on demand.
+      if (!meta?.monitor_service_url) void refreshLive();
       getTree().then((t) => { tree = t; }).catch(() => {});
     })();
   });

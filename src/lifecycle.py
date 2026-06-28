@@ -421,8 +421,9 @@ def _fetch_canister_controllers(canister_id: str):
 def _resolve_provision_controllers(dk):
     """Generator: controller set for a canister Casals is provisioning.
 
-    Always includes Casals and CycleOps (when enabled), the stand commander,
-    and — by default — every IC controller of the commander principal/canister.
+    Always includes Casals, CycleOps and the off-chain monitor (each when
+    enabled), the stand commander, and — by default — every IC controller of the
+    commander principal/canister.
     That mirrors ops access from a parent realm (e.g. capital deploy key on
     auto-scaled quarters) without a separate post-provision step.
     """
@@ -431,6 +432,8 @@ def _resolve_provision_controllers(dk):
     base = [self_id]
     if s.cycleops_enabled and s.cycleops_principal:
         base.append(s.cycleops_principal.strip())
+    if s.monitor_enabled and s.monitor_principal:
+        base.append(s.monitor_principal.strip())
 
     inherited = []
     commander = _commander_for_stand(dk)
