@@ -73,11 +73,19 @@ def _latest_in_family(family: str):
 def _resolve_authorized_wasm(wasm_key: str, section):
     """Resolve a wasm key to an AuthorizedWasm. A bare family name ("foo")
     resolves to the latest version in that family; a pinned key ("foo@1.2.0")
-    resolves to that exact version."""
+    resolves to that exact version; ``foo@main`` resolves to the newest
+    main-channel snapshot in that family (same rule as ``realms rollout -v main``)."""
     from models import AuthorizedWasm
     list(AuthorizedWasm.instances())
     family, version = _split_key(wasm_key)
-    if version:
+    if version in ("main", "latest-main"):
+        members = _versions_in_family(family)
+        main_members = [
+            w for w in members
+            if (w.version or _split_key(w.key)[1]).startswith("main")
+        ]
+        w = main_members[0] if main_members else _latest_in_family(family)
+    elif version:
         w = AuthorizedWasm[wasm_key]
     else:
         w = _latest_in_family(family) or AuthorizedWasm[family]
@@ -262,6 +270,25 @@ def _provision_assets(canister_id: str, w, stand=None):
     })
     unwrap_call_result(store_res)
     _append_event("assets_uploaded", canister_id, {"wasm_key": w.key, "bytes": len(content)})
+
+    backend_cid = _backend_cid_for_stand(canister_id, stand)
+    if backend_cid:
+        ids = ('{realm_backend:"' + backend_cid
+               + '",internet_identity:"https://identity.ic0.app"')
+        fr = (_settings().file_registry_canister_id or "").strip()
+        if fr:
+            ids += ',file_registry:"' + fr + '"'
+        ids += "}"
+        js = ("globalThis.__CANISTER_IDS=" + ids + ";").encode()
+        store_res = yield asset.store({
+            "key": "/canister_ids.js",
+            "content_type": "application/javascript",
+            "content_encoding": "identity",
+            "content": js,
+            "sha256": None,
+        })
+        unwrap_call_result(store_res)
+        _append_event("canister_ids_written", canister_id, {"realm_backend": backend_cid})
 
 
 def _list_registry_files(namespace: str):
