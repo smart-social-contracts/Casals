@@ -9,6 +9,9 @@
     returnCycles,
     refreshCanisters,
     refreshTreasury,
+    monitorPollTreasury,
+    monitorPollCanisters,
+    monitorPollFlow,
     setCyclePolicy,
     reconcile,
     convertTreasuryIcp,
@@ -55,8 +58,9 @@
   let flowLoading = $state(false);
   let flowRequest = 0;
   let loading = $state(true);
-  let refreshing = $state(false); // live refresh running in background
-  let refreshProgress = $state(''); // e.g. "treasury" or "6/18 canisters"
+  let refreshing = $state(false); // on-chain full refresh (legacy, no monitor)
+  let refreshingTreasury = $state(false);
+  let refreshProgress = $state('');
 
   /** Max canisters per refresh_canisters call (must match backend REFRESH_CANISTERS_BATCH_MAX). */
   const CANISTER_REFRESH_BATCH = 3;
@@ -77,13 +81,12 @@
   let policyTargets = $state<CanisterCycles[]>([]);
   let policyAmount = $state('');
   let policyInherit = $state(false);
-  let showRefreshHelp = $state(false);
+  let assignPoolTarget = $state<string | null>(null);
   let canisterFilterText = $state('');
   let selectedCanisterIds = $state<Set<string>>(new Set());
   type CanisterSortKey = 'canister' | 'sectionStand' | 'cycles' | 'minPolicy' | 'status';
   let canisterSortKey = $state<CanisterSortKey>('canister');
   let canisterSortAsc = $state(true);
-  let assignPoolTarget = $state<string | null>(null);
   let tree = $state<Tree | null>(null);
 
   const orchestraCanisterIdSet = $derived.by(() => {
@@ -101,7 +104,7 @@
   async function onAssignPoolSuccess() {
     assignPoolTarget = null;
     await Promise.all([
-      refreshLive(),
+      loadCached(),
       getTree().then((t) => { tree = t; }).catch(() => {}),
     ]);
   }
@@ -220,18 +223,26 @@
     );
   }
 
-  async function loadCached() {
+  function applyOffChainMonitorState(cached: CyclesReport, md: Metadata | null) {
+    if (!md?.monitor_service_url && cached.source !== 'off-chain-monitor') return;
+    liveSynced = true;
+    snapshotPartial = false;
+  }
+
+  async function loadCached(): Promise<Metadata | null> {
     loading = true;
     error = '';
-    void reloadTreasuryFlow(flowPeriod);
+    let md: Metadata | null = null;
     try {
-      const [cached, h, md] = await Promise.all([
+      const [cached, h, metadata] = await Promise.all([
         getCyclesCached(),
         getCycleHistory({ window_secs: WINDOWS[windowKey] }),
         casalsMetadata().catch(() => null),
       ]);
+      md = metadata;
       meta = md;
       history = h;
+      void reloadTreasuryFlow(flowPeriod);
       if (cached?.treasury) {
         if (md) {
           cached.treasury.autopilot = md.cycles_autopilot;
@@ -243,6 +254,7 @@
         }
         report = cached;
         cachedAt = cached.cached_at ?? null;
+        applyOffChainMonitorState(cached, md);
       }
       loadFx();
     } catch (e: any) {
@@ -250,6 +262,7 @@
     } finally {
       loading = false;
     }
+    return md;
   }
 
   async function reloadHistory() {
@@ -288,7 +301,78 @@
     return (canisters ?? []).filter((c) => c.cycles !== undefined).length;
   }
 
-  async function refreshLive() {
+  function enrichReportFromMeta(cached: CyclesReport, md: Metadata | null): CyclesReport {
+    if (md) {
+      cached.treasury.autopilot = md.cycles_autopilot;
+      cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
+      cached.treasury.interval_secs = md.cycles_check_interval_secs;
+      const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
+      cached.treasury.reserve = reserve;
+      cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
+    }
+    return cached;
+  }
+
+  function mergeTreasuryIntoReport(live: CyclesReport) {
+    if (!report) {
+      report = enrichReportFromMeta(live, meta);
+      cachedAt = live.cached_at ?? null;
+      applyOffChainMonitorState(live, meta);
+      loadFx();
+      return;
+    }
+    const enriched = enrichReportFromMeta(live, meta);
+    report = {
+      ...report,
+      treasury: enriched.treasury,
+      cached_at: enriched.cached_at ?? report.cached_at,
+    };
+    cachedAt = report.cached_at ?? null;
+    applyOffChainMonitorState(live, meta);
+    loadFx();
+  }
+
+  function mergeCanisterRows(live: CyclesReport) {
+    if (!report) {
+      applyReport(enrichReportFromMeta(live, meta));
+      applyOffChainMonitorState(live, meta);
+      return;
+    }
+    const byName = new Map((live.canisters ?? []).map((c) => [c.name, c]));
+    report = {
+      ...report,
+      canisters: (report.canisters ?? []).map((c) => byName.get(c.name) ?? c),
+      totals: live.totals ?? report.totals,
+      cached_at: live.cached_at ?? report.cached_at,
+    };
+    cachedAt = report.cached_at ?? null;
+    applyOffChainMonitorState(live, meta);
+    loadFx();
+  }
+
+  async function refreshTreasuryOnly() {
+    if (refreshingTreasury) return;
+    refreshingTreasury = true;
+    error = '';
+    void reloadTreasuryFlow(flowPeriod);
+    try {
+      let live: CyclesReport | null = null;
+      if (meta?.monitor_service_url) {
+        live = await monitorPollTreasury();
+        if (!live) throw new Error('Off-chain monitor treasury refresh failed');
+      } else {
+        live = await refreshTreasury();
+      }
+      if (live?.treasury) mergeTreasuryIntoReport(live);
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Treasury refresh failed');
+    } finally {
+      refreshingTreasury = false;
+    }
+  }
+
+  /** Legacy on-chain full refresh when the off-chain monitor is not configured. */
+  async function refreshLiveOnChain() {
     if (refreshing) return;
     refreshing = true;
     refreshProgress = '';
@@ -357,16 +441,12 @@
   /** Load cached snapshot, then refresh live balances in the background. */
   async function load() {
     await loadCached();
-    await refreshLive();
+    if (!meta?.monitor_service_url) await refreshLiveOnChain();
   }
 
   onMount(() => {
     void (async () => {
       await loadCached();
-      // With the off-chain monitor configured, loadCached() already returns live
-      // balances — skip the per-visit on-chain refresh (the cost we moved off
-      // the conductor). The Refresh button still forces a live read on demand.
-      if (!meta?.monitor_service_url) void refreshLive();
       getTree().then((t) => { tree = t; }).catch(() => {});
     })();
   });
@@ -376,7 +456,9 @@
     flowLoading = true;
     flowError = '';
     try {
-      const flow = await getTreasuryFlow({ period });
+      const flow = meta?.monitor_service_url
+        ? await monitorPollFlow(period)
+        : await getTreasuryFlow({ period });
       if (req !== flowRequest) return;
       treasuryFlow = flow;
     } catch (e: any) {
@@ -729,8 +811,10 @@
     (report?.canisters ?? []).filter((c) => c.cycles !== undefined).length,
   );
   const totalCanisterCount = $derived(report?.canisters?.length ?? 0);
+  const usesOffChainMonitor = $derived(Boolean(meta?.monitor_service_url));
   const balancesStale = $derived(
-    snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing),
+    !usesOffChainMonitor
+      && (snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing)),
   );
   const topUpExpectedBalance = $derived.by(() => {
     if (!topUpValid || topUpTargets.length !== 1) return null;
@@ -880,7 +964,7 @@
     try {
       const res = await reconcile();
       toasts.success(`Reconciled — topped up ${(res as any).topped_up ?? 0} of ${(res as any).checked ?? 0}`);
-      await refreshLive();
+      await refreshTreasuryOnly();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Reconcile failed');
     } finally {
@@ -896,7 +980,7 @@
         const icpPart = typeof res.icp_e8s === 'number' ? formatIcp(res.icp_e8s) : 'ICP';
         toasts.success(`Converted ${icpPart} → ${formatCycles(res.cycles)}`);
         showConvert = false;
-        await refreshLive();
+        await refreshTreasuryOnly();
         await reloadTreasuryFlow(flowPeriod);
       } else {
         const msg = (res.reason as string) || res.error || 'Nothing to convert';
@@ -967,7 +1051,8 @@
       }
       closeTopUp();
       if (ok > 0) {
-        void refreshLive();
+        void refreshTreasuryOnly();
+        void refreshCanistersByNames(targets.map((t) => t.name));
       }
     } finally {
       busy = '';
@@ -1008,7 +1093,8 @@
       }
       closeReturn();
       if (ok > 0) {
-        void refreshLive();
+        void refreshTreasuryOnly();
+        void refreshCanistersByNames(targets.map((t) => t.name));
       }
     } finally {
       busy = '';
@@ -1017,6 +1103,12 @@
 
   async function refreshSelectedCanisters(names: string[]) {
     if (!names.length) return;
+    if (meta?.monitor_service_url) {
+      const live = await monitorPollCanisters(names);
+      if (!live) throw new Error('Off-chain monitor canister refresh failed');
+      mergeCanisterRows(live);
+      return;
+    }
     try {
       const live = await refreshCanisters({ canisters: names });
       applyReport(live);
@@ -1035,6 +1127,15 @@
       toasts.success(`Refreshed ${names.length} canister${names.length === 1 ? '' : 's'}`);
     } finally {
       busy = '';
+    }
+  }
+
+  async function refreshCanistersByNames(names: string[]) {
+    if (!names.length) return;
+    try {
+      await refreshSelectedCanisters(names);
+    } catch {
+      // refreshSelectedCanisters already toasts on failure
     }
   }
 
@@ -1071,7 +1172,7 @@
       }
       closePolicyEdit();
       if (ok > 0) {
-        void refreshLive();
+        void refreshCanistersByNames(targets.map((t) => t.name));
       }
     } finally {
       busy = '';
@@ -1107,68 +1208,17 @@
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
     <div class="flex items-center gap-2 self-start flex-wrap justify-end">
-      {#if cachedAt && !refreshing && !snapshotPartial}
+      {#if usesOffChainMonitor && cachedAt && !refreshing && !refreshingTreasury}
+        <span class="text-xs text-emerald-700 italic">off-chain monitor · {fmtAge(cachedAt)}</span>
+      {:else if cachedAt && !refreshing && !refreshingTreasury && !snapshotPartial}
         <span class="text-xs text-primary-400 italic">live snapshot · {fmtAge(cachedAt)}</span>
-      {:else if cachedAt && !refreshing && snapshotPartial}
+      {:else if cachedAt && !refreshing && !refreshingTreasury && snapshotPartial}
         <span class="text-xs text-amber-700 italic">partial snapshot · {fmtAge(cachedAt)}</span>
       {:else if refreshing}
         <span class="text-xs text-primary-400 italic">
           refreshing live balances…{#if refreshProgress} ({refreshProgress}){/if}
         </span>
       {/if}
-      <div class="relative flex items-center gap-1">
-        <button class="btn-secondary btn-sm" onclick={refreshLive} disabled={loading || refreshing}>
-          <svg class="w-4 h-4 {loading || refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
-          </svg>
-          Refresh
-        </button>
-        <button
-          type="button"
-          class="p-1 rounded-full text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
-          aria-label="What does Refresh do?"
-          aria-expanded={showRefreshHelp}
-          onclick={() => (showRefreshHelp = !showRefreshHelp)}
-        >
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10" />
-            <path stroke-linecap="round" d="M12 16v-4m0-4h.01" />
-          </svg>
-        </button>
-        {#if showRefreshHelp}
-          <div
-            class="absolute right-0 top-full mt-2 z-20 w-72 rounded-lg border border-[var(--color-border-primary)] bg-white p-3 shadow-lg text-xs text-primary-600 leading-relaxed"
-            role="dialog"
-            aria-label="Refresh help"
-          >
-            <p class="font-medium text-primary-800 mb-1.5">About Refresh</p>
-            <p class="mb-2">
-              Opening this page loads a <strong>cached snapshot</strong> so balances appear instantly.
-              The “snapshot from … ago” label shows how old that data is.
-            </p>
-            <p>
-              <strong>Refresh</strong> first updates the treasury (cycles + ledger ICP), then refreshes
-              orchestra canisters in small batches. Large orchestras skip the old one-shot scan that
-              could exceed IC limits. It does not top up canisters.
-            </p>
-            <button
-              type="button"
-              class="mt-2 text-primary-500 hover:text-primary-800 underline"
-              onclick={() => (showRefreshHelp = false)}
-            >Got it</button>
-          </div>
-        {/if}
-      </div>
-      <!-- Reconcile now — hidden for now; may restore later
-      <button
-        class="btn-primary btn-sm"
-        onclick={runReconcile}
-        disabled={!$isAuthenticated || busy === 'reconcile'}
-        title={!$isAuthenticated ? 'Log in with Internet Identity' : undefined}
-      >
-        {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile now'}
-      </button>
-      -->
     </div>
   </div>
 
@@ -1198,6 +1248,20 @@
           <p class="text-xs text-primary-400 mt-0.5">Casals backend treasury — cycles and ledger ICP</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            class="btn-secondary btn-sm px-2.5 py-1 text-xs inline-flex items-center gap-1"
+            onclick={refreshTreasuryOnly}
+            disabled={loading || refreshingTreasury}
+            title={usesOffChainMonitor
+              ? 'Ask the off-chain monitor to fetch live treasury data from the conductor'
+              : 'Fetch live treasury cycles and ledger ICP from the conductor'}
+          >
+            <svg class="w-3.5 h-3.5 {refreshingTreasury ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+            </svg>
+            {refreshingTreasury ? 'Refreshing…' : 'Refresh'}
+          </button>
           <button
             type="button"
             class="btn-secondary btn-sm px-2.5 py-1 text-xs"
@@ -1233,6 +1297,8 @@
             {#if report.treasury.icp_e8s !== undefined}
               {formatIcp(report.treasury.icp_e8s)}
               <CalculatedAtHint at={treasuryCalculatedAt()} label="Ledger ICP calculated" />
+            {:else if refreshingTreasury}
+              <span class="text-base text-amber-700/70">Refreshing…</span>
             {:else if refreshing}
               <span class="text-base text-amber-700/70">Refreshing…</span>
             {:else}
@@ -1450,7 +1516,7 @@
           <p class="text-sm text-primary-400 p-5">Fetching live balances from the IC… this can take about a minute.</p>
         {:else if hasHistory}
           <p class="text-sm text-primary-400 p-5">
-            Charts use stored history, but live balances are not loaded yet. Click <strong>Refresh</strong> above.
+            Charts use stored history, but live balances are not loaded yet. Select canisters and click <strong>Refresh</strong> in the table below.
           </p>
         {:else}
           <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
@@ -1483,8 +1549,12 @@
                 type="button"
                 class="btn-secondary btn-sm"
                 onclick={refreshSelection}
-                disabled={!selectedCanisterIds.size || bulkBusy || loading || refreshing}
-                title={!selectedCanisterIds.size ? 'Select canisters first' : undefined}
+                disabled={!selectedCanisterIds.size || bulkBusy || loading || refreshing || refreshingTreasury}
+                title={!selectedCanisterIds.size
+                  ? 'Select canisters first'
+                  : usesOffChainMonitor
+                    ? 'Ask the off-chain monitor to fetch live balances for the selection'
+                    : 'Fetch live balances for the selection from the conductor'}
               >
                 {busy === 'bulk:refresh' ? 'Refreshing…' : 'Refresh'}
               </button>

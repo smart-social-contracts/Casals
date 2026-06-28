@@ -68,19 +68,21 @@ export interface Metadata {
   open_access: boolean;
   file_registry_canister_id: string;
   file_registry_frontend_canister_id?: string;
-  cycleops_enabled: boolean;
-  cycleops_principal: string;
   /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
    * and history from monitor_service_url instead of calling the conductor. */
   monitor_enabled?: boolean;
   monitor_principal?: string;
   monitor_service_url?: string;
+  /** Comma-separated emails for treasury exhaustion alerts (sent by casals-monitor). */
+  alert_emails?: string;
   default_min_cycles: number;
   default_topup_cycles: number;
   treasury_reserve: number;
   cycles_autopilot: boolean;
   cycles_check_interval_secs: number;
   cycles_icp_autoconvert?: boolean;
+  /** On-chain balance history sampler (off when using the off-chain monitor). */
+  cycles_sampling?: boolean;
   // Fiat display: the currency cycle counts are also shown in, and the cached
   // conversion factor (millionths of currency per 1T cycles; 0 => not fetched).
   display_currency?: string;
@@ -131,12 +133,6 @@ export interface OrchestrationEvent {
   payload: Record<string, any>;
   self_hash: string;
   parent_hash: string;
-}
-
-export interface CycleOpsInfo {
-  cycleops_enabled: boolean;
-  cycleops_principal: string;
-  canister_ids: string[];
 }
 
 export type CycleStatus = 'ok' | 'low' | 'critical' | 'frozen' | 'error';
@@ -207,6 +203,8 @@ export interface CyclesReport {
   canisters: CanisterCycles[];
   pool?: { total: number; free: number; in_use: number; canisters: PoolCanisterCycles[] };
   cached_at?: number;
+  /** ``off-chain-monitor`` when balances came from casals-monitor instead of the canister cache. */
+  source?: string;
   /** True when only ``refreshed_canisters`` have live balances; other rows may be stale. */
   partial_refresh?: boolean;
   refreshed_canisters?: string[];
@@ -600,6 +598,98 @@ async function _monitorGet<T>(path: string): Promise<T | null> {
   }
 }
 
+/** True when this Casals instance is configured for off-chain cycle management. */
+export async function usesOffChainMonitor(): Promise<boolean> {
+  return Boolean(await _monitorBase());
+}
+
+/** POST to the off-chain monitor — triggers a live poll on the service. */
+async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> {
+  const base = await _monitorBase();
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base.replace(/\/$/, '')}${path}`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: body === undefined ? '{}' : JSON.stringify(body),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Ask the monitor to fetch live treasury data from the conductor, then return the report. */
+export async function monitorPollTreasury(): Promise<CyclesReport | null> {
+  const res = await _monitorPost<{ report?: CyclesReport }>('/poll/treasury');
+  if (res?.report?.treasury) return normalizeCyclesReport(res.report);
+  return null;
+}
+
+/** Ask the monitor to fetch live balances for named canisters, then return the report. */
+export async function monitorPollCanisters(names: string[]): Promise<CyclesReport | null> {
+  if (!names.length) return null;
+  const res = await _monitorPost<{ report?: CyclesReport }>(
+    '/poll/canisters',
+    { names },
+  );
+  if (res?.report?.treasury) return normalizeCyclesReport(res.report);
+  return null;
+}
+
+/** Re-sync treasury flow audit events from the conductor into the monitor. */
+export async function monitorPollFlow(period: TreasuryFlowPeriod = 'day'): Promise<TreasuryFlow | null> {
+  await _monitorPost('/poll/flow');
+  return getTreasuryFlow({ period });
+}
+
+/** Refresh the cached FX rate via the monitor (throttled server-side). */
+export async function monitorRefreshFx(): Promise<void> {
+  await _monitorPost('/poll/fx');
+}
+
+export interface FxInfo {
+  display_currency: string;
+  fx_micro_per_tcycle: number;
+  fx_updated: number;
+  fx_error: string;
+}
+
+/** Load FX info — from the monitor when off-chain, else from canister settings. */
+export async function loadFxInfo(): Promise<FxInfo | null> {
+  const off = await _monitorGet<FxInfo>('/fx');
+  if (off) {
+    return {
+      display_currency: off.display_currency || 'USD',
+      fx_micro_per_tcycle: off.fx_micro_per_tcycle || 0,
+      fx_updated: off.fx_updated || 0,
+      fx_error: off.fx_error || '',
+    };
+  }
+  if (await _monitorBase()) return null;
+  try {
+    const m = await getSettings();
+    return {
+      display_currency: m.display_currency || 'USD',
+      fx_micro_per_tcycle: m.fx_micro_per_tcycle || 0,
+      fx_updated: m.fx_updated || 0,
+      fx_error: m.fx_error || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Refresh FX rate — monitor path when off-chain, else on-chain ``refresh_fx``. */
+export async function refreshFxRate(): Promise<void> {
+  if (await _monitorBase()) {
+    await monitorRefreshFx();
+    return;
+  }
+  await refreshFx();
+}
+
 export async function getSettings(): Promise<Metadata> {
   return _parseQuery<Metadata>(await (await _actor()).get_settings());
 }
@@ -649,10 +739,6 @@ export async function getCanisterDeployment(canisterId: string): Promise<Caniste
     throw new Error(result.error);
   }
   return result as CanisterDeployment | null;
-}
-
-export async function cycleopsMonitored(): Promise<CycleOpsInfo> {
-  return _parseQuery<CycleOpsInfo>(await (await _actor()).cycleops_monitored());
 }
 
 // ---------------------------------------------------------------------------
@@ -872,10 +958,10 @@ export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
 }
 
 export async function getCyclesCached(): Promise<CyclesReport | null> {
-  // Prefer the off-chain monitor (no conductor cycle cost); fall back to the
-  // on-chain cached snapshot when monitoring is on-chain or the service is down.
+  const offChain = await _monitorBase();
   const off = await _monitorGet<CyclesReport>('/cycles');
-  if (off && off.treasury) return normalizeCyclesReport(off);
+  if (off?.treasury) return normalizeCyclesReport(off);
+  if (offChain) return null;
   const raw = _parseQuery<CyclesReport>(
     await (await _actor()).get_cycles_cached()
   );
@@ -910,13 +996,16 @@ export async function getCycleHistory(opts: {
   before_id?: number;
   limit?: number;
 } = {}): Promise<CycleHistory> {
-  // Off-chain monitor returns the whole window in one response (no on-chain paging).
+  const offChain = await _monitorBase();
   const off = await _monitorGet<CycleHistory>(
     `/history?window_secs=${opts.window_secs ?? 0}`,
   );
   if (off && Array.isArray(off.samples)) {
     const samples = [...off.samples].sort((a, b) => a.ts - b.ts);
     return { now: off.now ?? Math.floor(Date.now() / 1000), samples };
+  }
+  if (offChain) {
+    return { now: Math.floor(Date.now() / 1000), samples: [] };
   }
 
   const all: CycleSamplePoint[] = [];
@@ -946,6 +1035,16 @@ export async function getTreasuryFlow(opts: {
   period?: TreasuryFlowPeriod;
   window_secs?: number;
 } = {}): Promise<TreasuryFlow> {
+  const period = opts.period ?? 'day';
+  const qs = new URLSearchParams({ period });
+  if (opts.window_secs != null) qs.set('window_secs', String(opts.window_secs));
+  const offChain = await _monitorBase();
+  const off = await _monitorGet<TreasuryFlow>(`/flow?${qs}`);
+  if (off?.buckets && off.totals) return off;
+  if (offChain) {
+    throw new Error('Treasury flow unavailable from off-chain monitor');
+  }
+
   const actor = await _actor();
   const all: TreasuryFlowEvent[] = [];
   let before_id = 0;
@@ -991,10 +1090,29 @@ export async function getTreasuryFlow(opts: {
 }
 
 export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {
+  if (await _monitorBase()) {
+    if (!args.canister || args.amount == null) {
+      throw new Error('Off-chain top-up requires canister and amount');
+    }
+    const res = await _monitorPost<UpdateResult & { report?: CyclesReport }>(
+      '/top-up',
+      { canister: args.canister, amount: args.amount },
+    );
+    if (res?.ok !== false && !res?.error) return { ok: true, ...res };
+    throw new Error(res?.error || 'Top-up failed');
+  }
   return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
 }
 
 export async function returnCycles(args: { canister: string; amount: number }): Promise<UpdateResult> {
+  if (await _monitorBase()) {
+    const res = await _monitorPost<UpdateResult & { report?: CyclesReport }>(
+      '/return-cycles',
+      args,
+    );
+    if (res?.ok !== false && !res?.error) return { ok: true, ...res };
+    throw new Error(res?.error || 'Return failed');
+  }
   return _parseUpdate(await (await _actor(true)).return_cycles(JSON.stringify(args)));
 }
 
@@ -1003,6 +1121,11 @@ export async function reconcile(): Promise<UpdateResult> {
 }
 
 export async function convertTreasuryIcp(): Promise<UpdateResult> {
+  if (await _monitorBase()) {
+    const res = await _monitorPost<UpdateResult & { report?: CyclesReport }>('/convert-icp');
+    if (res?.ok !== false && !res?.error) return { ok: true, ...res };
+    throw new Error(res?.error || 'Conversion failed');
+  }
   return _parseUpdate(await (await _actor(true)).convert_treasury_icp());
 }
 
@@ -1024,19 +1147,41 @@ export interface SettingsPatch {
   open_access?: boolean;
   file_registry_canister_id?: string;
   file_registry_frontend_canister_id?: string;
-  cycleops_enabled?: boolean;
-  cycleops_principal?: string;
+  monitor_enabled?: boolean;
+  monitor_principal?: string;
+  monitor_service_url?: string;
+  alert_emails?: string;
   default_min_cycles?: number;
   default_topup_cycles?: number;
   treasury_reserve?: number;
   cycles_autopilot?: boolean;
   cycles_check_interval_secs?: number;
   cycles_icp_autoconvert?: boolean;
+  cycles_sampling?: boolean;
   display_currency?: string;
 }
 
+export async function syncControllers(opts: { dry_run?: boolean } = {}): Promise<{
+  updated?: unknown[];
+  skipped?: unknown[];
+  failed?: unknown[];
+  dry_run?: boolean;
+}> {
+  return _parseUpdate(
+    await (await _actor(true)).sync_controllers(JSON.stringify(opts)),
+  ) as {
+    updated?: unknown[];
+    skipped?: unknown[];
+    failed?: unknown[];
+    dry_run?: boolean;
+  };
+}
+
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
+  const res = _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
+  _metadataCache = null;
+  _metadataInflight = null;
+  return res;
 }
 
 export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResult & { subnet_whitelist?: string[] }> {

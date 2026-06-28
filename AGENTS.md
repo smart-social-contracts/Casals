@@ -366,7 +366,6 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `get_cycles_cached` | last `get_cycles` snapshot (instant; may be stale) |
 | `get_cycle_history` | per-canister balance samples (Cycles charts) |
 | `get_treasury_flow` | aggregated treasury deposit/convert/consume buckets |
-| `cycleops_monitored` | CycleOps integration status |
 | `icrc10_supported_standards` | ICRC-120 / ICRC-121 |
 
 ### Orchestra structure & governance

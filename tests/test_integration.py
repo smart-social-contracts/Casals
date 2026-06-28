@@ -123,14 +123,11 @@ class TestSettingsAndCommander:
             "file_registry_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
             "file_registry_frontend_canister_id": "oe3kv-3aaaa-aaaac-qgmzq-cai",
             "open_access": True,
-            "cycleops_enabled": True,
-            "cycleops_principal": "cpbhx-cqaaa-aaaad-aancq-cai",
         })
         md = call_canister("casals_metadata")
         assert md["file_registry_canister_id"] == "ryjl3-tyaaa-aaaaa-aaaba-cai"
         assert md["file_registry_frontend_canister_id"] == "oe3kv-3aaaa-aaaac-qgmzq-cai"
         assert md["open_access"] is True
-        assert md["cycleops_enabled"] is True
         # reset open_access so later assertions are stable
         _ok("set_settings", {"open_access": False})
 
@@ -146,6 +143,14 @@ class TestSettingsAndCommander:
         assert md["monitor_service_url"] == "https://casals.example.org"
         # disable so the off-chain monitor isn't wired into unrelated tests
         _ok("set_settings", {"monitor_enabled": False})
+
+    def test_alert_emails_roundtrip(self, canister):
+        _ok("set_settings", {
+            "alert_emails": "ops@example.com, alerts@example.org",
+        })
+        md = call_canister("casals_metadata")
+        assert md["alert_emails"] == "ops@example.com, alerts@example.org"
+        _ok("set_settings", {"alert_emails": ""})
 
     def test_set_commander_on_section(self, canister):
         _ok("create_section", {"name": "sec-cmd"})

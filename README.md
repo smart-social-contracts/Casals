@@ -32,9 +32,23 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 - **Sheets** — declare a whole orchestra in one JSON document; `deploy_sheet` idempotently brings it to life.
 - **Arrangements** — per-environment config overlays applied *after* a deploy: a flat `parameters` map plus ordered, declarative post-deploy `steps` (`{target, method, args}`) Casals runs against managed canisters. One active per instance; Casals forwards the data without interpreting it (so app concepts like extensions stay out of the orchestrator).
 - **Canister pool** — reuses existing canisters before creating new ones (creation is expensive).
-- **Cycles management** — native treasury, per-section/stand/canister policy, autopilot top-up timer, history charts.
+- **Cycles management** — native treasury, per-section/stand/canister policy, optional on-chain autopilot, or an **off-chain monitor** (`casals-monitor`) that polls balances, runs auto top-ups, and serves the Cycles UI without burning conductor cycles on hourly samplers.
 - **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend); more added via governed list.
 - **Frontend** — SvelteKit + Internet Identity: tree view, sheet editor, cycles page, WASM catalog, settings.
+
+---
+
+## Off-chain cycle monitor
+
+For production Realms deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers:
+
+1. Deploy `casals-monitor` (FastAPI + SQLite) with an IC identity that is a Casals controller.
+2. In **Settings → Cycle operations**, choose **Off-chain monitor** and set:
+   - **Monitor service URL** — e.g. `https://casals.example.org/v1/my-instance`
+   - **Monitor controller principal** — the identity the monitor uses for `canister_status` reads
+3. Save and run **Sync controllers** so the monitor is co-controller on managed canisters.
+
+This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Optional **Alert emails** in Settings notify operators when the treasury cannot fund a top-up.
 
 ---
 
@@ -115,6 +129,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |
+| update | `sync_controllers` | add monitor co-controller on managed canisters |
 
 ---
 

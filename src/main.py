@@ -354,11 +354,10 @@ def casals_metadata() -> text:
         "open_access": bool(s.open_access),
         "file_registry_canister_id": s.file_registry_canister_id,
         "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
-        "cycleops_enabled": bool(s.cycleops_enabled),
-        "cycleops_principal": s.cycleops_principal,
         "monitor_enabled": bool(s.monitor_enabled),
         "monitor_principal": s.monitor_principal,
         "monitor_service_url": (s.monitor_service_url or ""),
+        "alert_emails": (s.alert_emails or ""),
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
         "treasury_reserve": int(s.treasury_reserve or 0),
@@ -798,8 +797,8 @@ def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
     {open_access: bool, file_registry_canister_id: str,
      file_registry_frontend_canister_id: str,
-     cycleops_enabled: bool, cycleops_principal: str,
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
+     alert_emails: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
      cycles_autopilot: bool, cycles_check_interval_secs: int,
      cycles_icp_autoconvert: bool}."""
@@ -815,16 +814,14 @@ def set_settings(args: text) -> text:
             s.file_registry_frontend_canister_id = (
                 params["file_registry_frontend_canister_id"] or ""
             ).strip()
-        if "cycleops_enabled" in params:
-            s.cycleops_enabled = 1 if params["cycleops_enabled"] else 0
-        if "cycleops_principal" in params:
-            s.cycleops_principal = (params["cycleops_principal"] or "").strip()
         if "monitor_enabled" in params:
             s.monitor_enabled = 1 if params["monitor_enabled"] else 0
         if "monitor_principal" in params:
             s.monitor_principal = (params["monitor_principal"] or "").strip()
         if "monitor_service_url" in params:
             s.monitor_service_url = (params["monitor_service_url"] or "").strip()
+        if "alert_emails" in params:
+            s.alert_emails = (params["alert_emails"] or "").strip()[:512]
         if "default_min_cycles" in params:
             s.default_min_cycles = max(0, int(params["default_min_cycles"]))
         if "default_topup_cycles" in params:
@@ -1357,7 +1354,7 @@ def create_canister(args: text) -> Async[text]:
         w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
 
         # Allocate (reuse a pooled canister or create one), install + verify,
-        # wire CycleOps, and record the canister.
+        # record the canister.
         st = yield from _provision_canister(dk, name, kind, w)
         return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash)
     except Exception as e:
@@ -2961,29 +2958,15 @@ def set_cycle_policy(args: text) -> text:
         return _err(str(e))
 
 
-@query
-def cycleops_monitored() -> text:
-    """Return the list of canister ids Casals manages, for CycleOps monitoring."""
-    list(Canister.instances())
-    ids = [s.canister_id for s in Canister.instances() if s.canister_id]
-    s = _settings()
-    return json.dumps({
-        "cycleops_enabled": bool(s.cycleops_enabled),
-        "cycleops_principal": s.cycleops_principal,
-        "canister_ids": ids,
-    })
-
-
 @update
 def sync_controllers(args: text) -> Async[text]:
     """Controller-only. Sweep all managed canisters and, for each where Casals
     is already a controller, ensure the desired controller set is applied:
-    Casals itself is always preserved; the CycleOps principal is added when
-    cycleops_enabled is on, and the off-chain monitor principal when
-    monitor_enabled is on, if not yet in the list.
+    Casals itself is always preserved; the off-chain monitor principal is added
+    when monitor_enabled is on, if not yet in the list.
 
-    Useful when cycleops_enabled / monitor_enabled is turned on after canisters
-    were already created, or as a health-check after any controller changes.
+    Useful when monitor_enabled is turned on after canisters were already
+    created, or as a health-check after any controller changes.
 
     Args (JSON, optional): {"dry_run": true} to report without applying.
     Returns: {updated, skipped, failed, dry_run}."""
@@ -2994,9 +2977,8 @@ def sync_controllers(args: text) -> Async[text]:
         list(Canister.instances())
         s = _settings()
         self_id = ic.id().to_str()
-        cycleops_id = (s.cycleops_principal or "").strip() if s.cycleops_enabled else ""
         monitor_id = (s.monitor_principal or "").strip() if s.monitor_enabled else ""
-        want_extra = [p for p in (cycleops_id, monitor_id) if p]
+        want_extra = [monitor_id] if monitor_id else []
 
         updated = []
         skipped = []

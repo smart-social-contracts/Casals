@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, cycleopsMonitored, setSettings, getTree, shortPrincipal, formatCycles, parseCycles, formatFiat, canisterUrl } from '$lib/api';
-  import type { Metadata, CycleOpsInfo, SettingsPatch } from '$lib/api';
+  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, canisterUrl } from '$lib/api';
+  import type { Metadata, SettingsPatch } from '$lib/api';
   import { isAuthenticated, principal, isController } from '$lib/auth';
   import { get } from 'svelte/store';
   import { ensureFx } from '$lib/fx.svelte';
@@ -20,7 +20,6 @@
   const FALLBACK_CURRENCIES = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY', 'CAD', 'AUD'];
 
   let meta = $state<Metadata | null>(null);
-  let cycleops = $state<CycleOpsInfo | null>(null);
   let loading = $state(true);
   let error = $state('');
   let saving = $state(false);
@@ -30,8 +29,12 @@
   let openAccess = $state(false);
   let fileRegistryId = $state('');
   let fileRegistryFrontendId = $state('');
-  let cycleopsEnabled = $state(false);
-  let cycleopsPrincipal = $state('');
+  /** Where balance sampling + refresh run: on the conductor or an external monitor. */
+  type CycleMode = 'onchain' | 'offchain';
+  let cycleMode = $state<CycleMode>('onchain');
+  let monitorServiceUrl = $state('');
+  let monitorPrincipal = $state('');
+  let alertEmails = $state('');
   // Native cycles management
   let cyclesAutopilot = $state(false);
   let cyclesIcpAutoconvert = $state(true);
@@ -84,12 +87,14 @@
     loading = true;
     error = '';
     try {
-      [meta, cycleops] = await Promise.all([casalsMetadata(), cycleopsMonitored()]);
+      meta = await casalsMetadata();
       openAccess = meta.open_access;
       fileRegistryId = meta.file_registry_canister_id ?? '';
       fileRegistryFrontendId = meta.file_registry_frontend_canister_id ?? '';
-      cycleopsEnabled = meta.cycleops_enabled;
-      cycleopsPrincipal = meta.cycleops_principal ?? '';
+      cycleMode = meta.monitor_enabled ? 'offchain' : 'onchain';
+      monitorServiceUrl = meta.monitor_service_url ?? '';
+      monitorPrincipal = meta.monitor_principal ?? '';
+      alertEmails = meta.alert_emails ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
       cyclesIcpAutoconvert = meta.cycles_icp_autoconvert ?? true;
       cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 3600) / 3600));
@@ -119,18 +124,25 @@
 
   async function save(event: Event) {
     event.preventDefault();
+    if (cycleMode === 'offchain' && !monitorServiceUrl.trim()) {
+      toasts.error('Off-chain mode requires a monitor service URL');
+      return;
+    }
     saving = true;
     try {
       const patch: SettingsPatch = {
         open_access: openAccess,
         file_registry_canister_id: fileRegistryId.trim(),
         file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
-        cycleops_enabled: cycleopsEnabled,
-        cycleops_principal: cycleopsPrincipal.trim(),
-        cycles_autopilot: cyclesAutopilot,
+        cycles_autopilot: cycleMode === 'offchain' ? false : cyclesAutopilot,
         cycles_icp_autoconvert: cyclesIcpAutoconvert,
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
         display_currency: displayCurrency,
+        monitor_enabled: cycleMode === 'offchain',
+        monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
+        monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta?.monitor_principal ?? ''),
+        cycles_sampling: cycleMode === 'onchain',
+        alert_emails: alertEmails.trim(),
       };
       const minC = parseTcAmount(defaultMinCycles);
       const topupC = parseTcAmount(defaultTopupCycles);
@@ -140,19 +152,39 @@
       if (!Number.isNaN(reserveC)) patch.treasury_reserve = reserveC;
       const currencyChanged = displayCurrency !== (meta?.display_currency || 'USD');
       await setSettings(patch);
-      toasts.success('Settings saved');
+      if (cycleMode === 'offchain' && monitorPrincipal.trim()) {
+        try {
+          const sync = await syncControllers();
+          const n = sync.updated?.length ?? 0;
+          if (n > 0) {
+            toasts.success(`Settings saved — added monitor controller on ${n} canister${n === 1 ? '' : 's'}`);
+          } else {
+            toasts.success('Settings saved');
+          }
+        } catch {
+          toasts.success('Settings saved (controller sync failed — run sync_controllers manually)');
+        }
+      } else {
+        toasts.success('Settings saved');
+      }
+      if (cycleMode === 'offchain') {
+        cyclesAutopilot = false;
+      }
       if (meta) {
         meta = {
           ...meta,
           open_access: openAccess,
           file_registry_canister_id: fileRegistryId.trim(),
           file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
-          cycleops_enabled: cycleopsEnabled,
-          cycleops_principal: cycleopsPrincipal.trim(),
-          cycles_autopilot: cyclesAutopilot,
+          monitor_enabled: cycleMode === 'offchain',
+          monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
+          monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta.monitor_principal ?? ''),
+          cycles_sampling: cycleMode === 'onchain',
+          cycles_autopilot: cycleMode === 'offchain' ? false : cyclesAutopilot,
           cycles_icp_autoconvert: cyclesIcpAutoconvert,
           cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
           display_currency: displayCurrency,
+          alert_emails: alertEmails.trim(),
           ...( !Number.isNaN(minC) ? { default_min_cycles: minC } : {} ),
           ...( !Number.isNaN(topupC) ? { default_topup_cycles: topupC } : {} ),
           ...( !Number.isNaN(reserveC) ? { treasury_reserve: reserveC } : {} ),
@@ -175,7 +207,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Settings</h1>
-      <p class="text-sm text-primary-500 mt-1">Platform configuration, cycles management & CycleOps</p>
+      <p class="text-sm text-primary-500 mt-1">Platform configuration and cycles management</p>
     </div>
     <button class="btn-secondary btn-sm self-start" onclick={load}>
       <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -222,10 +254,26 @@
           </dd>
         </div>
         <div class="flex justify-between gap-3">
-          <dt class="text-primary-500">CycleOps</dt>
+          <dt class="text-primary-500">Cycle operations</dt>
           <dd>
-            <span class="badge {meta.cycleops_enabled ? 'badge-frontend' : 'badge-neutral'}">
-              {meta.cycleops_enabled ? 'enabled' : 'disabled'}
+            <span class="badge {meta.monitor_enabled ? 'badge-frontend' : 'badge-neutral'}">
+              {meta.monitor_enabled ? 'off-chain' : 'on-chain'}
+            </span>
+          </dd>
+        </div>
+        {#if meta.monitor_enabled && meta.monitor_service_url}
+          <div class="flex justify-between gap-3 sm:col-span-2">
+            <dt class="text-primary-500 shrink-0">Monitor service</dt>
+            <dd class="font-mono text-primary-900 truncate min-w-0 text-xs" title={meta.monitor_service_url}>
+              {meta.monitor_service_url}
+            </dd>
+          </div>
+        {/if}
+        <div class="flex justify-between gap-3">
+          <dt class="text-primary-500">Cycles sampler</dt>
+          <dd>
+            <span class="badge {meta.cycles_sampling ? 'badge-frontend' : 'badge-neutral'}">
+              {meta.cycles_sampling ? 'on-chain' : 'off'}
             </span>
           </dd>
         </div>
@@ -380,26 +428,62 @@
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
             <div>
-              <h3 class="text-sm font-semibold text-primary-800">CycleOps</h3>
-              <p class="text-xs text-primary-400 mt-0.5">External cycle monitoring integration (optional).</p>
+              <h3 class="text-sm font-semibold text-primary-800">Cycle operations</h3>
+              <p class="text-xs text-primary-400 mt-0.5">
+                Choose whether balance sampling and manual refresh run on this conductor or on an external
+                <strong>casals-monitor</strong> service (saves conductor cycles).
+              </p>
             </div>
 
-            <label class="flex items-center gap-2.5 cursor-pointer">
-              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cycleopsEnabled} />
-              <span class="text-sm font-medium text-primary-700">CycleOps enabled</span>
-              <span class="text-xs text-primary-400">— grant CycleOps controller access for monitoring</span>
-            </label>
+            <fieldset class="space-y-2 border-0 p-0 m-0">
+              <legend class="sr-only">Cycle operations mode</legend>
+              <label class="flex items-start gap-2.5 cursor-pointer rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'onchain' ? 'bg-primary-50 border-primary-200' : 'bg-white'}">
+                <input type="radio" class="mt-0.5" name="cycleMode" value="onchain" bind:group={cycleMode} />
+                <span>
+                  <span class="text-sm font-medium text-primary-800 block">On-chain</span>
+                  <span class="text-xs text-primary-500">Conductor timers sample balances and the Cycles page refreshes via canister calls.</span>
+                </span>
+              </label>
+              <label class="flex items-start gap-2.5 cursor-pointer rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'offchain' ? 'bg-emerald-50 border-emerald-200' : 'bg-white'}">
+                <input type="radio" class="mt-0.5" name="cycleMode" value="offchain" bind:group={cycleMode} />
+                <span>
+                  <span class="text-sm font-medium text-primary-800 block">Off-chain monitor</span>
+                  <span class="text-xs text-primary-500">An external service polls <code class="text-[11px]">canister_status</code>, runs auto top-ups, and serves the Cycles UI; on-chain sampler and autopilot are disabled.</span>
+                </span>
+              </label>
+            </fieldset>
 
-            <div>
-              <label class="label" for="cycleopsPrincipal">CycleOps principal</label>
-              <input
-                id="cycleopsPrincipal"
-                type="text"
-                class="input font-mono"
-                placeholder="aaaaa-aa"
-                bind:value={cycleopsPrincipal}
-              />
-            </div>
+            {#if cycleMode === 'offchain'}
+              <div class="space-y-4 border-l-2 border-emerald-200 ml-1 pl-4">
+                <div>
+                  <label class="label" for="monitorServiceUrl">Monitor service URL</label>
+                  <input
+                    id="monitorServiceUrl"
+                    type="url"
+                    class="input font-mono text-sm"
+                    placeholder="https://monitor.example.org/v1/my-instance"
+                    bind:value={monitorServiceUrl}
+                    required
+                  />
+                  <p class="text-xs text-primary-400 mt-1">
+                    Base URL for this instance on the monitor API (must expose <code class="text-[11px]">/cycles</code>, <code class="text-[11px]">/history</code>, and <code class="text-[11px]">/poll/*</code>).
+                  </p>
+                </div>
+                <div>
+                  <label class="label" for="monitorPrincipal">Monitor controller principal</label>
+                  <input
+                    id="monitorPrincipal"
+                    type="text"
+                    class="input font-mono text-sm"
+                    placeholder="aaaaa-aa"
+                    bind:value={monitorPrincipal}
+                  />
+                  <p class="text-xs text-primary-400 mt-1">
+                    Identity the monitor uses for <code class="text-[11px]">canister_status</code> reads. On save, Casals adds it as a co-controller of managed canisters when set.
+                  </p>
+                </div>
+              </div>
+            {/if}
           </div>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-5">
@@ -445,10 +529,21 @@
               </div>
             </div>
 
-            <label class="flex items-center gap-2.5 cursor-pointer">
-              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesAutopilot} />
+            <label class="flex items-center gap-2.5 cursor-pointer {cycleMode === 'offchain' ? 'opacity-50' : ''}">
+              <input
+                type="checkbox"
+                class="w-4 h-4 rounded border-primary-300"
+                bind:checked={cyclesAutopilot}
+                disabled={cycleMode === 'offchain'}
+              />
               <span class="text-sm font-medium text-primary-700">Autopilot</span>
-              <span class="text-xs text-primary-400">— periodically top up low canisters</span>
+              <span class="text-xs text-primary-400">
+                {#if cycleMode === 'offchain'}
+                  — disabled while off-chain monitor is active
+                {:else}
+                  — periodically top up low canisters
+                {/if}
+              </span>
               <div class="relative shrink-0 ml-auto">
                 <button
                   type="button"
@@ -574,6 +669,20 @@
                 </div>
               </div>
             </div>
+
+            <div>
+              <label class="label" for="alertEmails">Alert emails</label>
+              <input
+                id="alertEmails"
+                type="text"
+                class="input"
+                placeholder="ops@example.com, alerts@example.com"
+                bind:value={alertEmails}
+              />
+              <p class="text-xs text-primary-400 mt-1">
+                Comma-separated recipients. When the treasury cannot fund a top-up (no spendable cycles and no convertible ICP), the off-chain monitor sends an email alert.
+              </p>
+            </div>
           </div>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-3">
@@ -631,32 +740,6 @@
           if (meta) meta = { ...meta, subnet_whitelist: wl };
         }}
       />
-    </div>
-
-    <!-- CycleOps monitored canisters -->
-    <div class="card p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-semibold text-primary-800">CycleOps monitored canisters</h2>
-        {#if cycleops}
-          <span class="badge {cycleops.cycleops_enabled ? 'badge-frontend' : 'badge-neutral'}">
-            {cycleops.cycleops_enabled ? 'enabled' : 'disabled'}
-          </span>
-        {/if}
-      </div>
-      {#if cycleops && cycleops.cycleops_principal}
-        <p class="text-xs text-primary-400 mb-3 font-mono" title={cycleops.cycleops_principal}>
-          principal: {shortPrincipal(cycleops.cycleops_principal)}
-        </p>
-      {/if}
-      {#if cycleops && cycleops.canister_ids.length > 0}
-        <ul class="space-y-1.5">
-          {#each cycleops.canister_ids as id (id)}
-            <li class="font-mono text-xs text-primary-700 bg-primary-50 rounded-md px-3 py-1.5">{id}</li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="text-sm text-primary-400">No canisters monitored.</p>
-      {/if}
     </div>
   {/if}
 </div>

@@ -37,8 +37,13 @@ def _install_wasm_bytes(canister_id: str, wasm: bytes, install_mode):
     unwrap_call_result(res)
 
 
+def sweep_candid_arg(treasury_id: str, amount: int) -> str:
+    """Candid text for the cycles-sweep helper's ``sweep(principal, nat64)`` method."""
+    return f'(principal "{treasury_id}", {int(amount)} : nat64)'
+
+
 def _call_sweep(canister_id: str, treasury_id: str, amount: int):
-    arg = f'(principal "{treasury_id}", nat64 {int(amount)})'
+    arg = sweep_candid_arg(treasury_id, amount)
     res = yield ic.call_raw(
         Principal.from_str(canister_id), "sweep", ic.candid_encode(arg), 0)
     unwrap_call_result(res)

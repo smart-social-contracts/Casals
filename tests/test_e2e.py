@@ -176,10 +176,15 @@ class TestFailurePaths:
 
 
 class TestIntrospection:
-    def test_cycleops_monitors_created_canisters(self, env):
-        mon = call_canister("cycleops_monitored")
-        ids = mon["canister_ids"]
-        assert isinstance(ids, list) and len(ids) >= 1
+    def test_managed_canisters_in_tree(self, env):
+        tree = call_canister("get_tree")
+        ids = [
+            c["canister_id"]
+            for sec in tree["sections"]
+            for stand in sec["stands"]
+            for c in stand["canisters"]
+            if c.get("canister_id")
+        ]
         assert TestLifecycle.state.get("cid") in ids
 
     def test_audit_log_records_lifecycle_blocks(self, env):

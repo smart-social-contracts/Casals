@@ -7,7 +7,7 @@ The orchestra metaphor, persisted via ic_python_db entities:
 Plus the supporting governance/operational records:
 
     AuthorizedWasm   — per-section list of WASMs a stand's canisters may run
-    Settings         — singleton: open-access toggle, CycleOps, file-registry
+    Settings         — singleton: open-access toggle, file-registry
     OrchestrationEvent — append-only, ICRC-3 / ICRC-121-style audit log
 """
 
@@ -208,11 +208,6 @@ class Settings(Entity):
     # Optional browse UI for the registry (separate asset canister in Realms;
     # bundled as ic_file_registry_frontend in standalone Casals deployments).
     file_registry_frontend_canister_id = String(max_length=64, default="")
-    # CycleOps: Casals keeps this principal informed of the canisters to
-    # monitor and adds it as a controller so it can auto-top-up. Optional
-    # backstop alongside Casals' own native cycles management (below).
-    cycleops_enabled = Integer(default=0)
-    cycleops_principal = String(max_length=64, default="")
     # Off-chain monitor (casals-monitor): when enabled, its principal is added as
     # a co-controller of managed canisters so it can read canister_status and
     # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot
@@ -221,6 +216,8 @@ class Settings(Entity):
     monitor_enabled = Integer(default=0)
     monitor_principal = String(max_length=64, default="")
     monitor_service_url = String(max_length=128, default="")
+    # Comma-separated alert recipients when treasury cannot fund a top-up.
+    alert_emails = String(max_length=512, default="")
     # ── Native cycles management (the conductor as the orchestra's paymaster) ──
     # Platform-default cycle policy, used when a canister/stand/section sets no
     # override. min_cycles: top up when a canister's balance (above its freezing

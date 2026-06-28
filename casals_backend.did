@@ -153,6 +153,7 @@ service : {
   "canister_exec" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;
+  "refresh_treasury" : (text) -> (text);
   "refresh_canisters" : (text) -> (text);
   "get_cycle_history" : (text) -> (text) query;
   "get_treasury_flow" : (text) -> (text) query;
@@ -161,7 +162,6 @@ service : {
   "convert_treasury_icp" : (text) -> (text);
   "reconcile" : () -> (text);
   "set_cycle_policy" : (text) -> (text);
-  "cycleops_monitored" : () -> (text) query;
   "sync_controllers" : (text) -> (text);
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

@@ -15,7 +15,6 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     list_authorized_wasms: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_events:            IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_canister_deployment: IDL.Func([IDL.Text], [IDL.Text], ['query']),
-    cycleops_monitored:    IDL.Func([], [IDL.Text], ['query']),
     get_sheet:             IDL.Func([], [IDL.Text], ['query']),
     list_pool:             IDL.Func([], [IDL.Text], ['query']),
     pool_remove:           IDL.Func([IDL.Text], [IDL.Text], []),

@@ -188,6 +188,13 @@ def test_notify_top_up_parses_numeric_ok_variant_with_nat():
     assert cycles_mod._variant_ok_first_number(decoded) == 8_370_832_580_000
 
 
+def test_sweep_candid_arg_uses_postfix_nat64():
+    import cycle_sweep as sweep_mod
+    arg = sweep_mod.sweep_candid_arg("aaaaa-aa", 8_500_000_000_000)
+    assert arg == '(principal "aaaaa-aa", 8500000000000 : nat64)'
+    assert "nat64 " not in arg.split(": nat64")[0]
+
+
 def test_treasury_cycles_deposit_amount():
     import cycles as cycles_mod
     assert cycles_mod.treasury_cycles_deposit_amount(1000, 500, minted=0, spent=0, dust=10) == 500
@@ -792,9 +799,9 @@ import lifecycle  # noqa: E402
 
 def test_merge_controllers_dedupes_and_preserves_order():
     assert lifecycle._merge_controllers(
-        ["casals", "cycleops"],
-        ["commander", "cycleops", "deployer"],
-    ) == ["casals", "cycleops", "commander", "deployer"]
+        ["casals", "monitor"],
+        ["commander", "monitor", "deployer"],
+    ) == ["casals", "monitor", "commander", "deployer"]
     assert lifecycle._merge_controllers(["a"], ["", "  ", "a", "b"]) == ["a", "b"]
 
 

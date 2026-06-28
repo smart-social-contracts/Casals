@@ -421,17 +421,15 @@ def _fetch_canister_controllers(canister_id: str):
 def _resolve_provision_controllers(dk):
     """Generator: controller set for a canister Casals is provisioning.
 
-    Always includes Casals, CycleOps and the off-chain monitor (each when
-    enabled), the stand commander, and — by default — every IC controller of the
-    commander principal/canister.
+    Always includes Casals and the off-chain monitor (when enabled), the stand
+    commander, and — by default — every IC controller of the commander
+    principal/canister.
     That mirrors ops access from a parent realm (e.g. capital deploy key on
     auto-scaled quarters) without a separate post-provision step.
     """
     s = _settings()
     self_id = ic.id().to_str()
     base = [self_id]
-    if s.cycleops_enabled and s.cycleops_principal:
-        base.append(s.cycleops_principal.strip())
     if s.monitor_enabled and s.monitor_principal:
         base.append(s.monitor_principal.strip())
 
@@ -551,7 +549,7 @@ def _allocate_canister(subnet: str = "", subnet_type: str = ""):
 
 def _provision_canister(dk, name: str, kind: str, w):
     """Generator: allocate a canister (reuse or create), install ``w``, verify
-    the module hash, wire CycleOps, and create+return the Canister record.
+    the module hash, and create+return the Canister record.
     On failure the canister is returned to the pool and the exception
     propagates.
     """
