@@ -32,6 +32,77 @@ export interface Series {
   points: SeriesPoint[];
 }
 
+/** Balance row used when summing canister history into one line. */
+export interface BalanceSample {
+  ts: number;
+  canister_id: string;
+  cycles: number;
+}
+
+/**
+ * Sort by time and collapse duplicate timestamps (last sample wins).
+ * Required for Lightweight Charts, which needs strictly increasing unique times.
+ */
+export function dedupeSeriesPoints(points: SeriesPoint[]): SeriesPoint[] {
+  const sorted = [...points].sort((a, b) => a.t - b.t);
+  const out: SeriesPoint[] = [];
+  for (const p of sorted) {
+    if (out.length && out[out.length - 1].t === p.t) {
+      out[out.length - 1] = p;
+    } else {
+      out.push({ t: p.t, v: p.v });
+    }
+  }
+  return out;
+}
+
+/**
+ * Sum balances across canisters at each sample time using forward-fill.
+ * Without this, a partial refresh (one canister sampled alone) under-counts
+ * the total and draws sharp bogus dips on aggregated lines.
+ */
+export function aggregateBalanceSeries(samples: BalanceSample[]): SeriesPoint[] {
+  if (!samples.length) return [];
+  const byCan = new Map<string, SeriesPoint[]>();
+  for (const s of samples) {
+    let pts = byCan.get(s.canister_id);
+    if (!pts) {
+      pts = [];
+      byCan.set(s.canister_id, pts);
+    }
+    pts.push({ t: s.ts, v: s.cycles });
+  }
+
+  const perCan: SeriesPoint[][] = [];
+  const allTs = new Set<number>();
+  for (const pts of byCan.values()) {
+    const deduped = dedupeSeriesPoints(pts);
+    if (!deduped.length) continue;
+    perCan.push(deduped);
+    for (const p of deduped) allTs.add(p.t);
+  }
+  if (!perCan.length) return [];
+
+  const times = [...allTs].sort((a, b) => a - b);
+  const idx = perCan.map(() => 0);
+  const lastV = perCan.map(() => 0);
+  const out: SeriesPoint[] = [];
+
+  for (const t of times) {
+    let sum = 0;
+    for (let c = 0; c < perCan.length; c++) {
+      const canPts = perCan[c];
+      while (idx[c] < canPts.length && canPts[idx[c]].t <= t) {
+        lastV[c] = canPts[idx[c]].v;
+        idx[c]++;
+      }
+      sum += lastV[c];
+    }
+    out.push({ t, v: sum });
+  }
+  return out;
+}
+
 export interface TreemapInput {
   name: string;
   value: number;
@@ -154,11 +225,266 @@ export function treemapLayout(root: TreemapInput, width: number, height: number)
   return out;
 }
 
+/** Fixed Y-axis step for cycles balance charts (0.2 TC in raw cycles). */
+export const TC_Y_TICK_STEP = 0.2 * 1e12;
+
+export type ChartWindowKey = '1h' | '1d' | '1w' | '1month' | 'inception';
+
+const NICE_X_INTERVALS_SECS = [
+  60,
+  2 * 60,
+  5 * 60,
+  10 * 60,
+  15 * 60,
+  30 * 60,
+  3600,
+  2 * 3600,
+  6 * 3600,
+  12 * 3600,
+  86400,
+  2 * 86400,
+  7 * 86400,
+  14 * 86400,
+  30 * 86400,
+  90 * 86400,
+  180 * 86400,
+  365 * 86400,
+];
+
+/** Pick a readable X tick interval for long/inception ranges (~8 ticks). */
+export function dynamicXTickInterval(spanSecs: number): number {
+  if (spanSecs <= 0) return 3600;
+  const target = spanSecs / 8;
+  for (const interval of NICE_X_INTERVALS_SECS) {
+    if (interval >= target) return interval;
+  }
+  return NICE_X_INTERVALS_SECS[NICE_X_INTERVALS_SECS.length - 1];
+}
+
+export function xTickIntervalForWindow(window: ChartWindowKey, spanSecs: number): number {
+  switch (window) {
+    case '1h':
+      return 60;
+    case '1d':
+      return 3600;
+    case '1w':
+      return 6 * 3600;
+    case '1month':
+      return 86400;
+    case 'inception':
+      return dynamicXTickInterval(spanSecs);
+  }
+}
+
+export function buildXTicks(tStart: number, tEnd: number, intervalSecs: number): number[] {
+  if (intervalSecs <= 0 || tEnd <= tStart) return [];
+  const first = Math.ceil(tStart / intervalSecs) * intervalSecs;
+  const ticks: number[] = [];
+  for (let t = first; t <= tEnd; t += intervalSecs) {
+    ticks.push(t);
+  }
+  return ticks;
+}
+
+/** Keep grid density but cap axis labels so they do not overlap (~56px per label). */
+export function thinTicks(ticks: number[], maxCount: number): number[] {
+  if (ticks.length <= maxCount || maxCount < 2) return ticks;
+  const step = Math.ceil(ticks.length / maxCount);
+  const out: number[] = [];
+  for (let i = 0; i < ticks.length; i += step) {
+    out.push(ticks[i]);
+  }
+  const last = ticks[ticks.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+export function buildYTicksFromStep(
+  vMinRaw: number,
+  vMaxRaw: number,
+  step: number,
+  options?: { anchorZero?: boolean },
+): { vMin: number; vMax: number; ticks: number[] } {
+  if (step <= 0) {
+    const vMax = vMaxRaw > 0 ? vMaxRaw * 1.08 : 1;
+    return { vMin: 0, vMax, ticks: [0, 0.25, 0.5, 0.75, 1].map((f) => f * vMax) };
+  }
+  const vMin = options?.anchorZero ? 0 : Math.floor(vMinRaw / step) * step;
+  let vMax = Math.ceil(vMaxRaw / step) * step;
+  if (vMax <= vMin) vMax = vMin + step;
+  const ticks: number[] = [];
+  for (let v = vMin; v <= vMax + step * 0.001; v += step) {
+    ticks.push(v);
+  }
+  return { vMin, vMax, ticks };
+}
+
 // Compact, human time label for a unix-seconds tick given the visible span.
-export function timeLabel(tsSecs: number, spanSecs: number): string {
+export function timeLabel(tsSecs: number, spanSecs: number, tickIntervalSecs?: number): string {
   const d = new Date(tsSecs * 1000);
-  if (spanSecs <= 36 * 3600) {
+  const interval = tickIntervalSecs ?? 0;
+  if (interval <= 3600 || spanSecs <= 2 * 3600) {
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
+  if (interval <= 86400 || spanSecs <= 3 * 86400) {
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+    });
+  }
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+export interface PlotPoint {
+  t: number;
+  v: number;
+}
+
+export interface MeasureLine {
+  id: number;
+  a: PlotPoint;
+  b: PlotPoint;
+}
+
+export function measureLineStats(a: PlotPoint, b: PlotPoint): {
+  dt: number;
+  dv: number;
+  ratePerSec: number;
+} {
+  const dt = b.t - a.t;
+  const dv = b.v - a.v;
+  const ratePerSec = dt !== 0 ? dv / dt : 0;
+  return { dt, dv, ratePerSec };
+}
+
+export function formatChartDuration(secs: number): string {
+  const abs = Math.abs(secs);
+  if (abs < 90) return `${Math.round(abs)}s`;
+  if (abs < 5400) return `${(abs / 60).toFixed(abs < 600 ? 1 : 0)}m`;
+  if (abs < 172800) return `${(abs / 3600).toFixed(abs < 7200 ? 1 : 0)}h`;
+  return `${(abs / 86400).toFixed(abs < 604800 ? 1 : 0)}d`;
+}
+
+function formatSignedTcRate(tcPerHour: number, multiplier: number, suffix: string): string {
+  const value = tcPerHour * multiplier;
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${suffix}`;
+}
+
+export function formatMeasureLabel(
+  dt: number,
+  dv: number,
+  ratePerSec: number,
+  formatValue: (v: number) => string,
+): { primary: string; secondary: string } {
+  const tcPerHour = (ratePerSec * 3600) / 1e12;
+  const deltaSign = dv >= 0 ? '+' : '−';
+  return {
+    primary: [
+      formatSignedTcRate(tcPerHour, 1, 'TC/h'),
+      formatSignedTcRate(tcPerHour, 24, 'TC/day'),
+      formatSignedTcRate(tcPerHour, 24 * 30, 'TC/month'),
+    ].join(' · '),
+    secondary: `${deltaSign}${formatValue(Math.abs(dv))} · ${formatChartDuration(dt)}`,
+  };
+}
+
+export const CYCLES_TO_TC = 1 / 1e12;
+export const TC_TO_CYCLES = 1e12;
+
+export function cyclesToTc(cycles: number): number {
+  return cycles * CYCLES_TO_TC;
+}
+
+export function tcToCycles(tc: number): number {
+  return tc * TC_TO_CYCLES;
+}
+
+export interface ChartEventMarker {
+  time: number;
+  text: string;
+  color: string;
+  /** Match ``Series.name`` when set; otherwise show on every series. */
+  seriesName?: string;
+}
+
+export const CHART_EVENT_BTYPES = new Set([
+  'cycles_topup',
+  'cycles_return',
+  'treasury_spent',
+  'cycles_icp_convert',
+  'treasury_cycles_deposit',
+]);
+
+export function snapPlotPointToSeries(
+  series: Series[],
+  point: PlotPoint,
+  timeToX: (t: number) => number | null,
+  valueToY: (v: number) => number | null,
+  thresholdPx = 20,
+): PlotPoint {
+  const px = timeToX(point.t);
+  const py = valueToY(point.v);
+  if (px === null || py === null) return point;
+  let best: PlotPoint | null = null;
+  let bestDist = thresholdPx;
+  for (const s of series) {
+    for (const p of s.points) {
+      const x = timeToX(p.t);
+      const y = valueToY(p.v);
+      if (x === null || y === null) continue;
+      const dist = Math.hypot(x - px, y - py);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = p;
+      }
+    }
+  }
+  return best ?? point;
+}
+
+export function exportSeriesCsv(series: Series[], visibleNames: Set<string>): string {
+  const lines = ['series,unix_secs,iso_time,cycles,tc'];
+  for (const s of series) {
+    if (!visibleNames.has(s.name)) continue;
+    for (const p of [...s.points].sort((a, b) => a.t - b.t)) {
+      lines.push(
+        `${JSON.stringify(s.name)},${p.t},${new Date(p.t * 1000).toISOString()},${p.v},${cyclesToTc(p.v)}`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+export function downloadTextFile(filename: string, text: string, mime = 'text/csv;charset=utf-8'): void {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const CHART_MARKER_META: Record<string, { text: string; color: string }> = {
+  cycles_topup: { text: '↑', color: '#10b981' },
+  cycles_return: { text: '↓', color: '#f59e0b' },
+  treasury_spent: { text: '¢', color: '#ef4444' },
+  cycles_icp_convert: { text: '⇄', color: '#6366f1' },
+  treasury_cycles_deposit: { text: '+', color: '#14b8a6' },
+};
+
+export function orchestrationEventToMarker(
+  e: { btype: string; timestamp_secs: number; canister_id?: string },
+  canisterName?: string,
+): ChartEventMarker | null {
+  const meta = CHART_MARKER_META[e.btype];
+  if (!meta) return null;
+  return {
+    time: e.timestamp_secs,
+    text: meta.text,
+    color: meta.color,
+    seriesName: canisterName,
+  };
 }

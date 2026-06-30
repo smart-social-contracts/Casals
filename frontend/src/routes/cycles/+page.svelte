@@ -27,6 +27,7 @@
     getTree,
     orchestraCanisterIds,
     isPoolUnassigned,
+    getEvents,
   } from '$lib/api';
   import type {
     CyclesReport,
@@ -39,20 +40,23 @@
     Metadata,
     CycleStatus,
     Tree,
+    OrchestrationEvent,
   } from '$lib/api';
   import { isAuthenticated, isController } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
   import LineChart from '$lib/components/LineChart.svelte';
+  import CyclesAdvancedChart from '$lib/components/CyclesAdvancedChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
-  import { colorAt, type Series, type TreemapInput } from '$lib/charts';
+  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, dedupeSeriesPoints, type ChartEventMarker, type Series, type TreemapInput } from '$lib/charts';
 
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
+  let chartEvents = $state<ChartEventMarker[]>([]);
   let treasuryFlow = $state<TreasuryFlow | null>(null);
   let flowError = $state('');
   let flowLoading = $state(false);
@@ -66,7 +70,7 @@
   const CANISTER_REFRESH_BATCH = 3;
   /** Only attempt monolithic get_cycles below this orchestra size. */
   const FULL_GET_CYCLES_MAX = 10;
-  let historyLoading = $state(false); // chart history fetch or scope re-aggregation
+  let historyFetching = $state(false); // window change → API fetch only
   let cachedAt = $state<number | null>(null);
   let snapshotPartial = $state(false);
   let liveSynced = $state(false);
@@ -221,6 +225,29 @@
     history = await getCycleHistory(
       w === 'inception' ? {} : { window_secs: WINDOWS[w] },
     );
+    await loadChartEvents(w);
+  }
+
+  function canisterNameForId(id: string): string | undefined {
+    return report?.canisters?.find((c) => c.canister_id === id)?.name;
+  }
+
+  async function loadChartEvents(w: WindowKey = windowKey) {
+    try {
+      const end = history?.now ?? Math.floor(Date.now() / 1000);
+      const start = w === 'inception'
+        ? (history?.samples?.length ? Math.min(...history.samples.map((s) => s.ts)) : end - WINDOWS['1d'])
+        : end - WINDOWS[w];
+      const evs = await getEvents({ take: 500 });
+      chartEvents = evs
+        .flatMap((e: OrchestrationEvent) => {
+          if (e.timestamp_secs < start || e.timestamp_secs > end) return [];
+          const m = orchestrationEventToMarker(e, canisterNameForId(e.canister_id));
+          return m ? [m] : [];
+        });
+    } catch {
+      chartEvents = [];
+    }
   }
 
   function applyOffChainMonitorState(cached: CyclesReport, md: Metadata | null) {
@@ -274,27 +301,23 @@
   }
 
   async function setWindow(w: WindowKey) {
-    if (w === windowKey || historyLoading) return;
+    if (w === windowKey || historyFetching) return;
     windowKey = w;
-    historyLoading = true;
+    historyFetching = true;
     await tick();
     try {
       await loadHistoryForWindow(w);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Could not load cycle history');
     } finally {
-      historyLoading = false;
+      historyFetching = false;
     }
   }
 
-  async function setScope(next: Scope) {
-    if (next === scope || historyLoading) return;
-    historyLoading = true;
-    await tick();
+  function setScope(next: Scope) {
+    if (next === scope) return;
     scope = next;
     scopeFilter = new Set();
-    await tick();
-    historyLoading = false;
   }
 
   function liveBalanceCountFrom(canisters: CanisterCycles[] | undefined): number {
@@ -576,6 +599,13 @@
     windowKey === 'inception' ? samples : samples.filter((s) => s.ts >= since),
   );
 
+  const chartTimeStart = $derived.by(() => {
+    if (windowKey !== 'inception') return since;
+    if (!windowSamples.length) return now - WINDOWS['1d'];
+    return Math.min(...windowSamples.map((s) => s.ts));
+  });
+  const chartTimeEnd = $derived(now);
+
   const treemapWinSecs = $derived(WINDOWS[treemapWindow]);
   const treemapSince = $derived(treemapWindow === 'inception' ? 0 : now - treemapWinSecs);
   const treemapSamples = $derived(
@@ -631,7 +661,7 @@
       : 'selected canisters',
   );
 
-  // Over-time series for the selected scope (sum by ts for aggregated scopes).
+  // Over-time series for the selected scope (forward-filled sum for aggregated scopes).
   const lineSeries = $derived.by<Series[]>(() => {
     const ss = windowSamples.filter(passesScopeFilter);
     if (!ss.length) return [];
@@ -642,28 +672,34 @@
         if (!e) { e = { name: s.canister || s.canister_id, points: [] }; byCan.set(s.canister_id, e); }
         e.points.push({ t: s.ts, v: s.cycles });
       }
-      return [...byCan.values()].map((e, i) => ({ name: e.name, color: colorAt(i), points: e.points }));
+      return [...byCan.values()].map((e, i) => ({
+        name: e.name,
+        color: colorAt(i),
+        points: dedupeSeriesPoints(e.points),
+      }));
     }
     if (scope === 'all') {
-      const byTs = new Map<number, number>();
-      for (const s of ss) byTs.set(s.ts, (byTs.get(s.ts) ?? 0) + s.cycles);
-      return [{ name: 'All', color: colorAt(0), points: [...byTs.entries()].map(([t, v]) => ({ t, v })) }];
+      return [{
+        name: 'All',
+        color: colorAt(0),
+        points: aggregateBalanceSeries(ss),
+      }];
     }
     const keyOf =
       scope === 'orchestra' || scope === 'sections'
         ? (s: typeof ss[number]) => s.section
         : (s: typeof ss[number]) => s.stand;
-    const byKey = new Map<string, Map<number, number>>();
+    const byKey = new Map<string, typeof ss>();
     for (const s of ss) {
       const k = keyOf(s) || '(none)';
-      let m = byKey.get(k);
-      if (!m) { m = new Map(); byKey.set(k, m); }
-      m.set(s.ts, (m.get(s.ts) ?? 0) + s.cycles);
+      let group = byKey.get(k);
+      if (!group) { group = []; byKey.set(k, group); }
+      group.push(s);
     }
-    return [...byKey.entries()].map(([k, m], i) => ({
+    return [...byKey.entries()].map(([k, group], i) => ({
       name: k,
       color: colorAt(i),
-      points: [...m.entries()].map(([t, v]) => ({ t, v })),
+      points: aggregateBalanceSeries(group),
     }));
   });
 
@@ -1327,7 +1363,7 @@
           </h2>
           <p class="text-xs text-primary-400">
             Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
-            {#if historyLoading}
+            {#if historyFetching}
               <span class="text-primary-500">Loading chart…</span>
             {:else if !hasHistory}
               History fills in as the sampler runs (hourly) or after a reconcile.
@@ -1335,20 +1371,19 @@
           </p>
         </div>
         <div class="flex flex-wrap gap-2 self-start">
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyLoading ? 'opacity-60' : ''}">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyFetching ? 'opacity-60' : ''}">
             {#each Object.keys(WINDOWS) as w (w)}
               <button
                 class="px-3 py-1.5 text-xs font-medium disabled:cursor-wait {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                disabled={historyLoading}
+                disabled={historyFetching}
                 onclick={() => setWindow(w as WindowKey)}
               >{w}</button>
             {/each}
           </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyLoading ? 'opacity-60' : ''}">
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
             {#each SCOPE_OPTIONS as opt (opt[0])}
               <button
-                class="px-3 py-1.5 text-xs font-medium disabled:cursor-wait {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                disabled={historyLoading}
+                class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
                 onclick={() => setScope(opt[0])}
               >{opt[1]}</button>
             {/each}
@@ -1387,7 +1422,7 @@
         </div>
       {/if}
       <div class="relative min-h-[260px]">
-        {#if historyLoading}
+        {#if historyFetching}
           <div
             class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/75"
             aria-live="polite"
@@ -1401,8 +1436,14 @@
             </div>
           </div>
         {/if}
-        <div class="transition-opacity duration-150 {historyLoading ? 'opacity-40 pointer-events-none' : ''}">
-          <LineChart series={lineSeries} format={formatCycles} />
+        <div class="transition-opacity duration-150 {historyFetching ? 'opacity-40 pointer-events-none' : ''}">
+          <CyclesAdvancedChart
+            series={lineSeries}
+            format={formatCycles}
+            timeStart={chartTimeStart}
+            timeEnd={chartTimeEnd}
+            events={chartEvents}
+          />
         </div>
       </div>
     </div>
