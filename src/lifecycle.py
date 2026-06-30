@@ -579,12 +579,32 @@ def _provision_canister(dk, name: str, kind: str, w):
     the module hash, and create+return the Canister record.
     On failure the canister is returned to the pool and the exception
     propagates.
+
+    Name reservation: the Canister record is written to stable memory with
+    status CREATED *before* the first yield so that concurrent calls for the
+    same name are rejected by the `Canister[name] is not None` check in
+    `create_canister` (see issue #casals-dedup).
     """
     subnet, subnet_type = _target_subnet(dk)
     assert_subnet_allowed(subnet, subnet_type)
+
+    # Reserve the name in stable memory atomically (before the first yield).
+    # This prevents a concurrent create_canister call for the same name from
+    # slipping past the dedup check while this call's WASM install is in flight.
+    st = Canister(name=name)
+    st.stand = dk
+    st.kind = kind
+    st.wasm_key = w.key
+    st.status = CanisterStatus.CREATED
+    st.created_by = _caller()
+
     _append_event("allocating_canister", "", {"stand": dk.name, "name": name,
                                               "wasm_key": w.key, "subnet": subnet or "default"})
-    cid, reused = yield from _allocate_canister(subnet, subnet_type)
+    try:
+        cid, reused = yield from _allocate_canister(subnet, subnet_type)
+    except Exception:
+        st.delete()
+        raise
     mode = {"reinstall": None} if reused else {"install": None}
     _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
                                            "wasm_key": w.key, "reused": reused})
@@ -599,9 +619,11 @@ def _provision_canister(dk, name: str, kind: str, w):
         ok, actual = yield from _verify_module_hash(cid, w.wasm_hash)
     except Exception:
         _pool_free(cid)
+        st.delete()
         raise
     if not ok:
         _pool_free(cid)
+        st.delete()
         _append_event("create_failed", cid, {"expected": w.wasm_hash, "actual": actual})
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
@@ -617,14 +639,10 @@ def _provision_canister(dk, name: str, kind: str, w):
     _append_event("verifying_hash", cid, {"wasm_key": w.key})
     yield from _maybe_provision_assets(cid, w, dk)
 
-    st = Canister(name=name)
-    st.stand = dk
+    # Finalize the reserved entity with the actual installed values.
     st.canister_id = cid
-    st.kind = kind
-    st.wasm_key = w.key
     st.wasm_hash = actual
     st.status = CanisterStatus.INSTALLED
-    st.created_by = _caller()
     pooled = PooledCanister[cid]
     st.subnet = pooled.subnet if pooled is not None else ""
     _pool_mark_in_use(cid, name)

@@ -1350,8 +1350,14 @@ def create_canister(args: text) -> Async[text]:
         name = params["name"].strip()
         kind = params.get("kind") or CanisterKind.BACKEND
         list(Canister.instances())
-        if Canister[name] is not None:
-            return _err(f"canister '{name}' already exists")
+        existing = Canister[name]
+        if existing is not None:
+            # A CREATED-status entry with no canister_id is a stale reservation
+            # from a previously failed provision attempt — allow recreation.
+            if existing.status == CanisterStatus.CREATED and not (existing.canister_id or "").strip():
+                existing.delete()
+            else:
+                return _err(f"canister '{name}' already exists")
 
         w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
 
