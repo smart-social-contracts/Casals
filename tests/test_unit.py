@@ -77,6 +77,30 @@ def test_ic_run_status_parses_variant():
     assert cycles_mod._ic_run_status({}) == "unknown"
 
 
+def test_resolve_topup_source_requires_monitor_identity(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakeSettings:
+        monitor_enabled = True
+        monitor_principal = "aaaaa-aa"
+
+    monkeypatch.setattr(cycles_mod, "_settings", lambda: FakeSettings())
+    assert cycles_mod.resolve_topup_source("autotopup", "aaaaa-aa") == "autotopup"
+    assert cycles_mod.resolve_topup_source("autotopup", "bbbbb-bb") == "manual"
+    assert cycles_mod.resolve_topup_source("", "aaaaa-aa") == "manual"
+
+
+def test_topup_event_payload_source_and_legacy_manual():
+    import cycles as cycles_mod
+
+    manual = cycles_mod.topup_event_payload(1_000, "manual")
+    assert manual == {"amount": 1_000, "source": "manual", "manual": True}
+    auto = cycles_mod.topup_event_payload(2_000, "autotopup")
+    assert auto == {"amount": 2_000, "source": "autotopup"}
+    pilot = cycles_mod.topup_event_payload(3_000, "autopilot", balance_before=500)
+    assert pilot == {"amount": 3_000, "source": "autopilot", "balance_before": 500}
+
+
 def test_hex_to_blob_escaped():
     import cycles as cycles_mod
     assert cycles_mod._hex_to_blob_escaped("aabb01") == "\\aa\\bb\\01"

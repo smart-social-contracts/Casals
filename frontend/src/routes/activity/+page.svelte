@@ -1,10 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getEvents, getTree, shortPrincipal, formatCycles, formatIcp } from '$lib/api';
+  import {
+    getEvents,
+    getTree,
+    shortPrincipal,
+    formatCycles,
+    formatIcp,
+    casalsMetadata,
+    topupSourceSuffix,
+  } from '$lib/api';
   import type { OrchestrationEvent, Tree } from '$lib/api';
 
   let events = $state<OrchestrationEvent[]>([]);
   let canisterNames = $state<Record<string, string>>({});
+  let monitorPrincipal = $state('');
   let loading = $state(true);
   let error = $state('');
   let take = $state(100);
@@ -16,11 +25,13 @@
     loading = true;
     error = '';
     try {
-      const [evs, tree] = await Promise.all([
+      const [evs, tree, meta] = await Promise.all([
         getEvents({ take, btype: btypeFilter || undefined }),
         getTree().catch(() => null as Tree | null),
+        casalsMetadata().catch(() => null),
       ]);
       events = evs;
+      monitorPrincipal = meta?.monitor_principal?.trim() ?? '';
       const map: Record<string, string> = {};
       if (tree) {
         for (const s of tree.sections)
@@ -91,7 +102,8 @@
       case 'assets_uploaded': return `Assets uploaded (${p.bytes ?? 0} bytes)`;
       case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
       case 'create_failed': return 'Create failed: module hash mismatch';
-      case 'cycles_topup': return `Topped up ${fmt(p.amount)} cycles${p.manual ? ' (manual)' : ''}`;
+      case 'cycles_topup':
+        return `Topped up ${fmt(p.amount)} cycles${topupSourceSuffix(p, e.caller, monitorPrincipal)}`;
       case 'cycles_return': return `Returned ${fmt(p.amount)} cycles to treasury`;
       case 'cycle_policy_set': return `Cycle policy: min ${fmt(p.min_cycles)}${p.topup_cycles ? `, top-up ${fmt(p.topup_cycles)}` : ''}`;
       case 'cycles_checked': return `Checked balance ${fmt(p.balance)} · ${p.status ?? 'ok'}`;

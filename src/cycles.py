@@ -38,6 +38,27 @@ FX_SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "CNY", "CAD", "AUD
 # number of stored samples to bound stable-memory growth.
 SAMPLE_RETENTION_SECS = 35 * 24 * 3600   # ~35 days
 SAMPLE_MAX = 8000
+
+
+def resolve_topup_source(requested: str, caller: str) -> str:
+    """Audit source for ``top_up``. ``autotopup`` is only accepted from the monitor identity."""
+    raw = (requested or "").strip().lower()
+    if raw in ("autotopup", "auto", "monitor"):
+        s = _settings()
+        monitor_id = (s.monitor_principal or "").strip()
+        if s.monitor_enabled and monitor_id and caller == monitor_id:
+            return "autotopup"
+    return "manual"
+
+
+def topup_event_payload(amount: int, source: str, *, balance_before: int = None) -> dict:
+    """Build a ``cycles_topup`` audit payload with explicit ``source``."""
+    payload = {"amount": int(amount), "source": source}
+    if source == "manual":
+        payload["manual"] = True
+    if balance_before is not None:
+        payload["balance_before"] = int(balance_before)
+    return payload
 # Minimum spacing between opportunistic (get_cycles) samples.
 SAMPLE_MIN_GAP_SECS = 120
 
@@ -298,7 +319,7 @@ def _reconcile_all_gen():
                 topped_total += amount
                 st.cycles_deposited = int(st.cycles_deposited or 0) + amount
                 _append_event("cycles_topup", st.canister_id,
-                              {"amount": amount, "balance_before": bal})
+                              topup_event_payload(amount, "autopilot", balance_before=bal))
                 results.append({"canister": st.name, "topped_up": amount, "balance_before": bal})
                 bal = bal + amount
             except Exception as e:

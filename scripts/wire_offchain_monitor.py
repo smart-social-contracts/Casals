@@ -15,9 +15,9 @@ MONITOR_PRINCIPAL = "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6
 MONITOR_BASE = "https://casals.realmsgos.dev"
 
 INSTANCES = {
-    "test": ("qthgp-3yaaa-aaaae-agveq-cai", "realms-test"),
-    "staging": ("jj2e5-iyaaa-aaaac-bffeq-cai", "realms-staging"),
-    "demo": ("jo3cj-faaaa-aaaac-bffea-cai", "realms-demo"),
+    "test": ("qthgp-3yaaa-aaaae-agveq-cai", "realms-test", "qic2k-baaaa-aaaae-agvga-cai"),
+    "staging": ("jj2e5-iyaaa-aaaac-bffeq-cai", "realms-staging", "mcqbx-hyaaa-aaaaj-qsarq-cai"),
+    "demo": ("jo3cj-faaaa-aaaac-bffea-cai", "realms-demo", "hvwpv-aiaaa-aaaam-ajddq-cai"),
 }
 
 
@@ -67,13 +67,14 @@ def main() -> None:
     for env_name in [x.strip() for x in args.environments.split(",") if x.strip()]:
         if env_name not in INSTANCES:
             raise SystemExit(f"unknown environment: {env_name}")
-        cid, instance = INSTANCES[env_name]
+        cid, instance, frontend_cid = INSTANCES[env_name]
         url = f"{MONITOR_BASE}/v1/{instance}"
         print(f"\n=== {env_name} ({cid}) ===", flush=True)
         settings = {
             "monitor_enabled": True,
             "monitor_service_url": url,
             "monitor_principal": MONITOR_PRINCIPAL,
+            "casals_frontend_canister_id": frontend_cid,
             "cycles_sampling": False,
             "cycles_autopilot": False,
         }

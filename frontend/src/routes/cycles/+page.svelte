@@ -178,6 +178,20 @@
   let scope = $state<Scope>('all');
   let scopeFilter = $state<Set<string>>(new Set());
   let windowKey = $state<WindowKey>('1d');
+  let cyclesChartRef = $state<
+    | {
+        toggleMeasure(): void;
+        toggleSnapToData(): void;
+        clearMeasureLines(): void;
+        toggleExpanded(): void;
+        exportCsv(): void;
+      }
+    | undefined
+  >(undefined);
+  let chartMeasureActive = $state(false);
+  let chartSnapToData = $state(true);
+  let chartExpanded = $state(false);
+  let chartMeasureOverlay = $state(false);
   let treemapWindow = $state<WindowKey>('1month');
   let metric = $state<Metric>('burn');
   let flowPeriod = $state<TreasuryFlowPeriod>('day');
@@ -232,6 +246,22 @@
     return report?.canisters?.find((c) => c.canister_id === id)?.name;
   }
 
+  function chartSeriesNameForEvent(e: OrchestrationEvent): string | undefined {
+    if (scope === 'all') return 'All';
+    const fromReport = report?.canisters?.find((c) => c.canister_id === e.canister_id);
+    const fromHistory = history?.samples?.find((s) => s.canister_id === e.canister_id);
+    if (scope === 'canisters') {
+      return fromReport?.name ?? fromHistory?.canister ?? (e.canister_id || undefined);
+    }
+    if (scope === 'stands') {
+      return (fromReport?.stand ?? fromHistory?.stand) || '(none)';
+    }
+    if (scope === 'sections' || scope === 'orchestra') {
+      return (fromReport?.section ?? fromHistory?.section) || '(none)';
+    }
+    return undefined;
+  }
+
   async function loadChartEvents(w: WindowKey = windowKey) {
     try {
       const end = history?.now ?? Math.floor(Date.now() / 1000);
@@ -242,7 +272,13 @@
       chartEvents = evs
         .flatMap((e: OrchestrationEvent) => {
           if (e.timestamp_secs < start || e.timestamp_secs > end) return [];
-          const m = orchestrationEventToMarker(e, canisterNameForId(e.canister_id));
+          const canisterName = canisterNameForId(e.canister_id);
+          const m = orchestrationEventToMarker(
+            e,
+            canisterName,
+            meta?.monitor_principal,
+            chartSeriesNameForEvent(e),
+          );
           return m ? [m] : [];
         });
     } catch {
@@ -283,6 +319,7 @@
         cachedAt = cached.cached_at ?? null;
         applyOffChainMonitorState(cached, md);
       }
+      await loadChartEvents(windowKey);
       loadFx();
     } catch (e: any) {
       error = e?.message ?? String(e);
@@ -317,7 +354,12 @@
   function setScope(next: Scope) {
     if (next === scope) return;
     scope = next;
-    scopeFilter = new Set();
+    if (next === 'sections' || next === 'stands' || next === 'canisters') {
+      scopeFilter = new Set(filterKeysForScope(next, windowSamples));
+    } else {
+      scopeFilter = new Set();
+    }
+    if (history) void loadChartEvents(windowKey);
   }
 
   function liveBalanceCountFrom(canisters: CanisterCycles[] | undefined): number {
@@ -377,7 +419,7 @@
     if (refreshingTreasury) return;
     refreshingTreasury = true;
     error = '';
-    void reloadTreasuryFlow(flowPeriod);
+    void reloadTreasuryFlow(flowPeriod, true);
     try {
       let live: CyclesReport | null = null;
       if (meta?.monitor_service_url) {
@@ -401,7 +443,7 @@
     refreshProgress = '';
     error = '';
     void reloadHistory();
-    void reloadTreasuryFlow();
+    void reloadTreasuryFlow(undefined, true);
     try {
       // Phase 1: treasury only (fast; avoids IC instruction limit on large orchestras).
       refreshProgress = 'treasury';
@@ -474,12 +516,15 @@
     })();
   });
 
-  async function reloadTreasuryFlow(period: TreasuryFlowPeriod = flowPeriod) {
+  async function reloadTreasuryFlow(
+    period: TreasuryFlowPeriod = flowPeriod,
+    refreshMonitor = false,
+  ) {
     const req = ++flowRequest;
     flowLoading = true;
     flowError = '';
     try {
-      const flow = meta?.monitor_service_url
+      const flow = refreshMonitor
         ? await monitorPollFlow(period)
         : await getTreasuryFlow({ period });
       if (req !== flowRequest) return;
@@ -633,33 +678,29 @@
     return s.canister || s.canister_id;
   }
 
-  function passesScopeFilter(s: CycleHistory['samples'][number]): boolean {
-    if (scope === 'all' || scope === 'orchestra') return true;
-    if (scopeFilter.size === 0) return true;
-    return scopeFilter.has(scopeItemKey(s, scope));
-  }
-
-  const filterOptions = $derived.by<string[]>(() => {
-    const ss = windowSamples;
-    if (scope === 'sections' || scope === 'orchestra') {
+  function filterKeysForScope(
+    forScope: Scope,
+    ss: CycleHistory['samples'],
+  ): string[] {
+    if (forScope === 'sections' || forScope === 'orchestra') {
       return [...new Set(ss.map((s) => s.section || '(none)'))].sort();
     }
-    if (scope === 'stands') {
+    if (forScope === 'stands') {
       return [...new Set(ss.map((s) => s.stand || '(none)'))].sort();
     }
-    if (scope === 'canisters') {
+    if (forScope === 'canisters') {
       return [...new Set(ss.map((s) => s.canister || s.canister_id))].sort();
     }
     return [];
-  });
+  }
 
-  const scopeSubtitle = $derived(
-    scope === 'all' ? 'all canisters combined'
-      : scope === 'orchestra' ? 'by section'
-      : scope === 'sections' ? 'selected sections'
-      : scope === 'stands' ? 'selected stands'
-      : 'selected canisters',
-  );
+  function passesScopeFilter(s: CycleHistory['samples'][number]): boolean {
+    if (scope === 'all' || scope === 'orchestra') return true;
+    if (scopeFilter.size === 0) return false;
+    return scopeFilter.has(scopeItemKey(s, scope));
+  }
+
+  const filterOptions = $derived.by<string[]>(() => filterKeysForScope(scope, windowSamples));
 
   // Over-time series for the selected scope (forward-filled sum for aggregated scopes).
   const lineSeries = $derived.by<Series[]>(() => {
@@ -1017,7 +1058,7 @@
         toasts.success(`Converted ${icpPart} → ${formatCycles(res.cycles)}`);
         showConvert = false;
         await refreshTreasuryOnly();
-        await reloadTreasuryFlow(flowPeriod);
+        await reloadTreasuryFlow(flowPeriod, true);
       } else {
         const msg = (res.reason as string) || res.error || 'Nothing to convert';
         toasts.error(msg);
@@ -1361,14 +1402,15 @@
             Cycles over time
             <CalculatedAtHint at={historyCalculatedAt} label="Chart data fetched" />
           </h2>
-          <p class="text-xs text-primary-400">
-            Balance over the last {WINDOW_LABELS[windowKey]}, broken down by {scopeSubtitle}.
-            {#if historyFetching}
-              <span class="text-primary-500">Loading chart…</span>
-            {:else if !hasHistory}
-              History fills in as the sampler runs (hourly) or after a reconcile.
-            {/if}
-          </p>
+          {#if historyFetching || !hasHistory}
+            <p class="text-xs text-primary-400">
+              {#if historyFetching}
+                <span class="text-primary-500">Loading chart…</span>
+              {:else}
+                History fills in as the sampler runs (hourly) or after a reconcile.
+              {/if}
+            </p>
+          {/if}
         </div>
         <div class="flex flex-wrap gap-2 self-start">
           <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyFetching ? 'opacity-60' : ''}">
@@ -1390,34 +1432,124 @@
           </div>
         </div>
       </div>
+
+      {#snippet cyclesChartToolbar()}
+        <div class="flex flex-wrap items-center gap-2 mb-3">
+          {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
+            <button
+              type="button"
+              class="btn-secondary btn-sm btn-icon-tool"
+              aria-label="Select every {scope === 'sections' ? 'section' : scope === 'stands' ? 'stand' : 'canister'} in this time window"
+              onclick={() => selectAllScopeFilter(filterOptions)}
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="btn-secondary btn-sm btn-icon-tool"
+              aria-label="Clear the filter — hide all series until you pick items again"
+              disabled={scopeFilter.size === 0}
+              onclick={clearScopeFilter}
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="btn-secondary btn-sm btn-icon-tool {chartMeasureActive ? 'btn-icon-tool--active' : ''}"
+            aria-label={chartMeasureActive
+              ? 'Measuring: click two points on the chart · Esc to exit'
+              : 'Measure rate — click two points to measure Δcycles and consumption'}
+            onclick={() => cyclesChartRef?.toggleMeasure()}
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 21l9-9m0 0 3 3 9-9M12 12V3m0 9h9" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn-secondary btn-sm btn-icon-tool"
+            aria-label="Clear measure lines"
+            disabled={!chartMeasureOverlay}
+            onclick={() => cyclesChartRef?.clearMeasureLines()}
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.897 2.13 1.125 1.125 0 0 0-1.085.805M9.53 16.122 13.5 12m-3.97 4.122L6 18m12-6-2.122-2.122a3 3 0 0 0-5.78-1.128 2.25 2.25 0 0 1-2.897-2.13 1.125 1.125 0 0 0-1.085-.805M15 12l-2.122 2.122" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn-secondary btn-sm btn-icon-tool {chartSnapToData ? 'btn-icon-tool--active' : ''}"
+            aria-label={chartSnapToData
+              ? 'Snap to samples on — click to allow free placement'
+              : 'Snap to samples — snap measure points to nearest data'}
+            onclick={() => cyclesChartRef?.toggleSnapToData()}
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.75 0 3.75 3.75 0 0 1 7.75 0Z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="btn-secondary btn-sm btn-icon-tool"
+            aria-label={chartExpanded ? 'Close expanded chart (Esc)' : 'Full screen'}
+            onclick={() => cyclesChartRef?.toggleExpanded()}
+          >
+            {#if chartExpanded}
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M15 9h4.5M15 9V4.5M15 9l5.25-5.25M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
+              </svg>
+            {:else}
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+              </svg>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="btn-secondary btn-sm btn-icon-tool"
+            aria-label="Export CSV"
+            onclick={() => cyclesChartRef?.exportCsv()}
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12M12 16.5V3" />
+            </svg>
+          </button>
+          {#if chartMeasureActive}
+            <span class="text-xs text-primary-400">
+              Pan/zoom freely · Esc exits measure mode
+            </span>
+          {/if}
+        </div>
+      {/snippet}
+
+      {#if !chartExpanded}
+        {@render cyclesChartToolbar()}
+      {/if}
+
       {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
         <div class="flex flex-wrap items-center gap-2 mb-3">
           <span class="text-xs text-primary-500">Show</span>
-          <button
-            type="button"
-            class="text-xs text-primary-600 hover:text-primary-900 underline"
-            onclick={() => selectAllScopeFilter(filterOptions)}
-          >all</button>
-          <span class="text-primary-300">·</span>
-          <button
-            type="button"
-            class="text-xs text-primary-600 hover:text-primary-900 underline"
-            onclick={clearScopeFilter}
-          >clear</button>
           {#each filterOptions as key (key)}
             <button
               type="button"
               class="px-2 py-0.5 rounded-full text-xs border transition-colors
-                {scopeFilter.size === 0 || scopeFilter.has(key)
+                {scopeFilter.has(key)
                   ? 'bg-primary-100 border-primary-300 text-primary-800'
                   : 'bg-white border-[var(--color-border-primary)] text-primary-400'}"
               onclick={() => toggleScopeFilter(key)}
             >{key}</button>
           {/each}
-          {#if scopeFilter.size > 0}
-            <span class="text-xs text-primary-400">({scopeFilter.size} selected)</span>
-          {:else}
+          {#if scopeFilter.size === 0}
+            <span class="text-xs text-primary-400">(none)</span>
+          {:else if scopeFilter.size === filterOptions.length}
             <span class="text-xs text-primary-400">(all)</span>
+          {:else}
+            <span class="text-xs text-primary-400">({scopeFilter.size} selected)</span>
           {/if}
         </div>
       {/if}
@@ -1438,6 +1570,12 @@
         {/if}
         <div class="transition-opacity duration-150 {historyFetching ? 'opacity-40 pointer-events-none' : ''}">
           <CyclesAdvancedChart
+            bind:this={cyclesChartRef}
+            bind:measureActive={chartMeasureActive}
+            bind:snapToData={chartSnapToData}
+            bind:isExpanded={chartExpanded}
+            bind:measureOverlayVisible={chartMeasureOverlay}
+            toolbar={cyclesChartToolbar}
             series={lineSeries}
             format={formatCycles}
             timeStart={chartTimeStart}

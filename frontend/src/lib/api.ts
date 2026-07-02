@@ -68,6 +68,7 @@ export interface Metadata {
   open_access: boolean;
   file_registry_canister_id: string;
   file_registry_frontend_canister_id?: string;
+  casals_frontend_canister_id?: string;
   /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
    * and history from monitor_service_url instead of calling the conductor. */
   monitor_enabled?: boolean;
@@ -587,15 +588,17 @@ async function _monitorBase(): Promise<string> {
 async function _monitorGet<T>(path: string): Promise<T | null> {
   const base = await _monitorBase();
   if (!base) return null;
-  try {
-    const res = await fetch(`${base.replace(/\/$/, '')}${path}`, {
-      headers: { accept: 'application/json' },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
+  const url = `${base.replace(/\/$/, '')}${path}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      if (!res.ok) continue;
+      return (await res.json()) as T;
+    } catch {
+      // Transient network errors — one retry.
+    }
   }
+  return null;
 }
 
 /** True when this Casals instance is configured for off-chain cycle management. */
@@ -639,8 +642,12 @@ export async function monitorPollCanisters(names: string[]): Promise<CyclesRepor
 }
 
 /** Re-sync treasury flow audit events from the conductor into the monitor. */
-export async function monitorPollFlow(period: TreasuryFlowPeriod = 'day'): Promise<TreasuryFlow | null> {
-  await _monitorPost('/poll/flow');
+export async function monitorPollFlow(period: TreasuryFlowPeriod = 'day'): Promise<TreasuryFlow> {
+  const qs = new URLSearchParams({ period });
+  const post = await _monitorPost<{ flow?: TreasuryFlow }>(`/poll/flow?${qs}`);
+  if (Array.isArray(post?.flow?.buckets) && post?.flow?.totals != null) {
+    return post.flow;
+  }
   return getTreasuryFlow({ period });
 }
 
@@ -1039,9 +1046,9 @@ export async function getTreasuryFlow(opts: {
   const qs = new URLSearchParams({ period });
   if (opts.window_secs != null) qs.set('window_secs', String(opts.window_secs));
   const offChain = await _monitorBase();
-  const off = await _monitorGet<TreasuryFlow>(`/flow?${qs}`);
-  if (off?.buckets && off.totals) return off;
   if (offChain) {
+    const off = await _monitorGet<TreasuryFlow>(`/flow?${qs}`);
+    if (Array.isArray(off?.buckets) && off?.totals != null) return off;
     throw new Error('Treasury flow unavailable from off-chain monitor');
   }
 
@@ -1089,7 +1096,12 @@ export async function getTreasuryFlow(opts: {
   };
 }
 
-export async function topUp(args: { canister?: string; stand?: string; amount?: number }): Promise<UpdateResult> {
+export async function topUp(args: {
+  canister?: string;
+  stand?: string;
+  amount?: number;
+  source?: 'manual' | 'autotopup';
+}): Promise<UpdateResult> {
   if (await _monitorBase()) {
     if (!args.canister || args.amount == null) {
       throw new Error('Off-chain top-up requires canister and amount');
@@ -1101,7 +1113,36 @@ export async function topUp(args: { canister?: string; stand?: string; amount?: 
     if (res?.ok !== false && !res?.error) return { ok: true, ...res };
     throw new Error(res?.error || 'Top-up failed');
   }
-  return _parseUpdate(await (await _actor(true)).top_up(JSON.stringify(args)));
+  return _parseUpdate(
+    await (await _actor(true)).top_up(
+      JSON.stringify({ ...args, source: args.source ?? 'manual' }),
+    ),
+  );
+}
+
+/** Human-readable suffix for cycles_topup activity/chart labels. */
+export function topupSourceSuffix(
+  payload: Record<string, unknown> | undefined,
+  caller?: string,
+  monitorPrincipal?: string,
+): string {
+  if (!payload) return '';
+  const src = typeof payload.source === 'string' ? payload.source : '';
+  if (src === 'autotopup') return ' (automatic · off-chain monitor)';
+  if (src === 'autopilot') return ' (automatic · autopilot)';
+  if (src === 'manual' || payload.manual === true) return ' (manual)';
+  // Legacy reconcile top-ups: balance_before but no manual/source.
+  if (payload.balance_before != null) return ' (automatic · autopilot)';
+  // Legacy mislabeled monitor top-ups before source was recorded.
+  if (
+    payload.manual === true
+    && monitorPrincipal
+    && caller
+    && caller === monitorPrincipal
+  ) {
+    return ' (automatic · off-chain monitor)';
+  }
+  return '';
 }
 
 export async function returnCycles(args: { canister: string; amount: number }): Promise<UpdateResult> {
@@ -1147,6 +1188,7 @@ export interface SettingsPatch {
   open_access?: boolean;
   file_registry_canister_id?: string;
   file_registry_frontend_canister_id?: string;
+  casals_frontend_canister_id?: string;
   monitor_enabled?: boolean;
   monitor_principal?: string;
   monitor_service_url?: string;
@@ -1508,6 +1550,7 @@ export function cycleStatusBadge(status: CycleStatus): string {
     case 'low':
       return 'badge-neutral';
     case 'critical':
+      return 'badge-critical';
     case 'frozen':
     case 'error':
       return 'badge-neutral';

@@ -1,4 +1,6 @@
 // Tiny dependency-free charting helpers (SVG-rendered in LineChart/Treemap).
+
+import { topupSourceSuffix } from '$lib/api';
 //
 // We hand-roll these instead of pulling in a charting library: the data is
 // small (a handful of canisters, a few hundred samples) and the static adapter
@@ -336,6 +338,98 @@ export function timeLabel(tsSecs: number, spanSecs: number, tickIntervalSecs?: n
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+/** Clock label for the chart time row (local timezone). */
+export function formatAxisClock(tsSecs: number): string {
+  return new Date(tsSecs * 1000).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** Date band label for the chart date row (local timezone). */
+export function formatAxisDateShort(tsSecs: number): string {
+  return new Date(tsSecs * 1000).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/** Local-time hour boundaries from ``from`` through ``to`` (inclusive span). */
+export function iterLocalHourTicks(fromSec: number, toSec: number): number[] {
+  const start = new Date(fromSec * 1000);
+  start.setMinutes(0, 0, 0);
+  let t = Math.floor(start.getTime() / 1000);
+  if (t < fromSec) t += 3600;
+  const out: number[] = [];
+  for (; t <= toSec + 1; t += 3600) out.push(t);
+  return out;
+}
+
+/** Local midnight timestamps from ``from`` through ``to``. */
+export function iterLocalDayStarts(fromSec: number, toSec: number): number[] {
+  const start = new Date(fromSec * 1000);
+  start.setHours(0, 0, 0, 0);
+  let t = Math.floor(start.getTime() / 1000);
+  if (t < fromSec) t += 86400;
+  const out: number[] = [];
+  for (; t <= toSec + 1; t += 86400) out.push(t);
+  return out;
+}
+
+export interface DateAxisBand {
+  label: string;
+  startTs: number;
+  endTs: number;
+}
+
+/** One date label per local calendar day in the visible span. */
+export function buildDateAxisBands(fromSec: number, toSec: number): DateAxisBand[] {
+  const midnights = iterLocalDayStarts(fromSec, toSec);
+  const bands: DateAxisBand[] = [];
+  let cursor = fromSec;
+  for (const dayStart of midnights) {
+    if (dayStart > cursor) {
+      bands.push({
+        label: formatAxisDateShort(cursor),
+        startTs: cursor,
+        endTs: dayStart,
+      });
+    }
+    cursor = dayStart;
+  }
+  bands.push({
+    label: formatAxisDateShort(cursor),
+    startTs: cursor,
+    endTs: toSec,
+  });
+  return bands.filter((b) => b.endTs > b.startTs);
+}
+
+/** Drop ticks whose screen x positions are closer than ``minPx``. */
+export function thinTicksByPixel(
+  ticks: number[],
+  toX: (t: number) => number | null,
+  minPx: number,
+): number[] {
+  if (ticks.length <= 1 || minPx <= 0) return ticks;
+  const out: number[] = [];
+  let lastX = -Infinity;
+  for (const t of ticks) {
+    const x = toX(t);
+    if (x === null) continue;
+    if (out.length === 0 || x - lastX >= minPx) {
+      out.push(t);
+      lastX = x;
+    }
+  }
+  const last = ticks[ticks.length - 1];
+  if (out[out.length - 1] !== last) {
+    const x = toX(last);
+    if (x !== null && (out.length === 0 || x - lastX >= minPx * 0.6)) out.push(last);
+  }
+  return out;
+}
+
 export interface PlotPoint {
   t: number;
   v: number;
@@ -405,8 +499,22 @@ export interface ChartEventMarker {
   time: number;
   text: string;
   color: string;
-  /** Match ``Series.name`` when set; otherwise show on every series. */
+  btype: string;
+  /** Short label for the legend, e.g. "Top-up". */
+  label: string;
+  /** Primary hover line. */
+  title: string;
+  /** Secondary hover line (amounts, context). */
+  detail: string;
+  /** Match ``Series.name`` when set; otherwise show on every visible series. */
   seriesName?: string;
+}
+
+export interface ChartMarkerLegendItem {
+  btype: string;
+  label: string;
+  text: string;
+  color: string;
 }
 
 export const CHART_EVENT_BTYPES = new Set([
@@ -467,24 +575,118 @@ export function downloadTextFile(filename: string, text: string, mime = 'text/cs
   URL.revokeObjectURL(url);
 }
 
-const CHART_MARKER_META: Record<string, { text: string; color: string }> = {
-  cycles_topup: { text: '↑', color: '#10b981' },
-  cycles_return: { text: '↓', color: '#f59e0b' },
-  treasury_spent: { text: '¢', color: '#ef4444' },
-  cycles_icp_convert: { text: '⇄', color: '#6366f1' },
-  treasury_cycles_deposit: { text: '+', color: '#14b8a6' },
+const CHART_MARKER_META: Record<string, { label: string; text: string; color: string }> = {
+  cycles_topup: { label: 'Top-up', text: '↑', color: '#10b981' },
+  cycles_return: { label: 'Return', text: '↓', color: '#f59e0b' },
+  treasury_spent: { label: 'Treasury spend', text: '¢', color: '#ef4444' },
+  cycles_icp_convert: { label: 'ICP convert', text: '⇄', color: '#6366f1' },
+  treasury_cycles_deposit: { label: 'Treasury deposit', text: '+', color: '#14b8a6' },
 };
 
-export function orchestrationEventToMarker(
-  e: { btype: string; timestamp_secs: number; canister_id?: string },
+export const CHART_MARKER_LEGEND: ChartMarkerLegendItem[] = Object.entries(CHART_MARKER_META).map(
+  ([btype, meta]) => ({ btype, ...meta }),
+);
+
+function markerFmtCycles(n: unknown): string {
+  const v = typeof n === 'number' ? n : Number(n);
+  if (!Number.isFinite(v)) return '—';
+  const tc = v / 1e12;
+  const abs = Math.abs(tc);
+  let digits = 2;
+  if (abs > 0 && abs < 0.01) digits = 4;
+  else if (abs < 1) digits = 3;
+  return `${tc.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} TC`;
+}
+
+function markerFmtIcp(e8s: unknown): string {
+  const v = typeof e8s === 'number' ? e8s : Number(e8s);
+  if (!Number.isFinite(v)) return '—';
+  const icp = v / 1e8;
+  return `${icp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ICP`;
+}
+
+function chartMarkerCopy(
+  btype: string,
+  payload: Record<string, unknown>,
   canisterName?: string,
+  caller?: string,
+  monitorPrincipal?: string,
+): { title: string; detail: string } {
+  const who = canisterName ? canisterName : 'Treasury';
+  switch (btype) {
+    case 'cycles_topup':
+      return {
+        title: `Top-up · ${who}`,
+        detail: `${markerFmtCycles(payload.amount)}${topupSourceSuffix(payload, caller, monitorPrincipal)}`,
+      };
+    case 'cycles_return':
+      return {
+        title: `Return · ${who}`,
+        detail: `${markerFmtCycles(payload.amount)} to treasury`,
+      };
+    case 'treasury_spent':
+      return {
+        title: 'Treasury spent on top-ups',
+        detail: `${markerFmtCycles(payload.amount)} · balance ${markerFmtCycles(payload.balance)}`,
+      };
+    case 'cycles_icp_convert':
+      return {
+        title: 'ICP converted to cycles',
+        detail: `${markerFmtIcp(payload.icp_e8s)} → ${markerFmtCycles(payload.cycles)}`,
+      };
+    case 'treasury_cycles_deposit':
+      return {
+        title: 'Treasury cycles deposit',
+        detail: `+${markerFmtCycles(payload.amount)} · balance ${markerFmtCycles(payload.balance)}`,
+      };
+    default:
+      return { title: btype, detail: '' };
+  }
+}
+
+/** Balance on a step series at ``t`` (last sample at or before ``t``). */
+export function valueAtOrBefore(points: PlotPoint[], t: number): number | null {
+  let best: PlotPoint | null = null;
+  for (const p of points) {
+    if (p.t <= t && (!best || p.t > best.t)) best = p;
+  }
+  return best?.v ?? null;
+}
+
+/** Balance at ``t``, falling back to the next sample if the event is just after a gap. */
+export function valueNearTime(points: PlotPoint[], t: number): number | null {
+  const before = valueAtOrBefore(points, t);
+  if (before !== null) return before;
+  for (const p of points) {
+    if (p.t >= t) return p.v;
+  }
+  return points.length ? points[points.length - 1].v : null;
+}
+
+export function orchestrationEventToMarker(
+  e: {
+    btype: string;
+    timestamp_secs: number;
+    canister_id?: string;
+    caller?: string;
+    payload?: Record<string, unknown>;
+  },
+  canisterName?: string,
+  monitorPrincipal?: string,
+  targetSeriesName?: string,
 ): ChartEventMarker | null {
   const meta = CHART_MARKER_META[e.btype];
   if (!meta) return null;
+  const payload = e.payload ?? {};
+  const copy = chartMarkerCopy(e.btype, payload, canisterName, e.caller, monitorPrincipal);
   return {
     time: e.timestamp_secs,
     text: meta.text,
     color: meta.color,
-    seriesName: canisterName,
+    btype: e.btype,
+    label: meta.label,
+    title: copy.title,
+    detail: copy.detail,
+    seriesName: targetSeriesName,
   };
 }

@@ -69,6 +69,8 @@ from cycles import (
     _treasury_watch_begin_gen,
     _sync_treasury_baseline_gen,
     resolve_flow_window,
+    resolve_topup_source,
+    topup_event_payload,
     _treasury_icp_e8s_gen,
     _fetch_icp_cycles_per_e8s_gen,
     _notify_top_up_gen,
@@ -354,6 +356,7 @@ def casals_metadata() -> text:
         "open_access": bool(s.open_access),
         "file_registry_canister_id": s.file_registry_canister_id,
         "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
+        "casals_frontend_canister_id": s.casals_frontend_canister_id,
         "monitor_enabled": bool(s.monitor_enabled),
         "monitor_principal": s.monitor_principal,
         "monitor_service_url": (s.monitor_service_url or ""),
@@ -797,6 +800,7 @@ def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
     {open_access: bool, file_registry_canister_id: str,
      file_registry_frontend_canister_id: str,
+     casals_frontend_canister_id: str,
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
      alert_emails: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
@@ -813,6 +817,10 @@ def set_settings(args: text) -> text:
         if "file_registry_frontend_canister_id" in params:
             s.file_registry_frontend_canister_id = (
                 params["file_registry_frontend_canister_id"] or ""
+            ).strip()
+        if "casals_frontend_canister_id" in params:
+            s.casals_frontend_canister_id = (
+                params["casals_frontend_canister_id"] or ""
             ).strip()
         if "monitor_enabled" in params:
             s.monitor_enabled = 1 if params["monitor_enabled"] else 0
@@ -2786,11 +2794,12 @@ def get_treasury_flow(args: text) -> text:
 
 @update
 def top_up(args: text) -> Async[text]:
-    """Manually deposit cycles into a canister or every canister in a stand.
+    """Deposit cycles into a canister or every canister in a stand.
 
     Authorized by the stand/section commander (or a controller). Args (JSON):
-    {"canister": str}|{"stand": str}, optional {"amount": int}. Without `amount`,
-    the resolved policy top-up amount is used. The treasury reserve is enforced.
+    {"canister": str}|{"stand": str}, optional {"amount": int},
+    optional {"source": "manual"|"autotopup"}. ``autotopup`` is only recorded
+    when the caller is the configured off-chain monitor principal.
     """
     try:
         params = json.loads(args)
@@ -2801,6 +2810,7 @@ def top_up(args: text) -> Async[text]:
         treasury = int(ic.canister_balance128())
         explicit = params.get("amount")
         explicit = int(explicit) if explicit is not None else None
+        topup_source = resolve_topup_source(params.get("source"), _caller())
         out = []
         for st in targets:
             if not st.canister_id:
@@ -2822,7 +2832,8 @@ def top_up(args: text) -> Async[text]:
             ).with_cycles(amount)
             treasury -= amount
             st.cycles_deposited = int(st.cycles_deposited or 0) + amount
-            _append_event("cycles_topup", st.canister_id, {"amount": amount, "manual": True})
+            _append_event("cycles_topup", st.canister_id,
+                          topup_event_payload(amount, topup_source))
             out.append({"canister": st.name, "topped_up": amount})
         return _ok(topped_up=out, treasury=treasury)
     except Exception as e:

@@ -208,6 +208,8 @@ class Settings(Entity):
     # Optional browse UI for the registry (separate asset canister in Realms;
     # bundled as ic_file_registry_frontend in standalone Casals deployments).
     file_registry_frontend_canister_id = String(max_length=64, default="")
+    # Asset canister serving this Casals SPA (for off-chain cycle monitoring).
+    casals_frontend_canister_id = String(max_length=64, default="")
     # Off-chain monitor (casals-monitor): when enabled, its principal is added as
     # a co-controller of managed canisters so it can read canister_status and
     # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot
