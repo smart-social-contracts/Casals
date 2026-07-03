@@ -11,6 +11,7 @@ from conftest import (
     baton_env,
     call,
     create_detached,
+    ensure_identity,
     finish_action,
     icp,
     identity_principal,
@@ -36,11 +37,12 @@ class TestBootstrap:
         commanders = call(baton_env["baton_id"], "list_commanders")
         assert len(commanders) >= 1
 
-    def test_anonymous_cannot_add_commander(self, baton_env):
+    def test_unprivileged_cannot_add_commander(self, baton_env):
+        ensure_identity("orch-unprivileged")
         res = call(baton_env["baton_id"], "add_commander", json.dumps({
             "principal": "aaaaa-aa",
             "capabilities": ["propose:managed_upgrade"],
-        }), identity="anonymous")
+        }), identity="orch-unprivileged")
         assert res.get("ok") is False
 
 
@@ -176,8 +178,7 @@ class TestConcurrency:
 class TestCommanderPolicyIntegration:
     def test_policy_delegate_adds_commander(self, replica, deploy_principal):
         baton_id = install_baton(deploy_principal)
-        icp(["identity", "new", "orch-policy-test"], check=False)
-        orch = identity_principal("orch-policy-test")
+        orch = ensure_identity("orch-policy-test")
         policy = {
             "delegates": [{
                 "principal": orch,
@@ -196,8 +197,7 @@ class TestCommanderPolicyIntegration:
 
     def test_policy_rejects_out_of_bounds_capability(self, replica, deploy_principal):
         baton_id = install_baton(deploy_principal)
-        icp(["identity", "new", "orch-policy-test2"], check=False)
-        orch = identity_principal("orch-policy-test2")
+        orch = ensure_identity("orch-policy-test2")
         ok(call(baton_id, "set_commander_policy", json.dumps({
             "delegates": [{
                 "principal": orch,

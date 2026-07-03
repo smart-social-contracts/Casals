@@ -21,6 +21,7 @@ identity_principal = _baton_conftest.identity_principal
 install_baton = _baton_conftest.install_baton
 install_multisig = _baton_conftest.install_multisig
 parse_nat_output = _baton_conftest.parse_nat_output
+ensure_identity = _baton_conftest.ensure_identity
 
 
 @pytest.fixture(scope="session")

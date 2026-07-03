@@ -7,6 +7,7 @@ import pytest
 from conftest import (
     build_multisig,
     call,
+    ensure_identity,
     icp,
     identity_principal,
     install_baton,
@@ -41,19 +42,19 @@ class TestMultisigThreshold:
         assert orch in [c["principal"] for c in commanders], f"proposal={prop!r}, commanders={commanders}"
 
     def test_non_signer_cannot_propose(self, multisig_env):
+        ensure_identity("orch-unprivileged-msig")
         with pytest.raises(RuntimeError, match="assertion failed|reject"):
             call(
                 multisig_env["multisig_id"],
                 "propose",
                 f'(variant {{ AddCommander = record {{ baton_id = principal "{multisig_env["baton_id"]}"; commander = principal "aaaaa-aa"; capabilities = vec {{ "propose:managed_upgrade" }} }} }})',
-                identity="anonymous",
+                identity="orch-unprivileged-msig",
             )
 
 
 class TestMultisigPolicy:
     def test_set_policy_reaches_baton(self, multisig_env):
-        icp(["identity", "new", "orch-msig-policy"], check=False)
-        orch = identity_principal("orch-msig-policy")
+        orch = ensure_identity("orch-msig-policy")
         policy_json = json.dumps({
             "delegates": [{
                 "principal": orch,

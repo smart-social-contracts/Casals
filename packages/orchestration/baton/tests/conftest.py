@@ -124,6 +124,12 @@ def identity_principal(identity=None) -> str:
     return out.split()[-1]
 
 
+def ensure_identity(name: str) -> str:
+    """Create a plaintext identity if missing; return its principal."""
+    icp(["identity", "new", name, "--storage", "plaintext"], check=False)
+    return identity_principal(name)
+
+
 def build_baton():
     env = os.environ.copy()
     env["CANISTER_CANDID_PATH"] = os.path.join(BATON_ROOT, "baton.did")
@@ -211,7 +217,10 @@ def setup_managed_canister(baton_id: str, wasm_path: str) -> tuple[str, str]:
     """Create a canister, install wasm, hand sole control to baton, register it."""
     cid = create_detached()
     icp(["canister", "install", cid, "--wasm", wasm_path, "--mode", "install", "-n", "local", "-y"])
-    icp(["canister", "settings", "update", cid, "--set-controller", baton_id, "-n", "local", "--force"])
+    caller = identity_principal()
+    icp(["canister", "settings", "update", cid, "--add-controller", baton_id, "-n", "local", "-f"])
+    if caller != baton_id:
+        icp(["canister", "settings", "update", cid, "--remove-controller", caller, "-n", "local", "-f"])
     icp(["canister", "start", cid, "-n", "local", "-y"], check=False)
     mh = module_hash(cid)
     ok(call(baton_id, "add_managed_canister", cid))
