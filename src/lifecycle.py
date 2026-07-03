@@ -107,6 +107,31 @@ def _install_arg_for(w) -> bytes:
     return b""
 
 
+def _resolve_install_arg(install_arg_spec, w) -> bytes:
+    """Resolve a sheet canister's optional ``install_arg`` to candid-encoded bytes.
+
+    Supported references:
+      - ``{"top_commander": "$canister:<name>"}`` — Baton init arg pointing at
+        another registered canister (must already be deployed).
+    """
+    if not install_arg_spec:
+        return _install_arg_for(w)
+    top_ref = (install_arg_spec.get("top_commander") or "").strip()
+    if top_ref.startswith("$canister:"):
+        cname = top_ref.split(":", 1)[1].strip()
+        list(Canister.instances())
+        c = Canister[cname]
+        if c is None or not (c.canister_id or "").strip():
+            raise Exception(
+                f"install_arg top_commander: canister '{cname}' is missing or has no id "
+                f"(deploy '{cname}' before this canister)"
+            )
+        pid = c.canister_id.strip()
+        arg_text = f'(record {{ top_commander = principal "{pid}" }})'
+        return ic.candid_encode(arg_text)
+    raise Exception(f"unsupported install_arg: {install_arg_spec}")
+
+
 # ── File-registry pull helpers ────────────────────────────────────────────────
 
 def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
@@ -574,11 +599,13 @@ def _allocate_canister(subnet: str = "", subnet_type: str = ""):
 
 # ── Canister provision / retire ───────────────────────────────────────────────
 
-def _provision_canister(dk, name: str, kind: str, w):
+def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     """Generator: allocate a canister (reuse or create), install ``w``, verify
     the module hash, and create+return the Canister record.
     On failure the canister is returned to the pool and the exception
     propagates.
+
+    ``init_arg`` overrides the default from ``_install_arg_for(w)`` when set.
 
     Name reservation: the Canister record is written to stable memory with
     status CREATED *before* the first yield so that concurrent calls for the
@@ -608,9 +635,10 @@ def _provision_canister(dk, name: str, kind: str, w):
     mode = {"reinstall": None} if reused else {"install": None}
     _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
                                            "wasm_key": w.key, "reused": reused})
+    arg = init_arg if init_arg is not None else _install_arg_for(w)
     try:
         yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
-                                     w.wasm_hash, mode, _install_arg_for(w))
+                                     w.wasm_hash, mode, arg)
         if reused:
             try:
                 yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})

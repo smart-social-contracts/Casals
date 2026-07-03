@@ -42,11 +42,17 @@ SEED_DIR = os.path.join(REPO_ROOT, "seed")
 TEMPLATES_DIR = os.path.join(SEED_DIR, "templates")
 ASSETS_DIR = os.path.join(SEED_DIR, "assets")
 ARRANGEMENTS_DIR = os.path.join(SEED_DIR, "arrangements")
+SHEETS_DIR = os.path.join(SEED_DIR, "sheets")
 CATALOG = os.path.join(SEED_DIR, "templates.json")
 
 CASALS = "casals_backend"
 REGISTRY = "ic_file_registry"
 REGISTRY_FRONTEND = "ic_file_registry_frontend"
+
+# Default local master conductor (mirrors Makefile LOCAL_CONDUCTOR).
+DEFAULT_LOCAL_CONDUCTOR = (
+    "kpvwp-c7tzf-sybdw-2j6l2-4c3cd-wnkt6-ryzf2-lsjit-dfqve-g5rfb-tae"
+)
 
 # Raw bytes per upload chunk. base64 expands ~1.33x, so a 1 MiB chunk is ~1.4 MiB
 # of candid — under the 2 MiB ingress budget. Args are passed via --args-file, so
@@ -133,6 +139,82 @@ def call(canister: str, method: str, args, payload: str = None):
     finally:
         if tmp is not None:
             os.unlink(tmp.name)
+
+
+def call_candid(canister: str, method: str, candid_arg: str, cli_args):
+    """Invoke a canister with a raw Candid argument (not JSON text-in/text-out)."""
+    cmd = ["canister", "call", canister, method, candid_arg] + _base_flags(cli_args)
+    return _parse(_icp(cmd, cli_args).stdout)
+
+
+def identity_principal(cli_args) -> str:
+    out = _icp(["identity", "principal"], cli_args).stdout.strip()
+    return out.split()[-1] if out else ""
+
+
+def _canister_ids_from_tree(tree: dict) -> dict:
+    """Return {canister_name: canister_id} from a get_tree payload."""
+    out = {}
+    for sec in tree.get("sections") or []:
+        for stand in sec.get("stands") or []:
+            for c in stand.get("canisters") or []:
+                name = (c.get("name") or "").strip()
+                cid = (c.get("canister_id") or "").strip()
+                if name and cid:
+                    out[name] = cid
+    return out
+
+
+def wire_orchestration_demo(cli_args, casals_id: str) -> None:
+    """Post-deploy: configure multisig and verify baton points at it."""
+    tree = call(CASALS, "get_tree", cli_args)
+    if not isinstance(tree, dict):
+        print("  orchestration wire: could not read tree; skipping")
+        return
+    ids = _canister_ids_from_tree(tree)
+    if "multisig" not in ids or "baton" not in ids:
+        print("  orchestration wire: multisig/baton not in tree; skipping")
+        return
+
+    conductor = (os.environ.get("LOCAL_CONDUCTOR") or "").strip()
+    if not conductor:
+        conductor = identity_principal(cli_args) or DEFAULT_LOCAL_CONDUCTOR
+
+    multisig_id = ids["multisig"]
+    baton_id = ids["baton"]
+    signer_vec = f'principal "{conductor}"'
+    cfg = call_candid(
+        multisig_id,
+        "configure",
+        f"(vec {{ {signer_vec} }} : vec principal, 1 : nat, 604800 : nat)",
+        cli_args,
+    )
+    if isinstance(cfg, dict) and cfg.get("ok") is True:
+        print(f"  configured multisig ({multisig_id}) with 1 signer")
+    elif "ok" in str(cfg).lower() and "err" not in str(cfg).lower():
+        print(f"  configured multisig ({multisig_id}) with 1 signer")
+    elif "already configured" in str(cfg).lower():
+        print(f"  multisig ({multisig_id}) already configured")
+    else:
+        print(f"  WARN: multisig configure returned {cfg!r}")
+
+    baton_cfg = call(baton_id, "get_config", cli_args)
+    if isinstance(baton_cfg, dict):
+        top = baton_cfg.get("top_commander")
+        if top == multisig_id:
+            print(f"  baton ({baton_id}) top_commander = multisig")
+        else:
+            print(f"  WARN: baton top_commander={top!r}, expected {multisig_id}")
+
+    controllers = [c for c in (casals_id, multisig_id) if c]
+    res = call(CASALS, "set_canister_controllers", cli_args, json.dumps({
+        "canister": "baton",
+        "controllers": controllers,
+    }))
+    if isinstance(res, dict) and res.get("ok"):
+        print(f"  baton controllers: {', '.join(controllers)}")
+    else:
+        print(f"  WARN: set_canister_controllers(baton) returned {res!r}")
 
 
 def canister_id(name: str, args) -> str:
@@ -229,13 +311,13 @@ def main():
                          "this at a consumer repo's own config (e.g. realms/casals-config) "
                          "so environment-specific objects live outside the engine repo.")
     ap.add_argument("--deploy", action="store_true",
-                    help="also deploy the live sheet (stand up the orchestra)")
+                    help="deploy seed/sheets/demo.json and wire orchestration canisters")
     ap.add_argument("--arrangement", default=None,
                     help="seed an arrangement by name from seed/arrangements/<name>.json "
                          "(upsert + activate if marked active)")
     ap.add_argument("--apply-arrangement", action="store_true",
                     help="after deploying, apply the active arrangement's post-deploy steps "
-                         "(requires --deploy)")
+                         "(requires --deploy; default when --deploy is used)")
     ap.add_argument("--arrangement-only", action="store_true",
                     help="ONLY upsert/activate the --arrangement; skip template upload, "
                          "set_settings and sheet deploy. For seeding an environment's "
@@ -246,13 +328,14 @@ def main():
     # Allow a consumer repo to own its seed data outside this engine repo: point
     # --config-dir at e.g. realms/casals-config and re-derive the data paths.
     if args.config_dir:
-        global SEED_DIR, TEMPLATES_DIR, ASSETS_DIR, ARRANGEMENTS_DIR, CATALOG
+        global SEED_DIR, TEMPLATES_DIR, ASSETS_DIR, ARRANGEMENTS_DIR, SHEETS_DIR, CATALOG
         SEED_DIR = os.path.abspath(args.config_dir)
         if not os.path.isdir(SEED_DIR):
             sys.exit(f"--config-dir not found: {SEED_DIR}")
         TEMPLATES_DIR = os.path.join(SEED_DIR, "templates")
         ASSETS_DIR = os.path.join(SEED_DIR, "assets")
         ARRANGEMENTS_DIR = os.path.join(SEED_DIR, "arrangements")
+        SHEETS_DIR = os.path.join(SEED_DIR, "sheets")
         CATALOG = os.path.join(SEED_DIR, "templates.json")
 
     # Arrangement-only: seed just the env's arrangement, leaving the catalog and
@@ -370,8 +453,11 @@ def main():
     #    --apply-arrangement it also runs the active arrangement's post-deploy
     #    steps in the same call, so the environment comes up fully configured.
     if args.deploy:
-        print("deploying live sheet (this creates/reuses canisters)…")
-        deploy_args = {"apply_arrangement": True} if args.apply_arrangement else {}
+        demo_sheet_path = os.path.join(SHEETS_DIR, "demo.json")
+        with open(demo_sheet_path) as f:
+            demo_sheet = json.load(f)
+        print("deploying demo sheet (this creates/reuses canisters)…")
+        deploy_args = {"sheet": demo_sheet, "apply_arrangement": True}
         res = call(CASALS, "deploy_sheet", args, json.dumps(deploy_args))
         if not (isinstance(res, dict) and res.get("ok")):
             sys.exit(f"deploy_sheet failed: {res}")
@@ -385,6 +471,8 @@ def main():
         if isinstance(arr, dict):
             print(f"  arrangement '{arr.get('arrangement', '')}': "
                   f"{arr.get('applied', 0)} applied, {arr.get('failed', 0)} failed")
+        print("wiring orchestration demo (multisig configure + baton controllers)…")
+        wire_orchestration_demo(args, casals_id)
 
     print("Seed complete.")
 

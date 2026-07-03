@@ -103,6 +103,7 @@ from lifecycle import (
     _allocate_canister,
     _assign_pool_canister,
     _install_arg_for,
+    _resolve_install_arg,
     _maybe_provision_assets,
     _provision_canister,
     _pull_and_install,
@@ -1484,6 +1485,7 @@ def deploy_sheet(args: text) -> Async[text]:
                         "stand": dname,
                         "kind": canister_spec.get("kind") or CanisterKind.BACKEND,
                         "wasm_key": (canister_spec.get("wasm_key") or "").strip(),
+                        "install_arg": canister_spec.get("install_arg"),
                     }
 
         # Pass 2: retire canisters no longer in the sheet (canisters -> pool).
@@ -1501,6 +1503,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     result["errors"].append(f"{stname}: stand '{spec['stand']}' missing")
                     continue
                 w = _resolve_authorized_wasm(spec["wasm_key"], dk.section)
+                init_arg = _resolve_install_arg(spec.get("install_arg"), w)
                 list(Canister.instances())
                 existing = Canister[stname]
                 if existing is not None:
@@ -1515,7 +1518,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     # Present but wrong WASM/status: reinstall fresh code in place.
                     yield from _pull_and_install(existing.canister_id, w.registry_namespace,
                                                  w.registry_path, w.wasm_hash, {"reinstall": None},
-                                                 _install_arg_for(w))
+                                                 init_arg)
                     ok, actual = yield from _verify_module_hash(existing.canister_id, w.wasm_hash)
                     if not ok:
                         result["errors"].append(f"{stname}: hash mismatch after reinstall")
@@ -1532,7 +1535,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     continue
                 # Missing: provision from the pool (reuse) or create.
                 free_before = _pool_take_free() != ""
-                st = yield from _provision_canister(dk, stname, spec["kind"], w)
+                st = yield from _provision_canister(dk, stname, spec["kind"], w, init_arg)
                 if free_before:
                     result["reused_canisters"].append(st.name)
                 else:

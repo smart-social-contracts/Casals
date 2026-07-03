@@ -1,0 +1,57 @@
+# Baton + Multisig integration tests on a local replica (icp-cli).
+# Runs on every PR and push to main alongside cli-e2e.
+name: Orchestration integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "pytest -v"
+        type: boolean
+        default: true
+
+jobs:
+  orchestration-integration:
+    name: Baton + Multisig (local replica)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli, ic-wasm, and Motoko tooling
+        run: |
+          npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm ic-mops
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          mops --version || true
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Show toolchain versions
+        run: |
+          icp --version || true
+          python3 -m basilisk --version || true
+          pytest --version
+
+      # conftest.py in baton/tests/ starts the local replica, builds Baton,
+      # Multisig, and managed-canister fixture WASMs, then drives propose →
+      # execute upgrade flows. Multisig tests reuse the same helpers.
+      - name: Run orchestration integration tests
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          make -C packages/orchestration test-integration
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop || true

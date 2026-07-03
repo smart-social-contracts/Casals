@@ -1,0 +1,49 @@
+type Capability = text;
+
+type BatonAction = variant {
+  UpgradeBaton : record { baton_id : principal; wasm_module : blob; arg : blob };
+  UpdateBatonSettings : record {
+    baton_id : principal;
+    add_controllers : vec principal;
+    remove_controllers : vec principal;
+  };
+  AddCommander : record { baton_id : principal; commander : principal; capabilities : vec Capability };
+  RemoveCommander : record { baton_id : principal; commander : principal };
+  SetPolicy : record { baton_id : principal; policy_json : text };
+  ManageSigners : record {
+    add : vec principal;
+    remove : vec principal;
+    new_threshold : opt nat;
+  };
+};
+
+type ProposalStatus = variant { pending; executed; rejected; expired };
+
+type Proposal = record {
+  id : nat;
+  action : BatonAction;
+  proposed_by : principal;
+  approvals : vec principal;
+  status : ProposalStatus;
+  created_at : int;
+  expires_at : int;
+};
+
+type AuditEvent = record {
+  at : int;
+  kind : text;
+  detail : text;
+};
+
+type Result = variant { ok; err : text };
+
+service : {
+  configure : (vec principal, nat, nat) -> (Result);
+  propose : (BatonAction) -> (nat);
+  approve : (nat) -> (Result);
+  reject : (nat) -> (Result);
+  get_proposal : (nat) -> (opt Proposal) query;
+  list_proposals : () -> (vec Proposal) query;
+  list_signers : () -> (record { signers : vec principal; threshold : nat }) query;
+  list_events : () -> (vec AuditEvent) query;
+};

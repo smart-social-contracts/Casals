@@ -54,6 +54,22 @@
         "path": "hello-world-frontend/index.html",
         "content_type": "text/html"
       }
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.0.0",
+      "file": "orchestration-baton.wasm.gz",
+      "path": "orchestration-baton.wasm",
+      "kind": "backend",
+      "description": "Baton orchestrator (Basilisk): managed_upgrade pipeline and commander model."
+    },
+    {
+      "key": "orchestration-multisig",
+      "version": "1.0.0",
+      "file": "orchestration-multisig.wasm.gz",
+      "path": "orchestration-multisig.wasm",
+      "kind": "backend",
+      "description": "n-of-m multisig canister: top commander and IC controller of Batons."
     }
   ]
 }

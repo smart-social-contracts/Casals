@@ -1,0 +1,22 @@
+canisters:
+  - name: baton
+    recipe:
+      type: "@dfinity/prebuilt@v2.0.0"
+      configuration:
+        path: .basilisk/baton/baton.wasm
+        shrink: true
+        compress: true
+
+  - name: multisig
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/main.mo
+        candid: multisig.did
+
+  - name: managed_canister
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: tests/fixtures/managed_canister/src/main.mo
+        candid: tests/fixtures/managed_canister/managed_canister.did

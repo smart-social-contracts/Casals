@@ -70,3 +70,22 @@ jobs:
       # the Cycles page and the cycles bindings in lib/api.ts.
       - name: Build frontend
         run: npm --prefix frontend run build
+
+  orchestration-unit:
+    name: Orchestration unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Baton + Multisig pure helpers (no local replica). Each package is
+      # pytest-run from its own directory — both ship tests/test_unit.py.
+      - name: Run orchestration unit tests
+        run: make -C packages/orchestration test-unit

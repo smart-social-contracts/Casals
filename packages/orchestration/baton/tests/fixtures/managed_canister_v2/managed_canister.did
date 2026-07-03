@@ -1,0 +1,4 @@
+service : {
+  "health_check" : () -> (text) query;
+  "greet" : (text) -> (text);
+};

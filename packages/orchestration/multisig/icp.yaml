@@ -1,0 +1,7 @@
+canisters:
+  - name: multisig
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/main.mo
+        candid: multisig.did

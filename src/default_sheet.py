@@ -14,11 +14,29 @@ used by `scripts/seed.py`). Keep the two in sync when editing.
 DEFAULT_SHEET = {
     "name": "demo",
     "description": (
-        "Default Casals demo orchestra: a Demo section with one stand per "
-        "language (Motoko, Rust, Python), each running a backend canister plus a "
-        "certified-assets frontend canister."
+        "Default Casals demo orchestra: hello-world stands per language plus an "
+        "Orchestration section with Multisig and Baton governance canisters."
     ),
     "sections": [
+        {
+            "name": "Orchestration",
+            "description": "Governance layer: multisig (top commander) and baton (managed canister controller).",
+            "stands": [
+                {
+                    "name": "Governance",
+                    "description": "Multisig + Baton deployed in order (multisig first so baton init can reference it).",
+                    "canisters": [
+                        {"name": "multisig", "wasm_key": "orchestration-multisig", "kind": "backend"},
+                        {
+                            "name": "baton",
+                            "wasm_key": "orchestration-baton",
+                            "kind": "backend",
+                            "install_arg": {"top_commander": "$canister:multisig"},
+                        },
+                    ],
+                },
+            ],
+        },
         {
             "name": "Demo",
             "description": "Neutral demo section: one full-stack stand per supported backend language.",
@@ -48,6 +66,6 @@ DEFAULT_SHEET = {
                     ],
                 },
             ],
-        }
+        },
     ],
 }

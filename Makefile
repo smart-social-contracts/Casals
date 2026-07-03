@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-registry build-templates deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
+.PHONY: build build-backend build-registry build-templates build-orchestration deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
 
 # Local "master conductor": added as a controller of the local canisters after
 # a local deploy so this principal can run admin endpoints (set commanders,
@@ -27,6 +27,10 @@ build-registry:
 # only when changing a template; the gzipped artifacts are committed.
 build-templates:
 	bash scripts/build_templates.sh
+
+# Baton + Multisig WASMs for the demo Orchestration section.
+build-orchestration:
+	bash scripts/build_orchestration_templates.sh
 
 # Local deploy (backend + registry + frontend). The frontend is built by the
 # asset-canister recipe (see icp.yaml). After installing, the local conductor
@@ -64,13 +68,19 @@ local-conductor:
 deploy-ic: build
 	icp deploy -e ic
 
-# Seed the catalog (templates + demo section/stand). Wire Casals to the registry,
-# upload template WASMs, authorize them, create a demo section + playground stand.
+# Seed the catalog (templates). Does not deploy canisters — use seed-demo for that.
 seed:
 	python3 scripts/seed.py -e local
 
 seed-ic:
 	python3 scripts/seed.py -e ic --identity casals
+
+# Full demo: authorize templates, deploy demo sheet (incl. multisig + baton), wire + greet.
+seed-demo:
+	python3 scripts/seed.py -e local --deploy --arrangement demo
+
+seed-demo-ic:
+	python3 scripts/seed.py -e ic --identity casals --deploy --arrangement demo
 
 # Thin CLI for querying and commanding a deployed Casals backend.
 # Usage: make cli ARGS="status"
