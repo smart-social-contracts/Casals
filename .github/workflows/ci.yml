@@ -20,14 +20,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
 
-      # tests/test_unit.py covers all pure helpers with no IC runtime needed:
-      #   util    — canister URLs, audit hash chain, cycles policy/top-up
-      #   auth    — PERMISSIONS table, _parse/_normalize/_has_permission
-      #   wasm_helpers — _split_key, _ver_tuple, _family_of
-      #   views   — _canister_view, _stand_view, _section_view
+      # tests/test_unit.py covers pure helpers (util, auth, wasm_helpers, views,
+      # lifecycle controller merge). lifecycle imports basilisk types but tests
+      # do not need a replica.
       - name: Run unit tests
         run: pytest tests/test_unit.py -v
 
