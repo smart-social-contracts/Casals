@@ -49,6 +49,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     create_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     create_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     set_commander:         IDL.Func([IDL.Text], [IDL.Text], []),
+    remove_commander:      IDL.Func([IDL.Text], [IDL.Text], []),
     set_permissions:       IDL.Func([IDL.Text], [IDL.Text], []),
     list_permissions:      IDL.Func([], [IDL.Text], ['query']),
     list_backend_controllers: IDL.Func([IDL.Text], [IDL.Text], []),

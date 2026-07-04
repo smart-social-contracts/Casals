@@ -1,4 +1,5 @@
 import type { Section, Stand, Tree } from './api';
+import { entityCommanders } from './commanderAccess';
 
 function permissionsGrant(
   permissions: string[] | undefined,
@@ -13,11 +14,11 @@ function permissionsGrant(
   return false;
 }
 
-function standPermissionsGrant(stand: Stand, section: Section, key: string): boolean {
-  const standPerms = (stand.permissions?.length ?? 0) > 0 ? stand.permissions : section.permissions;
-  const standAll =
-    (stand.permissions?.length ?? 0) > 0 ? stand.all_permissions : section.all_permissions;
-  return permissionsGrant(standPerms, standAll, key);
+function commanderGrantAllows(
+  grant: { permissions?: string[]; all_permissions?: boolean },
+  key: string,
+): boolean {
+  return permissionsGrant(grant.permissions, grant.all_permissions, key);
 }
 
 /** True when `principal` may edit the platform subnet whitelist (mirrors backend). */
@@ -25,12 +26,13 @@ export function canManageSubnetWhitelist(tree: Tree | null, principal: string): 
   const caller = principal.trim();
   if (!caller || !tree) return false;
   for (const sec of tree.sections) {
-    if ((sec.commander_principal || '').trim() === caller) {
-      if (permissionsGrant(sec.permissions, sec.all_permissions, 'subnet.whitelist')) return true;
+    for (const cmd of entityCommanders(sec)) {
+      if (cmd.principal === caller && commanderGrantAllows(cmd, 'subnet.whitelist')) return true;
     }
     for (const stand of sec.stands) {
-      if ((stand.commander_principal || '').trim() !== caller) continue;
-      if (standPermissionsGrant(stand, sec, 'subnet.whitelist')) return true;
+      for (const cmd of entityCommanders(stand)) {
+        if (cmd.principal === caller && commanderGrantAllows(cmd, 'subnet.whitelist')) return true;
+      }
     }
   }
   return false;

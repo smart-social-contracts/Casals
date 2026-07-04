@@ -5,6 +5,11 @@
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied } from '$lib/auth';
   import { backendCanisterId, initLocalNetworkHints } from '$lib/api';
+  import {
+    pendingGovernanceCount,
+    startGovernancePolling,
+    stopGovernancePolling,
+  } from '$lib/stores/governancePending';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
 
@@ -50,6 +55,19 @@
     void initAuth(backendCanisterId());
     void initLocalNetworkHints();
   });
+
+  $effect(() => {
+    if ($isAuthenticated) {
+      startGovernancePolling();
+    } else {
+      stopGovernancePolling();
+    }
+    return () => stopGovernancePolling();
+  });
+
+  function pendingBadge(n: number): string {
+    return n > 9 ? '9+' : String(n);
+  }
 </script>
 
 <div class="min-h-screen flex flex-col bg-[var(--color-bg-secondary)]" class:overflow-hidden={sidebarOpen}>
@@ -59,12 +77,20 @@
       <div class="flex items-center gap-3 min-w-0">
         <button
           type="button"
-          class="btn-ghost btn-sm p-2"
+          class="btn-ghost btn-sm p-2 relative"
           onclick={toggleSidebar}
           aria-expanded={sidebarOpen}
           aria-controls="app-sidebar"
           aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
         >
+          {#if $pendingGovernanceCount > 0}
+            <span
+              class="absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-[1.125rem] px-1 rounded-full bg-red-600 text-white text-[10px] font-bold leading-none flex items-center justify-center pointer-events-none"
+              aria-label="{$pendingGovernanceCount} pending orchestration approvals"
+            >
+              {pendingBadge($pendingGovernanceCount)}
+            </span>
+          {/if}
           {#if sidebarOpen}
             <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -145,11 +171,19 @@
               <a
                 href={link.href}
                 onclick={closeSidebar}
-                class="block px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
+                class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
                   ? 'bg-primary-100 text-primary-900'
                   : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
               >
-                {link.label}
+                <span>{link.label}</span>
+                {#if link.href === '/commanders' && $pendingGovernanceCount > 0}
+                  <span
+                    class="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none inline-flex items-center justify-center"
+                    aria-hidden="true"
+                  >
+                    {pendingBadge($pendingGovernanceCount)}
+                  </span>
+                {/if}
               </a>
             </li>
           {/each}

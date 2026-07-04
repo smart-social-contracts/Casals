@@ -17,6 +17,7 @@ from models import Canister, CanisterKind, CanisterStatus, PooledCanister
 from services import AssetCanisterService
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
+from commanders import commander_principals
 from subnets import assert_subnet_allowed
 
 from helpers import (
@@ -486,12 +487,18 @@ def _governance_multisig_id() -> str:
     return ""
 
 
+def _commanders_for_stand(dk):
+    """Stand commanders, else section commanders."""
+    principals = commander_principals(dk)
+    if not principals and getattr(dk, "section", None) is not None:
+        principals = commander_principals(dk.section)
+    return principals
+
+
 def _commander_for_stand(dk) -> str:
-    """Resolve the stand commander (stand-level overrides section-level)."""
-    commander = (getattr(dk, "commander_principal", "") or "").strip()
-    if not commander and getattr(dk, "section", None) is not None:
-        commander = (getattr(dk.section, "commander_principal", "") or "").strip()
-    return commander
+    """First stand or section commander (legacy)."""
+    principals = _commanders_for_stand(dk)
+    return principals[0] if principals else ""
 
 
 def _merge_controllers(*groups: list) -> list:
@@ -613,8 +620,7 @@ def _resolve_provision_controllers(dk):
         base.append(s.monitor_principal.strip())
 
     inherited = []
-    commander = _commander_for_stand(dk)
-    if commander:
+    for commander in _commanders_for_stand(dk):
         inherited.append(commander)
         inherited.extend((yield from _fetch_canister_controllers(commander)))
 

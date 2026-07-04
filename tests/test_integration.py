@@ -155,9 +155,17 @@ class TestSettingsAndCommander:
     def test_set_commander_on_section(self, canister):
         _ok("create_section", {"name": "sec-cmd"})
         _ok("set_commander", {"section": "sec-cmd", "commander_principal": "ryjl3-tyaaa-aaaaa-aaaba-cai"})
+        _ok("set_commander", {"section": "sec-cmd", "commander_principal": "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aa"})
         sections = call_canister("list_sections")
         sec = next(s for s in sections if s["name"] == "sec-cmd")
-        assert sec["commander_principal"] == "ryjl3-tyaaa-aaaaa-aaaba-cai"
+        assert sec["commander_count"] == 2
+        tree = call_canister("get_tree")
+        sec_tree = next(s for s in tree["sections"] if s["name"] == "sec-cmd")
+        principals = {c["principal"] for c in sec_tree["commanders"]}
+        assert principals == {
+            "ryjl3-tyaaa-aaaaa-aaaba-cai",
+            "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aa",
+        }
 
 
 class TestLifecycleValidation:

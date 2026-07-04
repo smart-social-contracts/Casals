@@ -204,8 +204,14 @@ def is_approval_eligible(
     policy: dict[str, Any],
     action: str,
     section_permissions: str,
+    *,
+    platform_controller: bool = False,
 ) -> bool:
-    if not _has_permission(section_permissions, action):
+    """True when ``caller`` may propose or approve an orchestration action.
+
+    Section/stand commanders need the action permission. Casals backend
+    controllers are fully-permissioned but still honor an explicit eligible list."""
+    if not platform_controller and not _has_permission(section_permissions, action):
         return False
     eligible = policy.get("eligible") or []
     if not eligible:

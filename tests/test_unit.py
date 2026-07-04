@@ -654,8 +654,8 @@ def test_canister_view_subnet_none_becomes_empty_string():
 def _mock_stand(**kw):
     defaults = dict(
         name="Motoko", description="A stand", commander_principal="",
-        permissions="", min_cycles=0, topup_cycles=0, subnet="", subnet_type="",
-        canisters=[],
+        commanders_json="", permissions="", min_cycles=0, topup_cycles=0,
+        subnet="", subnet_type="", canisters=[],
     )
     defaults.update(kw)
     return types.SimpleNamespace(**defaults)
@@ -690,8 +690,8 @@ def test_stand_view_empty_canisters():
 def _mock_section(**kw):
     defaults = dict(
         name="Demo", description="Demo section", commander_principal="",
-        permissions="", min_cycles=0, topup_cycles=0, subnet="", subnet_type="",
-        stands=[],
+        commanders_json="", permissions="", min_cycles=0, topup_cycles=0,
+        subnet="", subnet_type="", stands=[],
     )
     defaults.update(kw)
     return types.SimpleNamespace(**defaults)
@@ -699,7 +699,7 @@ def _mock_section(**kw):
 
 def test_section_view_fields_present():
     v = views._section_view(_mock_section())
-    for field in ("name", "description", "commander_principal", "permissions",
+    for field in ("name", "description", "commander_principal", "commanders", "permissions",
                   "all_permissions", "min_cycles", "topup_cycles", "subnet",
                   "subnet_type", "stands"):
         assert field in v, f"missing field: {field}"
@@ -722,6 +722,45 @@ def test_section_view_subnet_and_subnet_type():
     v = views._section_view(_mock_section(subnet="abc123", subnet_type="fiduciary"))
     assert v["subnet"] == "abc123"
     assert v["subnet_type"] == "fiduciary"
+
+
+# ── commanders ────────────────────────────────────────────────────────────────
+
+import commanders as cmd_mod
+
+
+def test_add_commander_appends_without_removing():
+    sec = types.SimpleNamespace(commander_principal="", commanders_json="", permissions="")
+    cmd_mod.add_commander(sec, "aaaaa-aa")
+    cmd_mod.add_commander(sec, "bbbbb-bb")
+    principals = cmd_mod.commander_principals(sec)
+    assert principals == ["aaaaa-aa", "bbbbb-bb"]
+
+
+def test_remove_commander():
+    sec = types.SimpleNamespace(commander_principal="", commanders_json="", permissions="")
+    cmd_mod.add_commander(sec, "aaaaa-aa")
+    cmd_mod.add_commander(sec, "bbbbb-bb")
+    assert cmd_mod.remove_commander(sec, "aaaaa-aa") is True
+    assert cmd_mod.commander_principals(sec) == ["bbbbb-bb"]
+
+
+def test_legacy_commander_migrated_on_read():
+    sec = types.SimpleNamespace(
+        commander_principal="legacy-cmd", commanders_json="", permissions="canister.create",
+    )
+    entries = cmd_mod.list_commanders(sec)
+    assert len(entries) == 1
+    assert entries[0]["principal"] == "legacy-cmd"
+    assert entries[0]["permissions"] == "canister.create"
+
+
+def test_stand_view_exposes_commanders_array():
+    sec = types.SimpleNamespace(commander_principal="", commanders_json="", permissions="")
+    cmd_mod.add_commander(sec, "sec-cmd")
+    v = views._section_view(_mock_section(commanders_json=sec.commanders_json, commander_principal=sec.commander_principal))
+    assert len(v["commanders"]) == 1
+    assert v["commanders"][0]["principal"] == "sec-cmd"
 
 
 # ── arrangement_helpers: candid_text_tuple ───────────────────────────────────
@@ -903,12 +942,35 @@ def test_merge_controllers_dedupes_and_preserves_order():
 
 
 def test_commander_for_stand_prefers_stand_over_section():
-    section = types.SimpleNamespace(commander_principal="section-cmd")
-    stand = types.SimpleNamespace(commander_principal="stand-cmd", section=section)
+    section = types.SimpleNamespace(
+        commander_principal="section-cmd", commanders_json="", permissions="",
+    )
+    stand = types.SimpleNamespace(
+        commander_principal="stand-cmd", commanders_json="", permissions="", section=section,
+    )
     assert lifecycle._commander_for_stand(stand) == "stand-cmd"
 
-    stand_no = types.SimpleNamespace(commander_principal="", section=section)
+    stand_no = types.SimpleNamespace(
+        commander_principal="", commanders_json="", permissions="", section=section,
+    )
     assert lifecycle._commander_for_stand(stand_no) == "section-cmd"
+
+
+def test_commanders_for_stand_returns_all_principals():
+    import commanders as cmd_mod
+    section = types.SimpleNamespace(commander_principal="", commanders_json="", permissions="")
+    cmd_mod.persist_commanders(section, [
+        {"principal": "sec-a", "permissions": "*"},
+        {"principal": "sec-b", "permissions": "*"},
+    ])
+    stand = types.SimpleNamespace(
+        commander_principal="", commanders_json="", permissions="", section=section,
+    )
+    cmd_mod.persist_commanders(stand, [{"principal": "stand-a", "permissions": "*"}])
+    assert lifecycle._commanders_for_stand(stand) == ["stand-a"]
+    assert lifecycle._commanders_for_stand(
+        types.SimpleNamespace(commander_principal="", commanders_json="", permissions="", section=section)
+    ) == ["sec-a", "sec-b"]
 
 
 def test_install_mode_candid_basilisk_uses_plain_upgrade():
@@ -943,6 +1005,25 @@ def test_auth_includes_orchestration_permissions():
     assert "orchestration.baton.create" in keys
     assert "orchestration.baton.upgrade" in keys
     assert "orchestration.multisig.create" in keys
+
+
+def test_platform_controller_eligible_without_section_permission():
+    import orchestration_governance as og
+    policy = {"threshold": 2, "eligible": [], "required": []}
+    assert og.is_approval_eligible(
+        "kpvwp-controller",
+        policy,
+        og.ACTION_ORCHESTRATION_BATON_UPGRADE,
+        "",
+        platform_controller=True,
+    )
+    assert not og.is_approval_eligible(
+        "random-principal",
+        policy,
+        og.ACTION_ORCHESTRATION_BATON_UPGRADE,
+        "canister.deploy",
+        platform_controller=False,
+    )
 
 
 def test_install_mode_candid_motoko_requests_memory_keep():

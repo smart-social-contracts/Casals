@@ -43,6 +43,7 @@
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import { notifyGovernanceSubmitted } from '$lib/stores/governancePending';
   import { copyText } from '$lib/clipboard';
   import FormModal from '$lib/components/FormModal.svelte';
   import CreateCanisterModal from '$lib/components/CreateCanisterModal.svelte';
@@ -55,6 +56,7 @@
   import { resolveWasmType, hasBasiliskFeatures } from '$lib/canisterTypes';
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
+  import { entityCommanders } from '$lib/commanderAccess';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type OrchestraView = 'tree' | 'diagram';
@@ -116,10 +118,10 @@
       [s.name, s.canister_id, s.wasm_key, s.wasm_hash, s.status, s.kind, s.subnet]
         .some((v) => (v ?? '').toLowerCase().includes(q));
     const matchStand = (d: Stand) =>
-      [d.name, d.description, d.commander_principal, d.subnet, d.subnet_type]
+      [d.name, d.description, d.subnet, d.subnet_type, ...entityCommanders(d).map((c) => c.principal)]
         .some((v) => (v ?? '').toLowerCase().includes(q));
     const matchSection = (sec: Section) =>
-      [sec.name, sec.description, sec.commander_principal, sec.subnet, sec.subnet_type]
+      [sec.name, sec.description, sec.subnet, sec.subnet_type, ...entityCommanders(sec).map((c) => c.principal)]
         .some((v) => (v ?? '').toLowerCase().includes(q));
     const sections = tree.sections
       .map((sec) => {
@@ -448,7 +450,15 @@
     modalBusy = true;
     _startLogPoll();
     try {
-      await modal.onsubmit(values);
+      const result = await modal.onsubmit(values);
+      if (result?.status === 'PENDING' && !result?.ready_to_execute) {
+        _stopLogPoll();
+        const n = result.approval_count ?? result.approvals?.length ?? 1;
+        const t = result.threshold ?? 2;
+        notifyGovernanceSubmitted(`Awaiting approval (${n}/${t}) — see Commanders page`);
+        modal = null;
+        return;
+      }
       toasts.success(`${modal.title} succeeded`);
       modal = null;
       await load();
@@ -625,21 +635,21 @@
     });
   }
 
-  function openSetCommander(target: { section?: string; stand?: string }, current: string) {
+  function openAddCommander(target: { section?: string; stand?: string }) {
     const label = target.section ? `section "${target.section}"` : `stand "${target.stand}"`;
     openModal({
-      title: 'Set commander',
-      description: `Authorized commander for ${label}`,
+      title: 'Add commander',
+      description: `Add an authorized commander for ${label} (existing commanders are kept)`,
       fields: [
         {
           name: 'commander_principal',
           label: 'Commander principal',
           required: true,
-          value: current ?? '',
+          value: '',
           placeholder: 'aaaaa-aa',
         },
       ],
-      submitLabel: 'Set commander',
+      submitLabel: 'Add commander',
       onsubmit: (v) => setCommander({ ...target, commander_principal: String(v.commander_principal).trim() }),
     });
   }
@@ -917,11 +927,11 @@
                 {#if section.description}
                   <div class="text-xs text-primary-500 mt-0.5">{section.description}</div>
                 {/if}
-                {#if section.commander_principal}
-                  <div class="text-xs text-primary-400 mt-1 font-mono" title={section.commander_principal}>
-                    commander: {shortPrincipal(section.commander_principal)}
+                {#each entityCommanders(section) as cmd (cmd.principal)}
+                  <div class="text-xs text-primary-400 mt-1 font-mono" title={cmd.principal}>
+                    commander: {shortPrincipal(cmd.principal)}
                   </div>
-                {/if}
+                {/each}
                 {#if placementLabel(section)}
                   <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-1 font-mono" title={section.subnet || section.subnet_type}>
                     <span>⬡ {placementLabel(section)}</span>
@@ -937,7 +947,7 @@
                 <button class="icon-btn" aria-label="Add stand" onclick={() => openCreateStand(section)}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                 </button>
-                <button class="icon-btn" aria-label="Set commander" onclick={() => openSetCommander({ section: section.name }, section.commander_principal)}>
+                <button class="icon-btn" aria-label="Add commander" onclick={() => openAddCommander({ section: section.name })}>
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                 </button>
                 <button class="icon-btn" aria-label="Rename section" onclick={() => openRenameSection(section)}>
@@ -972,11 +982,11 @@
                         {#if stand.description}
                           <div class="text-xs text-primary-400 mt-0.5">{stand.description}</div>
                         {/if}
-                        {#if stand.commander_principal}
-                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={stand.commander_principal}>
-                            commander: {shortPrincipal(stand.commander_principal)}
+                        {#each entityCommanders(stand) as cmd (cmd.principal)}
+                          <div class="text-xs text-primary-400 mt-0.5 font-mono" title={cmd.principal}>
+                            commander: {shortPrincipal(cmd.principal)}
                           </div>
-                        {/if}
+                        {/each}
                         {#if placementLabel(stand)}
                           <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
                             <span>⬡ {placementLabel(stand)}</span>
@@ -998,7 +1008,7 @@
                         <button class="icon-btn" aria-label="Deploy all canisters in stand" onclick={() => openUpgradeStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                         </button>
-                        <button class="icon-btn" aria-label="Set commander" onclick={() => openSetCommander({ stand: stand.name }, stand.commander_principal)}>
+                        <button class="icon-btn" aria-label="Add commander" onclick={() => openAddCommander({ stand: stand.name })}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                         </button>
                         <button class="icon-btn" aria-label="Rename stand" onclick={() => openRenameStand(stand)}>

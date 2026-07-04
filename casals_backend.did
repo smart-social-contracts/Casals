@@ -129,6 +129,7 @@ service : {
   "delete_canister" : (text) -> (text);
   "destroy_canister" : (text) -> (text);
   "set_commander" : (text) -> (text);
+  "remove_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
   "list_permissions" : () -> (text) query;
   "list_backend_controllers" : (text) -> (text);

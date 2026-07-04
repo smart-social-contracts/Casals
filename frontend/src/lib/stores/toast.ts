@@ -24,8 +24,8 @@ function dismiss(id: number) {
 
 export const toasts = {
   subscribe,
-  success: (msg: string) => add('success', msg),
-  error: (msg: string) => add('error', msg, 6000),
-  info: (msg: string) => add('info', msg),
+  success: (msg: string, duration = 4000) => add('success', msg, duration),
+  error: (msg: string, duration = 6000) => add('error', msg, duration),
+  info: (msg: string, duration = 4000) => add('info', msg, duration),
   dismiss,
 };

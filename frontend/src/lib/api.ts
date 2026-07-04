@@ -26,9 +26,16 @@ export interface Canister {
   controllers?: string[];
 }
 
+export interface CommanderGrant {
+  principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
+}
+
 export interface Stand {
   name: string;
   description: string;
+  commanders?: CommanderGrant[];
   commander_principal: string;
   permissions?: string[];
   all_permissions?: boolean;
@@ -40,6 +47,7 @@ export interface Stand {
 export interface Section {
   name: string;
   description: string;
+  commanders?: CommanderGrant[];
   commander_principal: string;
   permissions?: string[];
   all_permissions?: boolean;
@@ -1333,9 +1341,18 @@ export async function setCommander(args: {
   return _parseUpdate(await (await _actor(true)).set_commander(JSON.stringify(args)));
 }
 
+export async function removeCommander(args: {
+  section?: string;
+  stand?: string;
+  commander_principal: string;
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).remove_commander(JSON.stringify(args)));
+}
+
 export async function setPermissions(args: {
   section?: string;
   stand?: string;
+  commander_principal: string;
   permissions: string[] | '*';
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));

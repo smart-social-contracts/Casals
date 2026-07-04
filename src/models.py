@@ -49,7 +49,10 @@ class Section(Entity, TimestampedMixin):
     # PERMISSIONS in main.py). Empty string or "*" => full access (every
     # permission), preserving the historical "commander can do everything"
     # behaviour. Otherwise only the listed permissions are granted.
+    # Legacy mirror of the first entry in ``commanders_json``.
     permissions = String(max_length=512, default="")
+    # JSON array of {principal, permissions} — authoritative multi-commander store.
+    commanders_json = String(max_length=8192, default="")
     created_by = String(max_length=64, default="")
     # Cycle policy (0 => inherit from Settings defaults). See util.resolve_cycle_policy.
     min_cycles = Integer(default=0)
@@ -77,7 +80,10 @@ class Stand(Entity, TimestampedMixin):
     # Optional per-stand commander; overrides the section commander when set.
     commander_principal = String(max_length=64, default="")
     # Permission keys granted to this stand's commander (see Section.permissions).
+    # Legacy mirror of the first entry in ``commanders_json``.
     permissions = String(max_length=512, default="")
+    # JSON array of {principal, permissions} — authoritative multi-commander store.
+    commanders_json = String(max_length=8192, default="")
     created_by = String(max_length=64, default="")
     # Cycle policy override (0 => inherit from the section, then Settings).
     min_cycles = Integer(default=0)

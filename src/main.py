@@ -43,6 +43,18 @@ from auth import (
     _normalize_permissions,
     _parse_permissions,
 )
+from commanders import (
+    add_commander,
+    apply_commanders_from_spec,
+    commander_principals,
+    entity_has_permission,
+    is_commander,
+    legacy_commander_principal,
+    list_commanders,
+    permissions_for,
+    remove_commander as _remove_commander_entity,
+    section_commander_can,
+)
 from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
 from orchestration_bridge import (
@@ -159,9 +171,11 @@ from orchestration_governance import (
     ORCHESTRATION_ACTION_LABELS,
     STATUS_EXECUTED,
     STATUS_FAILED,
+    STATUS_PENDING,
     create_permission_for_wasm,
     list_orchestration_actions_catalog,
     parse_orchestration_policies,
+    quorum_met,
     request_payload,
     upgrade_permission_for_targets,
 )
@@ -250,20 +264,20 @@ def _require_can_add() -> None:
 
 
 def _section_commander_can(sec, permission: str) -> bool:
-    """True if the caller is `sec`'s commander and `sec` grants `permission`.
-
-    Lets a section's delegated commander perform scoped structural actions inside
-    its own section (e.g. create stands / register canisters) without being a full
-    Casals controller — the least-privilege path. Generic: no project specifics."""
-    if sec is None:
-        return False
-    commander = (getattr(sec, "commander_principal", "") or "").strip()
-    return bool(commander and _caller() == commander
-                and _has_permission(getattr(sec, "permissions", ""), permission))
+    """True if the caller is a section commander with ``permission``."""
+    return section_commander_can(sec, _caller(), permission)
 
 
 def _stand_permissions_for(stand) -> str:
     """Permission string governing a stand commander (stand grant, else section's)."""
+    caller = _caller()
+    if stand and is_commander(stand, caller):
+        p = permissions_for(stand, caller)
+        if p:
+            return p
+    sec = getattr(stand, "section", None)
+    if sec and is_commander(sec, caller):
+        return permissions_for(sec, caller)
     p = (getattr(stand, "permissions", "") or "").strip()
     if p:
         return p
@@ -281,10 +295,8 @@ def _caller_can_manage_subnet_whitelist() -> bool:
             return True
     list(Stand.instances())
     for stand in Stand.instances():
-        sc = (stand.commander_principal or "").strip()
-        if sc and _caller() == sc:
-            if _has_permission(_stand_permissions_for(stand), "subnet.whitelist"):
-                return True
+        if entity_has_permission(stand, _caller(), "subnet.whitelist"):
+            return True
     return False
 
 
@@ -310,10 +322,13 @@ def _require_can_add_in_section(sec, permission: str) -> None:
 
 
 def _commander_for(stand: Stand) -> str:
-    if stand.commander_principal:
-        return stand.commander_principal
-    section = stand.section
-    return section.commander_principal if section else ""
+    """First stand or section commander (legacy helper)."""
+    principals = commander_principals(stand) if stand else []
+    if principals:
+        return principals[0]
+    section = stand.section if stand else None
+    sec_principals = commander_principals(section) if section else []
+    return sec_principals[0] if sec_principals else ""
 
 
 def _require_commander(stand: Stand, permission: str = "") -> None:
@@ -322,42 +337,28 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 
     Resolution order:
       - Casals controllers may do anything.
-      - The stand's own commander (if set) is matched against the stand's
-        permission grant.
-      - Otherwise the parent section's commander is matched against the
-        section's permission grant.
+      - Any stand commander with the required permission.
+      - Any parent section commander with the required permission.
       - With no commander assigned, open-access mode grants any authenticated
         caller full control (demo stands), mirroring _require_can_add.
     """
     if _is_controller():
         return
     caller = _caller()
-    # Prefer the stand-level commander; its permission grant governs.
-    stand_commander = (stand.commander_principal or "").strip() if stand else ""
-    if stand_commander:
-        if caller != stand_commander:
-            # A section commander may still act on the stand via the section grant.
-            section = stand.section if stand else None
-            sec_commander = (section.commander_principal or "").strip() if section else ""
-            if sec_commander and caller == sec_commander:
-                if not _has_permission(section.permissions, permission):
-                    raise Exception(f"unauthorized: commander lacks permission '{permission}'")
-                return
-            raise Exception("unauthorized: caller is not the commander for this stand/section")
-        if not _has_permission(stand.permissions, permission):
-            raise Exception(f"unauthorized: commander lacks permission '{permission}'")
-        return
-    # No stand commander: fall back to the section commander.
     section = stand.section if stand else None
-    sec_commander = (section.commander_principal or "").strip() if section else ""
-    if sec_commander:
-        if caller != sec_commander:
-            raise Exception("unauthorized: caller is not the commander for this stand/section")
-        if not _has_permission(section.permissions, permission):
-            raise Exception(f"unauthorized: commander lacks permission '{permission}'")
-        return
-    # No commander assigned (e.g. the demo stands): in open-access mode any
-    # authenticated caller may drive the lifecycle, mirroring _require_can_add.
+
+    if stand and list_commanders(stand):
+        if entity_has_permission(stand, caller, permission):
+            return
+        if section and entity_has_permission(section, caller, permission):
+            return
+        raise Exception("unauthorized: caller is not the commander for this stand/section")
+
+    if section and list_commanders(section):
+        if entity_has_permission(section, caller, permission):
+            return
+        raise Exception("unauthorized: caller is not the commander for this stand/section")
+
     if _settings().open_access and caller != ANONYMOUS:
         return
     raise Exception("unauthorized: caller is not the commander for this stand/section")
@@ -446,7 +447,8 @@ def list_sections() -> text:
         {
             "name": s.name,
             "description": s.description,
-            "commander_principal": s.commander_principal,
+            "commander_principal": legacy_commander_principal(s),
+            "commander_count": len(list_commanders(s)),
             "stand_count": len(list(s.stands or [])),
         }
         for s in Section.instances()
@@ -926,7 +928,7 @@ def create_section(args: text) -> text:
             return _err(f"section '{name}' already exists")
         sec = Section(name=name)
         sec.description = (params.get("description") or "")[:512]
-        sec.commander_principal = (params.get("commander_principal") or "").strip()
+        apply_commanders_from_spec(sec, params)
         sec.subnet = (params.get("subnet") or "").strip()
         sec.subnet_type = (params.get("subnet_type") or "").strip()
         assert_subnet_allowed(sec.subnet, sec.subnet_type)
@@ -958,7 +960,7 @@ def create_stand(args: text) -> text:
         dk = Stand(name=name)
         dk.section = sec
         dk.description = (params.get("description") or "")[:512]
-        dk.commander_principal = (params.get("commander_principal") or "").strip()
+        apply_commanders_from_spec(dk, params)
         dk.subnet = (params.get("subnet") or "").strip()
         dk.subnet_type = (params.get("subnet_type") or "").strip()
         assert_subnet_allowed(dk.subnet, dk.subnet_type)
@@ -1151,20 +1153,19 @@ def destroy_canister(args: text) -> Async[text]:
 
 @update
 def set_commander(args: text) -> text:
-    """Set the commander principal for a section or stand.
+    """Add or update a commander for a section or stand (does not remove others).
 
     Authorization:
       - Casals controllers may set any section or stand commander.
-      - A section's own commander may appoint commanders for stands within
-        that section (delegation downward, not self-escalation).
+      - A section commander may appoint stand commanders within that section.
 
     Args (JSON): {"section": str} or {"stand": str} + {"commander_principal": str}.
     """
     try:
         params = json.loads(args)
         commander = (params.get("commander_principal") or "").strip()
-        # Optional permission grant supplied alongside the commander. None =>
-        # leave at the default (full access) unless already set.
+        if not commander:
+            return _err("commander_principal is required")
         perms = params.get("permissions", None)
         caller = _caller()
         if params.get("stand"):
@@ -1173,33 +1174,22 @@ def set_commander(args: text) -> text:
             dk = Stand[params["stand"].strip()]
             if dk is None:
                 return _err(f"unknown stand '{params['stand']}'")
-            # Allow: Casals controller, or the commander of the stand's parent
-            # section holding the `commander.assign` permission.
             if not _is_controller():
                 sec = dk.section
-                sec_commander = (sec.commander_principal or "").strip() if sec else ""
-                if not sec_commander or caller != sec_commander:
+                if not sec or not entity_has_permission(sec, caller, "commander.assign"):
                     raise Exception(
-                        "unauthorized: must be a Casals controller or the section commander "
-                        f"to set a stand commander (section commander: {sec_commander or '—'})"
+                        "unauthorized: must be a Casals controller or a section commander "
+                        "with 'commander.assign' to set a stand commander"
                     )
-                if not _has_permission(sec.permissions, "commander.assign"):
-                    raise Exception("unauthorized: section commander lacks 'commander.assign'")
-            dk.commander_principal = commander
-            if perms is not None:
-                dk.permissions = _normalize_permissions(perms)
+            add_commander(dk, commander, perms)
             _append_event("commander_set", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
-            # Section commanders are top-level governance — only Casals controllers
-            # may assign them (prevents privilege escalation via open-access stands).
             _require_admin()
             list(Section.instances())
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
-            sec.commander_principal = commander
-            if perms is not None:
-                sec.permissions = _normalize_permissions(perms)
+            add_commander(sec, commander, perms)
             _append_event("commander_set", "", {"section": sec.name, "commander": commander})
         else:
             return _err("expected 'section' or 'stand'")
@@ -1209,20 +1199,17 @@ def set_commander(args: text) -> text:
 
 
 @update
-def set_permissions(args: text) -> text:
-    """Update the permission grant of an existing section/stand commander
-    without changing who the commander is.
+def remove_commander(args: text) -> text:
+    """Remove a commander from a section or stand.
 
-    Authorization mirrors set_commander:
-      - section permissions: Casals controllers only;
-      - stand permissions: controller, or the parent section's commander holding
-        `commander.assign`.
-
-    Args (JSON): {"section": str} or {"stand": str} + {"permissions": [str]|"*"}.
+    Authorization mirrors set_commander.
+    Args (JSON): {"section"|"stand": str, "commander_principal": str}.
     """
     try:
         params = json.loads(args)
-        perms = params.get("permissions", [])
+        commander = (params.get("commander_principal") or "").strip()
+        if not commander:
+            return _err("commander_principal is required")
         caller = _caller()
         if params.get("stand"):
             list(Stand.instances())
@@ -1232,21 +1219,78 @@ def set_permissions(args: text) -> text:
                 return _err(f"unknown stand '{params['stand']}'")
             if not _is_controller():
                 sec = dk.section
-                sec_commander = (sec.commander_principal or "").strip() if sec else ""
-                if not sec_commander or caller != sec_commander:
-                    raise Exception("unauthorized: must be a controller or the section commander")
-                if not _has_permission(sec.permissions, "commander.assign"):
-                    raise Exception("unauthorized: section commander lacks 'commander.assign'")
-            dk.permissions = _normalize_permissions(perms)
-            _append_event("permissions_set", "", {"stand": dk.name, "permissions": _parse_permissions(dk.permissions)})
+                if not sec or not entity_has_permission(sec, caller, "commander.assign"):
+                    raise Exception(
+                        "unauthorized: must be a Casals controller or a section commander "
+                        "with 'commander.assign' to remove a stand commander"
+                    )
+            if not _remove_commander_entity(dk, commander):
+                return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
+            _append_event("commander_removed", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
             _require_admin()
             list(Section.instances())
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
-            sec.permissions = _normalize_permissions(perms)
-            _append_event("permissions_set", "", {"section": sec.name, "permissions": _parse_permissions(sec.permissions)})
+            if not _remove_commander_entity(sec, commander):
+                return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
+            _append_event("commander_removed", "", {"section": sec.name, "commander": commander})
+        else:
+            return _err("expected 'section' or 'stand'")
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_permissions(args: text) -> text:
+    """Update the permission grant for one commander on a section or stand.
+
+    Authorization mirrors set_commander.
+
+    Args (JSON): {"section"|"stand": str, "commander_principal": str,
+                  "permissions": [str]|"*"}. 
+    """
+    try:
+        params = json.loads(args)
+        perms = params.get("permissions", [])
+        commander = (params.get("commander_principal") or "").strip()
+        if not commander:
+            return _err("commander_principal is required")
+        caller = _caller()
+        if params.get("stand"):
+            list(Stand.instances())
+            list(Section.instances())
+            dk = Stand[params["stand"].strip()]
+            if dk is None:
+                return _err(f"unknown stand '{params['stand']}'")
+            if not _is_controller():
+                sec = dk.section
+                if not sec or not entity_has_permission(sec, caller, "commander.assign"):
+                    raise Exception("unauthorized: must be a controller or the section commander")
+            if not is_commander(dk, commander):
+                return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
+            add_commander(dk, commander, perms)
+            _append_event("permissions_set", "", {
+                "stand": dk.name,
+                "commander": commander,
+                "permissions": _parse_permissions(permissions_for(dk, commander)),
+            })
+        elif params.get("section"):
+            _require_admin()
+            list(Section.instances())
+            sec = Section[params["section"].strip()]
+            if sec is None:
+                return _err(f"unknown section '{params['section']}'")
+            if not is_commander(sec, commander):
+                return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
+            add_commander(sec, commander, perms)
+            _append_event("permissions_set", "", {
+                "section": sec.name,
+                "commander": commander,
+                "permissions": _parse_permissions(permissions_for(sec, commander)),
+            })
         else:
             return _err("expected 'section' or 'stand'")
         return _ok()
@@ -1518,7 +1562,7 @@ def deploy_sheet(args: text) -> Async[text]:
             if sec is None:
                 sec = Section(name=sname)
                 sec.description = (sec_spec.get("description") or "")[:512]
-                sec.commander_principal = (sec_spec.get("commander_principal") or "").strip()
+                apply_commanders_from_spec(sec, sec_spec)
                 sec.created_by = _caller()
                 _append_event("section_created", "", {"name": sname})
                 result["created_sections"].append(sname)
@@ -1539,7 +1583,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     dk = Stand(name=dname)
                     dk.section = sec
                     dk.description = (stand_spec.get("description") or "")[:512]
-                    dk.commander_principal = (stand_spec.get("commander_principal") or "").strip()
+                    apply_commanders_from_spec(dk, stand_spec)
                     dk.created_by = _caller()
                     _append_event("stand_created", "", {"section": sname, "name": dname})
                     result["created_stands"].append(dname)
@@ -2351,6 +2395,66 @@ def _execute_governance_payload_gen(action: str, payload: dict) -> Async[str]:
     return _err(f"unsupported governance action: {action}")
 
 
+def _section_governance_policy(section, action: str) -> dict:
+    policies = parse_orchestration_policies(getattr(section, "orchestration_policies_json", "") or "")
+    return policies.get(action) or {"threshold": 1, "eligible": [], "required": []}
+
+
+def _finalize_governance_request_gen(request_id: str) -> Async[str]:
+    """Execute a quorum-approved governance request and persist terminal status."""
+    req = _load_request(request_id)
+    if req is None:
+        return _err("unknown governance request")
+    if req.status != STATUS_PENDING:
+        return _err(f"request not actionable: {req.status}")
+
+    list(Section.instances())
+    section = Section[req.section_name]
+    if section is None:
+        return _err(f"unknown section '{req.section_name}'")
+
+    policy = _section_governance_policy(section, req.action)
+    if not quorum_met({"approvals": req.approvals}, policy):
+        return _err("quorum not met")
+
+    payload = request_payload(req)
+    try:
+        exec_res = yield from _execute_governance_payload_gen(req.action, payload)
+        ok = False
+        try:
+            parsed = json.loads(exec_res)
+            ok = bool(parsed.get("ok")) if isinstance(parsed, dict) else False
+        except json.JSONDecodeError:
+            ok = True
+        req.status = STATUS_EXECUTED if ok else STATUS_FAILED
+        req.result_json = exec_res if isinstance(exec_res, str) else json.dumps(exec_res or {})
+        _append_event("governance_executed", "", {
+            "request_id": request_id,
+            "action": req.action,
+            "status": req.status,
+        })
+        if ok:
+            try:
+                merged = json.loads(exec_res)
+                if isinstance(merged, dict):
+                    merged["governance"] = {"request_id": request_id, "status": req.status}
+                    return json.dumps(merged)
+            except json.JSONDecodeError:
+                pass
+        return exec_res
+    except Exception as exc:
+        err = _err(f"{exc} :: {traceback.format_exc()[-400:]}")
+        req.status = STATUS_FAILED
+        req.result_json = err
+        _append_event("governance_executed", "", {
+            "request_id": request_id,
+            "action": req.action,
+            "status": STATUS_FAILED,
+            "error": str(exc),
+        })
+        return err
+
+
 @query
 def list_orchestration_actions() -> text:
     """Catalog of orchestration actions that support N-of-M approval policies."""
@@ -2424,27 +2528,21 @@ def approve_governance_request(args: text) -> Async[text]:
         request_id = (params.get("request_id") or "").strip()
         if not request_id:
             return _err("expected 'request_id'")
-        res = yield from approve_governance_request_gen(request_id)
+        req = _load_request(request_id)
+        if req is not None and req.status == STATUS_PENDING:
+            list(Section.instances())
+            section = Section[req.section_name]
+            if section is not None:
+                policy = _section_governance_policy(section, req.action)
+                if quorum_met({"approvals": req.approvals}, policy):
+                    return (yield from _finalize_governance_request_gen(request_id))
+
+        res = approve_governance_request_gen(request_id)
         parsed = json.loads(res)
         if not parsed.get("ok"):
             return res
         if parsed.get("ready_to_execute"):
-            req = _load_request(request_id)
-            if req is None:
-                return _err("unknown governance request")
-            payload = request_payload(req)
-            exec_res = yield from _execute_governance_payload_gen(req.action, payload)
-            req.status = STATUS_EXECUTED if json.loads(exec_res).get("ok") else STATUS_FAILED
-            req.result_json = exec_res
-            _append_event("governance_executed", "", {"request_id": request_id, "action": req.action})
-            try:
-                merged = json.loads(exec_res)
-                if isinstance(merged, dict):
-                    merged["governance"] = {"request_id": request_id, "status": req.status}
-                    return json.dumps(merged)
-            except json.JSONDecodeError:
-                pass
-            return exec_res
+            return (yield from _finalize_governance_request_gen(request_id))
         return res
     except Exception as e:
         return _err(str(e))
@@ -2458,7 +2556,7 @@ def reject_governance_request(args: text) -> Async[text]:
         request_id = (params.get("request_id") or "").strip()
         if not request_id:
             return _err("expected 'request_id'")
-        return (yield from reject_governance_request_gen(request_id))
+        return reject_governance_request_gen(request_id)
     except Exception as e:
         return _err(str(e))
 

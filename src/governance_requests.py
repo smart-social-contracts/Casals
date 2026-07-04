@@ -9,6 +9,7 @@ import traceback
 from basilisk import Async
 
 from audit import _append_event
+from commanders import is_commander, permissions_for
 from helpers import _caller, _err, _is_controller, _ok
 from models import GovernanceRequest, Section, Stand
 from orchestration_governance import (
@@ -32,17 +33,19 @@ def _section_policies(section) -> dict:
     return parse_orchestration_policies(raw)
 
 
-def _permission_grant_for_request(section, req: GovernanceRequest) -> str:
-    payload = request_payload(req)
-    stand_name = (payload.get("stand") or "").strip()
-    if stand_name:
-        list(Stand.instances())
-        dk = Stand[stand_name]
-        if dk is not None:
-            p = (getattr(dk, "permissions", "") or "").strip()
-            if p:
-                return p
-    return (getattr(section, "permissions", "") or "").strip() if section else ""
+def _permission_grant_for_caller(section, caller: str, req: GovernanceRequest | None = None) -> str:
+    """Resolve the permission grant for ``caller`` on a governance request."""
+    if req is not None:
+        payload = request_payload(req)
+        stand_name = (payload.get("stand") or "").strip()
+        if stand_name:
+            list(Stand.instances())
+            dk = Stand[stand_name]
+            if dk is not None and is_commander(dk, caller):
+                return permissions_for(dk, caller)
+    if section is not None and is_commander(section, caller):
+        return permissions_for(section, caller)
+    return ""
 
 
 def _policy_for_section(section, action: str) -> dict:
@@ -72,6 +75,24 @@ def _load_request(request_id: str) -> GovernanceRequest | None:
     return GovernanceRequest[(request_id or "").strip()]
 
 
+def _request_record_from_entity(req: GovernanceRequest) -> dict:
+    return {
+        "request_id": req.request_id,
+        "section_name": req.section_name,
+        "action": req.action,
+        "status": req.status,
+        "payload_json": req.payload_json,
+        "proposed_by": req.proposed_by,
+        "proposed_at": int(req.proposed_at or 0),
+        "approvals": req.approvals,
+        "result_json": req.result_json or "",
+    }
+
+
+def _persist_request(req: GovernanceRequest) -> GovernanceRequest:
+    return _save_request(_request_record_from_entity(req))
+
+
 def _governance_response(record: GovernanceRequest, section, extra: dict | None = None) -> str:
     rec = request_to_dict(record, section)
     if section is not None:
@@ -90,17 +111,14 @@ def orchestration_governance_gate(
     permission_grant: str = "",
 ) -> Async[str]:
     """Run ``execute_gen`` immediately when quorum allows, else store PENDING."""
-    if _is_controller():
-        result = yield from execute_gen()
-        if isinstance(result, str):
-            return result
-        return _ok(**(result or {}))
-
     policy = _policy_for_section(section, action)
     caller = _caller()
-    perms = (permission_grant or "").strip() or getattr(section, "permissions", "") or ""
+    perms = (permission_grant or "").strip() or _permission_grant_for_caller(section, caller)
+    platform_controller = _is_controller()
 
-    if not is_approval_eligible(caller, policy, action, perms):
+    if not is_approval_eligible(
+        caller, policy, action, perms, platform_controller=platform_controller,
+    ):
         return _err(f"caller not eligible to propose '{action}'")
 
     record = new_governance_request(
@@ -153,7 +171,7 @@ def orchestration_governance_gate(
     return _governance_response(req, section, {"status": STATUS_PENDING})
 
 
-def approve_governance_request_gen(request_id: str) -> Async[str]:
+def approve_governance_request_gen(request_id: str) -> str:
     req = _load_request(request_id)
     if req is None:
         return _err("unknown governance request")
@@ -167,11 +185,12 @@ def approve_governance_request_gen(request_id: str) -> Async[str]:
 
     policy = _policy_for_section(section, req.action)
     caller = _caller()
-    perms = _permission_grant_for_request(section, req)
+    perms = _permission_grant_for_caller(section, caller, req)
+    platform_controller = _is_controller()
 
-    if _is_controller():
-        pass
-    elif not is_approval_eligible(caller, policy, req.action, perms):
+    if not is_approval_eligible(
+        caller, policy, req.action, perms, platform_controller=platform_controller,
+    ):
         return _err("caller not eligible to approve this request")
 
     record = {
@@ -185,15 +204,17 @@ def approve_governance_request_gen(request_id: str) -> Async[str]:
 
     if not quorum_met({"approvals": req.approvals}, policy):
         _append_event("governance_approved", "", {"request_id": req.request_id, "caller": caller})
+        req = _persist_request(req)
         return _governance_response(req, section, {"status": STATUS_PENDING})
 
-    # Quorum met — execution happens via execute_governance_request.
+    # Quorum met — caller finalizes execution in main.approve_governance_request.
     req.status = STATUS_PENDING
     _append_event("governance_quorum_met", "", {"request_id": req.request_id})
+    req = _persist_request(req)
     return _governance_response(req, section, {"status": STATUS_PENDING, "quorum_met": True, "ready_to_execute": True})
 
 
-def reject_governance_request_gen(request_id: str) -> Async[str]:
+def reject_governance_request_gen(request_id: str) -> str:
     req = _load_request(request_id)
     if req is None:
         return _err("unknown governance request")
@@ -204,9 +225,11 @@ def reject_governance_request_gen(request_id: str) -> Async[str]:
     section = Section[req.section_name]
     policy = _policy_for_section(section, req.action) if section else {"threshold": 1, "eligible": [], "required": []}
     caller = _caller()
-    perms = _permission_grant_for_request(section, req) if section else ""
+    perms = _permission_grant_for_caller(section, caller, req) if section else ""
 
-    if not _is_controller() and not is_approval_eligible(caller, policy, req.action, perms):
+    if not is_approval_eligible(
+        caller, policy, req.action, perms, platform_controller=_is_controller(),
+    ):
         return _err("caller not eligible to reject this request")
 
     req.status = STATUS_REJECTED

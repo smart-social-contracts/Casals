@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getTree, setCommander, setPermissions, listPermissions, listBackendControllers,
-    getOrchestrationPolicies, setOrchestrationPolicies, listGovernanceRequests,
+    getTree, setCommander, removeCommander, setPermissions, listPermissions, listBackendControllers,
+    getOrchestrationPolicies, setOrchestrationPolicies,
     approveGovernanceRequest, rejectGovernanceRequest, listOrchestrationActions,
-    type Tree, type Permission, type ApprovalPolicy, type GovernanceRequest,
+    type Tree, type Permission, type ApprovalPolicy,
   } from '$lib/api';
+  import { entityCommanders } from '$lib/commanderAccess';
   import { identity, isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import { refreshGovernancePending, pendingGovernanceRequests } from '$lib/stores/governancePending';
   import { copyText } from '$lib/clipboard';
 
   interface CommanderRow {
@@ -48,7 +50,7 @@
 
   onMount(() => {
     void load();
-    void loadGovernanceRequests();
+    void refreshGovernancePending(false);
   });
 
   // Catalog grouped by group, in declaration order.
@@ -79,17 +81,17 @@
     }
     if (!tree) return out;
     for (const sec of tree.sections) {
-      if (sec.commander_principal) {
+      for (const cmd of entityCommanders(sec)) {
         out.push({
-          scope: 'section', section: sec.name, principal: sec.commander_principal,
-          label: sec.name, permissions: sec.permissions ?? [], allPermissions: sec.all_permissions ?? true,
+          scope: 'section', section: sec.name, principal: cmd.principal,
+          label: sec.name, permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
         });
       }
       for (const dk of sec.stands) {
-        if (dk.commander_principal) {
+        for (const cmd of entityCommanders(dk)) {
           out.push({
-            scope: 'stand', section: sec.name, stand: dk.name, principal: dk.commander_principal,
-            label: `${sec.name} / ${dk.name}`, permissions: dk.permissions ?? [], allPermissions: dk.all_permissions ?? true,
+            scope: 'stand', section: sec.name, stand: dk.name, principal: cmd.principal,
+            label: `${sec.name} / ${dk.name}`, permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
           });
         }
       }
@@ -198,6 +200,23 @@
     permsSelected = allChecked ? new Set() : new Set(catalog.map((p) => p.key));
   }
 
+  async function submitRemove(row: CommanderRow) {
+    if (!confirm(`Remove ${row.principal.slice(0, 12)}… from ${row.scope} "${row.stand ?? row.section}"?`)) return;
+    busy = true;
+    try {
+      const target = row.scope === 'stand' && row.stand
+        ? { stand: row.stand }
+        : { section: row.section };
+      await removeCommander({ ...target, commander_principal: row.principal });
+      toasts.success('Commander removed');
+      await load();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed');
+    } finally {
+      busy = false;
+    }
+  }
+
   async function submitPerms() {
     if (!permsRow) return;
     busy = true;
@@ -205,7 +224,7 @@
       const target = permsRow.scope === 'stand' ? { stand: permsRow.stand! } : { section: permsRow.section };
       // Collapse a full set to "*" so it reads as full access.
       const permissions: string[] | '*' = allChecked ? '*' : [...permsSelected];
-      await setPermissions({ ...target, permissions });
+      await setPermissions({ ...target, commander_principal: permsRow.principal, permissions });
       toasts.success('Permissions updated');
       permsOpen = false;
       await load();
@@ -283,24 +302,14 @@
     }
   }
 
-  // ── Pending governance requests ───────────────────────────────────────────
-  let governanceRequests = $state<GovernanceRequest[]>([]);
-
-  async function loadGovernanceRequests() {
-    try {
-      const res = await listGovernanceRequests({ status: 'PENDING' });
-      governanceRequests = res.requests ?? [];
-    } catch {
-      governanceRequests = [];
-    }
-  }
+  // ── Pending governance requests (shared store, polled in layout) ────────────
 
   async function approveRequest(requestId: string) {
     busy = true;
     try {
       await approveGovernanceRequest(requestId);
       toasts.success('Approved');
-      await loadGovernanceRequests();
+      await refreshGovernancePending(false);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed');
     } finally {
@@ -313,7 +322,7 @@
     try {
       await rejectGovernanceRequest(requestId);
       toasts.success('Rejected');
-      await loadGovernanceRequests();
+      await refreshGovernancePending(false);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed');
     } finally {
@@ -446,6 +455,7 @@
                   </span>
                   {#if $isAuthenticated && row.scope !== 'controller'}
                     <button class="btn-ghost btn-sm text-xs shrink-0" onclick={() => openPerms(row)}>Permissions</button>
+                    <button class="btn-ghost btn-sm text-xs shrink-0 text-red-600 hover:text-red-700" onclick={() => submitRemove(row)} disabled={busy}>Remove</button>
                   {/if}
                 </div>
 
@@ -475,11 +485,11 @@
     </p>
   {/if}
 
-  {#if governanceRequests.length > 0}
+  {#if $pendingGovernanceRequests.length > 0}
     <div class="card p-4 space-y-3">
       <h2 class="text-sm font-semibold text-primary-900">Pending orchestration approvals</h2>
       <div class="space-y-2">
-        {#each governanceRequests as req (req.request_id)}
+        {#each $pendingGovernanceRequests as req (req.request_id)}
           <div class="border border-primary-100 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center gap-3">
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium text-primary-900">{req.action_label ?? req.action}</div>
@@ -525,6 +535,7 @@
     <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (assignOpen = false)}></button>
     <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
       <h3 class="text-lg font-semibold text-primary-900">Assign commander</h3>
+      <p class="text-sm text-primary-500">Adds a commander without removing existing ones. Each section or stand may have multiple commanders.</p>
       <div>
         <span class="label">Scope</span>
         <div class="flex gap-2 mt-1">
