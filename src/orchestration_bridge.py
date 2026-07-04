@@ -336,8 +336,23 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
 
     ``commanders`` entries are either bare principals (granted
     BATON_COMMANDER_DEFAULT_CAPS) or {"principal", "capabilities"} dicts.
+
+    Also propagates Casals' file-registry canister id into the Baton config
+    (when set and not yet configured) so the Baton can pull registry-backed
+    WASMs and asset bundles for managed actions.
     """
     baton_id = baton_st.canister_id
+
+    registry_id = (_settings().file_registry_canister_id or "").strip()
+    if registry_id:
+        cfg_raw = yield from _baton_query(baton_id, "get_config")
+        cfg = _parse_baton_json_reply(cfg_raw) or {}
+        if not (isinstance(cfg, dict) and (cfg.get("file_registry_canister_id") or "").strip()):
+            reply = yield from _call_text_method(baton_id, "set_config", json.dumps({
+                "file_registry_canister_id": registry_id,
+            }))
+            _parse_baton_reply(reply)
+
     added = []
     for entry in commanders or []:
         if isinstance(entry, str):

@@ -464,10 +464,13 @@ def _verify_module_hash(canister_id: str, expected_hash_hex: str):
 def _add_controllers(canister_id: str, controllers: list):
     """Generator: set the controllers list on a canister."""
     principals = [Principal.from_str(c) for c in controllers if c]
-    yield management_canister.update_settings({
+    res = yield management_canister.update_settings({
         "canister_id": Principal.from_str(canister_id),
         "settings": {"controllers": principals},
     })
+    # Raise on rejection (e.g. Casals is not a controller of the target) so
+    # callers don't report success while the controller set stays unchanged.
+    unwrap_call_result(res)
     _persist_ic_controllers(canister_id, [c for c in controllers if c])
 
 
