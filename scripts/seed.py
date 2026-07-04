@@ -17,8 +17,9 @@ reference.
 Re-running is safe: templates already authorized with a matching hash are
 skipped; deploy_sheet is itself idempotent.
 
-Both canisters (casals_backend, ic_file_registry) are tracked in icp.yaml, so
-they resolve by name on the target environment.
+Both canisters (casals_backend, ic_file_registry, ic_file_registry_frontend,
+casals_frontend) are tracked in icp.yaml, so they resolve by name on the target
+environment.
 
 Usage:
     python3 scripts/seed.py -e local
@@ -233,7 +234,10 @@ def wire_orchestration_demo(cli_args, casals_id: str) -> None:
     else:
         print(f"  WARN: multisig configure returned {cfg!r}")
 
-    caps = 'vec { "propose:managed_upgrade"; "submit_approval:managed_upgrade" }'
+    caps = (
+        'vec { "propose:managed_upgrade"; "submit_approval:managed_upgrade"; '
+        '"manage_managed_canisters" }'
+    )
     msig_vec = f'principal "{multisig_id}"'
 
     for baton_name in baton_names:
@@ -370,6 +374,27 @@ def seed_arrangement(args, name: str) -> None:
           f"{len(payload['parameters'])} params, {len(payload['steps'])} steps)")
 
 
+def wire_registry_settings(args) -> str:
+    """Point Casals at the deployed file-registry (+ browse UI when present)."""
+    casals_id = canister_id(CASALS, args)
+    registry_id = canister_id(REGISTRY, args)
+    print(f"casals_backend  : {casals_id}")
+    print(f"ic_file_registry: {registry_id}")
+    if not casals_id or not registry_id:
+        sys.exit("could not resolve canister ids; is the project deployed?")
+
+    registry_frontend_id = canister_id_optional(REGISTRY_FRONTEND, args)
+    settings = {"file_registry_canister_id": registry_id}
+    if registry_frontend_id:
+        settings["file_registry_frontend_canister_id"] = registry_frontend_id
+        print(f"ic_file_registry_frontend: {registry_frontend_id}")
+    res = call(CASALS, "set_settings", args, json.dumps(settings))
+    if not (isinstance(res, dict) and res.get("ok")):
+        sys.exit(f"set_settings failed: {res}")
+    print("wired Casals -> file-registry")
+    return casals_id
+
+
 def main():
     ap = argparse.ArgumentParser(description="Seed a Casals deployment.")
     ap.add_argument("-e", "--env", default="local", help="icp environment (local|ic)")
@@ -392,6 +417,9 @@ def main():
                          "set_settings and sheet deploy. For seeding an environment's "
                          "arrangement into an already-provisioned Casals without touching "
                          "its authorized-WASM catalog.")
+    ap.add_argument("--wire-registry-only", action="store_true",
+                    help="ONLY wire Casals to the deployed file-registry canisters "
+                         "(set_settings); skip template upload and sheet deploy.")
     args = ap.parse_args()
 
     # Allow a consumer repo to own its seed data outside this engine repo: point
@@ -420,26 +448,16 @@ def main():
         seed_arrangement(args, args.arrangement)
         return
 
+    if args.wire_registry_only:
+        wire_registry_settings(args)
+        return
+
     with open(CATALOG) as f:
         catalog = json.load(f)
     namespace = catalog["registry_namespace"]
 
-    casals_id = canister_id(CASALS, args)
-    registry_id = canister_id(REGISTRY, args)
-    print(f"casals_backend  : {casals_id}")
-    print(f"ic_file_registry: {registry_id}")
-    if not casals_id or not registry_id:
-        sys.exit("could not resolve canister ids; is the project deployed?")
-
-    # 1. Wire Casals to the registry (+ optional browse UI canister).
-    registry_frontend_id = canister_id_optional(REGISTRY_FRONTEND, args)
-    settings = {"file_registry_canister_id": registry_id}
-    if registry_frontend_id:
-        settings["file_registry_frontend_canister_id"] = registry_frontend_id
-    res = call(CASALS, "set_settings", args, json.dumps(settings))
-    if not (isinstance(res, dict) and res.get("ok")):
-        sys.exit(f"set_settings failed: {res}")
-    print("wired Casals -> file-registry")
+    # 1. Wire Casals to the registry (+ browse UI canister when deployed).
+    casals_id = wire_registry_settings(args)
 
     # Existing authorized wasms (key -> hash) for idempotency.
     existing = {}

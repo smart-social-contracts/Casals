@@ -33,8 +33,10 @@ from models import (
 )
 from pipeline import (
     accelerant_eligible,
+    action_bake_window_seconds,
     resume_status_for_execute,
     validate_payload_targets,
+    validate_payload_bake_window,
 )
 
 
@@ -63,7 +65,8 @@ def _sample_payload(n: int) -> dict:
             "canister_id": cid,
             "expected_module_hash": "ab" * 32,
             "wasm_hash": "cd" * 32,
-            "wasm_module_hex": "0061736d0100000000",
+            "registry_namespace": "tests",
+            "registry_path": f"module-{i}.wasm",
             "upgrade_args_hex": "",
         })
     return {"targets": targets}
@@ -114,6 +117,48 @@ class TestPayloadValidation:
     def test_mismatched_ids(self):
         with pytest.raises(ValueError, match="must match"):
             validate_payload_targets(_sample_payload(1), ["bbbbb-bb"])
+
+    def test_missing_registry_namespace(self):
+        payload = _sample_payload(1)
+        payload["targets"][0].pop("registry_namespace")
+        with pytest.raises(ValueError, match="registry_namespace"):
+            validate_payload_targets(payload, ["aaaaa-a00"])
+
+    def test_missing_wasm_hash(self):
+        payload = _sample_payload(1)
+        payload["targets"][0]["wasm_hash"] = ""
+        with pytest.raises(ValueError, match="wasm_hash"):
+            validate_payload_targets(payload, ["aaaaa-a00"])
+
+    def test_invalid_smoke_test(self):
+        payload = _sample_payload(1)
+        payload["targets"][0]["smoke_test"] = {"must_contain": "x"}
+        with pytest.raises(ValueError, match="method"):
+            validate_payload_targets(payload, ["aaaaa-a00"])
+
+    def test_valid_smoke_test(self):
+        payload = _sample_payload(1)
+        payload["targets"][0]["smoke_test"] = {
+            "method": "greet",
+            "arg": "probe",
+            "must_contain": "Hello",
+        }
+        validate_payload_targets(payload, ["aaaaa-a00"])
+
+    def test_invalid_bake_window(self):
+        payload = _sample_payload(1)
+        payload["bake_window_seconds"] = -1
+        with pytest.raises(ValueError, match="bake_window_seconds"):
+            validate_payload_bake_window(payload)
+
+    def test_action_bake_window_from_payload(self):
+        record = _sample_action(1)
+        record["payload"]["bake_window_seconds"] = 120
+        assert action_bake_window_seconds(record, 86400) == 120
+
+    def test_action_bake_window_falls_back_to_config(self):
+        record = _sample_action(1)
+        assert action_bake_window_seconds(record, 86400) == 86400
 
 
 class TestResumeStatus:
@@ -198,7 +243,7 @@ class TestConcurrencyGuard:
 
 class TestConfigDefaults:
     def test_bake_window_default(self):
-        assert DEFAULT_BAKE_WINDOW_SECONDS == 86_400
+        assert DEFAULT_BAKE_WINDOW_SECONDS == 0
 
     def test_accelerant_days_default(self):
         assert DEFAULT_ACCELERANT_DAYS == 7

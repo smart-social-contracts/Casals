@@ -1555,7 +1555,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     # Present but wrong WASM/status: reinstall fresh code in place.
                     yield from _pull_and_install(existing.canister_id, w.registry_namespace,
                                                  w.registry_path, w.wasm_hash, {"reinstall": None},
-                                                 init_arg)
+                                                 init_arg, wasm_type_of_wasm(w))
                     ok, actual = yield from _verify_module_hash(existing.canister_id, w.wasm_hash)
                     if not ok:
                         result["errors"].append(f"{stname}: hash mismatch after reinstall")
@@ -1978,7 +1978,8 @@ def upgrade_to(args: text) -> Async[text]:
         for st in targets:
             try:
                 yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
-                                             w.wasm_hash, install_mode, _install_arg_for(w))
+                                             w.wasm_hash, install_mode, _install_arg_for(w),
+                                             wasm_type_of_wasm(w))
                 ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
                 if not ok:
                     failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
@@ -3204,8 +3205,10 @@ def sync_controllers(args: text) -> Async[text]:
 
 @update
 def refresh_controllers_cache(_args: text) -> Async[text]:
-    """Fetch IC controller lists for all managed canisters and cache them on
-    the Canister records (for the Orchestra UI). Safe to call often."""
+    """Fetch IC controller lists and live module hashes for Orchestra canisters.
+
+    Updates cached ``ic_controllers``, ``wasm_hash``, and ``wasm_key`` (when the
+    module hash matches a catalog entry). Safe to call after Baton upgrades."""
     try:
         updated, failed = yield from _refresh_controllers_cache_gen()
         return _ok(updated=updated, failed=failed)

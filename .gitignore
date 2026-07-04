@@ -2,6 +2,7 @@
 .basilisk/
 node_modules/
 dist/
+file_registry_dist/
 .svelte-kit/
 build/
 __pycache__/

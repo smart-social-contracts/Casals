@@ -5,7 +5,6 @@ inter-canister calls from this canister satisfy Baton auth. Hand-off adds Baton
 as a co-controller of the target and registers it in Baton's managed set.
 """
 
-import hashlib
 import json
 import uuid
 
@@ -19,7 +18,6 @@ from lifecycle import (
     _fetch_canister_controllers,
     _add_controllers,
     _merge_controllers,
-    _pull_registry_bytes,
     _resolve_authorized_wasm,
     _governance_multisig_id,
     _persist_ic_controllers,
@@ -29,8 +27,6 @@ from util import to_hex as _to_hex
 
 # Baton template key in the authorized WASM catalog / sheet.
 BATON_WASM_KEY = "orchestration-baton"
-# Raw bytes per chunk when staging WASM on Baton (~400 KiB hex per ingress).
-STAGE_CHUNK_BYTES = 200_000
 
 
 def _parse_baton_json_reply(raw) -> object:
@@ -72,10 +68,6 @@ def _parse_baton_json_reply(raw) -> object:
                     except json.JSONDecodeError:
                         break
     return s
-
-
-# Baton stable store caps staged modules at ~500 KiB raw WASM.
-STAGE_MAX_WASM_BYTES = 480_000
 
 
 def _is_baton_wasm_key(wasm_key: str) -> bool:
@@ -151,45 +143,6 @@ def _current_module_hash(canister_id: str):
     status = unwrap_call_result(status_res)
     mh = status.get("module_hash") if isinstance(status, dict) else getattr(status, "module_hash", None)
     return _to_hex(mh).lower() if mh is not None else ""
-
-
-def _stage_wasm_on_baton_gen(baton_id: str, wasm_hash: str, wasm_bytes: bytes):
-    """Generator: stage ``wasm_bytes`` on Baton (chunked if needed)."""
-    if len(wasm_bytes) > STAGE_MAX_WASM_BYTES:
-        raise Exception(
-            f"WASM too large for Baton staging ({len(wasm_bytes)} bytes; "
-            f"max {STAGE_MAX_WASM_BYTES}). Pick a smaller module (e.g. Motoko/Rust hello-world)."
-        )
-    actual = hashlib.sha256(wasm_bytes).hexdigest().lower()
-    if actual != (wasm_hash or "").lower():
-        raise Exception(f"WASM hash mismatch: catalog {wasm_hash}, computed {actual}")
-
-    wasm_hex = wasm_bytes.hex()
-    if len(wasm_hex) <= STAGE_CHUNK_BYTES * 2:
-        reply = yield from _call_text_method(
-            baton_id,
-            "stage_wasm",
-            json.dumps({"wasm_hash": wasm_hash, "wasm_module_hex": wasm_hex}),
-        )
-        _parse_baton_reply(reply)
-        return
-
-    chunk_size = STAGE_CHUNK_BYTES
-    total_chunks = (len(wasm_bytes) + chunk_size - 1) // chunk_size
-    for i in range(total_chunks):
-        start = i * chunk_size
-        part = wasm_bytes[start:start + chunk_size]
-        reply = yield from _call_text_method(
-            baton_id,
-            "stage_wasm_chunk",
-            json.dumps({
-                "wasm_hash": wasm_hash,
-                "chunk_index": i,
-                "total_chunks": total_chunks,
-                "chunk_hex": part.hex(),
-            }),
-        )
-        _parse_baton_reply(reply)
 
 
 def _baton_status_gen(baton_st):
@@ -332,8 +285,11 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
     else:
         controllers = current
 
-    reply = yield from _call_text_method(baton_id, "add_managed_canister", target_cid)
-    _parse_baton_reply(reply)
+    managed_raw = yield from _baton_query(baton_id, "list_managed_canisters")
+    managed = _parse_baton_json_reply(managed_raw) or []
+    if target_cid not in managed:
+        reply = yield from _call_text_method(baton_id, "add_managed_canister", target_cid)
+        _parse_baton_reply(reply)
     _append_event("baton_hand_off", target_cid, {"baton": baton_id, "name": target_name})
     return {
         "target": target_name,
@@ -345,7 +301,7 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
 
 
 def _prepare_managed_upgrade_gen(target_name: str, wasm_key: str, baton_name=""):
-    """Generator: stage WASM, propose upgrade, and auto-approve on Baton."""
+    """Generator: propose upgrade (registry-backed WASM) and auto-approve on Baton."""
     target_name = (target_name or "").strip()
     wasm_key = (wasm_key or "").strip()
     baton_name = _resolve_baton_name(baton_name, target_name)
@@ -370,10 +326,10 @@ def _prepare_managed_upgrade_gen(target_name: str, wasm_key: str, baton_name="")
     if not current_hash:
         raise Exception(f"target {target_cid} has no installed module")
     pre_hash = current_hash
-
-    wasm_bytes = yield from _pull_registry_bytes(w.registry_namespace, w.registry_path)
     post_hash = (w.wasm_hash or "").lower()
-    yield from _stage_wasm_on_baton_gen(baton_id, post_hash, wasm_bytes)
+
+    from wasm_types import upgrade_uses_memory_keep
+    memory_keep = upgrade_uses_memory_keep(getattr(w, "wasm_type", "") or "")
 
     action_id = f"upgrade-{target_name}-{uuid.uuid4().hex[:8]}"
     propose_payload = json.dumps({
@@ -384,7 +340,10 @@ def _prepare_managed_upgrade_gen(target_name: str, wasm_key: str, baton_name="")
                 "canister_id": target_cid,
                 "expected_module_hash": pre_hash,
                 "wasm_hash": post_hash,
+                "registry_namespace": w.registry_namespace,
+                "registry_path": w.registry_path,
                 "upgrade_args_hex": "",
+                "upgrade_memory_keep": memory_keep,
             }],
         },
     })

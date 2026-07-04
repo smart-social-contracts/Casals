@@ -25,6 +25,16 @@ canisters:
         shrink: true
         compress: true
 
+  # Browse UI for the file-registry (SvelteKit). Built from the file_registry
+  # submodule; VITE_CANISTER_ID is injected by `make build-registry-frontend`.
+  - name: ic_file_registry_frontend
+    recipe:
+      type: "@dfinity/asset-canister@v2.2.0"
+      configuration:
+        dir: file_registry_dist
+        build:
+          - make build-registry-frontend
+
   - name: casals_frontend
     recipe:
       type: "@dfinity/asset-canister@v2.2.0"

@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-registry build-templates build-orchestration deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
+.PHONY: build build-backend build-registry build-registry-frontend build-templates build-orchestration deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
 
 # Local "master conductor": added as a controller of the local canisters after
 # a local deploy so this principal can run admin endpoints (set commanders,
@@ -22,6 +22,19 @@ build-registry:
 	CANISTER_CANDID_PATH=./file_registry/ic_file_registry.did \
 		python3 -m basilisk ic_file_registry file_registry/src/main.py
 
+# Build the file-registry browse UI. Injects VITE_CANISTER_ID from the deployed
+# ic_file_registry canister so the UI targets the right backend.
+build-registry-frontend:
+	@REGISTRY_ID=$$(icp canister status ic_file_registry 2>/dev/null | sed -n 's/Canister Id:[[:space:]]*//p' | head -1); \
+	if [ -z "$$REGISTRY_ID" ] && [ -f .icp/cache/mappings/local.ids.json ]; then \
+		REGISTRY_ID=$$(python3 -c "import json; print(json.load(open('.icp/cache/mappings/local.ids.json')).get('ic_file_registry',''))"); \
+	fi; \
+	if [ -z "$$REGISTRY_ID" ]; then echo "WARN: ic_file_registry id unknown — frontend may not target a backend"; fi; \
+	echo "Building file-registry frontend (VITE_CANISTER_ID=$$REGISTRY_ID)"; \
+	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend ci; \
+	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend run build; \
+	rm -rf file_registry_dist && cp -a file_registry/frontend/dist file_registry_dist
+
 # Rebuild the committed catalog template WASMs (seed/templates/*.wasm.gz).
 # Needs the Rust + Motoko toolchains (see scripts/build_templates.sh). Run this
 # only when changing a template; the gzipped artifacts are committed.
@@ -32,13 +45,14 @@ build-templates:
 build-orchestration:
 	bash scripts/build_orchestration_templates.sh
 
-# Local deploy (backend + registry + frontend). The frontend is built by the
-# asset-canister recipe (see icp.yaml). After installing, the local conductor
+# Local deploy (backend + registry + frontends). The frontends are built by the
+# asset-canister recipes (see icp.yaml). After installing, the local conductor
 # is added as a controller so it can drive admin endpoints from the UI.
 deploy: build
 	$(MAKE) local-network-json
 	icp deploy
 	$(MAKE) local-conductor
+	python3 scripts/seed.py -e local --wire-registry-only
 
 # Write the local replica's Candid UI canister id for the frontend (backend
 # canister links on local need it; the asset canister ic_env cookie does not
@@ -92,6 +106,6 @@ test:
 	pytest -q
 
 clean:
-	rm -rf .basilisk dist frontend/.svelte-kit frontend/node_modules \
+	rm -rf .basilisk dist file_registry_dist frontend/.svelte-kit frontend/node_modules \
 		templates/hello-world-rust/target templates/hello-world-motoko/.icp \
 		templates/hello-world-motoko/.mops

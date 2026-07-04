@@ -909,3 +909,15 @@ def test_commander_for_stand_prefers_stand_over_section():
 
     stand_no = types.SimpleNamespace(commander_principal="", section=section)
     assert lifecycle._commander_for_stand(stand_no) == "section-cmd"
+
+
+def test_install_mode_candid_basilisk_uses_plain_upgrade():
+    mode = lifecycle._install_mode_candid({"upgrade": None}, "baton")
+    assert "keep" not in mode
+    assert "upgrade = null" in mode
+
+
+def test_install_mode_candid_motoko_requests_memory_keep():
+    mode = lifecycle._install_mode_candid({"upgrade": None}, "motoko")
+    assert "wasm_memory_persistence" in mode
+    assert "keep" in mode

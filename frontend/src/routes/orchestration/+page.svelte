@@ -10,7 +10,7 @@
     candidUiUrl,
     shortHash,
   } from '$lib/api';
-  import { batonConsoleUrl, multisigConsoleUrl, isBatonWasm } from '$lib/orchestrationNav';
+  import { batonConsoleUrl, multisigConsoleUrl, isBatonWasm, batonControlsTarget } from '$lib/orchestrationNav';
   import type {
     Tree,
     AuthorizedWasm,
@@ -99,6 +99,16 @@
       : false,
   );
 
+  const batonCanisterId = $derived(selectedBatonStatus?.canister_id ?? '');
+
+  const batonIsIcController = $derived(
+    batonCanisterId && selectedTargetMeta?.canister_id
+      ? batonControlsTarget(tree, batonCanisterId, selectedTargetMeta.canister_id)
+      : false,
+  );
+
+  const needsControllerWire = $derived(isManaged && !batonIsIcController);
+
   async function load() {
     loading = true;
     error = '';
@@ -133,7 +143,7 @@
     try {
       await orchestrationHandToBaton(selectedTarget, selectedBaton);
       toasts.success(`Handed ${selectedTarget} to ${selectedBaton}`);
-      await refreshStatus();
+      await Promise.all([refreshStatus(), getTree().then((t) => { tree = t; }).catch(() => {})]);
     } catch (e: unknown) {
       toasts.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -192,7 +202,7 @@
     <h1 class="text-2xl font-semibold text-primary-900">Orchestration</h1>
     <p class="mt-1 text-sm text-primary-500 max-w-2xl">
       Each demo stand has its own Baton; Multisig is the shared top commander. Casals hands backends
-      to the stand&apos;s Baton, stages WASM from the catalog, and drives the managed-upgrade pipeline.
+      to the stand&apos;s Baton, proposes a registry-backed upgrade from the catalog, and drives the managed-upgrade pipeline.
       Motoko/Rust backends work best (Basilisk modules exceed Baton&apos;s staging limit).
     </p>
   </div>
@@ -335,10 +345,16 @@
         <button
           class="btn-secondary btn-sm"
           type="button"
-          disabled={busy || !$isAuthenticated || !selectedTarget || !selectedBaton || isManaged}
+          disabled={busy || !$isAuthenticated || !selectedTarget || !selectedBaton || batonIsIcController}
           onclick={() => handToBaton()}
         >
-          {isManaged ? 'Already managed' : 'Hand to Baton'}
+          {#if batonIsIcController}
+            Baton is IC controller
+          {:else if needsControllerWire}
+            Wire IC controllers
+          {:else}
+            Hand to Baton
+          {/if}
         </button>
 
         <button

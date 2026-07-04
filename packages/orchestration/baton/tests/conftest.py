@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -13,13 +15,18 @@ import time
 import pytest
 
 BATON_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+CASALS_ROOT = os.path.abspath(os.path.join(BATON_ROOT, "..", "..", ".."))
 MULTISIG_ROOT = os.path.abspath(os.path.join(BATON_ROOT, "..", "multisig"))
+FILE_REGISTRY_ROOT = os.path.abspath(os.path.join(CASALS_ROOT, "file_registry"))
 FIXTURES = os.path.join(BATON_ROOT, "tests", "fixtures")
 MANAGED_V1 = os.path.join(FIXTURES, "managed_canister", ".icp", "cache", "artifacts", "managed_canister")
 MANAGED_V2 = os.path.join(FIXTURES, "managed_canister_v2", ".icp", "cache", "artifacts", "managed_canister_v2")
+REGISTRY_NS = "baton-tests"
+REGISTRY_V1_PATH = "managed_v1.wasm"
+REGISTRY_V2_PATH = "managed_v2.wasm"
 
 
-def icp(args, cwd=BATON_ROOT, check=True, timeout=300, identity=None):
+def icp(args, cwd=CASALS_ROOT, check=True, timeout=300, identity=None):
     cmd = ["icp"] + args
     if identity:
         cmd.extend(["--identity", identity])
@@ -89,7 +96,7 @@ def parse_icp_output(output: str):
     return text
 
 
-def call(canister: str, method: str, arg=None, cwd=BATON_ROOT, identity=None):
+def call(canister: str, method: str, arg=None, cwd=CASALS_ROOT, identity=None):
     cmd = ["canister", "call", canister, method]
     args_file = None
     if arg is not None:
@@ -146,6 +153,43 @@ def build_baton():
     return os.path.join(BATON_ROOT, ".basilisk", "baton", "baton.wasm")
 
 
+def build_file_registry():
+    env = os.environ.copy()
+    env["CANISTER_CANDID_PATH"] = os.path.join(FILE_REGISTRY_ROOT, "ic_file_registry.did")
+    r = subprocess.run(
+        ["python3", "-m", "basilisk", "ic_file_registry", "src/main.py"],
+        cwd=FILE_REGISTRY_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=env,
+    )
+    if r.returncode != 0:
+        pytest.fail(f"file registry build failed:\n{r.stderr[-1200:]}")
+    return os.path.join(FILE_REGISTRY_ROOT, ".basilisk", "ic_file_registry", "ic_file_registry.wasm")
+
+
+def install_file_registry() -> str:
+    wasm = build_file_registry()
+    cid = create_detached()
+    icp(["canister", "install", cid, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"])
+    return cid
+
+
+def upload_registry_file(registry_id: str, namespace: str, path: str, file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        data = f.read()
+    sha = hashlib.sha256(data).hexdigest()
+    res = call(registry_id, "store_file", json.dumps({
+        "namespace": namespace,
+        "path": path,
+        "content_b64": base64.b64encode(data).decode("ascii"),
+        "content_type": "application/wasm",
+    }))
+    assert isinstance(res, dict) and res.get("ok"), res
+    return sha
+
+
 def build_multisig():
     env = os.environ.copy()
     env["PATH"] = f"{subprocess.check_output(['npm', 'config', 'get', 'prefix'], text=True).strip()}/bin:" + env.get("PATH", "")
@@ -159,9 +203,15 @@ def build_multisig():
 
 def build_managed_wasms():
     env = os.environ.copy()
-    env["PATH"] = f"{subprocess.check_output(['npm', 'config', 'get', 'prefix'], text=True).strip()}/bin:" + env.get("PATH", "")
+    if shutil.which("mops"):
+        env["PATH"] = f"{subprocess.check_output(['npm', 'config', 'get', 'prefix'], text=True).strip()}/bin:" + env.get("PATH", "")
     for d in ("managed_canister", "managed_canister_v2"):
         root = os.path.join(FIXTURES, d)
+        artifact = MANAGED_V1 if d == "managed_canister" else MANAGED_V2
+        if os.path.exists(artifact):
+            continue
+        if not shutil.which("mops"):
+            pytest.fail(f"missing fixture wasm {artifact} and mops is not installed")
         subprocess.run(["mops", "install"], cwd=root, check=True, capture_output=True, timeout=120)
         icp(["build", d if d != "managed_canister_v2" else "managed_canister_v2"], cwd=root)
     assert os.path.exists(MANAGED_V1), MANAGED_V1
@@ -257,12 +307,29 @@ def deploy_principal(replica):
 
 
 @pytest.fixture(scope="session")
-def baton_env(replica, deploy_principal):
+def registry_env(replica):
+    """File registry with test fixture WASMs uploaded."""
+    registry_id = install_file_registry()
+    v1_hash = upload_registry_file(registry_id, REGISTRY_NS, REGISTRY_V1_PATH, MANAGED_V1)
+    v2_hash = upload_registry_file(registry_id, REGISTRY_NS, REGISTRY_V2_PATH, MANAGED_V2)
+    return {
+        "registry_id": registry_id,
+        "namespace": REGISTRY_NS,
+        "v1_path": REGISTRY_V1_PATH,
+        "v2_path": REGISTRY_V2_PATH,
+        "v1_hash": v1_hash,
+        "v2_hash": v2_hash,
+    }
+
+
+@pytest.fixture(scope="session")
+def baton_env(replica, deploy_principal, registry_env):
     """Baton with deploy principal as top commander, test-friendly config."""
     baton_id = install_baton(deploy_principal)
     ok(call(baton_id, "set_config", json.dumps({
         "bake_window_seconds": 0,
         "install_cycles_buffer": 1_000_000_000,
+        "file_registry_canister_id": registry_env["registry_id"],
     })))
     approver = "approver-principal-001"
     ok(call(baton_id, "add_commander", json.dumps({
@@ -275,30 +342,28 @@ def baton_env(replica, deploy_principal):
         "deployer": deploy_principal,
         "v1_wasm": MANAGED_V1,
         "v2_wasm": MANAGED_V2,
+        **registry_env,
     }
 
 
-def stage_wasm(baton_id, wasm_hash, wasm_hex):
-    ok(call(baton_id, "stage_wasm", json.dumps({
-        "wasm_hash": wasm_hash,
-        "wasm_module_hex": wasm_hex,
-    })))
-
-
-def propose_upgrade(baton_id, canisters_hashes_targets, approver=None):
-    """canisters_hashes_targets: list of (cid, pre_hash, post_hash, wasm_hex)."""
-    staged = set()
-    for _cid, _pre, post, wasm_hex in canisters_hashes_targets:
-        if post not in staged:
-            stage_wasm(baton_id, post, wasm_hex)
-            staged.add(post)
+def propose_upgrade(baton_id, canisters_hashes_targets, registry_env=None, smoke_test=None):
+    """canisters_hashes_targets: list of (cid, pre_hash, post_hash)."""
+    if registry_env is None:
+        raise ValueError("registry_env is required")
     affected = [c[0] for c in canisters_hashes_targets]
-    targets = [{
-        "canister_id": cid,
-        "expected_module_hash": pre,
-        "wasm_hash": post,
-        "upgrade_args_hex": "",
-    } for cid, pre, post, _wasm_hex in canisters_hashes_targets]
+    targets = []
+    for cid, pre, post in canisters_hashes_targets:
+        target = {
+            "canister_id": cid,
+            "expected_module_hash": pre,
+            "wasm_hash": post,
+            "registry_namespace": registry_env["namespace"],
+            "registry_path": registry_env["v2_path"],
+            "upgrade_args_hex": "",
+        }
+        if smoke_test is not None:
+            target["smoke_test"] = smoke_test
+        targets.append(target)
     action_id = "upgrade-" + affected[0][:8]
     ok(call(baton_id, "propose_managed_upgrade", json.dumps({
         "action_id": action_id,
@@ -315,7 +380,7 @@ def run_execute(baton_id, action_id):
 
 def finish_action(baton_id, action_id):
     """Run execute until COMPLETE (one pipeline phase per call)."""
-    for _ in range(25):
+    for _ in range(60):
         res = run_execute(baton_id, action_id)
         if isinstance(res, dict) and res.get("status") == "COMPLETE":
             return res

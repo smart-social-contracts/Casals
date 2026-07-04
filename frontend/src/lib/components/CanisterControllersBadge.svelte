@@ -1,14 +1,21 @@
 <script lang="ts">
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
+  import { controllerLabel } from '$lib/controllerLabels';
 
   interface Props {
     canisterId?: string;
     controllers?: string[];
     inline?: boolean;
+    principalLabels?: Map<string, string>;
   }
 
-  let { canisterId = '', controllers = [], inline = false }: Props = $props();
+  let {
+    canisterId = '',
+    controllers = [],
+    inline = false,
+    principalLabels = new Map(),
+  }: Props = $props();
 
   let open = $state(false);
 
@@ -41,9 +48,10 @@
     {:else}
       <ul class="space-y-1">
         {#each controllers as principal (principal)}
+          {@const label = controllerLabel(principal, principalLabels)}
           <li class="flex items-center gap-2 min-w-0">
-            <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={principal}>
-              {principal}
+            <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={label.title}>
+              {label.display}
             </code>
             <button
               type="button"
@@ -82,9 +90,10 @@
         </p>
         <ul class="space-y-1.5">
           {#each controllers as principal (principal)}
+            {@const label = controllerLabel(principal, principalLabels)}
             <li class="flex items-center gap-2 min-w-0">
-              <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={principal}>
-                {principal}
+              <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={label.title}>
+                {label.display}
               </code>
               <button
                 type="button"

@@ -66,3 +66,12 @@ def wasm_type_tags(wasm_type: str) -> list[str]:
 
 def has_basilisk_features(wasm_type: str) -> bool:
     return (wasm_type or "").strip().lower() in _BASILISK_TYPES
+
+
+def upgrade_uses_memory_keep(wasm_type: str) -> bool:
+    """Whether install_chunked_code should request wasm_memory_persistence Keep.
+
+    Basilisk/Python modules (Casals backend, Baton, …) do not support enhanced
+    orthogonal persistence; requesting Keep causes IC rejection code 5.
+    """
+    return not has_basilisk_features(wasm_type)

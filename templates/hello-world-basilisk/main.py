@@ -5,7 +5,7 @@ logs it. Used as a Casals catalog template to demonstrate creating a
 Python-runtime stand. Build with `make build-templates`.
 """
 
-from basilisk import text, update
+from basilisk import query, text, update
 from ic_python_logging import get_logger
 
 # Opt into Basilisk's built-in introspection endpoints so Casals can drive them
@@ -15,13 +15,18 @@ from ic_python_logging import get_logger
 __basilisk_features__ = ["shell", "browse"]
 
 
-__version__ = "1.2.0"
+__version__ = "1.2.2"
 
 # The ic-basilisk-toolkit logger writes to the canister log (ic0.debug_print),
 # fetchable via the management canister's fetch_canister_logs / `icp canister
 # logs`. Logs are only recorded during replicated execution, so `greet` is an
 # @update (a non-replicated @query call would not be logged).
 _log = get_logger("hello-world")
+
+
+@query
+def health_check() -> text:
+    return '{"status":"ok"}'
 
 
 @update

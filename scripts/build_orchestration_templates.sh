@@ -40,7 +40,7 @@ echo "==> Baton orchestrator"
   CANISTER_CANDID_PATH=./baton.did python3 -m basilisk baton src/main.py >/dev/null )
 BATON_WASM="$BATON_DIR/.basilisk/baton/baton.wasm"
 embed_candid "$BATON_WASM" "$BATON_DIR/baton.did"
-emit "orchestration-baton" "$BATON_WASM"
+emit "orchestration-baton@1.2.8" "$BATON_WASM"
 
 echo "==> Multisig"
 ( cd "$MULTISIG_DIR" && mops install >/dev/null 2>&1 && icp build multisig >/dev/null )

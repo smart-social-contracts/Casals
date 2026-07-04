@@ -2,16 +2,38 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
-  import { candidUiUrl } from '$lib/api';
+  import { candidUiUrl, getTree, refreshControllersCache, type Tree } from '$lib/api';
   import {
     batonLoadSnapshot,
     batonSubmitApproval,
     batonRejectAction,
     batonRunPipeline,
+    batonSkipBakeAndComplete,
+    batonDisplayCommanders,
     type BatonActionRecord,
     type BatonConfig,
     type BatonCommander,
+    type BatonPipelineProgress,
   } from '$lib/batonClient';
+  import BatonAdminPanel from '$lib/components/BatonAdminPanel.svelte';
+  import BatonProposeUpgradeForm from '$lib/components/BatonProposeUpgradeForm.svelte';
+  import BatonPipelineLog from '$lib/components/BatonPipelineLog.svelte';
+  import {
+    actionStatusLabel,
+    clientLogLine,
+    executeResultLine,
+    formatActionTimestamp,
+    isBatonTerminal,
+    mergePipelineLines,
+    phaseLogToLines,
+    type PipelineLogLine,
+  } from '$lib/batonPipelineLog';
+  import {
+    approvalResultMessage,
+    batonCanApproveAction,
+    batonSupportsQuorumApproval,
+    formatApprovalSummary,
+  } from '$lib/batonApproval';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
@@ -24,18 +46,31 @@
   let commanders = $state<BatonCommander[]>([]);
   let managed = $state<string[]>([]);
   let actions = $state<BatonActionRecord[]>([]);
+  let policy = $state<unknown | null>(null);
+  let tree = $state<Tree | null>(null);
   let expandedAction = $state<string | null>(null);
   let busyAction = $state<string | null>(null);
-  let pipelineLog = $state<Record<string, string[]>>({});
+  let pipelineLog = $state<Record<string, PipelineLogLine[]>>({});
+  let pipelineStatus = $state<Record<string, string>>({});
 
   const pendingCount = $derived(actions.filter((a) => !isTerminal(a.status)).length);
 
+  const blockingAction = $derived(
+    actions.find((a) => a.status && !isTerminal(a.status)) ?? null,
+  );
+
+  const displayCommanders = $derived(
+    config ? batonDisplayCommanders(config, commanders) : [],
+  );
+
+  const isTopCommander = $derived(
+    $isAuthenticated &&
+      !!config?.top_commander &&
+      $principal.toLowerCase() === config.top_commander.toLowerCase(),
+  );
+
   function isTerminal(status?: string): boolean {
-    if (!status) return false;
-    return [
-      'COMPLETE', 'REJECTED', 'REJECTED_PREFLIGHT', 'FAILED_STOP',
-      'FAILED_SNAPSHOT', 'REVERTED_PARTIAL_FAILURE',
-    ].includes(status);
+    return isBatonTerminal(status);
   }
 
   function statusClass(status?: string): string {
@@ -47,8 +82,17 @@
   }
 
   function fmtTs(secs?: number): string {
-    if (!secs) return '—';
-    return new Date(secs * 1000).toLocaleString();
+    return formatActionTimestamp(secs);
+  }
+
+  function absorbPipelineProgress(actionId: string, progress: BatonPipelineProgress) {
+    const extra = executeResultLine(progress.execute);
+    pipelineLog[actionId] = mergePipelineLines(
+      pipelineLog[actionId] ?? [],
+      progress.action?.phase_log,
+      extra ? [extra] : [],
+    );
+    pipelineStatus[actionId] = actionStatusLabel(progress.action) || progress.execute.status || pipelineStatus[actionId] || '';
   }
 
   async function load() {
@@ -60,11 +104,28 @@
     loading = true;
     error = '';
     try {
-      const snap = await batonLoadSnapshot(canisterId);
+      const [snap, treeData] = await Promise.all([
+        batonLoadSnapshot(canisterId),
+        getTree().catch(() => null),
+      ]);
       config = snap.config;
       commanders = snap.commanders;
       managed = snap.managed;
       actions = snap.actions.sort((a, b) => (b.proposed_at ?? 0) - (a.proposed_at ?? 0));
+      policy = snap.policy;
+      tree = treeData;
+      if (treeData && snap.managed.length) {
+        const stale = snap.managed.some((mid) => {
+          const c = treeData.sections.flatMap((s) => s.stands).flatMap((st) => st.canisters)
+            .find((x) => x.canister_id === mid);
+          return c && !(c.controllers?.length);
+        });
+        if (stale) {
+          tree = await refreshControllersCache()
+            .then(() => getTree())
+            .catch(() => treeData);
+        }
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -88,12 +149,21 @@
   async function approve(actionId: string) {
     const id = get(identity);
     if (!id) return;
+    const action = actions.find((a) => a.action_id === actionId);
+    if (action && config && !batonCanApproveAction(id.getPrincipal().toText(), action, config, commanders)) {
+      toasts.error('You cannot approve this action (not eligible or already approved)');
+      return;
+    }
     busyAction = actionId;
+    expandedAction = actionId;
     try {
       const res = await batonSubmitApproval(canisterId, actionId, id);
       if (!res.ok) throw new Error(res.error || 'Approval failed');
-      toasts.success('Approval recorded');
+      toasts.success(approvalResultMessage(res));
       await load();
+      if (res.status === 'APPROVED') {
+        await runPipeline(actionId);
+      }
     } catch (e: unknown) {
       toasts.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -117,22 +187,52 @@
     }
   }
 
+  async function skipBakeComplete(actionId: string) {
+    const id = get(identity);
+    if (!id) return;
+    busyAction = actionId;
+    expandedAction = actionId;
+    try {
+      const res = await batonSkipBakeAndComplete(canisterId, actionId, id);
+      if (!res.ok) throw new Error(res.error || 'Could not complete action');
+      toasts.success('Action marked COMPLETE');
+      await refreshControllersCache().catch(() => {});
+      await load();
+    } catch (e: unknown) {
+      toasts.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      busyAction = null;
+    }
+  }
+
   async function runPipeline(actionId: string) {
     const id = get(identity);
     if (!id) return;
     busyAction = actionId;
-    pipelineLog[actionId] = [];
+    expandedAction = actionId;
+    pipelineLog[actionId] = [clientLogLine('Starting pipeline…')];
+    pipelineStatus[actionId] = '…';
     try {
-      const final = await batonRunPipeline(canisterId, actionId, id, (step) => {
-        if (step.status) {
-          pipelineLog[actionId] = [...(pipelineLog[actionId] ?? []), step.status];
+      const final = await batonRunPipeline(canisterId, actionId, id, (progress) => {
+        absorbPipelineProgress(actionId, progress);
+        const st = progress.action?.status;
+        if (st === 'FINALIZING' || st === 'COMPLETE' || progress.execute.status === 'VERIFYING') {
+          void refreshControllersCache().catch(() => {});
         }
       });
       if (!final.ok) throw new Error(final.error || `Stopped at ${final.status}`);
+      pipelineStatus[actionId] = final.status || pipelineStatus[actionId] || 'COMPLETE';
       toasts.success(final.status === 'COMPLETE' ? 'Pipeline complete' : `Finished: ${final.status}`);
+      if (final.status === 'COMPLETE') {
+        await refreshControllersCache().catch(() => {});
+      }
       await load();
     } catch (e: unknown) {
-      toasts.error(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      pipelineLog[actionId] = mergePipelineLines(pipelineLog[actionId] ?? [], undefined, [
+        clientLogLine(msg, 'ERROR'),
+      ]);
+      toasts.error(msg);
     } finally {
       busyAction = null;
     }
@@ -207,10 +307,20 @@
   {:else if error}
     <div class="card p-5 text-sm text-red-700">{error}</div>
   {:else}
+    {#if config && !batonSupportsQuorumApproval(config)}
+      <div class="card p-4 border border-amber-300 bg-amber-50 text-sm text-amber-950 space-y-1">
+        <p class="font-medium">Baton upgrade required for N-of-M approval</p>
+        <p class="text-xs">
+          This Baton is running WASM older than <code class="font-mono">orchestration-baton@1.2.7</code>.
+          Approval policy saved in Admin is ignored — every proposal still needs only <strong>one</strong> approval.
+          Upgrade <strong>baton1</strong> from the Orchestra tree, then re-save Configuration → Upgrade approval.
+        </p>
+      </div>
+    {/if}
     <section class="grid sm:grid-cols-3 gap-3">
       <div class="card p-4">
         <p class="stat-label">Commanders</p>
-        <p class="stat-value">{commanders.length}</p>
+        <p class="stat-value">{displayCommanders.length}</p>
       </div>
       <div class="card p-4">
         <p class="stat-label">Managed canisters</p>
@@ -221,6 +331,18 @@
         <p class="stat-value">{pendingCount}</p>
       </div>
     </section>
+
+    {#if config}
+      <BatonAdminPanel
+        {canisterId}
+        {config}
+        {commanders}
+        {managed}
+        {policy}
+        {tree}
+        onsuccess={() => load()}
+      />
+    {/if}
 
     <section class="card p-5 space-y-3">
       <h2 class="text-lg font-medium text-primary-900">Configuration</h2>
@@ -241,18 +363,41 @@
           <dt class="text-primary-400">Install cycles buffer</dt>
           <dd>{config?.install_cycles_buffer ?? '—'}</dd>
         </div>
+        <div class="sm:col-span-2">
+          <dt class="text-primary-400">Upgrade approval</dt>
+          <dd>
+            {#if config?.upgrade_approval_policy}
+              {config.upgrade_approval_policy.threshold} approval{config.upgrade_approval_policy.threshold === 1 ? '' : 's'} required
+              {#if config.upgrade_approval_policy.eligible.length}
+                · eligible: {config.upgrade_approval_policy.eligible.length}
+              {:else}
+                · any approver-capable commander
+              {/if}
+              {#if config.upgrade_approval_policy.required.length}
+                · required signers: {config.upgrade_approval_policy.required.length}
+              {/if}
+            {:else}
+              1 approval (legacy WASM — upgrade to 1.2.7 for N-of-M)
+            {/if}
+          </dd>
+        </div>
       </dl>
     </section>
 
     <section class="card p-5 space-y-3">
       <h2 class="text-lg font-medium text-primary-900">Commanders</h2>
-      {#if commanders.length === 0}
-        <p class="text-sm text-primary-400">No commanders registered.</p>
+      {#if !displayCommanders.length}
+        <p class="text-sm text-primary-400">No commanders configured.</p>
       {:else}
         <ul class="divide-y divide-[var(--color-border-primary)] text-sm">
-          {#each commanders as c (c.principal)}
+          {#each displayCommanders as c (c.principal)}
             <li class="py-2 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
-              <span class="font-mono text-xs break-all">{c.principal}</span>
+              <div class="flex flex-wrap items-center gap-2 min-w-0">
+                <span class="font-mono text-xs break-all">{c.principal}</span>
+                {#if c.isTop}
+                  <span class="badge badge-top">top commander</span>
+                {/if}
+              </div>
               {#if c.capabilities?.length}
                 <span class="flex flex-wrap gap-1">
                   {#each c.capabilities as cap (cap)}
@@ -290,6 +435,18 @@
           <span class="text-xs font-mono text-primary-400" title={$principal}>{$principal.slice(0, 5)}…{$principal.slice(-5)}</span>
         {/if}
       </div>
+
+      {#if config}
+        <BatonProposeUpgradeForm
+          batonCanisterId={canisterId}
+          {config}
+          {commanders}
+          {managed}
+          {tree}
+          {blockingAction}
+          onsuccess={() => load()}
+        />
+      {/if}
 
       {#if actions.length === 0}
         <p class="text-sm text-primary-400">No actions yet.</p>
@@ -337,41 +494,90 @@
                     <pre class="text-xs bg-primary-50 rounded-lg p-2 overflow-x-auto font-mono">{JSON.stringify(action.payload, null, 2)}</pre>
                   {/if}
 
-                  {#if pipelineLog[action.action_id]?.length}
-                    <ol class="text-xs font-mono text-primary-600 space-y-0.5 list-decimal list-inside">
-                      {#each pipelineLog[action.action_id] as step, i (i)}
-                        <li>{step}</li>
-                      {/each}
-                    </ol>
+                  {#if action.status === 'PENDING' && config}
+                    <div class="rounded-lg border border-primary-200 bg-primary-50/60 px-3 py-2 text-sm space-y-1">
+                      <p class="text-primary-800">{formatApprovalSummary(action, config)}</p>
+                      {#if action.approvals?.length}
+                        <p class="text-xs text-primary-600">
+                          Signed: {action.approvals.map((p) => p.slice(0, 8) + '…').join(', ')}
+                        </p>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  {#if pipelineLog[action.action_id]?.length || busyAction === action.action_id}
+                    <BatonPipelineLog
+                      lines={pipelineLog[action.action_id] ?? []}
+                      status={pipelineStatus[action.action_id] ?? action.status}
+                      busy={busyAction === action.action_id}
+                      title="Pipeline log"
+                      maxHeight="12rem"
+                    />
+                  {:else if action.phase_log?.length}
+                    <BatonPipelineLog
+                      lines={phaseLogToLines(action.phase_log)}
+                      status={action.status}
+                      title="Pipeline log"
+                      maxHeight="12rem"
+                    />
                   {/if}
 
                   {#if $isAuthenticated && !isTerminal(action.status)}
-                    <div class="flex flex-wrap gap-2">
-                      <button
-                        class="btn-secondary btn-sm"
-                        type="button"
-                        disabled={busyAction === action.action_id}
-                        onclick={() => approve(action.action_id)}
-                      >
-                        Approve
-                      </button>
-                      <button
-                        class="btn-ghost btn-sm text-red-600"
-                        type="button"
-                        disabled={busyAction === action.action_id}
-                        onclick={() => reject(action.action_id)}
-                      >
-                        Reject
-                      </button>
-                      <button
-                        class="btn-primary btn-sm"
-                        type="button"
-                        disabled={busyAction === action.action_id}
-                        onclick={() => runPipeline(action.action_id)}
-                      >
-                        {busyAction === action.action_id ? 'Running…' : 'Execute step / pipeline'}
-                      </button>
-                    </div>
+                    {#if action.status === 'FINALIZING'}
+                      <div class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 space-y-2">
+                        <p class="text-sm text-amber-900">
+                          Upgrade succeeded — {actionStatusLabel(action) || 'waiting bake period before COMPLETE'}.
+                        </p>
+                        <p class="text-xs text-amber-800">
+                          Approve/Reject no longer apply. The WASM is already live. Cancel is not available after VERIFY.
+                        </p>
+                        {#if isTopCommander}
+                          <button
+                            class="btn-primary btn-sm"
+                            type="button"
+                            disabled={busyAction === action.action_id}
+                            onclick={() => skipBakeComplete(action.action_id)}
+                          >
+                            {busyAction === action.action_id ? 'Completing…' : 'Skip bake & mark COMPLETE'}
+                          </button>
+                        {:else}
+                          <p class="text-xs text-amber-800">
+                            Only the top commander can skip the bake window and mark this COMPLETE.
+                          </p>
+                        {/if}
+                      </div>
+                    {:else}
+                      <div class="flex flex-wrap gap-2">
+                        {#if action.status === 'PENDING'}
+                          <button
+                            class="btn-secondary btn-sm"
+                            type="button"
+                            disabled={busyAction === action.action_id || !config || !$principal || !batonCanApproveAction($principal, action, config, commanders)}
+                            onclick={() => approve(action.action_id)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            class="btn-ghost btn-sm text-red-600"
+                            type="button"
+                            disabled={busyAction === action.action_id}
+                            onclick={() => reject(action.action_id)}
+                          >
+                            Reject
+                          </button>
+                        {/if}
+                        {#if action.status !== 'PENDING'}
+                          <button
+                            class="btn-primary btn-sm"
+                            type="button"
+                            disabled={busyAction === action.action_id}
+                            onclick={() => runPipeline(action.action_id)}
+                          >
+                            {busyAction === action.action_id ? 'Running…' : action.status === 'APPROVED' ? 'Run pipeline' : 'Continue pipeline'}
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
                   {/if}
                 </div>
               {/if}
@@ -392,6 +598,10 @@
     font-weight: 500;
   }
   .badge-baton {
+    background: #e0e7ff;
+    color: #3730a3;
+  }
+  .badge-top {
     background: #e0e7ff;
     color: #3730a3;
   }

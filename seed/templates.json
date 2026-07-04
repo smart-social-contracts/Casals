@@ -63,12 +63,93 @@
     },
     {
       "key": "orchestration-baton",
-      "version": "1.0.0",
+      "version": "1.2.8",
+      "file": "orchestration-baton@1.2.8.wasm.gz",
+      "path": "orchestration-baton@1.2.8.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.8 — verbose per-canister pipeline logs; N-of-M approval."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.7",
+      "file": "orchestration-baton@1.2.7.wasm.gz",
+      "path": "orchestration-baton@1.2.7.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.7 — N-of-M upgrade approval with required signers."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.6",
+      "file": "orchestration-baton@1.2.6.wasm.gz",
+      "path": "orchestration-baton@1.2.6.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.6 — skip_bake_and_complete + stored bake_window on actions."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.5",
+      "file": "orchestration-baton@1.2.5.wasm.gz",
+      "path": "orchestration-baton@1.2.5.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.5 — per-proposal bake_window_seconds on upgrade payload."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.4",
+      "file": "orchestration-baton@1.2.4.wasm.gz",
+      "path": "orchestration-baton@1.2.4.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.4 — skip in-flight bake when bake_window_seconds is 0."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.3",
+      "file": "orchestration-baton@1.2.3.wasm.gz",
+      "path": "orchestration-baton@1.2.3.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.3 — configurable smoke test in VERIFY phase."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.2",
+      "file": "orchestration-baton@1.2.2.wasm.gz",
+      "path": "orchestration-baton@1.2.2.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.2 — skip health_check verify for Basilisk targets."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.1",
+      "file": "orchestration-baton@1.2.1.wasm.gz",
+      "path": "orchestration-baton@1.2.1.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.1 — chunked registry pull/install (large WASM support)."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.2.0",
+      "file": "orchestration-baton@1.2.0.wasm.gz",
+      "path": "orchestration-baton@1.2.0.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2 — registry-backed WASM at upgrade time (no local staging)."
+    },
+    {
+      "key": "orchestration-baton",
+      "version": "1.1.0",
       "file": "orchestration-baton.wasm.gz",
       "path": "orchestration-baton.wasm",
       "kind": "backend",
       "wasm_type": "baton",
-      "description": "Baton orchestrator (Basilisk): managed_upgrade pipeline and commander model."
+      "description": "Baton v1.1 — manage_managed_canisters capability for register/remove."
     },
     {
       "key": "orchestration-multisig",

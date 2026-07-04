@@ -92,6 +92,7 @@ type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
 type InitArgs = record { top_commander : principal };
 type _HealthSvc = service { health_check : () -> (text) query };
+type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query };
 
 service : (InitArgs) -> {
   "set_commander_policy" : (text) -> (text);
@@ -106,13 +107,12 @@ service : (InitArgs) -> {
   "list_managed_canisters" : () -> (text) query;
   "set_config" : (text) -> (text);
   "get_config" : () -> (text) query;
-  "stage_wasm" : (text) -> (text);
-  "stage_wasm_chunk" : (text) -> (text);
   "propose_managed_upgrade" : (text) -> (text);
   "submit_approval" : (text) -> (text);
   "submit_multisig_accelerant" : (text) -> (text);
   "reject_action" : (text) -> (text);
   "execute_action" : (text) -> (text);
+  "skip_bake_and_complete" : (text) -> (text);
   "get_action" : (text) -> (text) query;
   "list_actions" : () -> (text) query;
   "read_cycle_balance" : (text) -> (text);

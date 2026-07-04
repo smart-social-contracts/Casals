@@ -5,7 +5,6 @@ state machine with automatic rollback. Never upgrades itself — the multisig
 does that externally.
 """
 
-import hashlib
 import json
 import traceback
 import uuid
@@ -34,6 +33,15 @@ from auth import (
     require_capability,
     require_top_commander,
 )
+from approval_policy import (
+    DEFAULT_UPGRADE_APPROVAL_POLICY,
+    append_approval,
+    approval_progress,
+    effective_approval_policy,
+    is_approval_eligible,
+    parse_approval_policy,
+    quorum_met,
+)
 from config import (
     DEFAULT_ACCELERANT_DAYS,
     DEFAULT_BAKE_WINDOW_SECONDS,
@@ -42,6 +50,7 @@ from config import (
 from models import (
     ALL_CAPABILITIES,
     CAP_MANAGE_COMMANDERS,
+    CAP_MANAGE_MANAGED,
     CAP_PROPOSE,
     CAP_READ_CYCLE_BALANCE,
     CAP_SUBMIT_APPROVAL,
@@ -89,6 +98,7 @@ from pipeline import (
     restart_canisters_gen,
     revert_upgraded_gen,
     validate_payload_targets,
+    action_bake_window_seconds,
     validate_targets_in_managed,
 )
 
@@ -99,8 +109,6 @@ _commanders = StableBTreeMap[str, str](memory_id=1, max_key_size=64, max_value_s
 _actions = StableBTreeMap[str, str](memory_id=2, max_key_size=128, max_value_size=500_000)
 _managed = StableBTreeMap[str, str](memory_id=3, max_key_size=64, max_value_size=256)
 _config = StableBTreeMap[str, str](memory_id=4, max_key_size=64, max_value_size=4096)
-_wasm_store = StableBTreeMap[str, str](memory_id=5, max_key_size=200, max_value_size=1_000_000)
-_wasm_staging = StableBTreeMap[str, str](memory_id=6, max_key_size=200, max_value_size=1_000_000)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -146,35 +154,6 @@ def _load_action(action_id: str) -> dict | None:
     return decode_record(raw)
 
 
-def _store_staged_wasm(wasm_hash: str, wasm_hex: str) -> None:
-    h = wasm_hash.lower()
-    if not wasm_hex:
-        raise ValueError(f"missing wasm module for hash {h}")
-    actual = hashlib.sha256(bytes.fromhex(wasm_hex)).hexdigest()
-    if actual != h:
-        raise ValueError(f"wasm_hash mismatch: expected {h}, got {actual}")
-    _wasm_store.insert(h, wasm_hex)
-
-
-def _store_action_wasm(payload: dict) -> None:
-    for target in payload.get("targets") or []:
-        wasm_hex = target.get("wasm_module_hex") or ""
-        wasm_hash = (target.get("wasm_hash") or "").lower()
-        if wasm_hex:
-            _store_staged_wasm(wasm_hash, wasm_hex)
-        elif not wasm_hash or not _wasm_store.contains_key(wasm_hash):
-            raise ValueError(f"wasm not staged for hash {wasm_hash}")
-        target.pop("wasm_module_hex", None)
-
-
-def _wasm_for_target(record: dict, canister_id: str) -> str:
-    for target in record["payload"]["targets"]:
-        if target["canister_id"] == canister_id:
-            h = (target.get("wasm_hash") or "").lower()
-            return _wasm_store.get(h) or ""
-    return ""
-
-
 def _active_action_id() -> str | None:
     for aid in _actions.keys():
         rec = _load_action(aid)
@@ -190,6 +169,11 @@ def _persist_config_defaults() -> None:
         _config.insert("accelerant_days", str(DEFAULT_ACCELERANT_DAYS))
     if _config.get("install_cycles_buffer") is None:
         _config.insert("install_cycles_buffer", str(DEFAULT_INSTALL_CYCLES_BUFFER))
+    if _config.get("upgrade_approval_policy") is None:
+        _config.insert(
+            "upgrade_approval_policy",
+            json.dumps(DEFAULT_UPGRADE_APPROVAL_POLICY, separators=(",", ":")),
+        )
 
 
 def _arm_resume_timer(action_id: str, delay_secs: int = 0) -> None:
@@ -222,10 +206,8 @@ def _execute_action_gen(action_id: str) -> Async[text]:
         status = STATUS_PRE_FLIGHT
 
     cycles_buffer = _cfg_int("install_cycles_buffer", DEFAULT_INSTALL_CYCLES_BUFFER)
-    bake_window = _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS)
-
-    def _wasm_loader(cid: str) -> str:
-        return _wasm_for_target(record, cid)
+    config_bake_window = _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS)
+    bake_window = action_bake_window_seconds(record, config_bake_window)
 
     try:
         if status == STATUS_PRE_FLIGHT:
@@ -265,7 +247,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
 
         if status == STATUS_UPGRADING:
             check_test_trap(_config, STATUS_UPGRADING, int(record.get("upgrade_index") or 0))
-            result, detail = yield from phase_upgrade_step_gen(record, _config, _wasm_loader)
+            result, detail = yield from phase_upgrade_step_gen(record, _config)
             _save_action(record)
             if result == "failed":
                 upgraded_count = int(record.get("upgrade_index") or 0)
@@ -302,6 +284,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
                 _save_action(record)
                 return _err(detail)
             record["status"] = STATUS_FINALIZING
+            record["bake_window_seconds"] = bake_window
             record["bake_until"] = _now() + bake_window * 1_000_000_000
             _save_action(record)
             delay = bake_window
@@ -310,7 +293,9 @@ def _execute_action_gen(action_id: str) -> Async[text]:
 
         if status == STATUS_FINALIZING:
             bake_until = int(record.get("bake_until") or 0)
-            if _now() < bake_until:
+            stored_bake = record.get("bake_window_seconds")
+            effective_bake = int(stored_bake) if stored_bake is not None else bake_window
+            if effective_bake > 0 and _now() < bake_until:
                 delay = max(1, (bake_until - _now()) // 1_000_000_000)
                 _arm_resume_timer(action_id, delay)
                 return _ok(action_id=action_id, status=STATUS_FINALIZING, waiting=True)
@@ -479,13 +464,10 @@ def list_commanders() -> text:
 def add_managed_canister(canister_id: text) -> text:
     """Register a canister this Baton controls.
 
-    Top commander or any principal with ``propose:managed_upgrade`` may register
-    targets (Casals registers on hand-off before proposing upgrades).
+    Requires ``manage_managed_canisters`` (top commander always allowed).
     """
     try:
-        caller = _caller()
-        if not is_top_commander(caller, _config):
-            require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        require_capability(_caller(), CAP_MANAGE_MANAGED, _commanders, _config)
         cid = canister_id.strip()
         _managed.insert(cid, "1")
         return _ok(canister_id=cid)
@@ -496,7 +478,7 @@ def add_managed_canister(canister_id: text) -> text:
 @update
 def remove_managed_canister(canister_id: text) -> text:
     try:
-        require_top_commander(_caller(), _config)
+        require_capability(_caller(), CAP_MANAGE_MANAGED, _commanders, _config)
         cid = canister_id.strip()
         if _managed.contains_key(cid):
             _managed.remove(cid)
@@ -512,13 +494,25 @@ def list_managed_canisters() -> text:
 
 @update
 def set_config(args: text) -> text:
-    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?}."""
+    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?, file_registry_canister_id?, upgrade_approval_policy?}."""
     try:
         require_top_commander(_caller(), _config)
         params = json.loads(args)
         for key in ("bake_window_seconds", "accelerant_days", "install_cycles_buffer"):
             if key in params:
                 _config.insert(key, str(int(params[key])))
+        if "upgrade_approval_policy" in params:
+            policy = parse_approval_policy(params["upgrade_approval_policy"])
+            _config.insert(
+                "upgrade_approval_policy",
+                json.dumps(policy, separators=(",", ":")),
+            )
+        if "file_registry_canister_id" in params:
+            fr = (params.get("file_registry_canister_id") or "").strip()
+            if fr:
+                _config.insert("file_registry_canister_id", fr)
+            elif _config.contains_key("file_registry_canister_id"):
+                _config.remove("file_registry_canister_id")
         return _ok(config={k: _config.get(k) for k in _config.keys()})
     except AuthError as e:
         return _err(str(e))
@@ -528,66 +522,19 @@ def set_config(args: text) -> text:
 
 @query
 def get_config() -> text:
+    policy_raw = _config.get("upgrade_approval_policy")
+    try:
+        approval_policy = parse_approval_policy(policy_raw)
+    except AuthError:
+        approval_policy = dict(DEFAULT_UPGRADE_APPROVAL_POLICY)
     return json.dumps({
         "top_commander": _config.get("top_commander"),
         "bake_window_seconds": _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS),
         "accelerant_days": _cfg_int("accelerant_days", DEFAULT_ACCELERANT_DAYS),
         "install_cycles_buffer": _cfg_int("install_cycles_buffer", DEFAULT_INSTALL_CYCLES_BUFFER),
+        "file_registry_canister_id": _config.get("file_registry_canister_id"),
+        "upgrade_approval_policy": approval_policy,
     })
-
-
-@update
-def stage_wasm(args: text) -> text:
-    """Stage a WASM module by content hash. JSON: {wasm_hash, wasm_module_hex}. Requires propose:managed_upgrade."""
-    try:
-        require_capability(_caller(), CAP_PROPOSE, _commanders, _config)
-        params = json.loads(args)
-        wasm_hash = params["wasm_hash"].strip()
-        wasm_hex = params["wasm_module_hex"]
-        _store_staged_wasm(wasm_hash, wasm_hex)
-        return _ok(wasm_hash=wasm_hash.lower())
-    except AuthError as e:
-        return _err(str(e))
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def stage_wasm_chunk(args: text) -> text:
-    """Stage a WASM in multiple calls. JSON: {wasm_hash, chunk_index, total_chunks, chunk_hex}.
-
-    Each chunk is concatenated in order; the final chunk verifies the sha256
-    hash and stores the module (same limits as ``stage_wasm``).
-    """
-    try:
-        require_capability(_caller(), CAP_PROPOSE, _commanders, _config)
-        params = json.loads(args)
-        wasm_hash = params["wasm_hash"].strip().lower()
-        chunk_index = int(params["chunk_index"])
-        total_chunks = int(params["total_chunks"])
-        chunk_hex = (params.get("chunk_hex") or "").strip()
-        if total_chunks < 1 or chunk_index < 0 or chunk_index >= total_chunks:
-            return _err("invalid chunk_index / total_chunks")
-        if not chunk_hex:
-            return _err("missing chunk_hex")
-        key = f"{wasm_hash}:{chunk_index}"
-        _wasm_staging.insert(key, chunk_hex)
-        if chunk_index + 1 < total_chunks:
-            return _ok(wasm_hash=wasm_hash, chunk_index=chunk_index, staged=False)
-        parts = []
-        for i in range(total_chunks):
-            part = _wasm_staging.get(f"{wasm_hash}:{i}")
-            if not part:
-                return _err(f"missing staging chunk {i}")
-            parts.append(part)
-            _wasm_staging.remove(f"{wasm_hash}:{i}")
-        wasm_hex = "".join(parts)
-        _store_staged_wasm(wasm_hash, wasm_hex)
-        return _ok(wasm_hash=wasm_hash, staged=True)
-    except AuthError as e:
-        return _err(str(e))
-    except Exception as e:
-        return _err(str(e))
 
 
 @update
@@ -613,7 +560,6 @@ def propose_managed_upgrade(args: text) -> text:
             affected_canisters=affected,
             payload=payload,
         )
-        _store_action_wasm(record["payload"])
         _save_action(record)
         return _ok(action_id=action_id, status=STATUS_PENDING)
     except AuthError as e:
@@ -627,15 +573,24 @@ def submit_approval(action_id: text) -> text:
     try:
         caller = _caller()
         require_capability(caller, CAP_SUBMIT_APPROVAL, _commanders, _config)
-        record = _load_action(action_id.strip())
+        aid = action_id.strip()
+        record = _load_action(aid)
         if record is None:
             return _err("unknown action")
         if record.get("status") != STATUS_PENDING:
             return _err(f"action not pending: {record.get('status')}")
-        record["status"] = STATUS_APPROVED
-        record["approval_path"] = "governance"
+        policy = effective_approval_policy(record, _config)
+        if not is_approval_eligible(caller, policy, _commanders, _config):
+            return _err("caller not eligible to approve this action")
+        append_approval(record, caller)
+        progress = approval_progress(record, policy)
+        if quorum_met(record, policy):
+            record["status"] = STATUS_APPROVED
+            record["approval_path"] = "governance"
+            _save_action(record)
+            return _ok(action_id=aid, status=STATUS_APPROVED, **progress)
         _save_action(record)
-        return _ok(action_id=action_id, status=STATUS_APPROVED)
+        return _ok(action_id=aid, status=STATUS_PENDING, **progress)
     except AuthError as e:
         return _err(str(e))
 
@@ -684,6 +639,25 @@ def execute_action(action_id: text) -> Async[text]:
     if active and active != aid:
         return _err(f"action {active} is already in progress")
     return (yield from _execute_action_gen(aid))
+
+
+@update
+def skip_bake_and_complete(action_id: text) -> Async[text]:
+    """Top commander only: finish FINALIZING without waiting for bake_until."""
+    try:
+        require_top_commander(_caller(), _config)
+        aid = action_id.strip()
+        record = _load_action(aid)
+        if record is None:
+            return _err("unknown action")
+        if record.get("status") != STATUS_FINALIZING:
+            return _err(f"action not in FINALIZING: {record.get('status')}")
+        record["bake_window_seconds"] = 0
+        record["bake_until"] = _now()
+        _save_action(record)
+        return (yield from _execute_action_gen(aid))
+    except AuthError as e:
+        return _err(str(e))
 
 
 @query

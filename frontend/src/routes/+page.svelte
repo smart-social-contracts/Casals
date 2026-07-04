@@ -54,6 +54,7 @@
   import { governanceConsoleUrl } from '$lib/orchestrationNav';
   import { resolveWasmType, hasBasiliskFeatures } from '$lib/canisterTypes';
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
+  import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type OrchestraView = 'tree' | 'diagram';
@@ -100,6 +101,8 @@
   let overviewOpen = $state(false);
   let orchestraView = $state<OrchestraView>('tree');
   let filterQuery = $state('');
+
+  const principalLabels = $derived.by(() => buildPrincipalLabels(tree, backendCanisterId()));
 
   // Filtered view of the tree. A section is kept when any of its stands match,
   // a stand is kept when any of its canisters match or the stand itself matches.
@@ -1029,6 +1032,7 @@
                                 <CanisterControllersBadge
                                   canisterId={canister.canister_id}
                                   controllers={canister.controllers}
+                                  {principalLabels}
                                 />
                                 {#if canister.subnet || canister.canister_id}
                                   <span class="badge badge-neutral font-mono inline-flex items-center gap-1" title="subnet {canister.subnet || 'lookup…'}">
@@ -1061,8 +1065,13 @@
                                 {/if}
                               </div>
                               {#if canister.controllers?.length}
-                                <p class="text-[11px] text-primary-500 font-mono truncate" title={canister.controllers.join('\n')}>
-                                  controllers: {canister.controllers.map((p) => shortPrincipal(p)).join(', ')}
+                                <p class="text-[11px] text-primary-500 font-mono truncate">
+                                  controllers:
+                                  {#each canister.controllers as principal, i (principal)}
+                                    {#if i > 0}<span>, </span>{/if}
+                                    {@const label = controllerLabel(principal, principalLabels)}
+                                    <span title={label.title}>{label.display}</span>
+                                  {/each}
                                 </p>
                               {/if}
                             </div>
@@ -1159,6 +1168,7 @@
                               <CanisterControllersBadge
                                 canisterId={canister.canister_id}
                                 controllers={canister.controllers}
+                                {principalLabels}
                                 inline
                               />
                               {#if canisterDetailsErr[canister.canister_id]}

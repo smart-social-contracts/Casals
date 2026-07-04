@@ -95,7 +95,7 @@ jobs:
 
       - name: Ensure canisters are running (stopped canisters block asset sync)
         run: |
-          for c in casals_backend casals_frontend ic_file_registry; do
+          for c in casals_backend casals_frontend ic_file_registry ic_file_registry_frontend; do
             echo "Ensuring $c is running…"
             icp canister start "$c" -e ic --identity casals -f || true
           done

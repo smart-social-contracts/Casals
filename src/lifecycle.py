@@ -141,19 +141,22 @@ def _candid_blob(data: bytes) -> str:
     return '"' + "".join(f"\\{b:02x}" for b in (data or b"")) + '"'
 
 
-def _install_mode_candid(install_mode) -> str:
+def _install_mode_candid(install_mode, wasm_type: str = "") -> str:
     if isinstance(install_mode, dict) and "upgrade" in install_mode:
-        return (
-            "variant { upgrade = opt record "
-            "{ wasm_memory_persistence = opt variant { keep = null } } }"
-        )
+        from wasm_types import upgrade_uses_memory_keep
+        if upgrade_uses_memory_keep(wasm_type):
+            return (
+                "variant { upgrade = opt record "
+                "{ wasm_memory_persistence = opt variant { keep = null } } }"
+            )
+        return "variant { upgrade = null }"
     if isinstance(install_mode, dict) and "reinstall" in install_mode:
         return "variant { reinstall = null }"
     return "variant { install = null }"
 
 
 def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex: str,
-                              init_arg: bytes, install_mode):
+                              init_arg: bytes, install_mode, wasm_type: str = ""):
     """Generator: install_chunked_code via explicit Candid (EOP-safe upgrades)."""
     hash_entries = []
     for ch in chunk_hashes:
@@ -163,7 +166,7 @@ def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex:
         hash_entries.append(f"record {{ hash = blob {_candid_blob(bytes(raw))} }}")
     hashes_vec = "; ".join(hash_entries)
     arg_text = (
-        f"(record {{ mode = {_install_mode_candid(install_mode)}; "
+        f"(record {{ mode = {_install_mode_candid(install_mode, wasm_type)}; "
         f"target_canister = principal \"{target_id}\"; "
         f"store_canister = opt principal \"{target_id}\"; "
         f"chunk_hashes_list = vec {{ {hashes_vec} }}; "
@@ -180,7 +183,7 @@ def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex:
 
 
 def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
-                      install_mode, init_arg: bytes = b""):
+                      install_mode, init_arg: bytes = b"", wasm_type: str = ""):
     """Generator: pull a WASM from the file-registry into the target's chunk
     store and install it via install_chunked_code.
 
@@ -221,7 +224,7 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
         raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
     _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
     yield from _install_chunked_code_raw(
-        target_id, chunk_hashes, expected_hash_hex, init_arg, install_mode)
+        target_id, chunk_hashes, expected_hash_hex, init_arg, install_mode, wasm_type)
     try:
         yield management_canister.clear_chunk_store({"canister_id": target})
     except Exception:
@@ -530,8 +533,47 @@ def _fetch_canister_controllers(canister_id: str):
         return []
 
 
+def _authorized_wasm_for_hash(hash_hex: str):
+    """Return the catalog entry whose wasm_hash matches (or None)."""
+    from models import AuthorizedWasm
+    h = (hash_hex or "").strip().lower()
+    if not h:
+        return None
+    list(AuthorizedWasm.instances())
+    for w in AuthorizedWasm.instances():
+        if (w.wasm_hash or "").strip().lower() == h:
+            return w
+    return None
+
+
+def _sync_canister_module_from_ic_gen(st):
+    """Generator: refresh wasm_hash (and wasm_key when known) from live IC state."""
+    cid = (st.canister_id or "").strip()
+    if not cid:
+        return {"name": st.name, "updated": False}
+    ok, actual = yield from _verify_module_hash(cid, "")
+    if not actual:
+        return {"name": st.name, "canister_id": cid, "updated": False, "error": "no module"}
+    changed = False
+    if (st.wasm_hash or "").lower() != actual:
+        st.wasm_hash = actual
+        changed = True
+    w = _authorized_wasm_for_hash(actual)
+    if w is not None:
+        if st.wasm_key != w.key:
+            st.wasm_key = w.key
+            changed = True
+        from wasm_types import wasm_type_of_wasm
+        wt = wasm_type_of_wasm(w)
+        if (st.wasm_type or "") != wt:
+            st.wasm_type = wt
+            changed = True
+    return {"name": st.name, "canister_id": cid, "updated": changed,
+            "wasm_hash": actual, "wasm_key": st.wasm_key or ""}
+
+
 def _refresh_controllers_cache_gen():
-    """Generator: fetch IC controllers for all managed canisters and persist."""
+    """Generator: fetch IC controllers + module metadata for all canisters."""
     list(Canister.instances())
     updated = []
     failed = []
@@ -539,10 +581,14 @@ def _refresh_controllers_cache_gen():
         cid = (st.canister_id or "").strip()
         if not cid:
             continue
+        entry = {"name": st.name, "canister_id": cid}
         try:
             current = yield from _fetch_canister_controllers(cid)
             _persist_ic_controllers(cid, current)
-            updated.append({"name": st.name, "canister_id": cid, "controllers": current})
+            entry["controllers"] = current
+            meta = yield from _sync_canister_module_from_ic_gen(st)
+            entry.update({k: meta[k] for k in ("wasm_hash", "wasm_key", "updated") if k in meta})
+            updated.append(entry)
         except Exception as e:
             failed.append({"name": st.name, "canister_id": cid, "error": str(e)})
     return updated, failed
@@ -737,7 +783,7 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     arg = init_arg if init_arg is not None else _install_arg_for(w)
     try:
         yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
-                                     w.wasm_hash, mode, arg)
+                                     w.wasm_hash, mode, arg, st.wasm_type)
         if reused:
             try:
                 yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
@@ -800,12 +846,14 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
     wasm_hash = ""
     status = CanisterStatus.REGISTERED
     if w is not None:
+        from wasm_types import wasm_type_of_wasm
         wasm_key = w.key
         _append_event("installing_wasm", cid, {"stand": dk.name, "name": name,
                                                "wasm_key": w.key, "reused": True})
         try:
             yield from _pull_and_install(cid, w.registry_namespace, w.registry_path,
-                                         w.wasm_hash, {"reinstall": None}, _install_arg_for(w))
+                                         w.wasm_hash, {"reinstall": None}, _install_arg_for(w),
+                                         wasm_type_of_wasm(w))
             try:
                 yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
             except Exception:

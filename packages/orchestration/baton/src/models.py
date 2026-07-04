@@ -50,12 +50,14 @@ CAP_PROPOSE = "propose:managed_upgrade"
 CAP_SUBMIT_APPROVAL = "submit_approval:managed_upgrade"
 CAP_READ_CYCLE_BALANCE = "read_cycle_balance"
 CAP_MANAGE_COMMANDERS = "manage_commanders"
+CAP_MANAGE_MANAGED = "manage_managed_canisters"
 
 ALL_CAPABILITIES = frozenset({
     CAP_PROPOSE,
     CAP_SUBMIT_APPROVAL,
     CAP_READ_CYCLE_BALANCE,
     CAP_MANAGE_COMMANDERS,
+    CAP_MANAGE_MANAGED,
 })
 
 
@@ -84,6 +86,7 @@ def new_action_record(
         "payload": payload,
         "approval_path": None,
         "status": STATUS_PENDING,
+        "approvals": [],
         "snapshot_refs": {},
         "phase_log": [],
         "bake_until": None,

@@ -1,7 +1,7 @@
 """Managed-upgrade pipeline — pure helpers + async phase generators."""
 
 import json
-from typing import Any, Callable, List, Tuple, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from basilisk import Async, CallResult, Principal, Service, ic, service_query, text
 from basilisk.canisters.management import management_canister
@@ -31,6 +31,10 @@ class _HealthSvc(Service):
         ...
 
 
+from registry import registry_install_step_gen
+from smoke import run_smoke_test_gen, validate_smoke_test
+
+
 def resume_status_for_execute(status: str) -> str:
     if status in (STATUS_PENDING, STATUS_APPROVED):
         return STATUS_PRE_FLIGHT
@@ -51,6 +55,51 @@ def validate_payload_targets(payload: dict[str, Any], affected: list[str]) -> No
     ids_in_payload = {t["canister_id"] for t in targets}
     if set(affected) != ids_in_payload:
         raise ValueError("payload.targets canister_ids must match affected_canisters")
+    for target in targets:
+        if not (target.get("wasm_hash") or "").strip():
+            raise ValueError("each target requires wasm_hash")
+        if not (target.get("registry_namespace") or "").strip():
+            raise ValueError("each target requires registry_namespace")
+        if not (target.get("registry_path") or "").strip():
+            raise ValueError("each target requires registry_path")
+        smoke = target.get("smoke_test")
+        if smoke is not None:
+            validate_smoke_test(smoke)
+    validate_payload_bake_window(payload)
+    validate_payload_approval_policy(payload)
+
+
+def validate_payload_bake_window(payload: dict[str, Any]) -> None:
+    raw = payload.get("bake_window_seconds")
+    if raw is None:
+        return
+    try:
+        secs = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("bake_window_seconds must be a non-negative integer") from exc
+    if secs < 0:
+        raise ValueError("bake_window_seconds must be non-negative")
+
+
+def validate_payload_approval_policy(payload: dict[str, Any]) -> None:
+    raw = payload.get("approval_policy")
+    if raw is None:
+        return
+    from approval_policy import parse_approval_policy
+
+    parse_approval_policy(raw)
+
+
+def action_bake_window_seconds(record: dict[str, Any], config_default: int) -> int:
+    """Per-proposal bake window from payload, else Baton config default."""
+    payload = record.get("payload") or {}
+    raw = payload.get("bake_window_seconds")
+    if raw is None:
+        return config_default
+    secs = int(raw)
+    if secs < 0:
+        raise ValueError("bake_window_seconds must be non-negative")
+    return secs
 
 
 def _now() -> int:
@@ -138,6 +187,7 @@ def phase_stop_gen(record: dict[str, Any]) -> Async[tuple[bool, list[str], str]]
         try:
             yield management_canister.stop_canister({"canister_id": _principal(cid)})
             stopped.append(cid)
+            append_phase_log(record, phase_entry("STOP", _now(), "ok", f"stopped {cid}"))
         except Exception as exc:
             detail = f"stop failed on {cid}: {exc}"
             append_phase_log(record, phase_entry("STOP", _now(), "failed", detail))
@@ -163,6 +213,7 @@ def phase_snapshot_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
             snap = _unwrap(snap_res)
             snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
             refs[cid] = _hex_blob(snap_id)
+            append_phase_log(record, phase_entry("SNAPSHOT", _now(), "ok", f"snapshot {cid}"))
         except Exception as exc:
             detail = f"snapshot failed on {cid}: {exc}"
             append_phase_log(record, phase_entry("SNAPSHOT", _now(), "failed", detail))
@@ -187,13 +238,20 @@ def check_test_trap(config_store, phase: str, upgrade_index: int) -> None:
     ic.trap(trap.get("message", "integration test trap"))
 
 
-def _encode_install_code_upgrade(canister_id: str, wasm: bytes, arg: bytes) -> bytes:
+def _encode_install_code_upgrade(canister_id: str, wasm: bytes, arg: bytes, memory_keep: bool = False) -> bytes:
+    """Legacy single-shot install_code (small modules only). Prefer registry_install_step_gen."""
     wasm_esc = "".join(f"\\{b:02x}" for b in wasm)
     arg_esc = "".join(f"\\{b:02x}" for b in arg)
+    if memory_keep:
+        upgrade_mode = (
+            "variant { upgrade = opt record { "
+            "wasm_memory_persistence = opt variant { keep = null } "
+            "} }"
+        )
+    else:
+        upgrade_mode = "variant { upgrade = null }"
     candid = (
-        f'(record {{ mode = variant {{ upgrade = opt record {{ '
-        f'wasm_memory_persistence = opt variant {{ keep = null }} '
-        f'}} }}; canister_id = principal "{canister_id}"; '
+        f'(record {{ mode = {upgrade_mode}; canister_id = principal "{canister_id}"; '
         f'wasm_module = blob "{wasm_esc}"; arg = blob "{arg_esc}" }})'
     )
     return ic.candid_encode(candid)
@@ -202,7 +260,6 @@ def _encode_install_code_upgrade(canister_id: str, wasm: bytes, arg: bytes) -> b
 def phase_upgrade_step_gen(
     record: dict[str, Any],
     config_store=None,
-    wasm_for_target: Callable[[str], str] | None = None,
 ) -> Async[tuple[str, str]]:
     """Upgrade one canister at upgrade_index. Returns (result, detail): ok|failed|done."""
     targets = record["payload"]["targets"]
@@ -210,35 +267,60 @@ def phase_upgrade_step_gen(
     if idx >= len(targets):
         append_phase_log(record, phase_entry("UPGRADE", _now(), "ok", "all upgraded"))
         return "done", ""
-    if idx == 0:
-        append_phase_log(record, phase_entry("UPGRADE", _now(), "ok", "enter"))
     target = targets[idx]
     cid = target["canister_id"]
-    wasm_hex = (wasm_for_target(cid) if wasm_for_target else "") or target.get("wasm_module_hex") or ""
-    if not wasm_hex:
-        detail = f"missing wasm module for {cid}"
-        append_phase_log(record, phase_entry("UPGRADE", _now(), "failed", detail))
-        return "failed", detail
-    wasm = bytes.fromhex(wasm_hex)
+    reg_path = (target.get("registry_path") or "").strip()
+    load_state = None
+    upgrade_load = record.get("upgrade_load")
+    if isinstance(upgrade_load, dict) and int(upgrade_load.get("target_index", -1)) == idx:
+        load_state = upgrade_load.get("state")
+    else:
+        append_phase_log(record, phase_entry(
+            "UPGRADE", _now(), "ok",
+            f"target {idx + 1}/{len(targets)}: {cid} ← {reg_path or 'wasm'}",
+        ))
+    if idx == 0 and not record.get("upgrade_load"):
+        append_phase_log(record, phase_entry("UPGRADE", _now(), "ok", "enter"))
     arg = bytes.fromhex(target.get("upgrade_args_hex") or "")
-    cycles_buf = DEFAULT_INSTALL_CYCLES_BUFFER
-    if config_store is not None:
-        raw = config_store.get("install_cycles_buffer")
-        if raw is not None:
-            try:
-                cycles_buf = int(raw)
-            except ValueError:
-                pass
+    memory_keep = target.get("upgrade_memory_keep", True)
+    if isinstance(memory_keep, str):
+        memory_keep = memory_keep.lower() not in ("0", "false", "no")
     try:
-        raw_args = _encode_install_code_upgrade(cid, wasm, arg)
-        install_res = yield ic.call_raw("aaaaa-aa", "install_code", raw_args, cycles_buf)
-        _unwrap(install_res)
-        record["upgrade_index"] = idx + 1
-        return "ok", ""
+        phase, new_state = yield from registry_install_step_gen(
+            config_store,
+            cid,
+            target.get("registry_namespace"),
+            target.get("registry_path"),
+            (target.get("wasm_hash") or "").lower(),
+            load_state,
+            arg,
+            memory_keep,
+        )
     except Exception as exc:
-        detail = f"upgrade failed on {cid}: {exc}"
+        detail = f"missing wasm module for {cid}: {exc}"
         append_phase_log(record, phase_entry("UPGRADE", _now(), "failed", detail))
+        record.pop("upgrade_load", None)
         return "failed", detail
+
+    if phase == "loading":
+        record["upgrade_load"] = {"target_index": idx, "state": new_state}
+        total = int(new_state.get("total") or 0)
+        offset = int(new_state.get("offset") or 0)
+        chunks = len(new_state.get("chunk_hashes") or [])
+        pct = min(100, int(offset * 100 / total)) if total else 0
+        append_phase_log(record, phase_entry(
+            "UPGRADE", _now(), "ok",
+            f"{cid}: uploading chunks {offset}/{total} B ({chunks} chunks, {pct}%)",
+        ))
+        return "ok", ""
+
+    record.pop("upgrade_load", None)
+    record["upgrade_index"] = idx + 1
+    append_phase_log(record, phase_entry(
+        "UPGRADE", _now(), "ok",
+        f"{cid}: installed ← {reg_path or 'wasm'}",
+    ))
+    return "ok", ""
 
 
 def revert_upgraded_gen(record: dict[str, Any], up_to_index: int) -> Async[None]:
@@ -263,6 +345,7 @@ def phase_start_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
     for cid in record["affected_canisters"]:
         try:
             yield management_canister.start_canister({"canister_id": _principal(cid)})
+            append_phase_log(record, phase_entry("START", _now(), "ok", f"started {cid}"))
         except Exception as exc:
             detail = f"start failed on {cid}: {exc}"
             append_phase_log(record, phase_entry("START", _now(), "failed", detail))
@@ -294,6 +377,25 @@ def phase_verify_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
             detail = f"verify hash mismatch on {cid}: expected {expected}, got {module_hash}"
             append_phase_log(record, phase_entry("VERIFY", _now(), "failed", detail))
             return False, detail
+        smoke = target.get("smoke_test")
+        if smoke is not None:
+            try:
+                yield from run_smoke_test_gen(cid, smoke)
+                method = (smoke.get("method") or "smoke").strip()
+                append_phase_log(record, phase_entry(
+                    "VERIFY", _now(), "ok", f"{cid}: smoke {method} passed",
+                ))
+            except Exception as exc:
+                detail = f"smoke test failed on {cid}: {exc}"
+                append_phase_log(record, phase_entry("VERIFY", _now(), "failed", detail))
+                return False, detail
+            continue
+        require_health = target.get("upgrade_memory_keep", True)
+        if isinstance(require_health, str):
+            require_health = require_health.lower() not in ("0", "false", "no")
+        if not require_health:
+            append_phase_log(record, phase_entry("VERIFY", _now(), "ok", f"{cid}: hash verified"))
+            continue
         svc = _HealthSvc(_principal(cid))
         hres: CallResult[text] = yield svc.health_check()
         if isinstance(hres, dict):
@@ -313,6 +415,7 @@ def phase_verify_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
             detail = f"health probe failed on {cid}: {herr}"
             append_phase_log(record, phase_entry("VERIFY", _now(), "failed", detail))
             return False, detail
+        append_phase_log(record, phase_entry("VERIFY", _now(), "ok", f"{cid}: health_check passed"))
     append_phase_log(record, phase_entry("VERIFY", _now(), "ok", "all verified"))
     return True, ""
 
