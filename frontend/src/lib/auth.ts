@@ -29,6 +29,19 @@ let _authClient: AuthClient | null = null;
 // current origin, so local and mainnet get separate identities automatically.
 const II_URL = 'https://identity.ic0.app';
 
+/** Internet Identity delegation lifetime (nanoseconds). */
+const SESSION_MAX_TTL_NS = BigInt(7 * 24 * 60 * 60 * 1_000_000_000); // 1 week
+
+/** AuthClient idle manager logs out after 10m by default; disable so TTL governs session length. */
+const AUTH_CLIENT_OPTIONS = {
+  idleOptions: { disableIdle: true },
+} as const;
+
+async function _getAuthClient(): Promise<AuthClient> {
+  if (!_authClient) _authClient = await AuthClient.create(AUTH_CLIENT_OPTIONS);
+  return _authClient;
+}
+
 function _clearSession() {
   identity.set(null);
   isAuthenticated.set(false);
@@ -82,7 +95,7 @@ export async function refreshControllerAccess(backendCanisterId?: string) {
 }
 
 export async function initAuth(backendCanisterId?: string) {
-  _authClient = await AuthClient.create();
+  _authClient = await _getAuthClient();
   const authed = await _authClient.isAuthenticated();
   if (authed) {
     await _verifyLoginAccess(_authClient.getIdentity(), backendCanisterId);
@@ -91,13 +104,13 @@ export async function initAuth(backendCanisterId?: string) {
 
 export async function login(backendCanisterId?: string): Promise<boolean> {
   accessDenied.set(null);
-  if (!_authClient) _authClient = await AuthClient.create();
+  const client = await _getAuthClient();
   return new Promise<boolean>((resolve, reject) => {
-    _authClient!.login({
+    client.login({
       identityProvider: II_URL,
-      maxTimeToLive: BigInt(7 * 24 * 60 * 60 * 1_000_000_000),
+      maxTimeToLive: SESSION_MAX_TTL_NS,
       onSuccess: async () => {
-        const ok = await _verifyLoginAccess(_authClient!.getIdentity(), backendCanisterId);
+        const ok = await _verifyLoginAccess(client.getIdentity(), backendCanisterId);
         resolve(ok);
       },
       onError: reject,
@@ -115,13 +128,13 @@ export async function logout() {
 /** Internet Identity login without Casals commander/controller gate (Baton / Multisig consoles). */
 export async function loginInternetIdentity(): Promise<boolean> {
   accessDenied.set(null);
-  if (!_authClient) _authClient = await AuthClient.create();
+  const client = await _getAuthClient();
   return new Promise<boolean>((resolve, reject) => {
-    _authClient!.login({
+    client.login({
       identityProvider: II_URL,
-      maxTimeToLive: BigInt(7 * 24 * 60 * 60 * 1_000_000_000),
+      maxTimeToLive: SESSION_MAX_TTL_NS,
       onSuccess: async () => {
-        _applyIdentity(_authClient!.getIdentity());
+        _applyIdentity(client.getIdentity());
         isCommander.set(null);
         isController.set(null);
         accessDenied.set(null);

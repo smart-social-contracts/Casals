@@ -8,7 +8,7 @@
 
 Casals is **fully on-chain**: the conductor is a canister that creates, upgrades, snapshots, and rolls back other canisters by calling the IC management canister directly. Sheets, arrangements, WASM catalog, cycles policy, and audit history all live in Casals' stable state — there is no off-chain worker in the deploy path. The CLI and frontend are thin clients that submit update calls; execution and rollback logic run inside the conductor.
 
-Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to its own commander (a vote, a committee, or nothing). Casals provides the structure and executes; it never embeds the voting logic.
+Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to one or more **commanders** (principals or external governance canisters). Casals provides the structure and executes approved actions; it never embeds voting logic inside the conductor.
 
 > **Live demo** — https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io
 
@@ -22,7 +22,8 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 | **Stand** | A logical unit inside a section — typically one deployed application instance. |
 | **Canister** | An actual canister. Stands contain one or more canisters. |
 | **Conductor** | The Casals orchestrator canister — controller of managed canisters; runs all lifecycle calls on-chain. |
-| **Commander** | The principal a section/stand authorizes to command changes (its governance canister). |
+| **Commander** | A principal authorized by a section or stand to perform scoped lifecycle actions. |
+| **Baton / Multisig** | Optional orchestration canisters (in `packages/orchestration/`) for managed upgrades and committee approval on target canisters. |
 
 ---
 
@@ -33,8 +34,30 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 - **Arrangements** — per-environment config overlays applied *after* a deploy: a flat `parameters` map plus ordered, declarative post-deploy `steps` (`{target, method, args}`) Casals runs against managed canisters. One active per instance; Casals forwards the data without interpreting it (so app concepts like extensions stay out of the orchestrator).
 - **Canister pool** — reuses existing canisters before creating new ones (creation is expensive).
 - **Cycles management** — native treasury, per-section/stand/canister policy, optional on-chain autopilot, or an **off-chain monitor** (`casals-monitor`) that polls balances, runs auto top-ups, and serves the Cycles UI without burning conductor cycles on hourly samplers.
-- **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend); more added via governed list.
-- **Frontend** — SvelteKit + Internet Identity: tree view, sheet editor, cycles page, WASM catalog, settings.
+- **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend) plus orchestration templates (Baton, multisig); more added via governed list.
+- **Commanders & permissions** — multiple commanders per section/stand; granular permission keys for create, upgrade, subnet whitelist, shell access, and orchestration actions.
+- **Orchestration governance (N-of-M)** — sensitive actions (create multisig/baton, upgrade baton, hand-off, run managed-upgrade pipeline) can require **M-of-N approvals** from eligible commanders before Casals executes them. Policies are per section; pending requests appear on the Commanders page with sidebar badges and toasts in the UI.
+- **Frontend** — SvelteKit + Internet Identity (1-week delegation, no idle logout): Orchestra tree, Commanders, Orchestration consoles, sheet editor, cycles dashboard, WASM catalog, settings. Open the **☰ menu** (top-left) for app navigation.
+
+---
+
+## Governance & orchestration
+
+Casals separates **who may propose** an action from **how many must approve**:
+
+| Permission | Typical use |
+|---|---|
+| `orchestration.multisig.create` | Provision a multisig canister on a stand |
+| `orchestration.baton.create` | Provision a Baton canister |
+| `orchestration.baton.upgrade` | Upgrade a Baton WASM via Casals |
+| `orchestration.baton.hand_off` | Transfer canister control to a Baton |
+| `orchestration.managed_upgrade.run` | Execute an approved Baton pipeline action |
+
+Each section stores **approval policies** per action: `{ threshold, eligible[], required[] }`. When threshold > 1, Casals creates a **governance request**, collects approvals from eligible commanders, then executes automatically once quorum is met. Casals backend **controllers** are fully permissioned but still count toward quorum like any other eligible approver.
+
+The **Commanders** page lists principals, permission grants, pending approvals, and per-section policy editors. **Orchestration** routes expose Baton and multisig status for operators.
+
+See [AGENTS.md](AGENTS.md) for API details and local-development notes.
 
 ---
 
@@ -64,10 +87,22 @@ This disables on-chain balance sampling and autopilot on the conductor (`cycles_
 
 ```bash
 pip install ic-basilisk-toolkit
-make deploy          # build + local deploy
-make seed            # upload templates + authorize WASMs (locally)
-make deploy-ic       # build + mainnet deploy
-make seed-ic         # upload templates + authorize WASMs (mainnet)
+icp network start -e local          # terminal 1 — keep replica running
+
+make deploy                         # build + local deploy (backend, registry, frontend)
+icp canister top-up --amount 100t casals_backend -e local   # fund treasury for creates
+python3 scripts/seed.py -e local --deploy --arrangement demo   # templates + demo orchestra
+```
+
+Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
+
+After code changes: rebuild and redeploy (`make deploy`), then re-seed if needed.
+
+Mainnet:
+
+```bash
+make deploy-ic
+make seed-ic
 ```
 
 ---
@@ -121,15 +156,23 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | query | `get_tree` | full Section→Stand→Canister tree |
 | query | `get_sheet` / `list_pool` | live sheet + canister pool |
 | query | `get_cycle_history` | balance samples over time |
+| query | `list_permissions` | assignable commander permission keys |
+| query | `list_backend_controllers` | Casals canister IC controllers (for Commanders UI) |
+| query | `get_orchestration_policies` / `list_governance_requests` | N-of-M rules + pending approvals |
 | update | `create_section` / `create_stand` / `create_canister` | structure |
 | update | `deploy_sheet` | idempotently deploy the whole orchestra |
+| update | `set_commander` / `set_permissions` | commander principals + permission grants |
+| update | `set_orchestration_policies` | per-section M-of-N approval rules (controller) |
+| update | `approve_governance_request` / `reject_governance_request` | orchestration approval workflow |
 | query | `list_arrangements` / `get_arrangement` | environment config overlays |
 | update | `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | manage arrangements |
 | update | `apply_arrangement` | run an arrangement's post-deploy steps (accepts `offset`/`limit` to apply in batches; returns `next_offset`/`done`) |
-| update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
+| update | `upgrade_to` | stand/canister upgrade with snapshot rollback (governed when policy requires) |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |
 | update | `sync_controllers` | add monitor co-controller on managed canisters |
+
+Full endpoint list: [AGENTS.md](AGENTS.md).
 
 ---
 
