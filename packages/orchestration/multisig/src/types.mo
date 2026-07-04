@@ -14,6 +14,7 @@ module {
       add_controllers : [Principal];
       remove_controllers : [Principal];
     };
+    #SetCanisterControllers : { canister_id : Principal; controllers : [Principal] };
     #AddCommander : { baton_id : Principal; commander : Principal; capabilities : [Capability] };
     #RemoveCommander : { baton_id : Principal; commander : Principal };
     #SetPolicy : { baton_id : Principal; policy_json : Text };

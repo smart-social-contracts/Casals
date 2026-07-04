@@ -7,6 +7,7 @@ type BatonAction = variant {
     add_controllers : vec principal;
     remove_controllers : vec principal;
   };
+  SetCanisterControllers : record { canister_id : principal; controllers : vec principal };
   AddCommander : record { baton_id : principal; commander : principal; capabilities : vec Capability };
   RemoveCommander : record { baton_id : principal; commander : principal };
   SetPolicy : record { baton_id : principal; policy_json : text };
@@ -39,11 +40,12 @@ type Result = variant { ok; err : text };
 
 service : {
   configure : (vec principal, nat, nat) -> (Result);
-  propose : (BatonAction) -> (nat);
+  propose : (BatonAction, opt nat) -> (nat);
   approve : (nat) -> (Result);
   reject : (nat) -> (Result);
   get_proposal : (nat) -> (opt Proposal) query;
   list_proposals : () -> (vec Proposal) query;
   list_signers : () -> (record { signers : vec principal; threshold : nat }) query;
   list_events : () -> (vec AuditEvent) query;
+  default_proposal_expiry_secs : () -> (nat) query;
 };

@@ -21,19 +21,23 @@ make test-integration   # PocketIC / local replica (requires icp-cli)
 ## Authority model
 
 ```
-Multisig ──(IC controller + top commander)──► Baton ──(IC controller)──► managed canisters
-Orchestrator ──(commander: propose)──────────► Baton
+The **Multisig** is the sole IC controller of every orchestra canister (including all Batons). Casals operates Batons as a registered commander, not as an IC controller.
 ```
 
 The Baton never upgrades itself. The multisig upgrades Batons with a plain `install_code`.
 
 ## Casals demo
 
-The default demo sheet (`seed/sheets/demo.json`) includes an **Orchestration → Governance** stand with `multisig` and `baton` canisters. After building template artifacts:
+The default demo sheet (`seed/sheets/demo.json`) has:
+
+- **Orchestration → Governance** — shared `multisig` (top commander for all Batons)
+- **Demo → Motoko / Rust / Python** — each stand has its own `{stand}-baton` plus backend + frontend
+
+After building template artifacts:
 
 ```bash
 make build-orchestration   # writes seed/templates/orchestration-*.wasm.gz
 make deploy && make seed-demo
 ```
 
-`seed-demo` uploads the orchestration WASMs, deploys the demo sheet, configures multisig (1-of-1 with `LOCAL_CONDUCTOR`), and sets baton's `top_commander` to multisig at install time via `$canister:multisig`.
+`seed-demo` uploads the orchestration WASMs, deploys the demo sheet, configures multisig (1-of-1 with `LOCAL_CONDUCTOR`), and wires each stand's Baton (`top_commander = multisig` via `$canister:multisig` at install).

@@ -100,6 +100,7 @@ _actions = StableBTreeMap[str, str](memory_id=2, max_key_size=128, max_value_siz
 _managed = StableBTreeMap[str, str](memory_id=3, max_key_size=64, max_value_size=256)
 _config = StableBTreeMap[str, str](memory_id=4, max_key_size=64, max_value_size=4096)
 _wasm_store = StableBTreeMap[str, str](memory_id=5, max_key_size=200, max_value_size=1_000_000)
+_wasm_staging = StableBTreeMap[str, str](memory_id=6, max_key_size=200, max_value_size=1_000_000)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -476,9 +477,15 @@ def list_commanders() -> text:
 
 @update
 def add_managed_canister(canister_id: text) -> text:
-    """Top commander only — register a canister this Baton controls."""
+    """Register a canister this Baton controls.
+
+    Top commander or any principal with ``propose:managed_upgrade`` may register
+    targets (Casals registers on hand-off before proposing upgrades).
+    """
     try:
-        require_top_commander(_caller(), _config)
+        caller = _caller()
+        if not is_top_commander(caller, _config):
+            require_capability(caller, CAP_PROPOSE, _commanders, _config)
         cid = canister_id.strip()
         _managed.insert(cid, "1")
         return _ok(canister_id=cid)
@@ -539,6 +546,44 @@ def stage_wasm(args: text) -> text:
         wasm_hex = params["wasm_module_hex"]
         _store_staged_wasm(wasm_hash, wasm_hex)
         return _ok(wasm_hash=wasm_hash.lower())
+    except AuthError as e:
+        return _err(str(e))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def stage_wasm_chunk(args: text) -> text:
+    """Stage a WASM in multiple calls. JSON: {wasm_hash, chunk_index, total_chunks, chunk_hex}.
+
+    Each chunk is concatenated in order; the final chunk verifies the sha256
+    hash and stores the module (same limits as ``stage_wasm``).
+    """
+    try:
+        require_capability(_caller(), CAP_PROPOSE, _commanders, _config)
+        params = json.loads(args)
+        wasm_hash = params["wasm_hash"].strip().lower()
+        chunk_index = int(params["chunk_index"])
+        total_chunks = int(params["total_chunks"])
+        chunk_hex = (params.get("chunk_hex") or "").strip()
+        if total_chunks < 1 or chunk_index < 0 or chunk_index >= total_chunks:
+            return _err("invalid chunk_index / total_chunks")
+        if not chunk_hex:
+            return _err("missing chunk_hex")
+        key = f"{wasm_hash}:{chunk_index}"
+        _wasm_staging.insert(key, chunk_hex)
+        if chunk_index + 1 < total_chunks:
+            return _ok(wasm_hash=wasm_hash, chunk_index=chunk_index, staged=False)
+        parts = []
+        for i in range(total_chunks):
+            part = _wasm_staging.get(f"{wasm_hash}:{i}")
+            if not part:
+                return _err(f"missing staging chunk {i}")
+            parts.append(part)
+            _wasm_staging.remove(f"{wasm_hash}:{i}")
+        wasm_hex = "".join(parts)
+        _store_staged_wasm(wasm_hash, wasm_hex)
+        return _ok(wasm_hash=wasm_hash, staged=True)
     except AuthError as e:
         return _err(str(e))
     except Exception as e:

@@ -154,6 +154,31 @@ persistent actor {
           #ok;
         } catch (_) { #err("update_settings failed") };
       };
+      case (#SetCanisterControllers(a)) {
+        let ic = actor ("aaaaa-aa") : actor {
+          update_settings : shared {
+            canister_id : Principal;
+            settings : {
+              controllers : ?[Principal];
+              compute_allocation : ?Nat;
+              memory_allocation : ?Nat;
+              freezing_threshold : ?Nat;
+            };
+          } -> async ();
+        };
+        try {
+          await ic.update_settings({
+            canister_id = a.canister_id;
+            settings = {
+              controllers = ?a.controllers;
+              compute_allocation = null;
+              memory_allocation = null;
+              freezing_threshold = null;
+            };
+          });
+          #ok;
+        } catch (_) { #err("update_settings failed") };
+      };
       case (#AddCommander(a)) {
         let baton = actor (Principal.toText(a.baton_id)) : actor {
           add_commander : shared Text -> async Text;
@@ -206,10 +231,21 @@ persistent actor {
     };
   };
 
-  public shared ({ caller }) func propose(action : BatonAction) : async Nat {
+  public query func default_proposal_expiry_secs() : async Nat {
+    proposal_expiry_secs;
+  };
+
+  public shared ({ caller }) func propose(action : BatonAction, expiry_secs : ?Nat) : async Nat {
     assert (isSigner(caller));
     let id = next_proposal_id;
     next_proposal_id += 1;
+    let secs = switch (expiry_secs) {
+      case (?s) {
+        assert (s > 0);
+        s;
+      };
+      case null { proposal_expiry_secs };
+    };
     let p : Proposal = {
       id;
       action;
@@ -217,7 +253,7 @@ persistent actor {
       approvals = [caller];
       status = #pending;
       created_at = now();
-      expires_at = now() + proposal_expiry_secs * 1_000_000_000;
+      expires_at = now() + secs * 1_000_000_000;
     };
     log("proposed", Nat.toText(id));
     let executed = await tryExecute(p);
