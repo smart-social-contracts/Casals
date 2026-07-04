@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
-  import type { AuthorizedWasm, Stand, Tree } from '$lib/api';
-  import { createCanister } from '$lib/api';
+  import type { AuthorizedWasm, DeployEstimate, Stand, Tree } from '$lib/api';
+  import { createCanister, estimateDeploy, formatCycles } from '$lib/api';
   import { principal } from '$lib/auth';
   import {
     buildCreateCanisterPayload,
+    buildCreateEstimateSheet,
     familyOf,
     kindForWasmKey,
     multisigCommanderOptions,
@@ -15,6 +16,8 @@
   } from '$lib/createCanisterForm';
   import { wasmTypeTags } from '$lib/canisterTypes';
   import { createOrchestrationLogPoll } from '$lib/orchestrationLogPoll';
+  import Fiat from '$lib/Fiat.svelte';
+  import { loadFx } from '$lib/fx.svelte';
 
   interface Props {
     stand: Stand;
@@ -37,8 +40,30 @@
   let topCommanderCustom = $state('');
   let busy = $state(false);
   let error = $state('');
+  let estimate = $state<DeployEstimate | null>(null);
+  let estimateBusy = $state(false);
+  let estimateErr = $state('');
   let logLines = $state<string[]>([]);
   let logEl = $state<HTMLElement | null>(null);
+
+  const sectionName = $derived.by(() => {
+    if (!tree) return '';
+    for (const sec of tree.sections) {
+      if (sec.stands.some((s) => s.name === stand.name)) return sec.name;
+    }
+    return '';
+  });
+
+  const nameTaken = $derived(
+    !!name.trim() && stand.canisters.some((c) => c.name === name.trim()),
+  );
+
+  const estimateCostCycles = $derived.by(() => {
+    if (!estimate || estimate.unresolved_canisters > 0) return null;
+    if (estimate.create_cost_cycles > 0) return estimate.create_cost_cycles;
+    if (estimate.new_canisters === 0 && estimate.reused_from_pool > 0) return 0;
+    return estimate.per_canister_cycles;
+  });
 
   const logPoll = createOrchestrationLogPoll((lines) => {
     logLines = lines;
@@ -77,6 +102,46 @@
     if (wasmType !== 'baton') return;
     if (topCommander) return;
     if (commanderOptions.length) topCommander = commanderOptions[0].value;
+  });
+
+  $effect(() => {
+    const sec = sectionName;
+    const wk = wasmKey.trim();
+    const taken = nameTaken;
+    if (!sec || !wk || taken) {
+      estimate = null;
+      estimateErr = '';
+      estimateBusy = false;
+      return;
+    }
+    const canisterName = name.trim() || '__estimate__';
+    const sheet = buildCreateEstimateSheet(sec, stand, canisterName, wk);
+    let cancelled = false;
+    estimateBusy = true;
+    estimateErr = '';
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const est = await estimateDeploy(sheet);
+          if (!cancelled) estimate = est;
+        } catch (e: unknown) {
+          if (!cancelled) {
+            estimate = null;
+            estimateErr = e instanceof Error ? e.message : String(e);
+          }
+        } finally {
+          if (!cancelled) estimateBusy = false;
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  });
+
+  onMount(() => {
+    void loadFx();
   });
 
   onDestroy(() => logPoll.stop());
@@ -172,6 +237,38 @@
               <option value={opt.value}>{opt.label}</option>
             {/each}
           </select>
+        </div>
+      {/if}
+
+      {#if !busy}
+        <div class="rounded-lg border border-primary-200 bg-primary-50/50 px-3 py-2.5">
+          <p class="text-xs font-medium text-primary-600 mb-1">Estimated creation cost</p>
+          {#if nameTaken}
+            <p class="text-xs text-amber-700">A canister named <strong>{name.trim()}</strong> already exists in this stand.</p>
+          {:else if estimateBusy}
+            <p class="text-xs text-primary-400">Calculating…</p>
+          {:else if estimateErr}
+            <p class="text-xs text-red-600">{estimateErr}</p>
+          {:else if estimate?.unresolved_canisters}
+            <p class="text-xs text-red-600">Selected WASM is not authorized for this section.</p>
+          {:else if estimateCostCycles !== null}
+            <p class="text-sm font-mono font-semibold text-primary-900">
+              {formatCycles(estimateCostCycles)}
+              <Fiat value={estimateCostCycles} />
+            </p>
+            {#if estimate && estimate.new_canisters === 0 && estimate.reused_from_pool > 0}
+              <p class="text-xs text-primary-500 mt-1">
+                Reuses a free canister from the pool — no new canister creation cost.
+              </p>
+            {:else if estimate && estimate.new_canisters > 0}
+              <p class="text-xs text-primary-500 mt-1">
+                {estimate.new_canisters} new canister{estimate.new_canisters === 1 ? '' : 's'}
+                at {formatCycles(estimate.per_canister_cycles)} each.
+              </p>
+            {/if}
+          {:else if !sectionName}
+            <p class="text-xs text-primary-400">Orchestra layout loading…</p>
+          {/if}
         </div>
       {/if}
 
