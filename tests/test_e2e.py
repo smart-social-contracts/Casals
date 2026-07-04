@@ -238,6 +238,42 @@ def _find_canister_in_tree(tree, name):
     )
 
 
+class TestDeployEstimate:
+    """estimate_deploy must not report ready when WASMs are missing from the catalog."""
+
+    def test_not_ready_for_unknown_wasm(self, canister):
+        sheet = {
+            "name": "bad",
+            "sections": [{
+                "name": "s",
+                "stands": [{
+                    "name": "d",
+                    "canisters": [{"name": "x", "wasm_key": "nonexistent-wasm", "kind": "backend"}],
+                }],
+            }],
+        }
+        est = call_canister("estimate_deploy", json.dumps({"sheet": sheet}))
+        assert est["ok"] is True
+        assert est["unresolved_canisters"] == 1
+        assert est["ready"] is False
+
+    def test_ready_when_wasm_authorized(self, env):
+        sheet = {
+            "name": "est",
+            "sections": [{
+                "name": "orch",
+                "stands": [{
+                    "name": "od",
+                    "canisters": [{"name": "est-a", "wasm_key": "e2e-v1", "kind": "backend"}],
+                }],
+            }],
+        }
+        est = call_canister("estimate_deploy", json.dumps({"sheet": sheet}))
+        assert est["ok"] is True
+        assert est["unresolved_canisters"] == 0
+        assert est["ready"] is True
+
+
 class TestSheetDeploy:
     """Drive the sheet → deploy_sheet flow: idempotency, retire-to-pool, reuse.
 
