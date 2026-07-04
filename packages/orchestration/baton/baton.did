@@ -90,9 +90,13 @@ type Archives = record { archives : vec Archive };
 type SymbolResult = record { symbol : text };
 type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
+type AssetPermission = variant { Commit : ; Prepare : ; ManagePermissions :  };
+type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
+type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
 type InitArgs = record { top_commander : principal };
+type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
 type _HealthSvc = service { health_check : () -> (text) query };
-type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query };
+type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text) query };
 
 service : (InitArgs) -> {
   "set_commander_policy" : (text) -> (text);
@@ -108,6 +112,7 @@ service : (InitArgs) -> {
   "set_config" : (text) -> (text);
   "get_config" : () -> (text) query;
   "propose_managed_upgrade" : (text) -> (text);
+  "propose_asset_provision" : (text) -> (text);
   "submit_approval" : (text) -> (text);
   "submit_multisig_accelerant" : (text) -> (text);
   "reject_action" : (text) -> (text);

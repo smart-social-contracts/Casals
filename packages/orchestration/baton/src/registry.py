@@ -20,6 +20,10 @@ class FileRegistryService(Service):
     def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text:
         ...
 
+    @service_query
+    def list_files_icc(self, namespace: text) -> text:
+        ...
+
 
 def registry_canister_id(config_store) -> str:
     raw = config_store.get("file_registry_canister_id")
@@ -195,3 +199,40 @@ def registry_install_step_gen(
     except Exception:
         pass
     return "installed", {}
+
+
+def list_registry_files_gen(config_store, namespace: str) -> Async[list]:
+    """List files in a file-registry namespace: [{path, size, content_type, sha256}]."""
+    fr = FileRegistryService(Principal.from_str(registry_canister_id(config_store)))
+    res = yield fr.list_files_icc((namespace or "").strip())
+    parsed = json.loads(_unwrap_text(res))
+    if isinstance(parsed, dict) and parsed.get("error"):
+        raise ValueError(f"file-registry: {parsed['error']}")
+    return parsed if isinstance(parsed, list) else []
+
+
+def pull_registry_file_gen(config_store, namespace: str, path: str) -> Async[bytes]:
+    """Download a full file from the file registry into memory."""
+    namespace = (namespace or "").strip()
+    path = (path or "").strip().lstrip("/")
+    fr = FileRegistryService(Principal.from_str(registry_canister_id(config_store)))
+    size_res = yield fr.get_file_size_icc(namespace, path)
+    size_json = json.loads(_unwrap_text(size_res))
+    if size_json.get("error"):
+        raise ValueError(f"file-registry: {size_json['error']}")
+    total = int(size_json.get("size") or 0)
+    buf = b""
+    offset = 0
+    while offset < total:
+        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
+        chunk_json = json.loads(_unwrap_text(chunk_res))
+        if chunk_json.get("error"):
+            raise ValueError(f"file-registry: {chunk_json['error']}")
+        data = base64.b64decode(chunk_json.get("content_b64") or "")
+        if not data:
+            break
+        buf += data
+        offset += len(data)
+        if chunk_json.get("eof"):
+            break
+    return buf

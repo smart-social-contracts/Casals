@@ -58,12 +58,15 @@ from commanders import (
 from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
 from orchestration_bridge import (
+    _baton_in_stand,
+    _configure_baton_gen,
     _execute_baton_action_gen,
     _hand_to_baton_gen,
     _list_baton_canisters,
     _multisig_configure_gen,
     _orchestration_status_all_gen,
     _orchestration_status_gen,
+    _prepare_asset_provision_gen,
     _prepare_managed_upgrade_gen,
 )
 from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
@@ -2632,6 +2635,45 @@ def orchestration_hand_to_baton(args: text) -> Async[text]:
 
 
 @update
+def orchestration_configure_baton(args: text) -> Async[text]:
+    """Register commanders and the upgrade approval policy on a stand's Baton.
+
+    Args (JSON): {"stand": "<stand>" | "baton": "<canister name>",
+                  "commanders": [<principal> | {"principal", "capabilities"}...],
+                  "approval_policy": {"threshold", "eligible", "required"}?}
+
+    Casals must be the Baton's top commander. Authorized by the stand/section
+    commander holding orchestration.baton.hand_off (or a Casals controller).
+    """
+    try:
+        params = json.loads(args)
+        list(Canister.instances())
+        baton_name = (params.get("baton") or "").strip()
+        if baton_name:
+            baton_st = Canister[baton_name]
+            if baton_st is None or not (baton_st.canister_id or "").strip():
+                return _err(f"unknown baton canister '{baton_name}'")
+        else:
+            stand_name = (params.get("stand") or "").strip()
+            if not stand_name:
+                return _err("expected 'baton' or 'stand'")
+            list(Stand.instances())
+            dk = Stand[stand_name]
+            if dk is None:
+                return _err(f"unknown stand '{stand_name}'")
+            baton_st = _baton_in_stand(dk)
+        _require_commander(baton_st.stand, ACTION_ORCHESTRATION_BATON_HAND_OFF)
+        result = yield from _configure_baton_gen(
+            baton_st,
+            commanders=params.get("commanders") or [],
+            approval_policy=params.get("approval_policy"),
+        )
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
 def orchestration_prepare_managed_upgrade(args: text) -> Async[text]:
     """Stage WASM, propose a Baton managed upgrade, and submit approval.
 
@@ -2650,6 +2692,36 @@ def orchestration_prepare_managed_upgrade(args: text) -> Async[text]:
         _require_commander(st.stand, "canister.deploy")
         baton_name = (params.get("baton") or "").strip()
         result = yield from _prepare_managed_upgrade_gen(target, wasm_key, baton_name)
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_prepare_asset_provision(args: text) -> Async[text]:
+    """Propose a Baton managed_asset_provision (frontend bundle re-provision)
+    and submit Casals' approval. Under a 2-of-2 policy the realm backend must
+    still approve before the Baton executes.
+
+    Args (JSON): {"target": "<frontend canister>", "wasm_key"?: "<frontend template>",
+                  "bundle_namespace"?: "<registry namespace>", "baton"?: "<name>"}
+    """
+    try:
+        params = json.loads(args)
+        target = (params.get("target") or params.get("canister") or "").strip()
+        if not target:
+            return _err("expected 'target' canister name")
+        list(Canister.instances())
+        st = Canister[target]
+        if st is None:
+            return _err(f"unknown canister '{target}'")
+        _require_commander(st.stand, "canister.deploy")
+        result = yield from _prepare_asset_provision_gen(
+            target,
+            wasm_key=(params.get("wasm_key") or "").strip(),
+            bundle_namespace=(params.get("bundle_namespace") or "").strip(),
+            baton_name=(params.get("baton") or "").strip(),
+        )
         return _ok(**result)
     except Exception as e:
         return _err(str(e))

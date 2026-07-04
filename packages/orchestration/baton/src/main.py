@@ -48,6 +48,8 @@ from config import (
     DEFAULT_INSTALL_CYCLES_BUFFER,
 )
 from models import (
+    ACTION_TYPE_ASSET_PROVISION,
+    ACTION_TYPE_MANAGED_UPGRADE,
     ALL_CAPABILITIES,
     CAP_MANAGE_COMMANDERS,
     CAP_MANAGE_MANAGED,
@@ -57,10 +59,12 @@ from models import (
     CAP_SUBMIT_APPROVAL,
     STATUS_APPROVED,
     STATUS_COMPLETE,
+    STATUS_FAILED_PROVISION,
     STATUS_FAILED_SNAPSHOT,
     STATUS_FAILED_STOP,
     STATUS_FINALIZING,
     STATUS_PENDING,
+    STATUS_PROVISIONING,
     STATUS_PRE_FLIGHT,
     STATUS_REJECTED,
     STATUS_REJECTED_PREFLIGHT,
@@ -83,6 +87,10 @@ from policy import (
     parse_policy,
     policy_allows_add,
     validate_policy,
+)
+from assets import (
+    asset_provision_step_gen,
+    validate_asset_payload,
 )
 from pipeline import (
     accelerant_eligible,
@@ -202,6 +210,10 @@ def _execute_action_gen(action_id: str) -> Async[text]:
     if is_terminal(record.get("status", "")):
         return _ok(action_id=action_id, status=record["status"])
 
+    action_type = record.get("action_type") or ACTION_TYPE_MANAGED_UPGRADE
+    if action_type == ACTION_TYPE_ASSET_PROVISION:
+        return (yield from _execute_asset_provision_gen(action_id, record))
+
     status = record.get("status", "")
     if status == STATUS_APPROVED:
         status = STATUS_PRE_FLIGHT
@@ -316,6 +328,41 @@ def _execute_action_gen(action_id: str) -> Async[text]:
     except Exception as exc:
         _log.error(f"execute_action error: {exc}")
         return _err(f"{exc} :: {traceback.format_exc()[-400:]}")
+
+
+def _execute_asset_provision_gen(action_id: str, record: dict) -> Async[text]:
+    """Asset-provision pipeline: APPROVED → PROVISIONING (batched, self-pumping) → COMPLETE."""
+    status = record.get("status", "")
+    if status == STATUS_APPROVED:
+        record["status"] = STATUS_PROVISIONING
+        _save_action(record)
+        status = STATUS_PROVISIONING
+    if status != STATUS_PROVISIONING:
+        return _err(f"unexpected status: {status}")
+
+    try:
+        result, detail = yield from asset_provision_step_gen(_config, record)
+    except Exception as exc:
+        _log.error(f"asset provision error: {exc}")
+        record["status"] = STATUS_FAILED_PROVISION
+        _save_action(record)
+        return _err(f"{exc} :: {traceback.format_exc()[-400:]}")
+
+    if result == "done":
+        record["status"] = STATUS_COMPLETE
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_COMPLETE)
+
+    _save_action(record)
+    # Self-pump the remaining batches so callers need not poll execute_action.
+    _arm_resume_timer(action_id, 0)
+    state = record.get("provision") or {}
+    return _ok(
+        action_id=action_id,
+        status=STATUS_PROVISIONING,
+        target_index=int(state.get("target_index") or 0),
+        file_index=int(state.get("file_index") or 0),
+    )
 
 
 def _scan_and_resume() -> None:
@@ -563,6 +610,43 @@ def propose_managed_upgrade(args: text) -> text:
         )
         _save_action(record)
         return _ok(action_id=action_id, status=STATUS_PENDING)
+    except AuthError as e:
+        return _err(str(e))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def propose_asset_provision(args: text) -> text:
+    """Requires propose:managed_upgrade. JSON: {affected_canisters, payload}.
+
+    payload.targets: [{canister_id, bundle_namespace, extra_files?, grant_commit?}].
+    Approval flows through the same policy as managed upgrades (per-payload
+    approval_policy override or the configured upgrade_approval_policy).
+    """
+    try:
+        caller = _caller()
+        require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        if _active_action_id():
+            return _err("another action is in progress")
+
+        params = json.loads(args)
+        affected = [c.strip() for c in params["affected_canisters"]]
+        payload = params["payload"]
+        validate_targets_in_managed(affected, _managed)
+        validate_asset_payload(payload, affected)
+
+        action_id = params.get("action_id") or str(uuid.uuid4())
+        record = new_action_record(
+            action_id=action_id,
+            proposed_by=caller,
+            proposed_at=_now(),
+            affected_canisters=affected,
+            payload=payload,
+            action_type=ACTION_TYPE_ASSET_PROVISION,
+        )
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_PENDING, action_type=ACTION_TYPE_ASSET_PROVISION)
     except AuthError as e:
         return _err(str(e))
     except Exception as e:

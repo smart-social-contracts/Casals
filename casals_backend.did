@@ -162,7 +162,9 @@ service : {
   "orchestration_status" : (text) -> (text) query;
   "orchestration_refresh" : (text) -> (text);
   "orchestration_hand_to_baton" : (text) -> (text);
+  "orchestration_configure_baton" : (text) -> (text);
   "orchestration_prepare_managed_upgrade" : (text) -> (text);
+  "orchestration_prepare_asset_provision" : (text) -> (text);
   "orchestration_execute_action" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;

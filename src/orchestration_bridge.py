@@ -5,6 +5,7 @@ inter-canister calls from this canister satisfy Baton auth. Hand-off adds Baton
 as a co-controller of the target and registers it in Baton's managed set.
 """
 
+import base64
 import json
 import uuid
 
@@ -17,16 +18,27 @@ from helpers import unwrap_call_result
 from lifecycle import (
     _fetch_canister_controllers,
     _add_controllers,
+    _backend_cid_for_stand,
     _merge_controllers,
     _resolve_authorized_wasm,
     _governance_multisig_id,
     _persist_ic_controllers,
+    _settings,
 )
 from models import Canister
 from util import to_hex as _to_hex
 
 # Baton template key in the authorized WASM catalog / sheet.
 BATON_WASM_KEY = "orchestration-baton"
+
+# Default capability grant for a Baton commander added via
+# orchestration_configure_baton (propose + approve + drive the pipeline).
+BATON_COMMANDER_DEFAULT_CAPS = [
+    "propose:managed_upgrade",
+    "submit_approval:managed_upgrade",
+    "execute:managed_upgrade",
+    "read_cycle_balance",
+]
 
 
 def _parse_baton_json_reply(raw) -> object:
@@ -98,6 +110,14 @@ def _baton_for_target(target_name: str):
         if _is_baton_canister(c) and c.canister_id:
             return c
     raise Exception(f"no Baton canister in stand '{stand.name}' for target '{target_name}'")
+
+
+def _baton_in_stand(stand) -> "Canister":
+    """Return the (single) Baton canister registered in ``stand``."""
+    for c in getattr(stand, "canisters", None) or []:
+        if _is_baton_canister(c) and c.canister_id:
+            return c
+    raise Exception(f"no Baton canister in stand '{getattr(stand, 'name', '?')}'")
 
 
 def _resolve_baton_name(baton_name: str = "", target_name: str = "") -> str:
@@ -276,7 +296,12 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
 
     current = yield from _fetch_canister_controllers(target_cid)
     if baton_id not in current:
-        if multisig_id:
+        # Add the Baton as a co-controller, preserving the existing controller
+        # set (multisig / Casals / deploy identities). Tightening to sole-baton
+        # control is a separate, explicit multisig action.
+        if current:
+            desired = _merge_controllers(current, [baton_id])
+        elif multisig_id:
             desired = _merge_controllers([multisig_id], [baton_id])
         else:
             desired = _merge_controllers([ic.id().to_str()], [baton_id])
@@ -297,6 +322,53 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
         "baton": baton_name,
         "baton_id": baton_id,
         "controllers": controllers,
+    }
+
+
+def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
+    """Generator: register commanders and the upgrade approval policy on a Baton.
+
+    Casals must be the Baton's top commander (i.e. the Baton was created with
+    ``install_arg.top_commander`` pointing at this canister) — ``add_commander``
+    and ``set_config`` are top-commander-only on the Baton.
+
+    ``commanders`` entries are either bare principals (granted
+    BATON_COMMANDER_DEFAULT_CAPS) or {"principal", "capabilities"} dicts.
+    """
+    baton_id = baton_st.canister_id
+    added = []
+    for entry in commanders or []:
+        if isinstance(entry, str):
+            principal, caps = entry.strip(), list(BATON_COMMANDER_DEFAULT_CAPS)
+        else:
+            principal = (entry.get("principal") or "").strip()
+            caps = entry.get("capabilities") or list(BATON_COMMANDER_DEFAULT_CAPS)
+        if not principal:
+            continue
+        reply = yield from _call_text_method(baton_id, "add_commander", json.dumps({
+            "principal": principal, "capabilities": caps,
+        }))
+        _parse_baton_reply(reply)
+        added.append(principal)
+
+    policy_set = None
+    if approval_policy is not None:
+        reply = yield from _call_text_method(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": approval_policy,
+        }))
+        _parse_baton_reply(reply)
+        policy_set = approval_policy
+
+    _append_event("baton_configured", baton_id, {
+        "baton": baton_st.name,
+        "commanders": added,
+        "approval_policy": policy_set,
+    })
+    return {
+        "baton": baton_st.name,
+        "baton_id": baton_id,
+        "commanders": added,
+        "approval_policy": policy_set,
     }
 
 
@@ -371,6 +443,96 @@ def _prepare_managed_upgrade_gen(target_name: str, wasm_key: str, baton_name="")
     }
 
 
+def _prepare_asset_provision_gen(target_name: str, wasm_key: str = "",
+                                 bundle_namespace: str = "", baton_name=""):
+    """Generator: propose a Baton managed_asset_provision for a frontend
+    canister (registry-backed bundle) and auto-submit Casals' approval.
+
+    The bundle namespace comes from ``bundle_namespace`` or, when a
+    ``wasm_key`` is given, from that frontend template's catalog entry.
+    Requires the stand's Baton to run orchestration-baton@1.3.0+.
+    """
+    target_name = (target_name or "").strip()
+    baton_name = _resolve_baton_name(baton_name, target_name)
+    baton_st = _named_canister(baton_name)
+    target_st = _named_canister(target_name)
+    if baton_st is None:
+        raise Exception(f"unknown baton canister '{baton_name}'")
+    if target_st is None:
+        raise Exception(f"unknown target canister '{target_name}'")
+
+    baton_id = baton_st.canister_id
+    target_cid = target_st.canister_id
+    stand = target_st.stand
+
+    namespace = (bundle_namespace or "").strip()
+    if not namespace:
+        if not (wasm_key or "").strip():
+            raise Exception("expected 'bundle_namespace' or 'wasm_key'")
+        w = _resolve_authorized_wasm(wasm_key.strip(), stand.section if stand else None)
+        namespace = (getattr(w, "bundle_namespace", "") or "").strip()
+        if not namespace:
+            raise Exception(f"wasm '{wasm_key}' has no bundle_namespace")
+
+    managed_raw = yield from _baton_query(baton_id, "list_managed_canisters")
+    managed = _parse_baton_json_reply(managed_raw) or []
+    if target_cid not in managed:
+        yield from _hand_to_baton_gen(target_name, baton_name)
+
+    # Per-deployment /canister_ids.js wiring this SPA frontend to its paired
+    # backend (mirrors lifecycle._upload_bundle's final-batch write).
+    extra_files = []
+    grant_commit = []
+    backend_cid = _backend_cid_for_stand(target_cid, stand)
+    if backend_cid:
+        grant_commit.append(backend_cid)
+        ids = ('{realm_backend:"' + backend_cid
+               + '",internet_identity:"https://identity.ic0.app"')
+        fr = (_settings().file_registry_canister_id or "").strip()
+        if fr:
+            ids += ',file_registry:"' + fr + '"'
+        ids += "}"
+        js = "globalThis.__CANISTER_IDS=" + ids + ";"
+        extra_files.append({
+            "key": "/canister_ids.js",
+            "content_type": "application/javascript",
+            "content_b64": base64.b64encode(js.encode()).decode(),
+        })
+
+    action_id = f"assets-{target_name}-{uuid.uuid4().hex[:8]}"
+    propose_payload = json.dumps({
+        "action_id": action_id,
+        "affected_canisters": [target_cid],
+        "payload": {
+            "targets": [{
+                "canister_id": target_cid,
+                "bundle_namespace": namespace,
+                "extra_files": extra_files,
+                "grant_commit": grant_commit,
+            }],
+        },
+    })
+    reply = yield from _call_text_method(baton_id, "propose_asset_provision", propose_payload)
+    _parse_baton_reply(reply)
+
+    reply = yield from _call_text_method(baton_id, "submit_approval", action_id)
+    approve = _parse_baton_reply(reply)
+
+    _append_event("baton_asset_provision_prepared", target_cid, {
+        "action_id": action_id,
+        "bundle_namespace": namespace,
+        "baton": baton_id,
+    })
+    return {
+        "action_id": action_id,
+        "target": target_name,
+        "baton": baton_name,
+        "canister_id": target_cid,
+        "bundle_namespace": namespace,
+        "status": approve.get("status", "PENDING"),
+    }
+
+
 def _execute_baton_action_gen(action_id: str, baton_name=""):
     """Generator: run one Baton pipeline phase for ``action_id``."""
     baton_name = _resolve_baton_name(baton_name)
@@ -381,7 +543,7 @@ def _execute_baton_action_gen(action_id: str, baton_name=""):
     result = _parse_baton_reply(reply)
     terminal_statuses = (
         "COMPLETE", "REJECTED", "REJECTED_PREFLIGHT", "FAILED_STOP",
-        "FAILED_SNAPSHOT", "REVERTED_PARTIAL_FAILURE",
+        "FAILED_SNAPSHOT", "REVERTED_PARTIAL_FAILURE", "FAILED_PROVISION",
     )
     result["done"] = result.get("status") in terminal_statuses
     if result.get("status") == "COMPLETE":

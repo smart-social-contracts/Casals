@@ -63,6 +63,15 @@
     },
     {
       "key": "orchestration-baton",
+      "version": "1.3.0",
+      "file": "orchestration-baton@1.3.0.wasm.gz",
+      "path": "orchestration-baton@1.3.0.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.3.0 — managed_asset_provision action: registry-backed frontend bundle provisioning under the same N-of-M approval."
+    },
+    {
+      "key": "orchestration-baton",
       "version": "1.2.9",
       "file": "orchestration-baton@1.2.9.wasm.gz",
       "path": "orchestration-baton@1.2.9.wasm",

@@ -20,6 +20,9 @@ STATUS_VERIFYING = "VERIFYING"
 STATUS_REVERTED_FAILED_VERIFY = "REVERTED_FAILED_VERIFY"
 STATUS_FINALIZING = "FINALIZING"
 STATUS_COMPLETE = "COMPLETE"
+# Asset-provision pipeline statuses.
+STATUS_PROVISIONING = "PROVISIONING"
+STATUS_FAILED_PROVISION = "FAILED_PROVISION"
 
 TERMINAL_STATUSES = frozenset({
     STATUS_REJECTED,
@@ -29,6 +32,7 @@ TERMINAL_STATUSES = frozenset({
     STATUS_REVERTED_PARTIAL_FAILURE,
     STATUS_REVERTED_FAILED_VERIFY,
     STATUS_COMPLETE,
+    STATUS_FAILED_PROVISION,
 })
 
 NON_TERMINAL_STATUSES = frozenset({
@@ -41,9 +45,11 @@ NON_TERMINAL_STATUSES = frozenset({
     STATUS_STARTING,
     STATUS_VERIFYING,
     STATUS_FINALIZING,
+    STATUS_PROVISIONING,
 })
 
 ACTION_TYPE_MANAGED_UPGRADE = "managed_upgrade"
+ACTION_TYPE_ASSET_PROVISION = "managed_asset_provision"
 
 # Capability strings (stored on Commander records).
 CAP_PROPOSE = "propose:managed_upgrade"
@@ -78,10 +84,11 @@ def new_action_record(
     proposed_at: int,
     affected_canisters: list[str],
     payload: dict[str, Any],
+    action_type: str = ACTION_TYPE_MANAGED_UPGRADE,
 ) -> dict[str, Any]:
     return {
         "action_id": action_id,
-        "action_type": ACTION_TYPE_MANAGED_UPGRADE,
+        "action_type": action_type,
         "proposed_by": proposed_by,
         "proposed_at": proposed_at,
         "affected_canisters": list(affected_canisters),

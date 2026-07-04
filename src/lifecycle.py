@@ -114,11 +114,16 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
     Supported references:
       - ``{"top_commander": "$canister:<name>"}`` — Baton init arg pointing at
         another registered canister (must already be deployed).
+      - ``{"top_commander": "$self"}`` — Baton init arg pointing at this Casals
+        backend, so Casals can administer the Baton (add commanders, set the
+        approval policy) on behalf of its governance layer.
     """
     if not install_arg_spec:
         return _install_arg_for(w)
     top_ref = (install_arg_spec.get("top_commander") or "").strip()
-    if top_ref.startswith("$canister:"):
+    if top_ref == "$self":
+        pid = ic.id().to_str()
+    elif top_ref.startswith("$canister:"):
         cname = top_ref.split(":", 1)[1].strip()
         list(Canister.instances())
         c = Canister[cname]
