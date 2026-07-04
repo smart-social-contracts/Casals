@@ -12,6 +12,7 @@
     type SubnetGeo,
   } from '$lib/subnetGeo';
   import { toasts } from '$lib/stores/toast';
+  import { copyText } from '$lib/clipboard';
 
   interface Props {
     whitelist: string[];
@@ -119,15 +120,14 @@
   });
 
   async function copySubnetId(id: string) {
-    try {
-      await navigator.clipboard.writeText(id);
+    if (await copyText(id)) {
       copiedSubnetId = id;
       toasts.success('Subnet ID copied');
       setTimeout(() => {
         if (copiedSubnetId === id) copiedSubnetId = null;
       }, 1500);
-    } catch {
-      toasts.error('Could not copy');
+    } else {
+      toasts.error('Copy failed');
     }
   }
 

@@ -6,6 +6,7 @@
   import { toasts } from '$lib/stores/toast';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
+  import { copyText } from '$lib/clipboard';
 
   let text = $state('');
   let loading = $state(true);
@@ -43,12 +44,7 @@
   });
 
   async function copy(s: string) {
-    try {
-      await navigator.clipboard.writeText(s);
-      toasts.info('Copied');
-    } catch {
-      /* ignore */
-    }
+    if (await copyText(s)) toasts.info('Copied');
   }
 
   // Parse the editor text into a Sheet, surfacing JSON errors inline.
@@ -194,7 +190,7 @@
       {#if $isAuthenticated}
         <button class="btn-secondary btn-sm" onclick={reset} disabled={busy}>Reset to default</button>
         <button class="btn-secondary btn-sm" onclick={save} disabled={busy || !parsed.sheet}>Save</button>
-        <button class="btn-primary btn-sm" onclick={deploy} disabled={busy || !parsed.sheet}>
+        <button class="btn-primary btn-sm" onclick={deploy} disabled={busy || !parsed.sheet || (estimate?.unresolved_canisters ?? 0) > 0}>
           {#if busy}
             <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
@@ -259,6 +255,14 @@
           <p class="text-xs text-red-600">⚠ {estimateErr}</p>
         {:else if !estimate}
           <div class="skeleton h-12 w-full"></div>
+        {:else if estimate.unresolved_canisters > 0}
+          <div class="rounded-lg bg-red-50 border border-red-200 px-3 py-2.5">
+            <p class="text-sm font-semibold text-red-700">Cannot deploy — unknown WASM</p>
+            <p class="text-xs text-red-600 mt-0.5">
+              {estimate.unresolved_canisters} canister(s) reference WASMs that are not authorized.
+              Seed the template catalog first (e.g. <code class="font-mono">make seed</code>).
+            </p>
+          </div>
         {:else if estimate.ready}
           <div class="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2.5">
             <p class="text-sm font-semibold text-emerald-700">✓ Ready to deploy</p>

@@ -8,13 +8,15 @@
   import { canManageSubnetWhitelist } from '$lib/subnetAccess';
   import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
   import { toasts } from '$lib/stores/toast';
+  import { copyText } from '$lib/clipboard';
 
   let copied = $state(false);
   async function copyPrincipal() {
     if (!$principal) return;
-    await navigator.clipboard.writeText($principal);
-    copied = true;
-    setTimeout(() => { copied = false; }, 1500);
+    if (await copyText($principal)) {
+      copied = true;
+      setTimeout(() => { copied = false; }, 1500);
+    }
   }
 
   const FALLBACK_CURRENCIES = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY', 'CAD', 'AUD'];

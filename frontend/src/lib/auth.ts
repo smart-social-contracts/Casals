@@ -11,7 +11,16 @@ export const principal = writable('');
 export const isController = writable<boolean | null>(null);
 /** null while checking; true/false once resolved for the current session. */
 export const isCommander = writable<boolean | null>(null);
-export const authError = writable<string | null>(null);
+export interface AccessDeniedInfo {
+  message: string;
+  principal: string;
+}
+
+export const accessDenied = writable<AccessDeniedInfo | null>(null);
+
+export function dismissAccessDenied() {
+  accessDenied.set(null);
+}
 
 let _authClient: AuthClient | null = null;
 
@@ -48,13 +57,16 @@ async function _verifyLoginAccess(id: Identity, backendCanisterId?: string): Pro
   isController.set(controller);
 
   if (!commander && !controller) {
-    authError.set('Access denied. Log in with a principal listed on the Commanders page.');
+    accessDenied.set({
+      message: 'Log in with a principal listed on the Commanders page.',
+      principal: caller,
+    });
     if (_authClient) await _authClient.logout();
     _clearSession();
     return false;
   }
 
-  authError.set(null);
+  accessDenied.set(null);
   _applyIdentity(id);
   return true;
 }
@@ -78,7 +90,7 @@ export async function initAuth(backendCanisterId?: string) {
 }
 
 export async function login(backendCanisterId?: string): Promise<boolean> {
-  authError.set(null);
+  accessDenied.set(null);
   if (!_authClient) _authClient = await AuthClient.create();
   return new Promise<boolean>((resolve, reject) => {
     _authClient!.login({
@@ -97,5 +109,25 @@ export async function logout() {
   if (!_authClient) return;
   await _authClient.logout();
   _clearSession();
-  authError.set(null);
+  accessDenied.set(null);
+}
+
+/** Internet Identity login without Casals commander/controller gate (Baton / Multisig consoles). */
+export async function loginInternetIdentity(): Promise<boolean> {
+  accessDenied.set(null);
+  if (!_authClient) _authClient = await AuthClient.create();
+  return new Promise<boolean>((resolve, reject) => {
+    _authClient!.login({
+      identityProvider: II_URL,
+      maxTimeToLive: BigInt(7 * 24 * 60 * 60 * 1_000_000_000),
+      onSuccess: async () => {
+        _applyIdentity(_authClient!.getIdentity());
+        isCommander.set(null);
+        isController.set(null);
+        accessDenied.set(null);
+        resolve(true);
+      },
+      onError: reject,
+    });
+  });
 }

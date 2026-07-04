@@ -3,6 +3,7 @@ import { idlFactory } from './declarations';
 import { get } from 'svelte/store';
 import { identity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
+import { governanceConsoleUrl } from './orchestrationNav';
 
 // ---------------------------------------------------------------------------
 // Types (mirror the backend JSON payloads)
@@ -14,12 +15,15 @@ export interface Canister {
   name: string;
   canister_id: string;
   kind: CanisterKind;
+  wasm_type?: string;
+  tags?: string[];
   url: string;
   wasm_key: string;
   wasm_hash: string;
   status: string;
   snapshot_id: string;
   subnet?: string;
+  controllers?: string[];
 }
 
 export interface Stand {
@@ -118,6 +122,7 @@ export interface AuthorizedWasm {
   registry_path: string;
   wasm_hash: string;
   kind: string;
+  wasm_type?: string;
   description: string;
   asset_namespace?: string;
   asset_path?: string;
@@ -1219,6 +1224,18 @@ export async function syncControllers(opts: { dry_run?: boolean } = {}): Promise
   };
 }
 
+export async function refreshControllersCache(): Promise<{
+  updated?: { name: string; canister_id: string; controllers: string[] }[];
+  failed?: { name: string; canister_id?: string; error: string }[];
+}> {
+  return _parseUpdate(
+    await (await _actor(true)).refresh_controllers_cache('{}'),
+  ) as {
+    updated?: { name: string; canister_id: string; controllers: string[] }[];
+    failed?: { name: string; canister_id?: string; error: string }[];
+  };
+}
+
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
   const res = _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
   _metadataCache = null;
@@ -1321,6 +1338,7 @@ export async function addAuthorizedWasm(args: {
   registry_path: string;
   wasm_hash: string;
   kind?: string;
+  wasm_type?: string;
   description?: string;
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).add_authorized_wasm(JSON.stringify(args)));
@@ -1337,8 +1355,16 @@ export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
 export async function createCanister(args: {
   stand: string;
   name: string;
-  kind: CanisterKind;
   wasm_key: string;
+  kind?: CanisterKind;
+  install_arg?: Record<string, string>;
+  init?: {
+    multisig?: {
+      signers: string[];
+      threshold: number;
+      expiry_secs: number;
+    };
+  };
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).create_canister(JSON.stringify(args)));
 }
@@ -1415,6 +1441,119 @@ export async function canisterBrowse(
 // Run Python inside the canister (controller-gated). Requires auth.
 export async function canisterExec(canister: string, code: string): Promise<ExecResult> {
   return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify({ canister, code }))) as ExecResult;
+}
+
+// ---------------------------------------------------------------------------
+// Baton managed upgrade (orchestration bridge)
+// ---------------------------------------------------------------------------
+
+export interface OrchestrationCanisterRef {
+  name: string;
+  canister_id: string;
+}
+
+export interface BatonAction {
+  action_id: string;
+  status?: string;
+  proposed_by?: string;
+  affected_canisters?: string[];
+  payload?: unknown;
+}
+
+export interface BatonStatus {
+  name: string;
+  canister_id: string;
+  stand?: string;
+  section?: string;
+  config?: Record<string, unknown>;
+  commanders?: Array<{ principal: string; capabilities?: string[] }>;
+  managed_canisters?: string[];
+  actions?: BatonAction[];
+  casals_is_commander?: boolean;
+}
+
+export interface OrchestrationStatus extends UpdateResult {
+  baton?: OrchestrationCanisterRef;
+  batons?: BatonStatus[];
+  multisig?: OrchestrationCanisterRef;
+  config?: Record<string, unknown>;
+  commanders?: Array<{ principal: string; capabilities?: string[] }>;
+  managed_canisters?: string[];
+  actions?: BatonAction[];
+  casals_is_commander?: boolean;
+  note?: string;
+}
+
+export interface PrepareManagedUpgradeResult extends UpdateResult {
+  action_id?: string;
+  target?: string;
+  baton?: string;
+  canister_id?: string;
+  wasm_key?: string;
+  pre_hash?: string;
+  post_hash?: string;
+  status?: string;
+}
+
+export interface ExecuteBatonActionResult extends UpdateResult {
+  action_id?: string;
+  status?: string;
+  done?: boolean;
+  upgrade_index?: number;
+}
+
+export async function orchestrationStatus(): Promise<OrchestrationStatus> {
+  return _parseQuery<OrchestrationStatus>(await (await _actor()).orchestration_status('{}'));
+}
+
+export async function orchestrationRefresh(): Promise<OrchestrationStatus> {
+  return _parseUpdate(await (await _actor()).orchestration_refresh('{}')) as OrchestrationStatus;
+}
+
+export async function orchestrationHandToBaton(target: string, baton?: string): Promise<UpdateResult> {
+  const payload: Record<string, string> = { target };
+  if (baton) payload.baton = baton;
+  return _parseUpdate(await (await _actor(true)).orchestration_hand_to_baton(JSON.stringify(payload)));
+}
+
+export async function orchestrationPrepareManagedUpgrade(
+  target: string,
+  wasmKey: string,
+  baton?: string,
+): Promise<PrepareManagedUpgradeResult> {
+  const payload: Record<string, string> = { target, wasm_key: wasmKey };
+  if (baton) payload.baton = baton;
+  return _parseUpdate(
+    await (await _actor(true)).orchestration_prepare_managed_upgrade(JSON.stringify(payload)),
+  ) as PrepareManagedUpgradeResult;
+}
+
+export async function orchestrationExecuteAction(
+  actionId: string,
+  baton: string,
+): Promise<ExecuteBatonActionResult> {
+  return _parseUpdate(
+    await (await _actor(true)).orchestration_execute_action(
+      JSON.stringify({ action_id: actionId, baton }),
+    ),
+  ) as ExecuteBatonActionResult;
+}
+
+/** Run execute_action until the pipeline completes or errors. */
+export async function orchestrationRunUpgradePipeline(
+  actionId: string,
+  baton: string,
+  onStep?: (result: ExecuteBatonActionResult) => void,
+  maxSteps = 30,
+): Promise<ExecuteBatonActionResult> {
+  let last: ExecuteBatonActionResult = { ok: true };
+  for (let i = 0; i < maxSteps; i++) {
+    last = await orchestrationExecuteAction(actionId, baton);
+    onStep?.(last);
+    if (last.done || last.ok === false) break;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return last;
 }
 
 // ---------------------------------------------------------------------------
@@ -1631,7 +1770,16 @@ export function canisterUrl(canisterId: string): string {
   return `https://${canisterId}.icp0.io`;
 }
 
-export function canisterLink(canister: { kind: CanisterKind; url: string; canister_id: string }): string {
+export function canisterLink(canister: {
+  kind: CanisterKind;
+  url: string;
+  canister_id: string;
+  wasm_key?: string;
+  name?: string;
+}): string {
+  const gov = governanceConsoleUrl(canister);
+  if (gov) return gov;
+
   // On local replica the backend bakes mainnet icp0.io URLs into every canister
   // view (it has no knowledge of the frontend's host). Override with the
   // correct local URL whenever we detect we are running locally.

@@ -7,7 +7,6 @@
     createStand,
     registerCanister,
     setCommander,
-    createCanister,
     upgradeTo,
     createSnapshot,
     revertSnapshot,
@@ -19,6 +18,7 @@
     getCanisterDeployment,
     getCyclesCached,
     listAuthorizedWasms,
+    refreshControllersCache,
     canisterBrowse,
     canisterExec,
     shortHash,
@@ -43,10 +43,17 @@
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import { copyText } from '$lib/clipboard';
   import FormModal from '$lib/components/FormModal.svelte';
+  import CreateCanisterModal from '$lib/components/CreateCanisterModal.svelte';
   import OrchestraDiagram from '$lib/components/OrchestraDiagram.svelte';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
+  import CanisterControllersBadge from '$lib/components/CanisterControllersBadge.svelte';
+  import CanisterTypeBadges from '$lib/components/CanisterTypeBadges.svelte';
   import { warmSubnetGeoCache } from '$lib/subnetGeo';
+  import { governanceConsoleUrl } from '$lib/orchestrationNav';
+  import { resolveWasmType, hasBasiliskFeatures } from '$lib/canisterTypes';
+  import { familyOf, versionOptions } from '$lib/createCanisterForm';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type OrchestraView = 'tree' | 'diagram';
@@ -130,6 +137,7 @@
   let modal = $state<ModalConfig | null>(null);
   let modalBusy = $state(false);
   let modalLogLines = $state<string[]>([]);
+  let createCanisterStand = $state<Stand | null>(null);
 
   // While an operation is running, poll the event log and stream new entries
   // into the modal's live log window so the user can see progress.
@@ -186,6 +194,16 @@
     error = '';
     canisterCycles = {};
     try {
+      const missingControllers =
+        !tree ||
+        tree.sections.some((sec) =>
+          sec.stands.some((stand) =>
+            stand.canisters.some((c) => c.canister_id && !(c.controllers?.length)),
+          ),
+        );
+      if (missingControllers) {
+        await refreshControllersCache().catch(() => undefined);
+      }
       [tree, status, catalog] = await Promise.all([
         getTree(),
         getStatus(),
@@ -199,44 +217,10 @@
     }
   }
 
-  // Build the WASM-version <select> options for a family. The first option is
-  // the bare family name, which the backend resolves to the latest version; the
-  // rest pin a specific version. Falls back to key-prefix matching when the
-  // catalog entries don't include a `family` field (old backend).
-  function versionOptions(family: string): { value: string; label: string }[] {
-    if (!family || !catalog.length) return [];
-    const members = catalog
-      .filter((w) => (w.family || w.key.split('@')[0]) === family)
-      .sort((a, b) => verCmp(b.version || b.key.split('@')[1] || '', a.version || a.key.split('@')[1] || ''));
-    if (members.length === 0) return [];
-    const latest = members.find((m) => m.latest) ?? members[0];
-    const latestVer = latest.version || latest.key.split('@')[1] || '?';
-    const opts = [{ value: family, label: `Latest (v${latestVer})` }];
-    for (const m of members) {
-      const ver = m.version || m.key.split('@')[1] || '?';
-      opts.push({ value: m.key, label: `v${ver}${m.latest !== false && m === latest ? ' · latest' : ''}` });
-    }
-    return opts;
-  }
-
   // All distinct families in the catalog (for free-text fallback datalist).
   const allFamilies = $derived(
     [...new Set(catalog.map((w) => w.family || w.key.split('@')[0]).filter(Boolean))].sort()
   );
-
-  function verCmp(a: string, b: string): number {
-    const pa = (a || '0').split('.').map((n) => parseInt(n, 10) || 0);
-    const pb = (b || '0').split('.').map((n) => parseInt(n, 10) || 0);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-      const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-      if (d !== 0) return d;
-    }
-    return 0;
-  }
-
-  function familyOf(wasmKey: string): string {
-    return (wasmKey || '').split('@')[0];
-  }
 
   function shortId(id: string): string {
     if (!id) return '';
@@ -423,12 +407,15 @@
   }
 
   async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      toasts.info('Copied to clipboard');
-    } catch {
-      toasts.error('Could not copy');
-    }
+    if (await copyText(text)) toasts.info('Copied to clipboard');
+    else toasts.error('Could not copy');
+  }
+
+  function governanceConsoleLabel(canister: Canister): string {
+    const t = resolveWasmType(canister);
+    if (t === 'baton') return 'Baton';
+    if (t === 'multisig') return 'Multisig';
+    return 'Console';
   }
 
   // Strip empty optional string fields so we only send what the user provided.
@@ -655,34 +642,22 @@
   }
 
   function openCreateCanister(stand: Stand) {
-    openModal({
-      title: 'Create canister',
-      description: `In stand "${stand.name}" — creates a canister + installs an authorized WASM`,
-      fields: [
-        { name: 'name', label: 'Name', required: true, placeholder: 'realm_backend' },
-        {
-          name: 'kind',
-          label: 'Kind',
-          type: 'select',
-          value: 'backend',
-          options: [
-            { value: 'backend', label: 'Backend' },
-            { value: 'frontend', label: 'Frontend' },
-          ],
-        },
-        allFamilies.length > 0
-          ? { name: 'wasm_key', label: 'WASM family', type: 'select', required: true,
-              value: allFamilies[0], options: allFamilies.map((f) => ({ value: f, label: f })) }
-          : { name: 'wasm_key', label: 'WASM family or key', required: true, placeholder: 'hello-world-basilisk' },
-      ],
-      submitLabel: 'Create canister',
-      onsubmit: (v) => createCanister({ ...(clean(v) as any), stand: stand.name }),
-    });
+    createCanisterStand = stand;
+  }
+
+  function closeCreateCanister() {
+    createCanisterStand = null;
+  }
+
+  async function onCreateCanisterSuccess() {
+    createCanisterStand = null;
+    toasts.success('Canister created');
+    await load();
   }
 
   function openUpgradeStand(stand: Stand) {
     const fams = standFamilies(stand);
-    const opts = fams.length === 1 ? versionOptions(fams[0]) : [];
+    const opts = fams.length === 1 ? versionOptions(fams[0], catalog) : [];
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
       title: 'Deploy stand',
@@ -713,7 +688,7 @@
 
   function openUpgradeCanister(canister: Canister) {
     const family = familyOf(canister.wasm_key);
-    const opts = versionOptions(family);
+    const opts = versionOptions(family, catalog);
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
       title: 'Deploy canister',
@@ -1047,14 +1022,27 @@
                                 <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
                                   {canister.kind}
                                 </span>
+                                <CanisterTypeBadges {canister} />
                                 {#if canister.status}
                                   <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
+                                <CanisterControllersBadge
+                                  canisterId={canister.canister_id}
+                                  controllers={canister.controllers}
+                                />
                                 {#if canister.subnet || canister.canister_id}
                                   <span class="badge badge-neutral font-mono inline-flex items-center gap-1" title="subnet {canister.subnet || 'lookup…'}">
                                     ⬡ {canister.subnet ? shortId(canister.subnet) : 'subnet'}
                                     <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
                                   </span>
+                                {/if}
+                                {#if governanceConsoleUrl(canister)}
+                                  <a
+                                    href={governanceConsoleUrl(canister)!}
+                                    class="btn-sm btn-secondary text-xs px-2 py-1"
+                                  >
+                                    {governanceConsoleLabel(canister)}
+                                  </a>
                                 {/if}
                               </div>
                               <div class="flex items-center gap-2 text-xs">
@@ -1072,6 +1060,11 @@
                                   <span class="text-primary-400 font-mono" title={canister.wasm_hash}>· {shortHash(canister.wasm_hash)}</span>
                                 {/if}
                               </div>
+                              {#if canister.controllers?.length}
+                                <p class="text-[11px] text-primary-500 font-mono truncate" title={canister.controllers.join('\n')}>
+                                  controllers: {canister.controllers.map((p) => shortPrincipal(p)).join(', ')}
+                                </p>
+                              {/if}
                             </div>
                             <div class="flex items-center gap-0.5 shrink-0">
                               <!-- Details toggle -->
@@ -1080,13 +1073,13 @@
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/>
                                 </svg>
                               </button>
-                              <!-- Open / Candid UI -->
+                              <!-- Open / Candid UI or governance console -->
                               <a
                                 href={canisterLink(canister)}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                                target={governanceConsoleUrl(canister) ? undefined : '_blank'}
+                                rel={governanceConsoleUrl(canister) ? undefined : 'noopener noreferrer'}
                                 class="icon-btn"
-                                aria-label={canister.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
+                                aria-label={governanceConsoleUrl(canister) ? 'Open governance console' : canister.kind === 'backend' ? 'Open Candid UI' : 'Open frontend'}
                               >
                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                   <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
@@ -1163,6 +1156,11 @@
                                   <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
                                 </span>
                               </div>
+                              <CanisterControllersBadge
+                                canisterId={canister.canister_id}
+                                controllers={canister.controllers}
+                                inline
+                              />
                               {#if canisterDetailsErr[canister.canister_id]}
                                 <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
                                   Couldn't load deployment info: {canisterDetailsErr[canister.canister_id]}
@@ -1208,7 +1206,7 @@
                                   {/if}
                                 </div>
 
-                                {#if canister.kind === 'backend'}
+                                {#if hasBasiliskFeatures(resolveWasmType(canister))}
                                   <div>
                                     <div class="flex items-center justify-between mb-1.5">
                                       <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Inspect (Basilisk)</div>
@@ -1277,5 +1275,16 @@
     logLines={modalLogLines}
     onsubmit={submitModal}
     oncancel={closeModal}
+  />
+{/if}
+
+{#if createCanisterStand}
+  <CreateCanisterModal
+    stand={createCanisterStand}
+    catalog={catalog}
+    tree={tree}
+    families={allFamilies}
+    onsuccess={onCreateCanisterSuccess}
+    oncancel={closeCreateCanister}
   />
 {/if}

@@ -6,6 +6,7 @@
   import { identity, isAuthenticated } from '$lib/auth';
   import { listCanisterControllers } from '$lib/controllerAccess';
   import { toasts } from '$lib/stores/toast';
+  import { copyText } from '$lib/clipboard';
 
   interface CommanderRow {
     scope: 'section' | 'stand' | 'controller';
@@ -129,7 +130,8 @@
   });
 
   async function copyToClipboard(text: string) {
-    try { await navigator.clipboard.writeText(text); toasts.success('Copied'); } catch { /* ignore */ }
+    if (await copyText(text)) toasts.success('Copied');
+    else toasts.error('Copy failed');
   }
 
   // ── Assign commander modal ──────────────────────────────────────────────────

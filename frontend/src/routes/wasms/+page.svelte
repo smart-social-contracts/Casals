@@ -11,6 +11,7 @@
   import { toasts } from '$lib/stores/toast';
   import FormModal from '$lib/components/FormModal.svelte';
   import type { Field } from '$lib/components/FormModal.svelte';
+  import { wasmTypeTags, wasmTypeBadgeClass, inferWasmType } from '$lib/canisterTypes';
 
   type Values = Record<string, string | boolean>;
 
@@ -43,6 +44,21 @@
       options: [
         { value: 'backend', label: 'Backend' },
         { value: 'frontend', label: 'Frontend' },
+      ],
+    },
+    {
+      name: 'wasm_type',
+      label: 'WASM type',
+      type: 'select',
+      value: '',
+      options: [
+        { value: '', label: '(infer from family name)' },
+        { value: 'motoko', label: 'Motoko' },
+        { value: 'rust', label: 'Rust' },
+        { value: 'basilisk', label: 'Basilisk' },
+        { value: 'baton', label: 'Baton' },
+        { value: 'multisig', label: 'Multisig' },
+        { value: 'assets', label: 'Assets (certified)' },
       ],
     },
     { name: 'description', label: 'Description', type: 'textarea' },
@@ -223,6 +239,9 @@
                 <td class="px-4 py-3 font-mono text-xs text-primary-500" title={w.wasm_hash}>{shortHash(w.wasm_hash)}</td>
                 <td class="px-4 py-3">
                   <span class="badge {w.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{w.kind || '—'}</span>
+                  {#each wasmTypeTags(w.wasm_type || inferWasmType(w.family)) as tag (tag)}
+                    <span class="badge {wasmTypeBadgeClass(tag)} ml-1">{tag}</span>
+                  {/each}
                 </td>
                 <td class="px-4 py-3 text-primary-600 max-w-xs truncate" title={w.description}>{w.description || '—'}</td>
                 {#if $isAuthenticated}
@@ -247,6 +266,9 @@
                       <td class="px-4 py-2.5 font-mono text-xs text-primary-400" title={v.wasm_hash}>{shortHash(v.wasm_hash)}</td>
                       <td class="px-4 py-2.5">
                         <span class="badge {v.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{v.kind || '—'}</span>
+                        {#each wasmTypeTags(v.wasm_type || inferWasmType(v.family)) as tag (tag)}
+                          <span class="badge {wasmTypeBadgeClass(tag)} ml-1">{tag}</span>
+                        {/each}
                       </td>
                       <td class="px-4 py-2.5 max-w-xs truncate" title={v.description}>{v.description || '—'}</td>
                       {#if $isAuthenticated}

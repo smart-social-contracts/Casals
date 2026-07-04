@@ -73,8 +73,15 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_log_visibility:    IDL.Func([IDL.Text], [IDL.Text], []),
     canister_browse:          IDL.Func([IDL.Text], [IDL.Text], []),
     canister_exec:            IDL.Func([IDL.Text], [IDL.Text], []),
+    orchestration_status:     IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    orchestration_refresh:    IDL.Func([IDL.Text], [IDL.Text], []),
+    orchestration_hand_to_baton: IDL.Func([IDL.Text], [IDL.Text], []),
+    orchestration_prepare_managed_upgrade: IDL.Func([IDL.Text], [IDL.Text], []),
+    orchestration_execute_action: IDL.Func([IDL.Text], [IDL.Text], []),
     list_subnets:          IDL.Func([], [IDL.Text], []),
     estimate_deploy:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
     refresh_fx:            IDL.Func([], [IDL.Text], []),
+    sync_controllers:      IDL.Func([IDL.Text], [IDL.Text], []),
+    refresh_controllers_cache: IDL.Func([IDL.Text], [IDL.Text], []),
   });
 };

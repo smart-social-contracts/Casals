@@ -46,6 +46,7 @@
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
+  import { copyText as copyToClipboard } from '$lib/clipboard';
   import LineChart from '$lib/components/LineChart.svelte';
   import CyclesAdvancedChart from '$lib/components/CyclesAdvancedChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
@@ -225,12 +226,11 @@
   });
 
   async function copyText(label: string, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       copiedField = label;
       toasts.success(`Copied ${label}`);
       setTimeout(() => { if (copiedField === label) copiedField = ''; }, 2000);
-    } catch {
+    } else {
       toasts.error('Could not copy to clipboard');
     }
   }

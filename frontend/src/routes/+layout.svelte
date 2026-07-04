@@ -1,12 +1,12 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
-  import { get } from 'svelte/store';
+  import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
-  import { initAuth, login, logout, isAuthenticated, principal, authError } from '$lib/auth';
+  import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied } from '$lib/auth';
   import { backendCanisterId, initLocalNetworkHints } from '$lib/api';
-  import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
+  import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
 
   let { children } = $props();
 
@@ -14,6 +14,7 @@
     { href: '/', label: 'Orchestra' },
     { href: '/wasms', label: 'WASMs' },
     { href: '/commanders', label: 'Commanders' },
+    { href: '/orchestration', label: 'Orchestration' },
     { href: '/cycles', label: 'Cycles' },
     { href: '/activity', label: 'Activity' },
     { href: '/sheet', label: 'Sheet' },
@@ -21,28 +22,60 @@
     { href: '/settings', label: 'Settings' },
   ];
 
+  let sidebarOpen = $state(false);
   let currentPath = $derived($page.url.pathname);
 
-  async function handleLogin() {
-    const ok = await login(backendCanisterId());
-    const err = get(authError);
-    if (!ok && err) toasts.error(err);
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
   }
 
+  function closeSidebar() {
+    sidebarOpen = false;
+  }
+
+  async function handleLogin() {
+    await login(backendCanisterId());
+  }
+
+  $effect(() => {
+    if (!sidebarOpen) return;
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeSidebar();
+    };
+    window.addEventListener('keydown', onKeydown);
+    return () => window.removeEventListener('keydown', onKeydown);
+  });
+
   onMount(() => {
-    void initAuth(backendCanisterId()).then(() => {
-      const err = get(authError);
-      if (err) toasts.error(err);
-    });
+    void initAuth(backendCanisterId());
     void initLocalNetworkHints();
   });
 </script>
 
-<div class="min-h-screen flex flex-col bg-[var(--color-bg-secondary)]">
-  <!-- Navbar -->
-  <nav class="sticky top-0 z-30 bg-white border-b border-[var(--color-border-primary)]" style="box-shadow: var(--shadow-sm);">
+<div class="min-h-screen flex flex-col bg-[var(--color-bg-secondary)]" class:overflow-hidden={sidebarOpen}>
+  <!-- Header -->
+  <header class="sticky top-0 z-30 bg-white border-b border-[var(--color-border-primary)]" style="box-shadow: var(--shadow-sm);">
     <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-      <div class="flex items-center gap-6 min-w-0">
+      <div class="flex items-center gap-3 min-w-0">
+        <button
+          type="button"
+          class="btn-ghost btn-sm p-2"
+          onclick={toggleSidebar}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
+          aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+        >
+          {#if sidebarOpen}
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          {:else}
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+            </svg>
+          {/if}
+        </button>
+
         <a href="/" class="flex items-center gap-2.5 group shrink-0">
           <img
             src="/logo.png"
@@ -55,19 +88,6 @@
             Casals
           </span>
         </a>
-
-        <div class="hidden sm:flex items-center gap-1">
-          {#each navLinks as link (link.href)}
-            <a
-              href={link.href}
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
-                ? 'bg-primary-100 text-primary-900'
-                : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
-            >
-              {link.label}
-            </a>
-          {/each}
-        </div>
       </div>
 
       <div class="flex items-center gap-3 shrink-0">
@@ -95,21 +115,56 @@
         {/if}
       </div>
     </div>
+  </header>
 
-    <!-- Mobile nav -->
-    <div class="sm:hidden border-t border-[var(--color-border-primary)] px-4 py-2 flex items-center gap-1 overflow-x-auto">
-      {#each navLinks as link (link.href)}
-        <a
-          href={link.href}
-          class="px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors {currentPath === link.href
-            ? 'bg-primary-100 text-primary-900'
-            : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
-        >
-          {link.label}
-        </a>
-      {/each}
-    </div>
-  </nav>
+  {#if sidebarOpen}
+    <button
+      type="button"
+      class="fixed inset-0 z-40 cursor-default"
+      style="background: var(--color-bg-overlay);"
+      aria-label="Close menu"
+      onclick={closeSidebar}
+      transition:fade={{ duration: 200 }}
+    ></button>
+
+    <aside
+      id="app-sidebar"
+      class="fixed top-0 left-0 z-50 h-full w-64 bg-white border-r border-[var(--color-border-primary)] flex flex-col"
+      style="box-shadow: var(--shadow-xl);"
+      transition:fly={{ x: -256, duration: 200 }}
+    >
+      <div class="h-14 flex items-center gap-2.5 px-4 border-b border-[var(--color-border-primary)] shrink-0">
+        <img src="/logo.png" alt="" class="w-7 h-7 object-contain" width="28" height="28" />
+        <span class="text-base font-semibold text-primary-900">Casals</span>
+      </div>
+
+      <nav class="flex-1 overflow-y-auto px-3 py-4">
+        <ul class="space-y-1">
+          {#each navLinks as link (link.href)}
+            <li>
+              <a
+                href={link.href}
+                onclick={closeSidebar}
+                class="block px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
+                  ? 'bg-primary-100 text-primary-900'
+                  : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
+              >
+                {link.label}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </nav>
+
+      {#if $isAuthenticated}
+        <div class="px-4 py-3 border-t border-[var(--color-border-primary)] shrink-0">
+          <p class="text-xs text-primary-400 font-mono truncate" title={$principal}>
+            {$principal.slice(0, 5)}…{$principal.slice(-5)}
+          </p>
+        </div>
+      {/if}
+    </aside>
+  {/if}
 
   <!-- Main content -->
   <main class="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
@@ -127,3 +182,11 @@
 </div>
 
 <Toast />
+
+{#if $accessDenied}
+  <AccessDeniedModal
+    message={$accessDenied.message}
+    principal={$accessDenied.principal}
+    onclose={dismissAccessDenied}
+  />
+{/if}
