@@ -165,15 +165,37 @@ def _canister_ids_from_tree(tree: dict) -> dict:
     return out
 
 
+def _is_baton_wasm_key(wasm_key: str) -> bool:
+    key = (wasm_key or "").strip()
+    return key == "orchestration-baton" or key.startswith("orchestration-baton@")
+
+
+def _baton_names_from_tree(tree: dict) -> list:
+    """Registered canister names whose wasm_key is orchestration-baton."""
+    out = []
+    for sec in tree.get("sections") or []:
+        for stand in sec.get("stands") or []:
+            for c in stand.get("canisters") or []:
+                if _is_baton_wasm_key(c.get("wasm_key") or ""):
+                    name = (c.get("name") or "").strip()
+                    if name:
+                        out.append(name)
+    return out
+
+
 def wire_orchestration_demo(cli_args, casals_id: str) -> None:
-    """Post-deploy: configure multisig and verify baton points at it."""
+    """Post-deploy: configure multisig and wire every stand's Baton."""
     tree = call(CASALS, "get_tree", cli_args)
     if not isinstance(tree, dict):
         print("  orchestration wire: could not read tree; skipping")
         return
     ids = _canister_ids_from_tree(tree)
-    if "multisig" not in ids or "baton" not in ids:
-        print("  orchestration wire: multisig/baton not in tree; skipping")
+    baton_names = _baton_names_from_tree(tree)
+    if "multisig" not in ids:
+        print("  orchestration wire: multisig not in tree; skipping")
+        return
+    if not baton_names:
+        print("  orchestration wire: no Baton canisters in tree; skipping")
         return
 
     conductor = (os.environ.get("LOCAL_CONDUCTOR") or "").strip()
@@ -181,8 +203,10 @@ def wire_orchestration_demo(cli_args, casals_id: str) -> None:
         conductor = identity_principal(cli_args) or DEFAULT_LOCAL_CONDUCTOR
 
     multisig_id = ids["multisig"]
-    baton_id = ids["baton"]
-    signer_vec = f'principal "{conductor}"'
+    signers = [conductor]
+    if casals_id and casals_id not in signers:
+        signers.append(casals_id)
+    signer_vec = "; ".join(f'principal "{p}"' for p in signers)
     cfg = call_candid(
         multisig_id,
         "configure",
@@ -190,31 +214,76 @@ def wire_orchestration_demo(cli_args, casals_id: str) -> None:
         cli_args,
     )
     if isinstance(cfg, dict) and cfg.get("ok") is True:
-        print(f"  configured multisig ({multisig_id}) with 1 signer")
+        print(f"  configured multisig ({multisig_id}) with {len(signers)} signer(s)")
     elif "ok" in str(cfg).lower() and "err" not in str(cfg).lower():
-        print(f"  configured multisig ({multisig_id}) with 1 signer")
+        print(f"  configured multisig ({multisig_id}) with {len(signers)} signer(s)")
     elif "already configured" in str(cfg).lower():
         print(f"  multisig ({multisig_id}) already configured")
+        if casals_id and casals_id != conductor:
+            call_candid(
+                multisig_id,
+                "propose",
+                (
+                    f'(variant {{ ManageSigners = record {{ '
+                    f'add = vec {{ principal "{casals_id}" }}; '
+                    f'remove = vec {{}}; new_threshold = null }} }}, null)'
+                ),
+                cli_args,
+            )
     else:
         print(f"  WARN: multisig configure returned {cfg!r}")
 
-    baton_cfg = call(baton_id, "get_config", cli_args)
-    if isinstance(baton_cfg, dict):
-        top = baton_cfg.get("top_commander")
-        if top == multisig_id:
-            print(f"  baton ({baton_id}) top_commander = multisig")
-        else:
-            print(f"  WARN: baton top_commander={top!r}, expected {multisig_id}")
+    caps = 'vec { "propose:managed_upgrade"; "submit_approval:managed_upgrade" }'
+    msig_vec = f'principal "{multisig_id}"'
 
-    controllers = [c for c in (casals_id, multisig_id) if c]
-    res = call(CASALS, "set_canister_controllers", cli_args, json.dumps({
-        "canister": "baton",
-        "controllers": controllers,
-    }))
-    if isinstance(res, dict) and res.get("ok"):
-        print(f"  baton controllers: {', '.join(controllers)}")
-    else:
-        print(f"  WARN: set_canister_controllers(baton) returned {res!r}")
+    for baton_name in baton_names:
+        baton_id = ids.get(baton_name)
+        if not baton_id:
+            print(f"  WARN: {baton_name} not in tree ids; skipping")
+            continue
+
+        baton_cfg = call(baton_id, "get_config", cli_args)
+        if isinstance(baton_cfg, dict):
+            top = baton_cfg.get("top_commander")
+            if top == multisig_id:
+                print(f"  {baton_name} ({baton_id}) top_commander = multisig")
+            else:
+                print(f"  WARN: {baton_name} top_commander={top!r}, expected {multisig_id}")
+
+        ctl = call_candid(
+            multisig_id,
+            "propose",
+            (
+                f'(variant {{ UpdateBatonSettings = record {{ baton_id = principal "{baton_id}"; '
+                f'add_controllers = vec {{ {msig_vec} }}; remove_controllers = vec {{}} }} }}, null)'
+            ),
+            cli_args,
+        )
+        if isinstance(ctl, int) or str(ctl).strip().isdigit():
+            print(f"  {baton_name} IC controller: multisig")
+        elif "ok" in str(ctl).lower() or "executed" in str(ctl).lower():
+            print(f"  {baton_name} IC controller: multisig")
+        else:
+            print(f"  WARN: {baton_name} controller proposal returned {ctl!r}")
+
+        add_cmd = call_candid(
+            multisig_id,
+            "propose",
+            (
+                f'(variant {{ AddCommander = record {{ baton_id = principal "{baton_id}"; '
+                f'commander = principal "{casals_id}"; capabilities = {caps} }} }}, null)'
+            ),
+            cli_args,
+        )
+        baton_commanders = call(baton_id, "list_commanders", cli_args)
+        if isinstance(baton_commanders, list) and any(
+            isinstance(c, dict) and c.get("principal") == casals_id for c in baton_commanders
+        ):
+            print(f"  {baton_name}: casals_backend is commander ({casals_id})")
+        elif "ok" in str(add_cmd).lower() or "AddCommander" in str(add_cmd):
+            print(f"  {baton_name}: proposed AddCommander for casals via multisig")
+        else:
+            print(f"  WARN: {baton_name} AddCommander returned {add_cmd!r}; commanders={baton_commanders!r}")
 
 
 def canister_id(name: str, args) -> str:
@@ -418,6 +487,7 @@ def main():
             "registry_path": tpl["path"],
             "wasm_hash": digest,
             "kind": tpl.get("kind", "backend"),
+            "wasm_type": tpl.get("wasm_type", ""),
             "description": tpl.get("description", ""),
         }
         if asset:

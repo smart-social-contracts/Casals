@@ -1,5 +1,5 @@
 {
-  "$comment": "Default template catalog for Casals. These WASMs are uploaded to the file-registry and authorized on the backend by scripts/seed.py. Each entry is one *version* of a template family (`key`); the authorized-WASM key is `<key>@<version>` and a sheet/upgrade that references a bare family name resolves to the latest version. List multiple entries with the same `key` to publish several versions. A `frontend`-kind template may carry an `asset` (a file uploaded to the registry); Casals uploads it into each stand built from that template after install, so the certified-assets canister actually serves a page.",
+  "$comment": "Default template catalog for Casals. These WASMs are uploaded to the file-registry and authorized on the backend by scripts/seed.py. Each entry is one *version* of a template family (`key`); the authorized-WASM key is `<key>@<version>` and a sheet/upgrade that references a bare family name resolves to the latest version. List multiple entries with the same `key` to publish several versions. `kind` is the stack role (`frontend` | `backend`). `wasm_type` is the implementation family (motoko, rust, basilisk, baton, multisig, assets, …) used for UI tags and to gate Basilisk-only tooling. A `frontend`-kind template may carry an `asset` (a file uploaded to the registry); Casals uploads it into each stand built from that template after install, so the certified-assets canister actually serves a page.",
   "registry_namespace": "casals-templates",
   "templates": [
     {
@@ -8,6 +8,7 @@
       "file": "hello-world-rust.wasm.gz",
       "path": "hello-world-rust.wasm",
       "kind": "backend",
+      "wasm_type": "rust",
       "description": "Rust hello-world canister (ic-cdk greet update; logs the name)."
     },
     {
@@ -16,6 +17,7 @@
       "file": "hello-world-motoko.wasm.gz",
       "path": "hello-world-motoko.wasm",
       "kind": "backend",
+      "wasm_type": "motoko",
       "description": "Motoko hello-world canister (greet update; logs the name)."
     },
     {
@@ -24,6 +26,7 @@
       "file": "hello-world-basilisk@1.0.0.wasm.gz",
       "path": "hello-world-basilisk@1.0.0.wasm",
       "kind": "backend",
+      "wasm_type": "basilisk",
       "description": "Basilisk (Python) hello-world canister (greet + introspection)."
     },
     {
@@ -32,6 +35,7 @@
       "file": "hello-world-basilisk@1.1.0.wasm.gz",
       "path": "hello-world-basilisk@1.1.0.wasm",
       "kind": "backend",
+      "wasm_type": "basilisk",
       "description": "Basilisk hello-world v1.1 — greeting tagged with the version."
     },
     {
@@ -40,6 +44,7 @@
       "file": "hello-world-basilisk@1.2.0.wasm.gz",
       "path": "hello-world-basilisk@1.2.0.wasm",
       "kind": "backend",
+      "wasm_type": "basilisk",
       "description": "Basilisk hello-world v1.2 — greet is an update that logs the name (ic-basilisk-toolkit logger)."
     },
     {
@@ -48,6 +53,7 @@
       "file": "hello-world-frontend.wasm.gz",
       "path": "hello-world-frontend.wasm",
       "kind": "frontend",
+      "wasm_type": "assets",
       "description": "DFINITY certified assets canister serving a hello-world page.",
       "asset": {
         "file": "index.html",
@@ -61,6 +67,7 @@
       "file": "orchestration-baton.wasm.gz",
       "path": "orchestration-baton.wasm",
       "kind": "backend",
+      "wasm_type": "baton",
       "description": "Baton orchestrator (Basilisk): managed_upgrade pipeline and commander model."
     },
     {
@@ -69,7 +76,17 @@
       "file": "orchestration-multisig.wasm.gz",
       "path": "orchestration-multisig.wasm",
       "kind": "backend",
+      "wasm_type": "multisig",
       "description": "n-of-m multisig canister: top commander and IC controller of Batons."
+    },
+    {
+      "key": "orchestration-multisig",
+      "version": "1.1.0",
+      "file": "orchestration-multisig@1.1.0.wasm.gz",
+      "path": "orchestration-multisig@1.1.0.wasm",
+      "kind": "backend",
+      "wasm_type": "multisig",
+      "description": "Multisig v1.1 — per-proposal expiry override on propose()."
     }
   ]
 }
