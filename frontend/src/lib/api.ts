@@ -43,9 +43,33 @@ export interface Section {
   commander_principal: string;
   permissions?: string[];
   all_permissions?: boolean;
+  orchestration_policies?: Record<string, ApprovalPolicy>;
   subnet?: string;
   subnet_type?: string;
   stands: Stand[];
+}
+
+export interface ApprovalPolicy {
+  threshold: number;
+  eligible: string[];
+  required: string[];
+}
+
+export interface GovernanceRequest {
+  request_id: string;
+  section_name: string;
+  action: string;
+  action_label?: string;
+  status: string;
+  payload: Record<string, unknown>;
+  proposed_by: string;
+  proposed_at: number;
+  approvals: string[];
+  approval_count?: number;
+  threshold?: number;
+  missing_required?: string[];
+  quorum_met?: boolean;
+  ready_to_execute?: boolean;
 }
 
 export interface Permission {
@@ -1319,6 +1343,40 @@ export async function setPermissions(args: {
 
 export async function listPermissions(): Promise<Permission[]> {
   return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
+}
+
+export async function listOrchestrationActions(): Promise<Permission[]> {
+  return _parseQuery<Permission[]>(await (await _actor()).list_orchestration_actions());
+}
+
+export async function getOrchestrationPolicies(section: string): Promise<{
+  section: string;
+  policies: Record<string, ApprovalPolicy>;
+  labels: Record<string, string>;
+}> {
+  return _parseQuery(await (await _actor()).get_orchestration_policies(JSON.stringify({ section })));
+}
+
+export async function setOrchestrationPolicies(args: {
+  section: string;
+  policies: Record<string, ApprovalPolicy>;
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_orchestration_policies(JSON.stringify(args)));
+}
+
+export async function listGovernanceRequests(args?: {
+  section?: string;
+  status?: string;
+}): Promise<{ requests: GovernanceRequest[] }> {
+  return _parseQuery(await (await _actor()).list_governance_requests(JSON.stringify(args ?? {})));
+}
+
+export async function approveGovernanceRequest(requestId: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).approve_governance_request(JSON.stringify({ request_id: requestId })));
+}
+
+export async function rejectGovernanceRequest(requestId: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).reject_governance_request(JSON.stringify({ request_id: requestId })));
 }
 
 export async function registerCanister(args: {

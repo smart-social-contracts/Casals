@@ -7,6 +7,7 @@ import { isBatonTerminal } from './batonPipelineLog';
 export const BATON_CAPABILITIES = [
   'propose:managed_upgrade',
   'submit_approval:managed_upgrade',
+  'execute:managed_upgrade',
   'read_cycle_balance',
   'manage_commanders',
   'manage_managed_canisters',
@@ -351,6 +352,18 @@ export function batonCanApprove(
   }
   const cmd = commanders.find((c) => c.principal.toLowerCase() === principal.toLowerCase());
   return cmd?.capabilities?.includes('submit_approval:managed_upgrade') ?? false;
+}
+
+export function batonCanExecute(
+  principal: string,
+  config: BatonConfig,
+  commanders: BatonCommander[],
+): boolean {
+  if (config.top_commander && principal.toLowerCase() === config.top_commander.toLowerCase()) {
+    return true;
+  }
+  const cmd = commanders.find((c) => c.principal.toLowerCase() === principal.toLowerCase());
+  return cmd?.capabilities?.includes('execute:managed_upgrade') ?? false;
 }
 
 /** Top commander (install root) plus registered deputies for display. */

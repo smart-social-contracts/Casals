@@ -236,7 +236,7 @@ def wire_orchestration_demo(cli_args, casals_id: str) -> None:
 
     caps = (
         'vec { "propose:managed_upgrade"; "submit_approval:managed_upgrade"; '
-        '"manage_managed_canisters" }'
+        '"execute:managed_upgrade"; "manage_managed_canisters" }'
     )
     msig_vec = f'principal "{multisig_id}"'
 

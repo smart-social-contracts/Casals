@@ -52,6 +52,7 @@ from models import (
     CAP_MANAGE_COMMANDERS,
     CAP_MANAGE_MANAGED,
     CAP_PROPOSE,
+    CAP_EXECUTE,
     CAP_READ_CYCLE_BALANCE,
     CAP_SUBMIT_APPROVAL,
     STATUS_APPROVED,
@@ -634,6 +635,10 @@ def reject_action(action_id: text) -> text:
 
 @update
 def execute_action(action_id: text) -> Async[text]:
+    try:
+        require_capability(_caller(), CAP_EXECUTE, _commanders, _config)
+    except AuthError as e:
+        return _err(str(e))
     active = _active_action_id()
     aid = action_id.strip()
     if active and active != aid:

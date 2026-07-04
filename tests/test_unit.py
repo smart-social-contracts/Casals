@@ -917,6 +917,34 @@ def test_install_mode_candid_basilisk_uses_plain_upgrade():
     assert "upgrade = null" in mode
 
 
+# ── orchestration_governance ─────────────────────────────────────────────────
+
+def test_create_permission_for_wasm_splits_orchestration():
+    import orchestration_governance as og
+    assert og.create_permission_for_wasm("orchestration-baton@1.2.8") == og.ACTION_ORCHESTRATION_BATON_CREATE
+    assert og.create_permission_for_wasm("orchestration-multisig@1.1.0") == og.ACTION_ORCHESTRATION_MULTISIG_CREATE
+    assert og.create_permission_for_wasm("hello-world-basilisk@1.0.0") == "canister.create"
+
+
+def test_quorum_met_requires_threshold_and_required():
+    import orchestration_governance as og
+    policy = {"threshold": 2, "eligible": ["a", "b"], "required": ["a"]}
+    record = {"approvals": ["a"]}
+    assert og.quorum_met(record, policy) is False
+    record = {"approvals": ["a", "b"]}
+    assert og.quorum_met(record, policy) is True
+    policy = {"threshold": 2, "eligible": ["a", "b"], "required": ["b"]}
+    record = {"approvals": ["a", "b"]}
+    assert og.quorum_met(record, policy) is True
+
+
+def test_auth_includes_orchestration_permissions():
+    keys = {p[0] for p in auth.PERMISSIONS}
+    assert "orchestration.baton.create" in keys
+    assert "orchestration.baton.upgrade" in keys
+    assert "orchestration.multisig.create" in keys
+
+
 def test_install_mode_candid_motoko_requests_memory_keep():
     mode = lifecycle._install_mode_candid({"upgrade": None}, "motoko")
     assert "wasm_memory_persistence" in mode

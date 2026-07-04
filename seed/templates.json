@@ -63,6 +63,15 @@
     },
     {
       "key": "orchestration-baton",
+      "version": "1.2.9",
+      "file": "orchestration-baton@1.2.9.wasm.gz",
+      "path": "orchestration-baton@1.2.9.wasm",
+      "kind": "backend",
+      "wasm_type": "baton",
+      "description": "Baton v1.2.9 — execute:managed_upgrade capability; orchestration permission split."
+    },
+    {
+      "key": "orchestration-baton",
       "version": "1.2.8",
       "file": "orchestration-baton@1.2.8.wasm.gz",
       "path": "orchestration-baton@1.2.8.wasm",

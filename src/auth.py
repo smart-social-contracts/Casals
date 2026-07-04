@@ -31,6 +31,11 @@ PERMISSIONS = [
     ("stand.delete",       "Delete stand",               "Stand"),
     ("commander.assign",   "Appoint sub-commanders",     "Governance"),
     ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
+    ("orchestration.multisig.create",      "Create multisig canister",        "Orchestration"),
+    ("orchestration.baton.create",         "Create baton canister",           "Orchestration"),
+    ("orchestration.baton.upgrade",        "Upgrade baton canister",          "Orchestration"),
+    ("orchestration.baton.hand_off",       "Hand canister to Baton",          "Orchestration"),
+    ("orchestration.managed_upgrade.run",  "Run managed upgrade pipeline",    "Orchestration"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 

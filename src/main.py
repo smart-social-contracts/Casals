@@ -134,6 +134,7 @@ from models import (
     AuthorizedWasm,
     CycleSample,
     CyclesSnapshot,
+    GovernanceRequest,
     Stand,
     OrchestrationEvent,
     PooledCanister,
@@ -142,6 +143,26 @@ from models import (
     Canister,
     CanisterKind,
     CanisterStatus,
+)
+from governance_requests import (
+    approve_governance_request_gen,
+    list_governance_requests_view,
+    orchestration_governance_gate,
+    reject_governance_request_gen,
+    _load_request,
+)
+from orchestration_governance import (
+    ACTION_ORCHESTRATION_BATON_HAND_OFF,
+    ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN,
+    ORCHESTRATION_ACTIONS,
+    ORCHESTRATION_ACTION_LABELS,
+    STATUS_EXECUTED,
+    STATUS_FAILED,
+    create_permission_for_wasm,
+    list_orchestration_actions_catalog,
+    parse_orchestration_policies,
+    request_payload,
+    upgrade_permission_for_targets,
 )
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from subnets import (
@@ -1355,6 +1376,44 @@ def remove_authorized_wasm(args: text) -> text:
 
 # ── Lifecycle update endpoints ────────────────────────────────────────────────
 
+def _create_canister_impl_gen(params: dict) -> Async[str]:
+    list(Stand.instances())
+    dk = Stand[params["stand"].strip()]
+    if dk is None:
+        return _err(f"unknown stand '{params['stand']}'")
+
+    name = params["name"].strip()
+    list(Canister.instances())
+    existing = Canister[name]
+    if existing is not None:
+        if existing.status == CanisterStatus.CREATED and not (existing.canister_id or "").strip():
+            existing.delete()
+        else:
+            return _err(f"canister '{name}' already exists")
+
+    w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
+    kind = params.get("kind") or w.kind or CanisterKind.BACKEND
+    install_arg_spec = params.get("install_arg")
+    init_arg = (_resolve_install_arg(install_arg_spec, w) if install_arg_spec is not None
+                else _install_arg_for(w))
+
+    st = yield from _provision_canister(dk, name, kind, w, init_arg)
+
+    init = params.get("init") or {}
+    ms_init = init.get("multisig") if isinstance(init, dict) else None
+    if ms_init:
+        yield from _multisig_configure_gen(
+            st.canister_id,
+            ms_init.get("signers") or [],
+            ms_init.get("threshold") or 1,
+            ms_init.get("expiry_secs") or 604800,
+        )
+        _append_event("multisig_configured", st.canister_id,
+                      {"name": name, "threshold": int(ms_init.get("threshold") or 1)})
+
+    return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash)
+
+
 @update
 def create_canister(args: text) -> Async[text]:
     """Create a new canister, install an authorized WASM, verify, and record it
@@ -1372,42 +1431,15 @@ def create_canister(args: text) -> Async[text]:
         dk = Stand[params["stand"].strip()]
         if dk is None:
             return _err(f"unknown stand '{params['stand']}'")
-        _require_commander(dk, "canister.create")
-
-        name = params["name"].strip()
-        list(Canister.instances())
-        existing = Canister[name]
-        if existing is not None:
-            # A CREATED-status entry with no canister_id is a stale reservation
-            # from a previously failed provision attempt — allow recreation.
-            if existing.status == CanisterStatus.CREATED and not (existing.canister_id or "").strip():
-                existing.delete()
-            else:
-                return _err(f"canister '{name}' already exists")
-
-        w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
-        kind = params.get("kind") or w.kind or CanisterKind.BACKEND
-        install_arg_spec = params.get("install_arg")
-        init_arg = (_resolve_install_arg(install_arg_spec, w) if install_arg_spec is not None
-                    else _install_arg_for(w))
-
-        # Allocate (reuse a pooled canister or create one), install + verify,
-        # record the canister.
-        st = yield from _provision_canister(dk, name, kind, w, init_arg)
-
-        init = params.get("init") or {}
-        ms_init = init.get("multisig") if isinstance(init, dict) else None
-        if ms_init:
-            yield from _multisig_configure_gen(
-                st.canister_id,
-                ms_init.get("signers") or [],
-                ms_init.get("threshold") or 1,
-                ms_init.get("expiry_secs") or 604800,
-            )
-            _append_event("multisig_configured", st.canister_id,
-                          {"name": name, "threshold": int(ms_init.get("threshold") or 1)})
-
-        return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash)
+        permission = create_permission_for_wasm(params.get("wasm_key", ""))
+        _require_commander(dk, permission)
+        return (yield from orchestration_governance_gate(
+            dk.section,
+            permission,
+            params,
+            lambda: _create_canister_impl_gen(params),
+            permission_grant=_stand_permissions_for(dk),
+        ))
     except Exception as e:
         _log.error(f"create_canister error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
@@ -1920,6 +1952,94 @@ def provision_assets(args: text) -> Async[text]:
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
 
 
+def _upgrade_to_impl_gen(params: dict) -> Async[str]:
+    wasm_key = params["wasm_key"].strip()
+    do_reinstall = bool(params.get("reinstall", False))
+    install_mode = {"reinstall": None} if do_reinstall else {"upgrade": None}
+
+    if params.get("canister"):
+        list(Canister.instances())
+        st = Canister[params["canister"].strip()]
+        if st is None:
+            return _err(f"unknown canister '{params['canister']}'")
+        targets = [st]
+        dk = st.stand
+    elif params.get("stand"):
+        list(Stand.instances())
+        dk = Stand[params["stand"].strip()]
+        if dk is None:
+            return _err(f"unknown stand '{params['stand']}'")
+        targets = list(dk.canisters or [])
+    else:
+        return _err("expected 'stand' or 'canister'")
+
+    if not targets:
+        return _err("no canisters to upgrade")
+
+    w = _resolve_authorized_wasm(wasm_key, dk.section if dk else None)
+
+    snapped = []
+    for st in targets:
+        st.status = CanisterStatus.UPGRADING
+        snap_res = yield management_canister.take_canister_snapshot({"canister_id": Principal.from_str(st.canister_id)})
+        snap = unwrap_call_result(snap_res)
+        snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
+        snap_id_hex = _to_hex(snap_id)
+        st.snapshot_id = snap_id_hex
+        snapped.append((st, snap_id))
+        _append_event("snapshot", st.canister_id, {"snapshot_id": snap_id_hex})
+
+    failure = None
+    for st in targets:
+        try:
+            yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
+                                         w.wasm_hash, install_mode, _install_arg_for(w),
+                                         wasm_type_of_wasm(w))
+            ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
+            if not ok:
+                failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
+                break
+            st.wasm_key = w.key
+            st.wasm_type = wasm_type_of_wasm(w)
+            st.wasm_hash = actual
+        except Exception as inner:
+            failure = f"install failed on {st.canister_id}: {inner}"
+            break
+
+    if failure is not None:
+        for st, snap_id in snapped:
+            try:
+                yield management_canister.load_canister_snapshot({
+                    "canister_id": Principal.from_str(st.canister_id),
+                    "snapshot_id": snap_id,
+                })
+                st.status = CanisterStatus.INSTALLED
+                _append_event("revert", st.canister_id, {"reason": failure})
+            except Exception as rb:
+                st.status = CanisterStatus.FAILED
+                _append_event("revert_failed", st.canister_id, {"error": str(rb)})
+        fail_ev = "reinstall_failed" if do_reinstall else "upgrade_failed"
+        _append_event(fail_ev, dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
+        return _err(f"{'reinstall' if do_reinstall else 'upgrade'} rolled back: {failure}")
+
+    for st, snap_id in snapped:
+        try:
+            yield management_canister.delete_canister_snapshot({
+                "canister_id": Principal.from_str(st.canister_id),
+                "snapshot_id": snap_id,
+            })
+        except Exception:
+            pass
+        st.status = CanisterStatus.INSTALLED
+        st.snapshot_id = ""
+        ev = "reinstalled" if do_reinstall else "upgraded"
+        _append_event(ev, st.canister_id,
+                      {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name})
+    finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
+    _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "canisters": [s.canister_id for s in targets]})
+    return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
+
+
 @update
 def upgrade_to(args: text) -> Async[text]:
     """Upgrade (or reinstall) a stand (all its canisters) or a single canister,
@@ -1935,10 +2055,6 @@ def upgrade_to(args: text) -> Async[text]:
     """
     try:
         params = json.loads(args)
-        wasm_key = params["wasm_key"].strip()
-        do_reinstall = bool(params.get("reinstall", False))
-        install_mode = {"reinstall": None} if do_reinstall else {"upgrade": None}
-
         if params.get("canister"):
             list(Canister.instances())
             st = Canister[params["canister"].strip()]
@@ -1955,76 +2071,15 @@ def upgrade_to(args: text) -> Async[text]:
         else:
             return _err("expected 'stand' or 'canister'")
 
-        _require_commander(dk, "canister.deploy")
-        if not targets:
-            return _err("no canisters to upgrade")
-
-        w = _resolve_authorized_wasm(wasm_key, dk.section if dk else None)
-
-        # Phase 1: snapshot every target.
-        snapped = []  # (canister, snapshot_id)
-        for st in targets:
-            st.status = CanisterStatus.UPGRADING
-            snap_res = yield management_canister.take_canister_snapshot({"canister_id": Principal.from_str(st.canister_id)})
-            snap = unwrap_call_result(snap_res)
-            snap_id = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
-            snap_id_hex = _to_hex(snap_id)
-            st.snapshot_id = snap_id_hex
-            snapped.append((st, snap_id))
-            _append_event("snapshot", st.canister_id, {"snapshot_id": snap_id_hex})
-
-        # Phase 2: install + verify; on any failure, roll back everything.
-        failure = None
-        for st in targets:
-            try:
-                yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
-                                             w.wasm_hash, install_mode, _install_arg_for(w),
-                                             wasm_type_of_wasm(w))
-                ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
-                if not ok:
-                    failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
-                    break
-                st.wasm_key = w.key
-                st.wasm_type = wasm_type_of_wasm(w)
-                st.wasm_hash = actual
-            except Exception as inner:
-                failure = f"install failed on {st.canister_id}: {inner}"
-                break
-
-        if failure is not None:
-            for st, snap_id in snapped:
-                try:
-                    yield management_canister.load_canister_snapshot({
-                        "canister_id": Principal.from_str(st.canister_id),
-                        "snapshot_id": snap_id,
-                    })
-                    st.status = CanisterStatus.INSTALLED
-                    _append_event("revert", st.canister_id, {"reason": failure})
-                except Exception as rb:
-                    st.status = CanisterStatus.FAILED
-                    _append_event("revert_failed", st.canister_id, {"error": str(rb)})
-            fail_ev = "reinstall_failed" if do_reinstall else "upgrade_failed"
-            _append_event(fail_ev, dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
-            return _err(f"{'reinstall' if do_reinstall else 'upgrade'} rolled back: {failure}")
-
-        # Success: drop snapshots.
-        for st, snap_id in snapped:
-            try:
-                yield management_canister.delete_canister_snapshot({
-                    "canister_id": Principal.from_str(st.canister_id),
-                    "snapshot_id": snap_id,
-                })
-            except Exception:
-                pass
-            st.status = CanisterStatus.INSTALLED
-            st.snapshot_id = ""
-            # Per-canister event so the canister's own timeline shows the upgrade.
-            ev = "reinstalled" if do_reinstall else "upgraded"
-            _append_event(ev, st.canister_id,
-                          {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name})
-        finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
-        _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "canisters": [s.canister_id for s in targets]})
-        return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
+        permission = upgrade_permission_for_targets(targets)
+        _require_commander(dk, permission)
+        return (yield from orchestration_governance_gate(
+            dk.section,
+            permission,
+            params,
+            lambda: _upgrade_to_impl_gen(params),
+            permission_grant=_stand_permissions_for(dk),
+        ))
     except Exception as e:
         _log.error(f"upgrade_to error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
@@ -2252,6 +2307,148 @@ def canister_exec(args: text) -> Async[text]:
 
 # ── Baton managed upgrade (orchestration bridge) ───────────────────────────
 
+def _hand_to_baton_impl_gen(target: str, baton_name: str) -> Async[str]:
+    result = yield from _hand_to_baton_gen(target, baton_name)
+    return _ok(**result)
+
+
+def _orchestration_execute_impl_gen(params: dict) -> Async[str]:
+    result = yield from _execute_baton_action_gen(
+        params["action_id"],
+        (params.get("baton") or "").strip(),
+    )
+    return _ok(**result)
+
+
+def _execute_governance_payload_gen(action: str, payload: dict) -> Async[str]:
+    if action in (
+        "orchestration.multisig.create",
+        "orchestration.baton.create",
+    ):
+        return (yield from _create_canister_impl_gen(payload))
+    if action == "orchestration.baton.upgrade":
+        return (yield from _upgrade_to_impl_gen(payload))
+    if action == ACTION_ORCHESTRATION_BATON_HAND_OFF:
+        target = (payload.get("target") or payload.get("canister") or "").strip()
+        baton_name = (payload.get("baton") or "").strip()
+        return (yield from _hand_to_baton_impl_gen(target, baton_name))
+    if action == ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN:
+        return (yield from _orchestration_execute_impl_gen(payload))
+    return _err(f"unsupported governance action: {action}")
+
+
+@query
+def list_orchestration_actions() -> text:
+    """Catalog of orchestration actions that support N-of-M approval policies."""
+    return json.dumps(list_orchestration_actions_catalog())
+
+
+@query
+def get_orchestration_policies(args: text) -> text:
+    """Args (JSON): {"section": "<name>"}."""
+    try:
+        params = json.loads(args) if args else {}
+        section_name = (params.get("section") or "").strip()
+        if not section_name:
+            return _err("expected 'section'")
+        list(Section.instances())
+        sec = Section[section_name]
+        if sec is None:
+            return _err(f"unknown section '{section_name}'")
+        policies = parse_orchestration_policies(sec.orchestration_policies_json or "")
+        labels = {k: ORCHESTRATION_ACTION_LABELS.get(k, k) for k in ORCHESTRATION_ACTIONS}
+        return _ok(section=section_name, policies=policies, labels=labels)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_orchestration_policies(args: text) -> text:
+    """Set per-action N-of-M approval policies for a section. Controller only.
+
+    Args (JSON): {"section": str, "policies": { "<action>": {threshold, eligible[], required[]} }}.
+    """
+    try:
+        _require_admin()
+        params = json.loads(args)
+        section_name = (params.get("section") or "").strip()
+        if not section_name:
+            return _err("expected 'section'")
+        list(Section.instances())
+        sec = Section[section_name]
+        if sec is None:
+            return _err(f"unknown section '{section_name}'")
+        policies = parse_orchestration_policies(params.get("policies"))
+        sec.orchestration_policies_json = json.dumps(policies, separators=(",", ":"))
+        _append_event("orchestration_policies_set", "", {"section": section_name})
+        return _ok(section=section_name, policies=policies)
+    except Exception as e:
+        return _err(str(e))
+
+
+@query
+def list_governance_requests(args: text) -> text:
+    """Args (JSON, optional): {"section": str, "status": str}."""
+    try:
+        params = json.loads(args) if args else {}
+        return list_governance_requests_view(
+            (params.get("section") or "").strip(),
+            (params.get("status") or "").strip(),
+        )
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def approve_governance_request(args: text) -> Async[text]:
+    """Approve a pending orchestration governance request.
+
+    Args (JSON): {"request_id": str}. Executes automatically when quorum is met.
+    """
+    try:
+        params = json.loads(args)
+        request_id = (params.get("request_id") or "").strip()
+        if not request_id:
+            return _err("expected 'request_id'")
+        res = yield from approve_governance_request_gen(request_id)
+        parsed = json.loads(res)
+        if not parsed.get("ok"):
+            return res
+        if parsed.get("ready_to_execute"):
+            req = _load_request(request_id)
+            if req is None:
+                return _err("unknown governance request")
+            payload = request_payload(req)
+            exec_res = yield from _execute_governance_payload_gen(req.action, payload)
+            req.status = STATUS_EXECUTED if json.loads(exec_res).get("ok") else STATUS_FAILED
+            req.result_json = exec_res
+            _append_event("governance_executed", "", {"request_id": request_id, "action": req.action})
+            try:
+                merged = json.loads(exec_res)
+                if isinstance(merged, dict):
+                    merged["governance"] = {"request_id": request_id, "status": req.status}
+                    return json.dumps(merged)
+            except json.JSONDecodeError:
+                pass
+            return exec_res
+        return res
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def reject_governance_request(args: text) -> Async[text]:
+    """Args (JSON): {"request_id": str}."""
+    try:
+        params = json.loads(args)
+        request_id = (params.get("request_id") or "").strip()
+        if not request_id:
+            return _err("expected 'request_id'")
+        return (yield from reject_governance_request_gen(request_id))
+    except Exception as e:
+        return _err(str(e))
+
+
 @query
 def orchestration_status(args: text) -> text:
     """Read Baton / multisig ids from the orchestra tree (static snapshot).
@@ -2308,10 +2505,16 @@ def orchestration_hand_to_baton(args: text) -> Async[text]:
         st = Canister[target]
         if st is None:
             return _err(f"unknown canister '{target}'")
-        _require_commander(st.stand, "canister.deploy")
+        _require_commander(st.stand, ACTION_ORCHESTRATION_BATON_HAND_OFF)
         baton_name = (params.get("baton") or "").strip()
-        result = yield from _hand_to_baton_gen(target, baton_name)
-        return _ok(**result)
+        section = st.stand.section if st.stand else None
+        return (yield from orchestration_governance_gate(
+            section,
+            ACTION_ORCHESTRATION_BATON_HAND_OFF,
+            params,
+            lambda: _hand_to_baton_impl_gen(target, baton_name),
+            permission_grant=_stand_permissions_for(st.stand),
+        ))
     except Exception as e:
         return _err(str(e))
 
@@ -2355,9 +2558,20 @@ def orchestration_execute_action(args: text) -> Async[text]:
         baton_name = (params.get("baton") or "").strip()
         if not baton_name:
             return _err("expected 'baton' (registered Baton canister name)")
-        _require_can_add()
-        result = yield from _execute_baton_action_gen(action_id, baton_name)
-        return _ok(**result)
+        list(Canister.instances())
+        baton_st = Canister[baton_name]
+        if baton_st is None:
+            return _err(f"unknown baton canister '{baton_name}'")
+        dk = baton_st.stand
+        _require_commander(dk, ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN)
+        section = dk.section if dk else None
+        return (yield from orchestration_governance_gate(
+            section,
+            ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN,
+            params,
+            lambda: _orchestration_execute_impl_gen(params),
+            permission_grant=_stand_permissions_for(dk),
+        ))
     except Exception as e:
         return _err(str(e))
 

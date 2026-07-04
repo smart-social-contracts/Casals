@@ -60,6 +60,9 @@ class Section(Entity, TimestampedMixin):
     # conductor's own subnet (default management-canister placement).
     subnet = String(max_length=128, default="")
     subnet_type = String(max_length=64, default="")
+    # Per-action N-of-M approval policies for orchestration (JSON object keyed by
+    # orchestration.* permission keys; each value is {threshold, eligible[], required[]}).
+    orchestration_policies_json = String(max_length=8192, default="")
     stands = OneToMany("Stand", "section")
     wasms = OneToMany("AuthorizedWasm", "section")
 
@@ -327,6 +330,21 @@ class Arrangement(Entity, TimestampedMixin):
     # steps incl. per-realm identity/manifesto text ≈ 20 KB).
     steps_json = String(max_length=131072, default="[]")
     created_by = String(max_length=64, default="")
+
+
+class GovernanceRequest(Entity, TimestampedMixin):
+    """Pending or completed orchestration action awaiting N-of-M approval."""
+
+    __alias__ = "request_id"
+    request_id = String(min_length=1, max_length=64)
+    section_name = String(max_length=128, default="")
+    action = String(max_length=64, default="")
+    status = String(max_length=32, default="PENDING")
+    payload_json = String(max_length=16384, default="")
+    proposed_by = String(max_length=64, default="")
+    proposed_at = Integer(default=0)
+    approvals = String(max_length=4096, default="[]")
+    result_json = String(max_length=16384, default="")
 
 
 class OrchestrationEvent(Entity, TimestampedMixin):

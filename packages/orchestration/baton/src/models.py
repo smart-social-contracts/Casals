@@ -48,6 +48,7 @@ ACTION_TYPE_MANAGED_UPGRADE = "managed_upgrade"
 # Capability strings (stored on Commander records).
 CAP_PROPOSE = "propose:managed_upgrade"
 CAP_SUBMIT_APPROVAL = "submit_approval:managed_upgrade"
+CAP_EXECUTE = "execute:managed_upgrade"
 CAP_READ_CYCLE_BALANCE = "read_cycle_balance"
 CAP_MANAGE_COMMANDERS = "manage_commanders"
 CAP_MANAGE_MANAGED = "manage_managed_canisters"
@@ -55,6 +56,7 @@ CAP_MANAGE_MANAGED = "manage_managed_canisters"
 ALL_CAPABILITIES = frozenset({
     CAP_PROPOSE,
     CAP_SUBMIT_APPROVAL,
+    CAP_EXECUTE,
     CAP_READ_CYCLE_BALANCE,
     CAP_MANAGE_COMMANDERS,
     CAP_MANAGE_MANAGED,
