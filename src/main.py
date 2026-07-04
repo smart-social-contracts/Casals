@@ -112,6 +112,7 @@ from lifecycle import (
     _allocate_canister,
     _assign_pool_canister,
     _ensure_provision_controllers_gen,
+    _fetch_canister_controllers,
     _install_arg_for,
     _resolve_install_arg,
     _maybe_provision_assets,
@@ -1258,6 +1259,19 @@ def list_permissions() -> text:
     """Return the catalog of assignable commander permissions:
     [{key, label, group}]."""
     return json.dumps([{"key": k, "label": lbl, "group": grp} for (k, lbl, grp) in PERMISSIONS])
+
+
+@update
+def list_backend_controllers(_args: text) -> Async[text]:
+    """Live IC controllers of this Casals backend (for the Commanders UI).
+
+    Callable by any principal — deputies cannot read controller lists via the
+    management canister directly, but Casals can query its own status."""
+    try:
+        controllers = yield from _fetch_canister_controllers(ic.id().to_str())
+        return _ok(controllers=controllers)
+    except Exception as e:
+        return _err(str(e))
 
 
 @update

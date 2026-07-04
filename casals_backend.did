@@ -131,12 +131,7 @@ service : {
   "set_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
   "list_permissions" : () -> (text) query;
-  "list_orchestration_actions" : () -> (text) query;
-  "get_orchestration_policies" : (text) -> (text) query;
-  "set_orchestration_policies" : (text) -> (text);
-  "list_governance_requests" : (text) -> (text) query;
-  "approve_governance_request" : (text) -> (text);
-  "reject_governance_request" : (text) -> (text);
+  "list_backend_controllers" : (text) -> (text);
   "register_canister" : (text) -> (text);
   "add_authorized_wasm" : (text) -> (text);
   "remove_authorized_wasm" : (text) -> (text);
@@ -157,6 +152,12 @@ service : {
   "set_log_visibility" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_exec" : (text) -> (text);
+  "list_orchestration_actions" : () -> (text) query;
+  "get_orchestration_policies" : (text) -> (text) query;
+  "set_orchestration_policies" : (text) -> (text);
+  "list_governance_requests" : (text) -> (text) query;
+  "approve_governance_request" : (text) -> (text);
+  "reject_governance_request" : (text) -> (text);
   "orchestration_status" : (text) -> (text) query;
   "orchestration_refresh" : (text) -> (text);
   "orchestration_hand_to_baton" : (text) -> (text);
