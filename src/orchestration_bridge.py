@@ -144,7 +144,9 @@ def _named_canister(name: str):
 
 
 def _parse_baton_reply(reply: str) -> dict:
-    data = json.loads(reply) if reply else {}
+    # Replies from _call_text_method are candid textual tuples like
+    # ("{\"ok\":true}"), so parse through the wrapper-tolerant helper.
+    data = _parse_baton_json_reply(reply) if reply else {}
     if isinstance(data, dict) and data.get("ok") is False:
         raise Exception(data.get("error") or "baton error")
     return data if isinstance(data, dict) else {"result": data}
