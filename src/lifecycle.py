@@ -127,12 +127,57 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
                 f"(deploy '{cname}' before this canister)"
             )
         pid = c.canister_id.strip()
-        arg_text = f'(record {{ top_commander = principal "{pid}" }})'
-        return ic.candid_encode(arg_text)
-    raise Exception(f"unsupported install_arg: {install_arg_spec}")
+    elif top_ref:
+        pid = top_ref
+    else:
+        return _install_arg_for(w)
+    arg_text = f'(record {{ top_commander = principal "{pid}" }})'
+    return ic.candid_encode(arg_text)
 
 
 # ── File-registry pull helpers ────────────────────────────────────────────────
+
+def _candid_blob(data: bytes) -> str:
+    return '"' + "".join(f"\\{b:02x}" for b in (data or b"")) + '"'
+
+
+def _install_mode_candid(install_mode) -> str:
+    if isinstance(install_mode, dict) and "upgrade" in install_mode:
+        return (
+            "variant { upgrade = opt record "
+            "{ wasm_memory_persistence = opt variant { keep = null } } }"
+        )
+    if isinstance(install_mode, dict) and "reinstall" in install_mode:
+        return "variant { reinstall = null }"
+    return "variant { install = null }"
+
+
+def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex: str,
+                              init_arg: bytes, install_mode):
+    """Generator: install_chunked_code via explicit Candid (EOP-safe upgrades)."""
+    hash_entries = []
+    for ch in chunk_hashes:
+        raw = ch.get("hash") if isinstance(ch, dict) else getattr(ch, "hash", ch)
+        if hasattr(raw, "__iter__") and not isinstance(raw, (bytes, str)):
+            raw = bytes(raw)
+        hash_entries.append(f"record {{ hash = blob {_candid_blob(bytes(raw))} }}")
+    hashes_vec = "; ".join(hash_entries)
+    arg_text = (
+        f"(record {{ mode = {_install_mode_candid(install_mode)}; "
+        f"target_canister = principal \"{target_id}\"; "
+        f"store_canister = opt principal \"{target_id}\"; "
+        f"chunk_hashes_list = vec {{ {hashes_vec} }}; "
+        f"wasm_module_hash = blob {_candid_blob(bytes.fromhex(wasm_hash_hex))}; "
+        f"arg = blob {_candid_blob(init_arg or b'')} }})"
+    )
+    res = yield ic.call_raw(
+        Principal.from_str("aaaaa-aa"),
+        "install_chunked_code",
+        ic.candid_encode(arg_text),
+        0,
+    )
+    unwrap_call_result(res)
+
 
 def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
                       install_mode, init_arg: bytes = b""):
@@ -175,15 +220,8 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
     if not chunk_hashes:
         raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
     _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
-    install_res = yield management_canister.install_chunked_code({
-        "mode": install_mode,
-        "target_canister": target,
-        "store_canister": target,
-        "chunk_hashes_list": chunk_hashes,
-        "wasm_module_hash": bytes.fromhex(expected_hash_hex),
-        "arg": init_arg,
-    })
-    unwrap_call_result(install_res)
+    yield from _install_chunked_code_raw(
+        target_id, chunk_hashes, expected_hash_hex, init_arg, install_mode)
     try:
         yield management_canister.clear_chunk_store({"canister_id": target})
     except Exception:
@@ -421,6 +459,28 @@ def _add_controllers(canister_id: str, controllers: list):
         "canister_id": Principal.from_str(canister_id),
         "settings": {"controllers": principals},
     })
+    _persist_ic_controllers(canister_id, [c for c in controllers if c])
+
+
+def _persist_ic_controllers(canister_id: str, controllers: list) -> None:
+    """Record the IC controller set on the matching Canister entity."""
+    cid = (canister_id or "").strip()
+    if not cid:
+        return
+    list(Canister.instances())
+    for st in Canister.instances():
+        if (st.canister_id or "").strip() == cid:
+            st.ic_controllers = json.dumps(controllers)
+            break
+
+
+def _governance_multisig_id() -> str:
+    """Multisig canister id when the demo governance layer is deployed."""
+    list(Canister.instances())
+    m = Canister["multisig"]
+    if m is not None and (m.canister_id or "").strip():
+        return m.canister_id.strip()
+    return ""
 
 
 def _commander_for_stand(dk) -> str:
@@ -470,15 +530,36 @@ def _fetch_canister_controllers(canister_id: str):
         return []
 
 
+def _refresh_controllers_cache_gen():
+    """Generator: fetch IC controllers for all managed canisters and persist."""
+    list(Canister.instances())
+    updated = []
+    failed = []
+    for st in Canister.instances():
+        cid = (st.canister_id or "").strip()
+        if not cid:
+            continue
+        try:
+            current = yield from _fetch_canister_controllers(cid)
+            _persist_ic_controllers(cid, current)
+            updated.append({"name": st.name, "canister_id": cid, "controllers": current})
+        except Exception as e:
+            failed.append({"name": st.name, "canister_id": cid, "error": str(e)})
+    return updated, failed
+
+
 def _resolve_provision_controllers(dk):
     """Generator: controller set for a canister Casals is provisioning.
 
-    Always includes Casals and the off-chain monitor (when enabled), the stand
-    commander, and — by default — every IC controller of the commander
-    principal/canister.
-    That mirrors ops access from a parent realm (e.g. capital deploy key on
-    auto-scaled quarters) without a separate post-provision step.
+    When a multisig governance canister is in the orchestra, it is the sole IC
+    controller (Casals remains a Baton commander but not an IC controller).
+    Otherwise: Casals, optional monitor, stand commander, and inherited
+    controllers from the commander principal.
     """
+    mid = _governance_multisig_id()
+    if mid:
+        return [mid]
+
     s = _settings()
     self_id = ic.id().to_str()
     base = [self_id]
@@ -492,6 +573,22 @@ def _resolve_provision_controllers(dk):
         inherited.extend((yield from _fetch_canister_controllers(commander)))
 
     return _merge_controllers(base, inherited)
+
+
+def _ensure_provision_controllers_gen(canister_id: str, dk):
+    """Generator: apply or cache the desired IC controller set for a canister."""
+    desired = yield from _resolve_provision_controllers(dk)
+    if not desired:
+        return
+    self_id = ic.id().to_str()
+    current = yield from _fetch_canister_controllers(canister_id)
+    if current == desired:
+        _persist_ic_controllers(canister_id, desired)
+        return
+    if self_id in current:
+        yield from _add_controllers(canister_id, desired)
+    else:
+        _persist_ic_controllers(canister_id, desired)
 
 
 def _set_log_visibility(canister_id: str, public: bool):
@@ -622,6 +719,8 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     st.stand = dk
     st.kind = kind
     st.wasm_key = w.key
+    from wasm_types import wasm_type_of_wasm
+    st.wasm_type = wasm_type_of_wasm(w)
     st.status = CanisterStatus.CREATED
     st.created_by = _caller()
 
@@ -656,7 +755,7 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
     controllers = yield from _resolve_provision_controllers(dk)
-    if len(controllers) > 1:
+    if controllers:
         yield from _add_controllers(cid, controllers)
 
     try:
@@ -720,7 +819,7 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
         wasm_hash = actual
         status = CanisterStatus.INSTALLED
         controllers = yield from _resolve_provision_controllers(dk)
-        if len(controllers) > 1:
+        if controllers:
             yield from _add_controllers(cid, controllers)
         try:
             yield from _set_log_visibility(cid, True)
@@ -738,6 +837,12 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
     st.canister_id = cid
     st.kind = kind
     st.wasm_key = wasm_key
+    if w is not None:
+        from wasm_types import wasm_type_of_wasm
+        st.wasm_type = wasm_type_of_wasm(w)
+    elif wasm_key:
+        from wasm_types import infer_wasm_type
+        st.wasm_type = infer_wasm_type(wasm_key)
     st.wasm_hash = wasm_hash
     st.status = status
     st.created_by = _caller()

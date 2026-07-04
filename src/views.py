@@ -1,19 +1,36 @@
 """Serialization helpers — pure, no IC-runtime dependencies.
-
-Converts live domain-model objects (Canister, Stand, Section) into plain
-dicts suitable for JSON serialization in query endpoints.  Keeping this
-layer pure makes it unit-testable with simple mock objects.
 """
+
+import json
 
 from auth import _normalize_permissions, _parse_permissions
 from util import canister_url
+from wasm_types import infer_wasm_type, wasm_type_tags
+
+
+def _canister_wasm_type(st) -> str:
+    t = (getattr(st, "wasm_type", "") or "").strip()
+    if t:
+        return t
+    return infer_wasm_type(st.wasm_key or "")
 
 
 def _canister_view(st) -> dict:
+    controllers = []
+    raw = getattr(st, "ic_controllers", "") or ""
+    if raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                controllers = [c for c in parsed if c]
+        except Exception:
+            pass
     return {
         "name": st.name,
         "canister_id": st.canister_id,
         "kind": st.kind,
+        "wasm_type": _canister_wasm_type(st),
+        "tags": wasm_type_tags(_canister_wasm_type(st)),
         "url": canister_url(st.kind, st.canister_id),
         "wasm_key": st.wasm_key,
         "wasm_hash": st.wasm_hash,
@@ -22,6 +39,7 @@ def _canister_view(st) -> dict:
         "min_cycles": int(st.min_cycles or 0),
         "topup_cycles": int(st.topup_cycles or 0),
         "subnet": st.subnet or "",
+        "controllers": controllers,
     }
 
 

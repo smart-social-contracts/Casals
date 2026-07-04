@@ -151,6 +151,11 @@ service : {
   "set_log_visibility" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_exec" : (text) -> (text);
+  "orchestration_status" : (text) -> (text) query;
+  "orchestration_refresh" : (text) -> (text);
+  "orchestration_hand_to_baton" : (text) -> (text);
+  "orchestration_prepare_managed_upgrade" : (text) -> (text);
+  "orchestration_execute_action" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;
   "refresh_treasury" : (text) -> (text);
@@ -163,5 +168,6 @@ service : {
   "reconcile" : () -> (text);
   "set_cycle_policy" : (text) -> (text);
   "sync_controllers" : (text) -> (text);
+  "refresh_controllers_cache" : (text) -> (text);
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

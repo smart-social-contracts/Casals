@@ -45,6 +45,15 @@ from auth import (
 )
 from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
+from orchestration_bridge import (
+    _execute_baton_action_gen,
+    _hand_to_baton_gen,
+    _list_baton_canisters,
+    _multisig_configure_gen,
+    _orchestration_status_all_gen,
+    _orchestration_status_gen,
+    _prepare_managed_upgrade_gen,
+)
 from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
@@ -102,11 +111,13 @@ from lifecycle import (
     _add_controllers,
     _allocate_canister,
     _assign_pool_canister,
+    _ensure_provision_controllers_gen,
     _install_arg_for,
     _resolve_install_arg,
     _maybe_provision_assets,
     _provision_canister,
     _pull_and_install,
+    _refresh_controllers_cache_gen,
     _resolve_authorized_wasm,
     _destroy_canister_gen,
     _destroy_ic_canister_gen,
@@ -153,6 +164,7 @@ from util import (
 )
 from views import _canister_view, _section_view, _stand_view
 from wasm_helpers import _family_of, _split_key, _ver_tuple
+from wasm_types import infer_wasm_type, wasm_type_of_wasm
 
 _log = get_logger("casals")
 
@@ -454,6 +466,7 @@ def list_authorized_wasms(args: text) -> text:
             "registry_path": w.registry_path,
             "wasm_hash": w.wasm_hash,
             "kind": w.kind,
+            "wasm_type": (w.wasm_type or "").strip() or infer_wasm_type(w.key),
             "description": w.description,
             "asset_namespace": w.asset_namespace,
             "asset_path": w.asset_path,
@@ -1265,8 +1278,8 @@ def register_canister(args: text) -> text:
 def add_authorized_wasm(args: text) -> text:
     """Controller only — represents an approved decision to authorize a WASM.
     Args (JSON):
-    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, description?,
-     asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?}.
+    {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, wasm_type?,
+     description?, asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?}.
 
     `bundle_namespace` (frontend WASMs): the file-registry namespace holding a
     whole multi-file static bundle to upload into each canister built from this
@@ -1304,6 +1317,7 @@ def add_authorized_wasm(args: text) -> text:
         w.registry_path = (params.get("registry_path") or "").strip()
         w.wasm_hash = (params.get("wasm_hash") or "").strip().lower()
         w.kind = params.get("kind") or CanisterKind.BACKEND
+        w.wasm_type = ((params.get("wasm_type") or infer_wasm_type(key)).strip())[:32]
         w.description = (params.get("description") or "")[:512]
         w.asset_namespace = (params.get("asset_namespace") or "").strip()
         w.asset_path = (params.get("asset_path") or "").strip()
@@ -1346,7 +1360,11 @@ def create_canister(args: text) -> Async[text]:
     """Create a new canister, install an authorized WASM, verify, and record it
     as a canister. Authorized by the stand/section commander (or a controller).
 
-    Args (JSON): {stand, name, kind, wasm_key}.
+    Args (JSON): {stand, name, wasm_key, kind?, install_arg?, init?}.
+    ``kind`` defaults to the authorized WASM's catalog kind (frontend/backend).
+    ``install_arg`` matches sheet deploy (e.g. baton ``top_commander``).
+    ``init`` holds wasm-type-specific post-install setup, e.g.
+    ``{"multisig": {"signers": [...], "threshold": 1, "expiry_secs": 604800}}``.
     """
     try:
         params = json.loads(args)
@@ -1357,7 +1375,6 @@ def create_canister(args: text) -> Async[text]:
         _require_commander(dk, "canister.create")
 
         name = params["name"].strip()
-        kind = params.get("kind") or CanisterKind.BACKEND
         list(Canister.instances())
         existing = Canister[name]
         if existing is not None:
@@ -1369,10 +1386,27 @@ def create_canister(args: text) -> Async[text]:
                 return _err(f"canister '{name}' already exists")
 
         w = _resolve_authorized_wasm(params["wasm_key"].strip(), dk.section)
+        kind = params.get("kind") or w.kind or CanisterKind.BACKEND
+        install_arg_spec = params.get("install_arg")
+        init_arg = (_resolve_install_arg(install_arg_spec, w) if install_arg_spec is not None
+                    else _install_arg_for(w))
 
         # Allocate (reuse a pooled canister or create one), install + verify,
         # record the canister.
-        st = yield from _provision_canister(dk, name, kind, w)
+        st = yield from _provision_canister(dk, name, kind, w, init_arg)
+
+        init = params.get("init") or {}
+        ms_init = init.get("multisig") if isinstance(init, dict) else None
+        if ms_init:
+            yield from _multisig_configure_gen(
+                st.canister_id,
+                ms_init.get("signers") or [],
+                ms_init.get("threshold") or 1,
+                ms_init.get("expiry_secs") or 604800,
+            )
+            _append_event("multisig_configured", st.canister_id,
+                          {"name": name, "threshold": int(ms_init.get("threshold") or 1)})
+
         return _ok(name=st.name, canister_id=st.canister_id, wasm_hash=st.wasm_hash)
     except Exception as e:
         _log.error(f"create_canister error: {e}")
@@ -1513,6 +1547,9 @@ def deploy_sheet(args: text) -> Async[text]:
                         # entity from a prior deploy (the stand was deleted/recreated).
                         if existing.stand is None or existing.stand.name != dk.name:
                             existing.stand = dk
+                        if not (existing.wasm_type or "").strip():
+                            existing.wasm_type = wasm_type_of_wasm(w)
+                        yield from _ensure_provision_controllers_gen(existing.canister_id, dk)
                         result["skipped_canisters"].append(stname)
                         continue
                     # Present but wrong WASM/status: reinstall fresh code in place.
@@ -1527,8 +1564,10 @@ def deploy_sheet(args: text) -> Async[text]:
                     existing.stand = dk
                     existing.kind = spec["kind"]
                     existing.wasm_key = w.key
+                    existing.wasm_type = wasm_type_of_wasm(w)
                     existing.wasm_hash = actual
                     existing.status = CanisterStatus.INSTALLED
+                    yield from _ensure_provision_controllers_gen(existing.canister_id, dk)
                     _append_event("canister_reinstalled", existing.canister_id,
                                   {"name": stname, "wasm_key": w.key})
                     result["reinstalled_canisters"].append(stname)
@@ -1809,7 +1848,7 @@ def estimate_deploy(args: text) -> text:
             "reserve_cycles": reserve,
             "available_cycles": available,
             "shortfall_cycles": shortfall,
-            "ready": shortfall == 0,
+            "ready": shortfall == 0 and unresolved == 0,
         })
     except Exception as e:
         return _err(str(e))
@@ -1945,6 +1984,7 @@ def upgrade_to(args: text) -> Async[text]:
                     failure = f"hash mismatch on {st.canister_id}: expected {w.wasm_hash}, got {actual}"
                     break
                 st.wasm_key = w.key
+                st.wasm_type = wasm_type_of_wasm(w)
                 st.wasm_hash = actual
             except Exception as inner:
                 failure = f"install failed on {st.canister_id}: {inner}"
@@ -2207,6 +2247,118 @@ def canister_exec(args: text) -> Async[text]:
         return _ok(output=output)
     except Exception as e:
         return _err(f"{e}")
+
+
+# ── Baton managed upgrade (orchestration bridge) ───────────────────────────
+
+@query
+def orchestration_status(args: text) -> text:
+    """Read Baton / multisig ids from the orchestra tree (static snapshot).
+
+    Args (JSON, optional): {"multisig": "multisig"}
+    """
+    try:
+        params = json.loads(args) if args else {}
+        multisig_name = (params.get("multisig") or "multisig").strip()
+        list(Canister.instances())
+        multisig_st = Canister[multisig_name]
+        batons = [
+            {"name": st.name, "canister_id": st.canister_id,
+             "stand": st.stand.name if st.stand else "",
+             "section": st.stand.section.name if st.stand and st.stand.section else ""}
+            for st in _list_baton_canisters()
+        ]
+        return _ok(
+            multisig={"name": multisig_name, "canister_id": multisig_st.canister_id if multisig_st else ""},
+            batons=batons,
+            note="Call orchestration_refresh for live Baton state.",
+        )
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_refresh(args: text) -> Async[text]:
+    """Fetch live multisig + every Baton config, commanders, and actions."""
+    try:
+        params = json.loads(args) if args else {}
+        multisig_name = (params.get("multisig") or "multisig").strip()
+        if params.get("baton"):
+            status = yield from _orchestration_status_gen(params["baton"], multisig_name)
+        else:
+            status = yield from _orchestration_status_all_gen(multisig_name)
+        return _ok(**status)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_hand_to_baton(args: text) -> Async[text]:
+    """Hand a managed canister to Baton (co-controller + register).
+
+    Args (JSON): {"target": "<canister name>", "baton": "baton"}
+    """
+    try:
+        params = json.loads(args)
+        target = (params.get("target") or params.get("canister") or "").strip()
+        if not target:
+            return _err("expected 'target' canister name")
+        list(Canister.instances())
+        st = Canister[target]
+        if st is None:
+            return _err(f"unknown canister '{target}'")
+        _require_commander(st.stand, "canister.deploy")
+        baton_name = (params.get("baton") or "").strip()
+        result = yield from _hand_to_baton_gen(target, baton_name)
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_prepare_managed_upgrade(args: text) -> Async[text]:
+    """Stage WASM, propose a Baton managed upgrade, and submit approval.
+
+    Args (JSON): {"target": "<canister>", "wasm_key": "<authorized key>", "baton": "baton"}
+    """
+    try:
+        params = json.loads(args)
+        target = (params.get("target") or params.get("canister") or "").strip()
+        wasm_key = (params.get("wasm_key") or "").strip()
+        if not target or not wasm_key:
+            return _err("expected 'target' and 'wasm_key'")
+        list(Canister.instances())
+        st = Canister[target]
+        if st is None:
+            return _err(f"unknown canister '{target}'")
+        _require_commander(st.stand, "canister.deploy")
+        baton_name = (params.get("baton") or "").strip()
+        result = yield from _prepare_managed_upgrade_gen(target, wasm_key, baton_name)
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_execute_action(args: text) -> Async[text]:
+    """Run one phase of a Baton managed-upgrade pipeline.
+
+    Args (JSON): {"action_id": "<id>", "baton": "baton"}
+    Repeat until ``done`` is true in the response.
+    """
+    try:
+        params = json.loads(args)
+        action_id = (params.get("action_id") or "").strip()
+        if not action_id:
+            return _err("expected 'action_id'")
+        baton_name = (params.get("baton") or "").strip()
+        if not baton_name:
+            return _err("expected 'baton' (registered Baton canister name)")
+        _require_can_add()
+        result = yield from _execute_baton_action_gen(action_id, baton_name)
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
 
 
 
@@ -3046,5 +3198,16 @@ def sync_controllers(args: text) -> Async[text]:
                                "error": str(e)})
 
         return _ok(updated=updated, skipped=skipped, failed=failed, dry_run=dry_run)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def refresh_controllers_cache(_args: text) -> Async[text]:
+    """Fetch IC controller lists for all managed canisters and cache them on
+    the Canister records (for the Orchestra UI). Safe to call often."""
+    try:
+        updated, failed = yield from _refresh_controllers_cache_gen()
+        return _ok(updated=updated, failed=failed)
     except Exception as e:
         return _err(str(e))

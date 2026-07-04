@@ -93,6 +93,10 @@ class Canister(Entity, TimestampedMixin):
     stand = ManyToOne("Stand", "canisters")
     canister_id = String(max_length=64, default="")
     kind = String(max_length=16, default=CanisterKind.BACKEND)
+    # Implementation family (motoko, rust, basilisk, baton, multisig, assets, …).
+    # Copied from the authorized WASM at install time; used for UI tags and to
+    # gate Basilisk-only tooling (inspect / Python shell).
+    wasm_type = String(max_length=32, default="")
     wasm_key = String(max_length=256, default="")   # AuthorizedWasm.key currently installed
     wasm_hash = String(max_length=128, default="")  # verified module hash (hex)
     status = String(max_length=32, default=CanisterStatus.REGISTERED)
@@ -108,6 +112,9 @@ class Canister(Entity, TimestampedMixin):
     # with the balance samples (CycleSample) to derive true consumption (burn):
     #   burn(t0,t1) = (deposited(t1) - deposited(t0)) - (balance(t1) - balance(t0))
     cycles_deposited = Integer(default=0)
+    # Cached IC controller list (JSON array of principals), updated when Casals
+    # or multisig governance sets controllers.
+    ic_controllers = String(max_length=1024, default="")
 
 
 class CycleSample(Entity, TimestampedMixin):
@@ -177,6 +184,8 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     registry_path = String(max_length=256, default="")
     wasm_hash = String(max_length=128, default="")    # sha256 hex of the stored bytes
     kind = String(max_length=16, default=CanisterKind.BACKEND)
+    # Implementation family — see Canister.wasm_type.
+    wasm_type = String(max_length=32, default="")
     description = String(max_length=512, default="")
     added_by = String(max_length=64, default="")
     # Optional asset to upload into canisters built from this WASM (for frontend
