@@ -1,14 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get } from 'svelte/store';
   import {
-    getTree, setCommander, setPermissions, listPermissions, backendCanisterId,
+    getTree, setCommander, setPermissions, listPermissions, listBackendControllers,
     getOrchestrationPolicies, setOrchestrationPolicies, listGovernanceRequests,
     approveGovernanceRequest, rejectGovernanceRequest, listOrchestrationActions,
     type Tree, type Permission, type ApprovalPolicy, type GovernanceRequest,
   } from '$lib/api';
   import { identity, isAuthenticated } from '$lib/auth';
-  import { listCanisterControllers } from '$lib/controllerAccess';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
 
@@ -29,44 +27,28 @@
   let error = $state('');
   let filterQuery = $state('');
 
-  async function loadControllers() {
-    const canisterId = backendCanisterId();
-    const id = get(identity);
-    if (!canisterId || !id) {
-      controllerPrincipals = [];
-      return;
-    }
-    try {
-      controllerPrincipals = await listCanisterControllers(canisterId, id);
-    } catch {
-      controllerPrincipals = [];
-    }
-  }
-
   async function load() {
     loading = true;
     error = '';
     try {
-      const [t, perms] = await Promise.all([
+      const [t, perms, controllers] = await Promise.all([
         getTree(),
         listPermissions().catch(() => []),
+        listBackendControllers().catch(() => []),
       ]);
       tree = t;
+      controllerPrincipals = controllers;
       if (perms.length) catalog = perms;
     } catch (e: any) {
       error = e?.message ?? 'Failed to load data';
     } finally {
       loading = false;
     }
-    void loadControllers();
   }
 
   onMount(() => {
     void load();
     void loadGovernanceRequests();
-    return identity.subscribe((id) => {
-      if (id && !loading) void loadControllers();
-    });
   });
 
   // Catalog grouped by group, in declaration order.
@@ -90,7 +72,7 @@
         scope: 'controller',
         section: '',
         principal,
-        label: 'Casals backend',
+        label: 'Casals controller',
         permissions: [],
         allPermissions: true,
       });
@@ -455,7 +437,7 @@
                   <span class="text-sm text-primary-800 flex-1 truncate">
                     {#if row.scope === 'controller'}
                       <span class="font-medium">{row.label}</span>
-                      <span class="text-primary-400 ml-1">· full Casals admin</span>
+                      <span class="text-primary-400 ml-1">· full platform access</span>
                     {:else if row.stand}
                       <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.stand}</span>
                     {:else}

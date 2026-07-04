@@ -1345,6 +1345,13 @@ export async function listPermissions(): Promise<Permission[]> {
   return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
 }
 
+export async function listBackendControllers(): Promise<string[]> {
+  const res = _parseUpdate<{ controllers?: string[] }>(
+    await (await _actor()).list_backend_controllers('{}'),
+  );
+  return res.controllers ?? [];
+}
+
 export async function listOrchestrationActions(): Promise<Permission[]> {
   return _parseQuery<Permission[]>(await (await _actor()).list_orchestration_actions());
 }

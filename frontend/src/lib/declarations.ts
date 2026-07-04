@@ -51,6 +51,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_commander:         IDL.Func([IDL.Text], [IDL.Text], []),
     set_permissions:       IDL.Func([IDL.Text], [IDL.Text], []),
     list_permissions:      IDL.Func([], [IDL.Text], ['query']),
+    list_backend_controllers: IDL.Func([IDL.Text], [IDL.Text], []),
     list_orchestration_actions: IDL.Func([], [IDL.Text], ['query']),
     get_orchestration_policies: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     set_orchestration_policies: IDL.Func([IDL.Text], [IDL.Text], []),
