@@ -68,10 +68,17 @@ def has_basilisk_features(wasm_type: str) -> bool:
     return (wasm_type or "").strip().lower() in _BASILISK_TYPES
 
 
+# Types built with modern moc, which defaults to enhanced orthogonal
+# persistence and therefore requires the Keep upgrade option.
+_EOP_TYPES = frozenset({MOTOKO, MULTISIG})
+
+
 def upgrade_uses_memory_keep(wasm_type: str) -> bool:
     """Whether install_chunked_code should request wasm_memory_persistence Keep.
 
-    Basilisk/Python modules (Casals backend, Baton, …) do not support enhanced
-    orthogonal persistence; requesting Keep causes IC rejection code 5.
+    Keep is only valid for Motoko modules compiled with enhanced orthogonal
+    persistence; requesting it for anything else (Basilisk/Python, Rust,
+    certified assets, or catalog entries with no declared wasm_type) makes the
+    IC reject the upgrade with code 5 — so it is strictly opt-in by type.
     """
-    return not has_basilisk_features(wasm_type)
+    return (wasm_type or "").strip().lower() in _EOP_TYPES
