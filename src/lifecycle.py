@@ -612,18 +612,23 @@ def _refresh_controllers_cache_gen():
 def _resolve_provision_controllers(dk):
     """Generator: controller set for a canister Casals is provisioning.
 
-    When a multisig governance canister is in the orchestra, it is the sole IC
-    controller (Casals remains a Baton commander but not an IC controller).
-    Otherwise: Casals, optional monitor, stand commander, and inherited
-    controllers from the commander principal.
+    Casals, optional monitor, stand commanders, and controllers inherited from
+    the commander principals. When a multisig governance canister is in the
+    orchestra it is included as the first co-controller — but never the sole
+    one: Casals must keep direct control so provisioning can proceed
+    (asset grants, baton hand-offs), and the commander-inherited set is what
+    authorizes the installer to drive post-install bootstrap on new realms
+    (extension/codex installs run against the realm backend, which trusts its
+    IC controllers). Tightening to sole-multisig control is an explicit
+    post-deploy governance action, not part of provisioning.
     """
-    mid = _governance_multisig_id()
-    if mid:
-        return [mid]
-
     s = _settings()
     self_id = ic.id().to_str()
-    base = [self_id]
+    base = []
+    mid = _governance_multisig_id()
+    if mid:
+        base.append(mid)
+    base.append(self_id)
     if s.monitor_enabled and s.monitor_principal:
         base.append(s.monitor_principal.strip())
 
