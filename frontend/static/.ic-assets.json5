@@ -4,7 +4,7 @@
     "security_policy": "standard",
     "headers": {
       "Cache-Control": "public, max-age=0, must-revalidate",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* http://*.localhost:* https://icp0.io https://*.icp0.io https://icp-api.io https://ic-api.internetcomputer.org https://*.ic0.app https://identity.ic0.app; img-src 'self' data: http://*.localhost:* https://*.icp0.io https://*.ic0.app; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src https://identity.ic0.app https://*.ic0.app; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;"
+      "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* http://*.localhost:* https://icp0.io https://*.icp0.io https://icp-api.io https://ic-api.internetcomputer.org https://*.ic0.app https://identity.ic0.app https://*.realmsgos.dev https://*.realmsops.dev; img-src 'self' data: http://*.localhost:* https://*.icp0.io https://*.ic0.app; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src https://identity.ic0.app https://*.ic0.app; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;"
     },
     "allow_raw_access": false
   },
