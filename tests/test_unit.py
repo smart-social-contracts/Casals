@@ -411,6 +411,19 @@ def test_max_returnable_cycles_respects_floor():
     assert util.max_returnable_cycles(1_000_000_000_000, 500_000_000_000, 500_000_000_000) == 0
 
 
+def test_canister_name_taken_uses_alias_lookup():
+    import helpers
+    from unittest.mock import MagicMock, patch
+
+    taken = MagicMock()
+    taken._id = "1"
+    with patch("models.Canister.__class_getitem__", return_value=taken) as lookup:
+        assert helpers._canister_name_taken("fe") is True
+        assert helpers._canister_name_taken("fe", exclude_id="1") is False
+        lookup.return_value = None
+        assert helpers._canister_name_taken("fe") is False
+
+
 # ── auth: permission constants ───────────────────────────────────────────────
 
 def test_permission_keys_match_permissions_table():

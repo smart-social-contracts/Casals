@@ -129,6 +129,41 @@ def _variant_first_number(decoded: str):
     return vals[0] if vals else None
 
 
+# ── Canister registry (O(1) alias lookups — never scan instances()) ───────────
+
+def _canister_name_taken(name: str, exclude_id: str = None) -> bool:
+    from models import Canister
+
+    name = (name or "").strip()
+    if not name:
+        return False
+    st = Canister[name]
+    if st is None:
+        return False
+    if exclude_id and str(st._id) == str(exclude_id):
+        return False
+    return True
+
+
+def _require_unique_canister_name(name: str) -> None:
+    if _canister_name_taken(name):
+        raise Exception(f"canister '{(name or '').strip()}' already exists")
+
+
+def _find_canister_by_name(name: str):
+    from models import Canister
+
+    name = (name or "").strip()
+    return Canister[name] if name else None
+
+
+def _find_canister_by_id(canister_id: str):
+    from models import Canister
+
+    cid = (canister_id or "").strip()
+    return Canister["canister_id", cid] if cid else None
+
+
 # ── Response helpers ─────────────────────────────────────────────────────────
 
 def _ok(**kw) -> str:

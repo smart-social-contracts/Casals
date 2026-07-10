@@ -20,7 +20,15 @@ from ic_python_logging import get_logger
 from models import Canister, CycleSample
 from util import cycles_status, decide_topup, resolve_cycle_policy
 from audit import _append_event
-from helpers import _settings, unwrap_call_result, _nat64s_in, _nats_in, _variant_first_number
+from helpers import (
+    _find_canister_by_name,
+    _find_canister_by_id,
+    _settings,
+    unwrap_call_result,
+    _nat64s_in,
+    _nats_in,
+    _variant_first_number,
+)
 
 _log = get_logger("casals")
 
@@ -138,15 +146,37 @@ def _min_cycles_source(st: Canister, s=None) -> str:
     return "default"
 
 
+def _resolve_managed_canister(params):
+    """Resolve one Canister by ``canister_id`` (preferred) or registered ``canister`` name."""
+    cid = (params.get("canister_id") or "").strip()
+    name = (params.get("canister") or "").strip()
+    if cid:
+        st = _find_canister_by_id(cid)
+        if st is None and name:
+            by_name = _find_canister_by_name(name)
+            if by_name and (by_name.canister_id or "").strip() == cid:
+                st = by_name
+        if st is None:
+            raise Exception(f"unknown canister_id '{cid}'")
+        return st
+    if name:
+        st = _find_canister_by_name(name)
+        if st is None:
+            raise Exception(f"unknown canister '{name}'")
+        return st
+    raise Exception("expected 'canister_id' or 'canister'")
+
+
 def _resolve_canister_or_stand(params):
     """Return (targets, stand) for a {"canister": ...} or {"stand": ...}
     request."""
     from models import Stand
+    cid = (params.get("canister_id") or "").strip()
+    if cid:
+        st = _resolve_managed_canister(params)
+        return [st], st.stand
     if params.get("canister"):
-        list(Canister.instances())
-        st = Canister[params["canister"].strip()]
-        if st is None:
-            raise Exception(f"unknown canister '{params['canister']}'")
+        st = _resolve_managed_canister(params)
         return [st], st.stand
     if params.get("stand"):
         list(Stand.instances())

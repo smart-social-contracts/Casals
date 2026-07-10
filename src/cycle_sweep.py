@@ -21,7 +21,7 @@ from cycles import (
     _sync_treasury_baseline,
 )
 from helpers import _settings, unwrap_call_result
-from lifecycle import _install_arg_for, _pull_and_install, _resolve_authorized_wasm
+from lifecycle import _install_arg_for, _maybe_provision_assets, _pull_and_install, _resolve_authorized_wasm
 from wasm_types import wasm_type_of_wasm
 from util import max_returnable_cycles, to_hex as _to_hex
 
@@ -114,6 +114,7 @@ def return_cycles_gen(st, amount: int):
         yield from _pull_and_install(
             cid, w.registry_namespace, w.registry_path, w.wasm_hash,
             {"upgrade": None}, _install_arg_for(w), wasm_type_of_wasm(w))
+        yield from _maybe_provision_assets(cid, w, dk)
         yield from _set_running(cid, was_running)
         try:
             yield management_canister.delete_canister_snapshot({

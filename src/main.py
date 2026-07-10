@@ -83,6 +83,7 @@ from cycles import (
     _reconcile_all_gen,
     _refresh_fx_gen,
     _resolve_canister_or_stand,
+    _resolve_managed_canister,
     _record_cycle_sample,
     _status_cycles,
     _status_freezing,
@@ -110,6 +111,7 @@ from helpers import (
     VERSION,
     _caller,
     _canister_call,
+    _canister_name_taken,
     _err,
     _file_registry,
     _is_controller,
@@ -117,6 +119,7 @@ from helpers import (
     _ok,
     _principals_in,
     _parse_principal_subnet_auth_map,
+    _require_unique_canister_name,
     _settings,
     unwrap_call_result,
 )
@@ -1032,12 +1035,12 @@ def rename_canister(args: text) -> text:
         new_name = params["new_name"].strip()
         list(Section.instances())
         list(Stand.instances())
-        canisters = list(Canister.instances())
-        st = Canister[old_name] or next((s for s in canisters if s.name == old_name), None)
+        list(Canister.instances())
+        st = Canister[old_name]
         if st is None:
             return _err(f"unknown canister '{old_name}'")
         _require_commander(st.stand, "canister.rename")
-        if new_name != old_name and Canister[new_name] is not None:
+        if new_name != old_name and _canister_name_taken(new_name, exclude_id=st._id):
             return _err(f"canister '{new_name}' already exists")
         st.name = new_name
         _pool_mark_in_use(st.canister_id, new_name)
@@ -3405,16 +3408,12 @@ def return_cycles(args: text) -> Async[text]:
     """
     try:
         params = json.loads(args)
-        name = (params.get("canister") or "").strip()
-        if not name:
-            return _err("expected 'canister'")
         amount = params.get("amount")
         if amount is None:
             return _err("expected 'amount'")
-        list(Canister.instances())
-        st = Canister[name]
-        if st is None:
-            return _err(f"unknown canister '{name}'")
+        if not (params.get("canister_id") or params.get("canister")):
+            return _err("expected 'canister_id' or 'canister'")
+        st = _resolve_managed_canister(params)
         dk = st.stand
         _require_commander(dk, "canister.topup")
         out = yield from return_cycles_gen(st, int(amount))

@@ -25,6 +25,7 @@ from helpers import (
     _file_registry,
     _nat64s_in,
     _principals_in,
+    _require_unique_canister_name,
     _settings,
     unwrap_call_result,
 )
@@ -38,6 +39,11 @@ _log = get_logger("casals")
 
 # Cycles provisioned into a freshly created canister.  Tune per deployment.
 CREATE_CYCLES = 2_000_000_000_000  # 2T
+
+# IC protocol limit on a canister's controller set. update_settings /
+# create_canister reject longer lists outright, so any resolved controller
+# set must be truncated to this size.
+MAX_CONTROLLERS = 10
 
 # Per-chunk read size when pulling a WASM from the file-registry (matches the
 # registry's get_file_chunk cap).
@@ -637,7 +643,31 @@ def _resolve_provision_controllers(dk):
         inherited.append(commander)
         inherited.extend((yield from _fetch_canister_controllers(commander)))
 
-    return _merge_controllers(base, inherited)
+    merged = _merge_controllers(base, inherited)
+    # The IC caps a canister at 10 controllers and rejects longer lists at the
+    # candid layer, so an oversized union must be truncated. Keep canister
+    # principals (multisig/baton, Casals, monitor, commanders — the governance
+    # topology) ahead of commander-inherited self-authenticating (human/dev)
+    # identities: humans co-controlling the commander can still act on the new
+    # canister through Casals or the baton, so they are the safe ones to drop.
+    if len(merged) > MAX_CONTROLLERS:
+        canisters = [p for p in merged if _is_canister_principal(p)]
+        humans = [p for p in merged if not _is_canister_principal(p)]
+        kept = (canisters + humans)[:MAX_CONTROLLERS]
+        dropped = [p for p in merged if p not in kept]
+        _log.warning(
+            f"controller set for stand '{dk.name}' has {len(merged)} principals; "
+            f"IC allows {MAX_CONTROLLERS} — dropping {dropped}"
+        )
+        merged = kept
+    return merged
+
+
+def _is_canister_principal(p: str) -> bool:
+    """True for opaque (canister) principals, False for self-authenticating
+    (user key) principals. Canister ids are short (<= ~10 bytes, 27 text
+    chars); self-authenticating principals are 29 bytes (63 text chars)."""
+    return len((p or "").strip()) < 40
 
 
 def _ensure_provision_controllers_gen(canister_id: str, dk):
@@ -771,11 +801,13 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
 
     Name reservation: the Canister record is written to stable memory with
     status CREATED *before* the first yield so that concurrent calls for the
-    same name are rejected by the `Canister[name] is not None` check in
-    `create_canister` (see issue #casals-dedup).
+    same name are rejected by ``_require_unique_canister_name`` in
+    ``create_canister`` (see issue #casals-dedup).
     """
     subnet, subnet_type = _target_subnet(dk)
     assert_subnet_allowed(subnet, subnet_type)
+
+    _require_unique_canister_name(name)
 
     # Reserve the name in stable memory atomically (before the first yield).
     # This prevents a concurrent create_canister call for the same name from
@@ -819,9 +851,16 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         _append_event("create_failed", cid, {"expected": w.wasm_hash, "actual": actual})
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
-    controllers = yield from _resolve_provision_controllers(dk)
-    if controllers:
-        yield from _add_controllers(cid, controllers)
+    try:
+        controllers = yield from _resolve_provision_controllers(dk)
+        if controllers:
+            yield from _add_controllers(cid, controllers)
+    except Exception:
+        # Return the allocation instead of leaking an in_use pool entry with a
+        # dangling CREATED record (the canister is installed and reusable).
+        _pool_free(cid)
+        st.delete()
+        raise
 
     try:
         yield from _set_log_visibility(cid, True)
@@ -898,6 +937,8 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
             yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
         except Exception:
             pass
+
+    _require_unique_canister_name(name)
 
     st = Canister(name=name)
     st.stand = dk

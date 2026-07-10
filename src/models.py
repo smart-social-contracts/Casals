@@ -125,6 +125,34 @@ class Canister(Entity, TimestampedMixin):
     # or multisig governance sets controllers.
     ic_controllers = String(max_length=1024, default="")
 
+    def _save(self):
+        """Enforce unique ``name`` and ``canister_id`` via alias indexes (O(1))."""
+        db = self.db()
+        name = (self.name or "").strip()
+        if name:
+            owner_id = db.load(self._alias_key(), name)
+            if owner_id and str(owner_id) != str(self._id):
+                raise ValueError(f"canister '{name}' already exists")
+        cid = (self.canister_id or "").strip()
+        if cid:
+            owner_id = db.load(self._alias_key("canister_id"), cid)
+            if owner_id and str(owner_id) != str(self._id):
+                raise ValueError(f"canister_id '{cid}' already registered")
+        if self._loaded:
+            old = db.load(self._type, self._id) or {}
+            old_cid = (old.get("canister_id") or "").strip()
+            if old_cid and old_cid != cid:
+                db.delete(self._alias_key("canister_id"), old_cid)
+        super()._save()
+        if cid:
+            db.save(self._alias_key("canister_id"), cid, self._id)
+
+    def delete(self):
+        cid = (self.canister_id or "").strip()
+        if cid:
+            self.db().delete(self._alias_key("canister_id"), cid)
+        super().delete()
+
 
 class CycleSample(Entity, TimestampedMixin):
     """A point-in-time reading of one canister's cycle balance.

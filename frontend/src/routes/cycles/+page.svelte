@@ -403,10 +403,10 @@
       applyOffChainMonitorState(live, meta);
       return;
     }
-    const byName = new Map((live.canisters ?? []).map((c) => [c.name, c]));
+    const byId = new Map((live.canisters ?? []).map((c) => [c.canister_id, c]));
     report = {
       ...report,
-      canisters: (report.canisters ?? []).map((c) => byName.get(c.name) ?? c),
+      canisters: (report.canisters ?? []).map((c) => byId.get(c.canister_id) ?? c),
       totals: live.totals ?? report.totals,
       cached_at: live.cached_at ?? report.cached_at,
     };
@@ -1152,7 +1152,11 @@
         const amount = Math.min(returnParsed, maxReturnable(target));
         if (amount <= 0) continue;
         try {
-          await returnCycles({ canister: target.name, amount });
+          await returnCycles({
+            canister: target.name,
+            canister_id: target.canister_id,
+            amount,
+          });
           ok += 1;
           returnedTotal += amount;
         } catch (e: any) {
@@ -1171,17 +1175,17 @@
       closeReturn();
       if (ok > 0) {
         void refreshTreasuryOnly();
-        void refreshCanistersByNames(targets.map((t) => t.name));
+        void refreshCanistersByIds(targets.map((t) => t.canister_id));
       }
     } finally {
       busy = '';
     }
   }
 
-  async function refreshSelectedCanisters(names: string[]) {
-    if (!names.length) return;
+  async function refreshSelectedCanisters(names: string[], canisterIds: string[] = []) {
+    if (!names.length && !canisterIds.length) return;
     if (meta?.monitor_service_url) {
-      const live = await monitorPollCanisters(names);
+      const live = await monitorPollCanisters(names, canisterIds);
       if (!live) throw new Error('Off-chain monitor canister refresh failed');
       mergeCanisterRows(live);
       return;
@@ -1207,6 +1211,19 @@
     }
   }
 
+  async function refreshCanistersByIds(canisterIds: string[]) {
+    if (!canisterIds.length) return;
+    const names = canisterIds
+      .map((id) => report?.canisters?.find((c) => c.canister_id === id)?.name)
+      .filter((n): n is string => Boolean(n));
+    try {
+      await refreshSelectedCanisters(names, canisterIds);
+    } catch {
+      // refreshSelectedCanisters already toasts on failure
+    }
+  }
+
+  /** @deprecated Prefer refreshCanistersByIds when canister_id is known. */
   async function refreshCanistersByNames(names: string[]) {
     if (!names.length) return;
     try {
@@ -2106,6 +2123,11 @@
         <p class="text-sm text-primary-500 mb-4">
           Sweep cycles from {returnTargets.length === 1 ? 'this canister' : 'each selected canister'} back into the Casals treasury. Each canister keeps its policy headroom and freezing reserve.
         </p>
+        {#if busy === 'bulk:return'}
+          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
+            Returning cycles upgrades the canister briefly to sweep funds, then restores it. This usually takes 1–3 minutes — please keep this dialog open.
+          </p>
+        {/if}
 
         {#if returnTargets.length > 1}
           <p class="text-xs text-primary-500 mb-4">
