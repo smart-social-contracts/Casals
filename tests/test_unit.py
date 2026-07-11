@@ -368,6 +368,22 @@ def test_deployment_from_events_reinstalled():
     assert found == {"at": 300, "kind": "reinstalled", "wasm_key": "w@3"}
 
 
+def test_find_canister_deployment_falls_back_to_canister_record(monkeypatch):
+    import audit
+    monkeypatch.setattr(audit.OrchestrationEvent, "count", lambda: 0)
+    fake = types.SimpleNamespace(
+        wasm_key="token-frontend", wasm_hash="abc", status="registered",
+        _timestamp_updated=123_000,
+    )
+    monkeypatch.setattr(
+        audit, "_find_canister_by_id",
+        lambda cid: fake if cid == "aaaaa-aa" else None,
+    )
+    assert audit.find_canister_deployment("aaaaa-aa") == {
+        "at": 123, "kind": "installed", "wasm_key": "token-frontend",
+    }
+
+
 def test_decide_topup_triggers_below_threshold():
     # Below threshold, treasury healthy => deposit the full top-up amount.
     assert util.decide_topup(

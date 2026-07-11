@@ -8,9 +8,14 @@ evident.  Only `_append_event` writes; everything else is a helper query.
 import json
 
 from basilisk import ic
-from helpers import _caller, unwrap_call_result
-from models import OrchestrationEvent
+from helpers import _caller, _find_canister_by_id, unwrap_call_result
+from models import CanisterStatus, OrchestrationEvent
 from util import audit_block_hash
+
+# Cap audit-log scans so get_canister_deployment stays under the 5B query limit
+# in Basilisk/Python WASM (~6k events already exceeds it when no match exists).
+_MAX_DEPLOYMENT_SCAN_BATCHES = 16
+_DEPLOYMENT_SCAN_BATCH = 64
 
 # Audit event types that represent a successful code deployment on a canister.
 DEPLOYMENT_EVENT_KINDS = {
@@ -35,25 +40,46 @@ def deployment_from_events(canister_id: str, events) -> dict | None:
     return None
 
 
+def _deployment_from_canister(canister_id: str) -> dict | None:
+    """Fallback when the audit log has no recent deployment event."""
+    st = _find_canister_by_id(canister_id)
+    if st is None:
+        return None
+    wasm_key = (st.wasm_key or "").strip()
+    wasm_hash = (st.wasm_hash or "").strip()
+    if not wasm_key and not wasm_hash:
+        return None
+    kind = "installed"
+    if (st.status or "").strip() == CanisterStatus.UPGRADING:
+        kind = "upgraded"
+    ts_ms = int(getattr(st, "_timestamp_updated", 0) or 0)
+    return {
+        "at": ts_ms // 1000 if ts_ms else 0,
+        "kind": kind,
+        "wasm_key": wasm_key,
+    }
+
+
 def find_canister_deployment(canister_id: str) -> dict | None:
-    """Scan the audit log for the most recent install/upgrade/reinstall."""
+    """Return the most recent install/upgrade/reinstall for a canister id."""
     cid = (canister_id or "").strip()
     if not cid:
         return None
+    # Registered orchestra canisters (incl. external token/nft services) carry
+    # wasm_hash/key on the Canister row — avoid scanning the audit log at all.
+    from_canister = _deployment_from_canister(cid)
+    if from_canister:
+        return from_canister
     total = OrchestrationEvent.count()
     if not total:
         return None
+    # One tail load (same pattern as get_events) — many small load_some calls
+    # blow the 5B query limit in Basilisk/Python WASM.
+    fetch = min(total, _DEPLOYMENT_SCAN_BATCH * _MAX_DEPLOYMENT_SCAN_BATCHES)
     max_oid = OrchestrationEvent.max_id()
-    batch = 64
-    oid = max_oid
-    while oid >= 1:
-        start = max(1, oid - batch + 1)
-        evs = OrchestrationEvent.load_some(start, oid - start + 1)
-        found = deployment_from_events(cid, reversed(evs))
-        if found:
-            return found
-        oid = start - 1
-    return None
+    start_id = max(1, max_oid - fetch + 1)
+    evs = OrchestrationEvent.load_some(start_id, fetch)
+    return deployment_from_events(cid, reversed(evs))
 
 
 def _last_event():
