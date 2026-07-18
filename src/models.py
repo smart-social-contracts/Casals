@@ -256,6 +256,8 @@ class Settings(Entity):
     file_registry_frontend_canister_id = String(max_length=64, default="")
     # Asset canister serving this Casals SPA (for off-chain cycle monitoring).
     casals_frontend_canister_id = String(max_length=64, default="")
+    # realm_installer canister allowed to call destroy_realm_stand (alpha teardown).
+    realm_installer_canister_id = String(max_length=64, default="")
     # Off-chain monitor (casals-monitor): when enabled, its principal is added as
     # a co-controller of managed canisters so it can read canister_status and
     # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot

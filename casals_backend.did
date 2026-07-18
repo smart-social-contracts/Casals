@@ -128,6 +128,7 @@ service : {
   "delete_stand" : (text) -> (text);
   "delete_canister" : (text) -> (text);
   "destroy_canister" : (text) -> (text);
+  "destroy_realm_stand" : (text) -> (text);
   "set_commander" : (text) -> (text);
   "remove_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);

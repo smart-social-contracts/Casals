@@ -217,6 +217,37 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
     assert len(merged) == 3
 
 
+def test_patch_cycles_snapshot_remove_canisters():
+    import json
+    import cycles as cycles_mod
+
+    snapshot = {
+        "treasury": {"balance": 1_000, "reserve": 0, "spendable": 1_000},
+        "canisters": [
+            {"canister_id": "aaaaa-aa", "name": "keep-me", "status": "ok"},
+            {"canister_id": "bbbbb-bb", "name": "gone", "status": "ok"},
+        ],
+        "totals": {"canisters": 2, "ok": 2, "low": 0, "critical": 0, "frozen": 0, "error": 0},
+        "pool": {
+            "total": 2,
+            "free": 0,
+            "in_use": 2,
+            "canisters": [
+                {"canister_id": "aaaaa-aa", "status": "in_use"},
+                {"canister_id": "bbbbb-bb", "status": "in_use"},
+            ],
+        },
+    }
+    cycles_mod._cycles_cache = json.dumps(snapshot)
+    cycles_mod.patch_cycles_snapshot_remove_canisters(["bbbbb-bb"])
+    data = json.loads(cycles_mod._cycles_cache)
+    assert [c["canister_id"] for c in data["canisters"]] == ["aaaaa-aa"]
+    assert data["totals"]["canisters"] == 1
+    assert [p["canister_id"] for p in data["pool"]["canisters"]] == ["aaaaa-aa"]
+    assert data["pool"]["total"] == 1
+    assert data["removed_canisters"] == ["bbbbb-bb"]
+
+
 def test_should_record_cycle_sample_respects_gap(monkeypatch):
     import cycles as cycles_mod
     import models as models_mod

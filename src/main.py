@@ -105,6 +105,7 @@ from cycles import (
     refresh_cycles_snapshot_settings,
     REFRESH_CANISTERS_BATCH_MAX,
     _build_treasury_obj_gen,
+    patch_cycles_snapshot_remove_canisters,
 )
 from helpers import (
     ANONYMOUS,
@@ -140,6 +141,7 @@ from lifecycle import (
     _resolve_authorized_wasm,
     _destroy_canister_gen,
     _destroy_ic_canister_gen,
+    _destroy_realm_stand_gen,
     _retire_canister,
     _set_log_visibility,
     _spec_target_subnet,
@@ -259,6 +261,18 @@ def post_upgrade_() -> void:
 def _require_admin() -> None:
     if not _is_controller():
         raise Exception("unauthorized: caller is not a Casals controller")
+
+
+def _require_admin_or_realm_installer() -> None:
+    """Casals controllers or the configured realm_installer may destroy user realms."""
+    if _is_controller():
+        return
+    installer_id = (_settings().realm_installer_canister_id or "").strip()
+    if installer_id and _caller() == installer_id:
+        return
+    raise Exception(
+        "unauthorized: caller is not a Casals controller or configured realm installer"
+    )
 
 
 def _require_can_add() -> None:
@@ -399,6 +413,7 @@ def casals_metadata() -> text:
         "file_registry_canister_id": s.file_registry_canister_id,
         "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
         "casals_frontend_canister_id": s.casals_frontend_canister_id,
+        "realm_installer_canister_id": s.realm_installer_canister_id,
         "monitor_enabled": bool(s.monitor_enabled),
         "monitor_principal": s.monitor_principal,
         "monitor_service_url": (s.monitor_service_url or ""),
@@ -845,6 +860,7 @@ def set_settings(args: text) -> text:
     {open_access: bool, file_registry_canister_id: str,
      file_registry_frontend_canister_id: str,
      casals_frontend_canister_id: str,
+     realm_installer_canister_id: str,
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
      alert_emails: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
@@ -865,6 +881,10 @@ def set_settings(args: text) -> text:
         if "casals_frontend_canister_id" in params:
             s.casals_frontend_canister_id = (
                 params["casals_frontend_canister_id"] or ""
+            ).strip()
+        if "realm_installer_canister_id" in params:
+            s.realm_installer_canister_id = (
+                params["realm_installer_canister_id"] or ""
             ).strip()
         if "monitor_enabled" in params:
             s.monitor_enabled = 1 if params["monitor_enabled"] else 0
@@ -1127,11 +1147,13 @@ def delete_canister(args: text) -> text:
 def destroy_canister(args: text) -> Async[text]:
     """Permanently delete a canister on the IC and reclaim its cycles to Casals.
 
-    Unlike ``delete_canister`` (retire-to-pool), this stops the canister, calls
-    management ``delete_canister`` (remaining cycles return to Casals' treasury),
-    removes any pool entry, and deletes the Canister record. Irreversible.
-    Controller-only. Args (JSON): {canister: <registered name>} or
-    {canister_id: <raw id>} to destroy a pooled/orphan canister by id."""
+    Unlike ``delete_canister`` (retire-to-pool), this drains the canister's
+    cycles into the Casals treasury (via the embedded cycles-sweep helper),
+    then stops and deletes it, removes any pool entry, and deletes the
+    Canister record. If the drain fails the canister is left intact so cycles
+    are never burned. Irreversible. Controller-only.
+    Args (JSON): {canister: <registered name>} or {canister_id: <raw id>} to
+    destroy a pooled/orphan canister by id."""
     try:
         _require_admin()
         params = json.loads(args)
@@ -1154,6 +1176,33 @@ def destroy_canister(args: text) -> Async[text]:
         return _err("provide 'canister' (registered name) or 'canister_id'")
     except Exception as e:
         _log.error(f"destroy_canister error: {e}")
+        return _err(str(e))
+
+
+@update
+def destroy_realm_stand(args: text) -> Async[text]:
+    """Destroy all canisters for a user-provisioned alpha realm; cycles → Casals treasury.
+
+    Authorization: Casals controller or ``Settings.realm_installer_canister_id``.
+    Args (JSON): {stand?, backend_canister_id?, frontend_canister_id?} — at least one
+    locator. When the stand is registered, every canister in it is destroyed and the
+    stand record is removed; otherwise the supplied raw canister ids are destroyed.
+    """
+    try:
+        _require_admin_or_realm_installer()
+        params = json.loads(args)
+        result = yield from _destroy_realm_stand_gen(params)
+        yield from _sync_treasury_baseline_gen()
+        removed = [
+            (d.get("canister_id") or "").strip()
+            for d in (result.get("destroyed") or [])
+            if (d.get("canister_id") or "").strip()
+        ]
+        if removed:
+            patch_cycles_snapshot_remove_canisters(removed)
+        return _ok(**result)
+    except Exception as e:
+        _log.error(f"destroy_realm_stand error: {e}")
         return _err(str(e))
 
 

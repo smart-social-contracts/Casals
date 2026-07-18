@@ -546,6 +546,57 @@ def patch_cycles_snapshot_treasury(cycles: int, icp_e8s=None) -> None:
         _log.error(f"patch cycles snapshot treasury failed: {e}")
 
 
+def patch_cycles_snapshot_remove_canisters(canister_ids) -> None:
+    """Drop destroyed canister rows from the persisted cycles snapshot.
+
+    Called after realm teardown so ``get_cycles_cached`` reflects reclaimed
+    treasury and no longer lists deleted canisters until the next full refresh.
+    """
+    global _cycles_cache
+    remove = {str(cid).strip() for cid in (canister_ids or []) if str(cid).strip()}
+    if not remove:
+        return
+    try:
+        from models import CyclesSnapshot
+        snap = CyclesSnapshot["singleton"]
+        raw = (snap.snapshot_json if snap else None) or _cycles_cache
+        if not raw:
+            return
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return
+
+        canisters_out = [
+            c for c in (data.get("canisters") or [])
+            if (c.get("canister_id") or "").strip() not in remove
+        ]
+        data["canisters"] = canisters_out
+        data["totals"] = _recompute_cycle_totals(canisters_out)
+
+        pool = dict(data.get("pool") or {})
+        pool_cans = [
+            p for p in (pool.get("canisters") or [])
+            if (p.get("canister_id") or "").strip() not in remove
+        ]
+        pool["canisters"] = pool_cans
+        pool["total"] = len(pool_cans)
+        pool["in_use"] = sum(1 for p in pool_cans if (p.get("status") or "") == "in_use")
+        pool["free"] = sum(1 for p in pool_cans if (p.get("status") or "") == "free")
+        data["pool"] = pool
+
+        data["cached_at"] = _now_secs()
+        data["partial_refresh"] = True
+        data["removed_canisters"] = sorted(remove)
+        patched = json.dumps(data)
+        _cycles_cache = patched
+        if snap:
+            snap.snapshot_json = patched
+            snap.updated_at = _now_secs()
+            snap.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"patch cycles snapshot remove canisters failed: {e}")
+
+
 def _recompute_cycle_totals(canisters_out):
     """Recount status labels after a policy-only snapshot patch."""
     counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}

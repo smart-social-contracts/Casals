@@ -1386,6 +1386,20 @@ export async function destroyCanister(args: { canister?: string; canister_id?: s
   return _parseUpdate(await (await _actor(true)).destroy_canister(JSON.stringify(args)));
 }
 
+export async function destroyRealmStand(args: {
+  stand?: string;
+  backend_canister_id?: string;
+  frontend_canister_id?: string;
+}): Promise<UpdateResult & {
+  stand?: string;
+  destroyed?: { name?: string; canister_id?: string; cycles_reclaimed?: number }[];
+  errors?: { name?: string; canister_id?: string; error?: string }[];
+  total_cycles_reclaimed?: number;
+  treasury_after?: number;
+}> {
+  return _parseUpdate(await (await _actor(true)).destroy_realm_stand(JSON.stringify(args)));
+}
+
 export async function setCommander(args: {
   section?: string;
   stand?: string;

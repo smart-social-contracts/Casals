@@ -13,7 +13,7 @@ import json
 from basilisk import Principal, ic
 from basilisk.canisters.management import management_canister
 from ic_python_logging import get_logger
-from models import Canister, CanisterKind, CanisterStatus, PooledCanister
+from models import Canister, CanisterKind, CanisterStatus, PooledCanister, Stand
 from services import AssetCanisterService
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
@@ -23,6 +23,7 @@ from subnets import assert_subnet_allowed
 from helpers import (
     _caller,
     _file_registry,
+    _find_canister_by_id,
     _nat64s_in,
     _principals_in,
     _require_unique_canister_name,
@@ -994,16 +995,78 @@ def _retire_canister(st):
     st.delete()
 
 
-def _destroy_ic_canister_gen(cid: str, name: str = ""):
-    """Generator: stop + delete an IC canister by id; reclaim cycles to Casals."""
-    cycles_reclaimed = 0
-    treasury_before = int(ic.canister_balance128())
+# Escalating headroom left on a doomed canister while sweeping its balance to
+# the treasury. Making a call on the IC requires prepaid reservations (response
+# bytes + callback execution), so the sweep needs a few billion cycles of
+# headroom; we start small to minimise the burned remainder and double until
+# the sweep goes through. Whatever headroom remains after the last sweep is
+# burned by delete_canister.
+DESTROY_SWEEP_RESERVES = (
+    8_000_000_000,      # 8B
+    16_000_000_000,
+    32_000_000_000,
+    64_000_000_000,
+    128_000_000_000,
+    256_000_000_000,    # matches the magnitude of SWEEP_EXEC_RESERVE
+)
+
+
+def _drain_cycles_before_destroy_gen(cid: str) -> int:
+    """Generator: sweep (nearly) all of a doomed canister's cycles to Casals.
+
+    The IC's ``delete_canister`` burns any remaining balance instead of
+    crediting the caller, so before deletion we reinstall the embedded
+    cycles-sweep helper on the target and have it ``deposit_cycles`` its whole
+    balance (minus a small execution reserve) into the Casals treasury.
+    Raises on failure — callers must NOT delete the canister then, so cycles
+    are never silently burned. Returns the amount swept.
+    """
+    from cycle_sweep import _call_sweep, _install_wasm_bytes
+    from cycle_sweep_wasm import sweep_wasm_bytes
     pid = Principal.from_str(cid)
+    # Drop the freezing threshold so the full balance is attachable to the sweep.
+    res = yield management_canister.update_settings({
+        "canister_id": pid,
+        "settings": {"freezing_threshold": 0},
+    })
+    unwrap_call_result(res)
+    yield from _install_wasm_bytes(cid, sweep_wasm_bytes(), {"reinstall": None})
     try:
-        status_res = yield management_canister.canister_status({"canister_id": pid})
-        cycles_reclaimed = _status_cycles(unwrap_call_result(status_res))
+        yield management_canister.start_canister({"canister_id": pid})
     except Exception:
         pass
+
+    last_err = None
+    for reserve in DESTROY_SWEEP_RESERVES:
+        status_res = yield management_canister.canister_status({"canister_id": pid})
+        balance = _status_cycles(unwrap_call_result(status_res))
+        amount = balance - reserve
+        if amount <= 0:
+            return 0
+        try:
+            yield from _call_sweep(cid, ic.id().to_str(), amount)
+            return amount
+        except Exception as e:
+            # Insufficient headroom shows up as "out of cycles" (executing the
+            # sweep method) or a SysTransient "Couldn't send message" trap
+            # (cycle reservations for the deposit_cycles call exceed what's
+            # left after attaching `amount`). Retry with a bigger reserve.
+            last_err = e
+            msg = str(e).lower()
+            if ("out of cycles" not in msg
+                    and "couldn't send message" not in msg
+                    and "systransient" not in msg):
+                raise
+    raise Exception(f"cycles sweep failed at max reserve: {last_err}")
+
+
+def _destroy_ic_canister_gen(cid: str, name: str = ""):
+    """Generator: drain a canister's cycles to the Casals treasury, then stop +
+    delete it on the IC. Draining must succeed before deletion — a failed drain
+    aborts the destroy (canister left intact) rather than burning its balance."""
+    treasury_before = int(ic.canister_balance128())
+    pid = Principal.from_str(cid)
+    cycles_reclaimed = yield from _drain_cycles_before_destroy_gen(cid)
     try:
         yield management_canister.stop_canister({"canister_id": pid})
     except Exception:
@@ -1039,3 +1102,123 @@ def _destroy_canister_gen(st):
     result = yield from _destroy_ic_canister_gen(cid, name)
     st.delete()
     return result
+
+
+def _find_stand_for_canister(canister_id: str):
+    """Return the Stand owning ``canister_id``, or None."""
+    cid = (canister_id or "").strip()
+    if not cid:
+        return None
+    st = _find_canister_by_id(cid)
+    if st is not None and getattr(st, "stand", None) is not None:
+        return st.stand
+    list(Stand.instances())
+    for dk in Stand.instances():
+        for c in (dk.canisters or []):
+            if (c.canister_id or "").strip() == cid:
+                return dk
+    return None
+
+
+def _destroy_sort_key(canister_name: str) -> tuple:
+    """Order canister teardown: quarters → frontend → backend → baton → other."""
+    name = (canister_name or "").lower()
+    if "quarter" in name:
+        return (0, name)
+    if name.endswith("-frontend"):
+        return (1, name)
+    if name.endswith("-backend") and "baton" not in name:
+        return (2, name)
+    if "baton" in name:
+        return (3, name)
+    return (4, name)
+
+
+def _destroy_realm_stand_gen(params: dict):
+    """Generator: destroy a wizard/user realm stand and reclaim cycles to Casals.
+
+    Locates the stand by explicit name and/or backend/frontend canister ids.
+    When the stand is registered in Casals, every canister in it is destroyed
+    (including batons and auto-provisioned quarters). Otherwise falls back to
+    destroying the supplied raw canister ids.
+
+    Each canister is drained into the Casals treasury before deletion; a
+    canister whose drain fails is left intact (listed under ``errors``) so no
+    cycles are ever burned.
+    """
+    stand_name = (params.get("stand") or "").strip()
+    backend_id = (params.get("backend_canister_id") or "").strip()
+    frontend_id = (params.get("frontend_canister_id") or "").strip()
+
+    list(Stand.instances())
+    list(Canister.instances())
+
+    dk = None
+    if stand_name:
+        dk = Stand[stand_name] or next(
+            (d for d in Stand.instances() if (d.name or "") == stand_name), None
+        )
+    if dk is None and backend_id:
+        dk = _find_stand_for_canister(backend_id)
+    if dk is None and frontend_id:
+        dk = _find_stand_for_canister(frontend_id)
+
+    destroyed = []
+    errors = []
+    total_cycles = 0
+
+    if dk is not None:
+        stand_name = dk.name or stand_name
+        canisters = sorted(
+            list(dk.canisters or []),
+            key=lambda c: _destroy_sort_key(c.name or ""),
+        )
+        for c in canisters:
+            cid = (c.canister_id or "").strip()
+            if not cid:
+                continue
+            try:
+                res = yield from _destroy_canister_gen(c)
+                reclaimed = int(res.get("cycles_reclaimed") or 0)
+                total_cycles += reclaimed
+                destroyed.append({
+                    "name": c.name,
+                    "canister_id": cid,
+                    "cycles_reclaimed": reclaimed,
+                })
+            except Exception as e:
+                errors.append({
+                    "name": c.name,
+                    "canister_id": cid,
+                    "error": str(e),
+                })
+        if not errors:
+            # Only drop the stand record once every canister was drained and
+            # deleted; on partial failure the survivors stay retriable.
+            dk.delete()
+        _append_event("stand_destroyed", "", {
+            "stand": stand_name,
+            "canisters": len(destroyed),
+            "failed": len(errors),
+            "cycles_reclaimed": total_cycles,
+        })
+    else:
+        for cid in [frontend_id, backend_id]:
+            if not cid:
+                continue
+            try:
+                res = yield from _destroy_ic_canister_gen(cid)
+                reclaimed = int(res.get("cycles_reclaimed") or 0)
+                total_cycles += reclaimed
+                destroyed.append({"canister_id": cid, "cycles_reclaimed": reclaimed})
+            except Exception as e:
+                errors.append({"canister_id": cid, "error": str(e)})
+
+    treasury_after = int(ic.canister_balance128())
+    return {
+        "stand": stand_name,
+        "destroyed": destroyed,
+        "errors": errors,
+        "total_cycles_reclaimed": total_cycles,
+        "treasury_after": treasury_after,
+    }

@@ -13,6 +13,8 @@
     monitorPollCanisters,
     monitorPollFlow,
     setCyclePolicy,
+    destroyCanister,
+    destroyRealmStand,
     reconcile,
     convertTreasuryIcp,
     formatCycles,
@@ -86,6 +88,9 @@
   let policyTargets = $state<CanisterCycles[]>([]);
   let policyAmount = $state('');
   let policyInherit = $state(false);
+  let destroyOpen = $state(false);
+  let destroyAck = $state(false);
+  let destroyConfirmText = $state('');
   let assignPoolTarget = $state<string | null>(null);
   let canisterFilterText = $state('');
   let selectedCanisterIds = $state<Set<string>>(new Set());
@@ -853,7 +858,79 @@
   );
 
   const bulkBusy = $derived(
-    busy === 'bulk:refresh' || busy === 'bulk:topup' || busy === 'bulk:return' || busy === 'bulk:policy',
+    busy === 'bulk:refresh'
+      || busy === 'bulk:topup'
+      || busy === 'bulk:return'
+      || busy === 'bulk:policy'
+      || busy === 'bulk:destroy',
+  );
+
+  function standKey(c: CanisterCycles): string {
+    return `${c.section || ''}\0${c.stand || ''}`;
+  }
+
+  /** Casals infra (conductor, treasury, etc.) must not be destroyed from the cycles page. */
+  function isDestroyProtected(c: CanisterCycles): boolean {
+    return (c.section || '').trim().toLowerCase() === 'casals';
+  }
+
+  type DestroyStandPlan = { section: string; stand: string; canisters: CanisterCycles[] };
+  type DestroyPlan = { stands: DestroyStandPlan[]; canisters: CanisterCycles[] };
+
+  function computeDestroyPlan(selected: CanisterCycles[], all: CanisterCycles[]): DestroyPlan {
+    const allByStand = new Map<string, CanisterCycles[]>();
+    for (const c of all) {
+      if (!c.stand?.trim()) continue;
+      const k = standKey(c);
+      const list = allByStand.get(k) ?? [];
+      list.push(c);
+      allByStand.set(k, list);
+    }
+
+    const selectedByStand = new Map<string, CanisterCycles[]>();
+    for (const c of selected) {
+      const k = standKey(c);
+      const list = selectedByStand.get(k) ?? [];
+      list.push(c);
+      selectedByStand.set(k, list);
+    }
+
+    const stands: DestroyStandPlan[] = [];
+    const canisters: CanisterCycles[] = [];
+
+    for (const sel of selectedByStand.values()) {
+      const k = standKey(sel[0]);
+      const allInStand = allByStand.get(k) ?? [];
+      const allSelected = allInStand.length > 0
+        && sel.length === allInStand.length
+        && allInStand.every((c) => sel.some((s) => s.canister_id === c.canister_id));
+      if (allSelected) {
+        stands.push({
+          section: sel[0].section,
+          stand: sel[0].stand,
+          canisters: sel,
+        });
+      } else {
+        canisters.push(...sel);
+      }
+    }
+
+    return { stands, canisters };
+  }
+
+  const destroyPlan = $derived(computeDestroyPlan(selectedCanisters, report?.canisters ?? []));
+  const destroyProtectedSelection = $derived(selectedCanisters.some(isDestroyProtected));
+  const destroyEstimatedReclaim = $derived(
+    selectedCanisters.reduce((sum, c) => sum + (c.cycles ?? 0), 0),
+  );
+  const destroyConfirmPhrase = $derived.by(() => {
+    const { stands, canisters } = destroyPlan;
+    if (stands.length === 1 && canisters.length === 0) return stands[0].stand;
+    if (canisters.length === 1 && stands.length === 0) return canisters[0].name;
+    return `${selectedCanisters.length} canisters`;
+  });
+  const destroyConfirmValid = $derived(
+    destroyAck && destroyConfirmText.trim() === destroyConfirmPhrase,
   );
 
   function toggleCanisterSort(key: CanisterSortKey) {
@@ -1034,6 +1111,79 @@
     policyTargets = [];
     policyAmount = '';
     policyInherit = false;
+  }
+
+  function openDestroyForSelection() {
+    if (!selectedCanisters.length || destroyProtectedSelection) return;
+    destroyAck = false;
+    destroyConfirmText = '';
+    destroyOpen = true;
+  }
+
+  function closeDestroy() {
+    destroyOpen = false;
+    destroyAck = false;
+    destroyConfirmText = '';
+  }
+
+  async function confirmDestroy() {
+    if (!destroyConfirmValid || !report) return;
+    busy = 'bulk:destroy';
+    const plan = destroyPlan;
+    const destroyedIds = new Set<string>();
+    let reclaimedTotal = 0;
+    let okCount = 0;
+    let lastErr = '';
+
+    try {
+      for (const st of plan.stands) {
+        try {
+          const res = await destroyRealmStand({ stand: st.stand });
+          if (!res.ok) throw new Error(res.error || 'Stand destroy failed');
+          for (const d of st.canisters) destroyedIds.add(d.canister_id);
+          reclaimedTotal += Number(res.total_cycles_reclaimed ?? 0);
+          okCount += st.canisters.length;
+          if (res.errors?.length) {
+            lastErr = res.errors.map((e) => e.error || 'Unknown error').join('; ');
+          }
+        } catch (e: any) {
+          lastErr = e?.message ?? 'Stand destroy failed';
+        }
+      }
+      for (const c of plan.canisters) {
+        try {
+          const res = await destroyCanister({ canister: c.name, canister_id: c.canister_id });
+          if (!res.ok) throw new Error(res.error || 'Destroy failed');
+          destroyedIds.add(c.canister_id);
+          reclaimedTotal += Number((res as { cycles_reclaimed?: number }).cycles_reclaimed ?? c.cycles ?? 0);
+          okCount += 1;
+        } catch (e: any) {
+          lastErr = e?.message ?? 'Destroy failed';
+        }
+      }
+
+      if (okCount > 0) {
+        toasts.success(
+          reclaimedTotal > 0
+            ? `Destroyed ${okCount} canister${okCount === 1 ? '' : 's'} — reclaimed ${formatCycles(reclaimedTotal)} to treasury`
+            : `Destroyed ${okCount} canister${okCount === 1 ? '' : 's'}`,
+        );
+        selectedCanisterIds = new Set(
+          [...selectedCanisterIds].filter((id) => !destroyedIds.has(id)),
+        );
+        closeDestroy();
+        await Promise.all([
+          loadCached(),
+          refreshTreasuryOnly(),
+          getTree().then((t) => { tree = t; }).catch(() => {}),
+        ]);
+        if (lastErr) toasts.error(lastErr);
+      } else {
+        toasts.error(lastErr || 'Destroy failed');
+      }
+    } finally {
+      busy = '';
+    }
   }
 
   async function runReconcile() {
@@ -1781,6 +1931,31 @@
               >
                 Min policy
               </button>
+              <button
+                type="button"
+                class="btn-danger btn-sm"
+                onclick={openDestroyForSelection}
+                disabled={
+                  !selectedCanisterIds.size
+                  || !$isAuthenticated
+                  || $isController !== true
+                  || bulkBusy
+                  || destroyProtectedSelection
+                }
+                title={
+                  !$isAuthenticated
+                    ? 'Log in with Internet Identity'
+                    : $isController === false
+                      ? 'Casals controller access required'
+                      : destroyProtectedSelection
+                        ? 'Casals infrastructure canisters cannot be destroyed here'
+                        : !selectedCanisterIds.size
+                          ? 'Select canisters first'
+                          : undefined
+                }
+              >
+                {busy === 'bulk:destroy' ? 'Destroying…' : 'Destroy'}
+              </button>
             </div>
           </div>
           {#if canisterFilterText.trim() && filteredCanisters.length === 0}
@@ -2319,6 +2494,95 @@
             onclick={confirmPolicyEdit}
           >
             {busy === 'bulk:policy' ? 'Saving…' : policyTargets.length === 1 ? 'Confirm' : `Apply to ${policyTargets.length} canisters`}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if destroyOpen && report}
+    <div class="fixed inset-0 z-40 flex items-center justify-center">
+      <button
+        type="button"
+        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
+        aria-label="Close destroy dialog"
+        onclick={closeDestroy}
+      ></button>
+      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6 border border-red-200">
+        <h3 class="text-lg font-semibold text-red-900 mb-1">
+          Destroy {selectedCanisters.length === 1 ? selectedCanisters[0].name : `${selectedCanisters.length} canisters`}
+        </h3>
+        <p class="text-sm text-primary-600 mb-4">
+          Permanently deletes the selected canister{selectedCanisters.length === 1 ? '' : 's'} on the Internet Computer.
+          Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+        </p>
+
+        {#if destroyPlan.stands.length === 1 && destroyPlan.canisters.length === 0}
+          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
+            Complete stand <span class="font-semibold">{destroyPlan.stands[0].stand}</span>
+            ({destroyPlan.stands[0].canisters.length} canister{destroyPlan.stands[0].canisters.length === 1 ? '' : 's'})
+            — stand record will be removed from Casals.
+          </p>
+        {:else if destroyPlan.stands.length > 0}
+          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
+            {destroyPlan.stands.length} complete stand{destroyPlan.stands.length === 1 ? '' : 's'}:
+            {destroyPlan.stands.map((s) => s.stand).join(', ')}
+            {#if destroyPlan.canisters.length}
+              — plus {destroyPlan.canisters.length} individual canister{destroyPlan.canisters.length === 1 ? '' : 's'}.
+            {/if}
+          </p>
+        {/if}
+
+        {#if busy === 'bulk:destroy'}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Destroying canisters drains cycles and deletes each canister on-chain. This can take several minutes — please keep this dialog open.
+          </p>
+        {/if}
+
+        <dl class="space-y-3 text-sm mb-5">
+          <div class="flex justify-between gap-4">
+            <dt class="text-primary-500">Estimated reclaim</dt>
+            <dd class="font-mono font-semibold text-primary-900">
+              {destroyEstimatedReclaim > 0 ? formatCycles(destroyEstimatedReclaim) : '—'}
+            </dd>
+          </div>
+        </dl>
+
+        <p class="text-xs text-primary-500 mb-4">
+          {selectedCanisters.map((c) => c.name).join(', ')}
+        </p>
+
+        <label class="flex items-start gap-2 text-sm text-primary-700 mb-4 cursor-pointer">
+          <input
+            type="checkbox"
+            class="mt-0.5 w-4 h-4 rounded border-primary-300"
+            bind:checked={destroyAck}
+          />
+          <span>I understand this permanently destroys the selected canister{selectedCanisters.length === 1 ? '' : 's'} and cannot be undone</span>
+        </label>
+
+        <div class="mb-4">
+          <label class="label" for="destroyConfirm">
+            Type <span class="font-mono font-semibold">{destroyConfirmPhrase}</span> to confirm
+          </label>
+          <input
+            id="destroyConfirm"
+            type="text"
+            class="input font-mono"
+            autocomplete="off"
+            bind:value={destroyConfirmText}
+          />
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-secondary btn-sm" onclick={closeDestroy}>Cancel</button>
+          <button
+            type="button"
+            class="btn-danger btn-sm"
+            disabled={!destroyConfirmValid || busy === 'bulk:destroy'}
+            onclick={confirmDestroy}
+          >
+            {busy === 'bulk:destroy' ? 'Destroying…' : 'Destroy permanently'}
           </button>
         </div>
       </div>
