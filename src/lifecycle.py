@@ -119,6 +119,8 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
     """Resolve a sheet canister's optional ``install_arg`` to candid-encoded bytes.
 
     Supported references:
+      - a raw Candid text string, e.g. ``(record { name = "X"; ... })`` —
+        encoded verbatim (used by realm_installer for token canisters).
       - ``{"top_commander": "$canister:<name>"}`` — Baton init arg pointing at
         another registered canister (must already be deployed).
       - ``{"top_commander": "$self"}`` — Baton init arg pointing at this Casals
@@ -127,6 +129,8 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
     """
     if not install_arg_spec:
         return _install_arg_for(w)
+    if isinstance(install_arg_spec, str):
+        return ic.candid_encode(install_arg_spec)
     top_ref = (install_arg_spec.get("top_commander") or "").strip()
     if top_ref == "$self":
         pid = ic.id().to_str()
