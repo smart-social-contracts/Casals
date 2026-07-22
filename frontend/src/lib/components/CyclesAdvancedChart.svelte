@@ -44,6 +44,7 @@
     snapToData?: boolean;
     isExpanded?: boolean;
     measureOverlayVisible?: boolean;
+    showLegend?: boolean;
   }
 
   let {
@@ -58,6 +59,7 @@
     snapToData = $bindable(true),
     isExpanded = $bindable(false),
     measureOverlayVisible = $bindable(false),
+    showLegend = true,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | undefined = $state();
@@ -806,6 +808,7 @@
         </div>
       </div>
 
+      {#if showLegend}
       <div class="flex flex-wrap gap-x-3 gap-y-1.5 mt-2 px-1 shrink-0">
         {#each series as s (s.name)}
           <button
@@ -821,6 +824,7 @@
           </button>
         {/each}
       </div>
+      {/if}
       {#if events.length}
         <div class="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 px-1 text-[11px] text-primary-600 shrink-0">
           <span class="text-primary-400 mr-1">Activity markers:</span>

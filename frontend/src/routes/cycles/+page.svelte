@@ -51,6 +51,7 @@
   import { copyText as copyToClipboard } from '$lib/clipboard';
   import LineChart from '$lib/components/LineChart.svelte';
   import CyclesAdvancedChart from '$lib/components/CyclesAdvancedChart.svelte';
+  import CanisterScopePicker from '$lib/components/CanisterScopePicker.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
@@ -359,7 +360,7 @@
   function setScope(next: Scope) {
     if (next === scope) return;
     scope = next;
-    if (next === 'sections' || next === 'stands' || next === 'canisters') {
+    if (next === 'sections' || next === 'stands') {
       scopeFilter = new Set(filterKeysForScope(next, windowSamples));
     } else {
       scopeFilter = new Set();
@@ -707,6 +708,25 @@
 
   const filterOptions = $derived.by<string[]>(() => filterKeysForScope(scope, windowSamples));
 
+  const canisterScopeOptions = $derived.by(() => {
+    const byKey = new Map<
+      string,
+      { key: string; name: string; canister_id: string; section?: string; stand?: string }
+    >();
+    for (const s of windowSamples) {
+      const key = scopeItemKey(s, 'canisters');
+      if (byKey.has(key)) continue;
+      byKey.set(key, {
+        key,
+        name: s.canister || s.canister_id,
+        canister_id: s.canister_id,
+        section: s.section,
+        stand: s.stand,
+      });
+    }
+    return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name));
+  });
+
   // Over-time series for the selected scope (forward-filled sum for aggregated scopes).
   const lineSeries = $derived.by<Series[]>(() => {
     const ss = windowSamples.filter(passesScopeFilter);
@@ -747,6 +767,14 @@
       color: colorAt(i),
       points: aggregateBalanceSeries(group),
     }));
+  });
+
+  const canisterSeriesColors = $derived.by(() => {
+    const colors = new Map<string, string>();
+    for (const s of lineSeries) {
+      colors.set(s.name, s.color);
+    }
+    return colors;
   });
 
   // Section ⊃ stand ⊃ canister tree sized by balance (latest) or burn (window).
@@ -1698,7 +1726,13 @@
         {@render cyclesChartToolbar()}
       {/if}
 
-      {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
+      {#if scope === 'canisters'}
+        <CanisterScopePicker
+          options={canisterScopeOptions}
+          bind:selected={scopeFilter}
+          seriesColors={canisterSeriesColors}
+        />
+      {:else if scope === 'sections' || scope === 'stands'}
         <div class="flex flex-wrap items-center gap-2 mb-3">
           <span class="text-xs text-primary-500">Show</span>
           {#each filterOptions as key (key)}
@@ -1721,6 +1755,11 @@
         </div>
       {/if}
       <div class="relative min-h-[260px]">
+        {#if scope === 'canisters' && scopeFilter.size === 0}
+          <div class="flex items-center justify-center text-sm text-primary-400 min-h-[260px] rounded-lg border border-dashed border-[var(--color-border-primary)]">
+            Search and add canisters above to plot their cycles over time.
+          </div>
+        {:else}
         {#if historyFetching}
           <div
             class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/75"
@@ -1748,8 +1787,10 @@
             timeStart={chartTimeStart}
             timeEnd={chartTimeEnd}
             events={chartEvents}
+            showLegend={scope !== 'canisters'}
           />
         </div>
+        {/if}
       </div>
     </div>
 
