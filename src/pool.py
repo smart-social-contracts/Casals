@@ -74,3 +74,17 @@ def _pool_free(canister_id: str) -> None:
     p = _pool_register(canister_id)
     p.status = "free"
     p.canister_name = ""
+
+
+def _pool_evict(canister_id: str) -> None:
+    """Remove a pool entry entirely (bookkeeping only — never touches the IC).
+
+    Used when a pooled id turns out to be dead on-chain (e.g. the canister was
+    destroyed but a later ``delete_stand`` re-added its id as ``free``). A dead
+    id must never be handed out by ``_pool_take_free`` again.
+    """
+    list(PooledCanister.instances())
+    p = PooledCanister[canister_id]
+    if p is not None:
+        p.delete()
+        _log.info(f"pool_evict: removed dead pool entry {canister_id}")

@@ -31,7 +31,7 @@ from helpers import (
     unwrap_call_result,
 )
 from cycles import _status_cycles, _sync_treasury_baseline
-from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
+from pool import _pool_evict, _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
 
 _log = get_logger("casals")
@@ -773,11 +773,27 @@ def _allocate_canister(subnet: str = "", subnet_type: str = ""):
     Returns ``(canister_id, reused)``. Reuses a free pooled canister matching
     the desired subnet placement when one exists; otherwise creates a new one.
     The returned canister is marked in_use with no occupant yet.
+
+    A free pool entry is only reused after verifying the canister still exists
+    on the IC and Casals controls it (``canister_status`` succeeds). Ghost
+    entries — ids whose canisters were destroyed but were later re-added as
+    ``free`` (e.g. by ``delete_stand`` on an orphaned stand) — are evicted and
+    the next candidate is tried, so a stale pool can never break provisioning.
     """
-    cid = _pool_take_free(subnet, subnet_type)
-    if cid:
-        _pool_mark_in_use(cid, "")
-        return (cid, True)
+    while True:
+        cid = _pool_take_free(subnet, subnet_type)
+        if not cid:
+            break
+        controllers = yield from _fetch_canister_controllers(cid)
+        if controllers:
+            _pool_mark_in_use(cid, "")
+            return (cid, True)
+        _log.error(
+            f"_allocate_canister: pooled canister {cid} unreachable on IC "
+            f"(destroyed or not controlled); evicting from pool"
+        )
+        _append_event("pool_ghost_evicted", cid, {"subnet": subnet or subnet_type or "default"})
+        _pool_evict(cid)
     self_id = ic.id().to_str()
     endow = int(_settings().create_cycles or 0) or CREATE_CYCLES
     if subnet or subnet_type:
