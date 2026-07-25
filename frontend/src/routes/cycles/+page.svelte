@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import {
     getCycles,
     getCyclesCached,
@@ -56,7 +56,7 @@
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
-  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, dedupeSeriesPoints, type ChartEventMarker, type Series, type TreemapInput } from '$lib/charts';
+  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, aggregateBurnIntervalSeries, burnIntervalSeriesFromSamples, bucketBurnSeries, burnBucketChoicesForSpan, defaultBurnBucketIndex, dedupeSeriesPoints, type ChartEventMarker, type Series, type TreemapInput } from '$lib/charts';
 
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
@@ -154,6 +154,7 @@
   type Scope = 'all' | 'orchestra' | 'sections' | 'stands' | 'canisters';
   type WindowKey = '1h' | '1d' | '1w' | '1month' | 'inception';
   type Metric = 'burn' | 'balance';
+  type ChartMetric = 'balance' | 'burn';
   type FlowUnit = 'tc' | 'icp' | 'usd';
   const WINDOWS: Record<WindowKey, number> = {
     '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000, 'inception': 0,
@@ -185,6 +186,8 @@
   let scope = $state<Scope>('all');
   let scopeFilter = $state<Set<string>>(new Set());
   let windowKey = $state<WindowKey>('1d');
+  /** Window whose history is currently shown in the chart (lags UI while fetching). */
+  let loadedWindowKey = $state<WindowKey>('1d');
   let cyclesChartRef = $state<
     | {
         toggleMeasure(): void;
@@ -192,6 +195,7 @@
         clearMeasureLines(): void;
         toggleExpanded(): void;
         exportCsv(): void;
+        fitYAxis(): void;
       }
     | undefined
   >(undefined);
@@ -201,6 +205,8 @@
   let chartMeasureOverlay = $state(false);
   let treemapWindow = $state<WindowKey>('1month');
   let metric = $state<Metric>('burn');
+  let chartMetric = $state<ChartMetric>('balance');
+  let burnBucketIndex = $state(0);
   let flowPeriod = $state<TreasuryFlowPeriod>('day');
   let flowUnit = $state<FlowUnit>('tc');
 
@@ -245,6 +251,7 @@
     history = await getCycleHistory(
       w === 'inception' ? {} : { window_secs: WINDOWS[w] },
     );
+    loadedWindowKey = w;
     await loadChartEvents(w);
   }
 
@@ -311,6 +318,7 @@
       md = metadata;
       meta = md;
       history = h;
+      loadedWindowKey = windowKey;
       void reloadTreasuryFlow(flowPeriod);
       if (cached?.treasury) {
         if (md) {
@@ -643,19 +651,44 @@
   );
 
   const now = $derived(history?.now ?? Math.floor(Date.now() / 1000));
-  const winSecs = $derived(WINDOWS[windowKey]);
-  const since = $derived(windowKey === 'inception' ? 0 : now - winSecs);
+  const chartWindowKey = $derived(historyFetching ? loadedWindowKey : windowKey);
+  const winSecs = $derived(WINDOWS[chartWindowKey]);
+  const since = $derived(chartWindowKey === 'inception' ? 0 : now - winSecs);
   const samples = $derived(history?.samples ?? []);
   const windowSamples = $derived(
-    windowKey === 'inception' ? samples : samples.filter((s) => s.ts >= since),
+    chartWindowKey === 'inception' ? samples : samples.filter((s) => s.ts >= since),
   );
 
   const chartTimeStart = $derived.by(() => {
-    if (windowKey !== 'inception') return since;
+    if (chartWindowKey !== 'inception') return since;
     if (!windowSamples.length) return now - WINDOWS['1d'];
     return Math.min(...windowSamples.map((s) => s.ts));
   });
   const chartTimeEnd = $derived(now);
+
+  const chartSpanSecs = $derived(Math.max(1, chartTimeEnd - chartTimeStart));
+  const burnBucketChoices = $derived(burnBucketChoicesForSpan(chartSpanSecs));
+  const burnBucketChoice = $derived(
+    burnBucketChoices[Math.min(burnBucketIndex, Math.max(0, burnBucketChoices.length - 1))]
+      ?? burnBucketChoices[0]
+      ?? { secs: 3600, label: '1h' },
+  );
+  const burnBucketSecs = $derived(burnBucketChoice.secs);
+  const burnBucketLabel = $derived(burnBucketChoice.label);
+
+  $effect(() => {
+    const target = windowKey;
+    untrack(() => {
+      const span = target === 'inception'
+        ? Math.max(1, chartTimeEnd - chartTimeStart)
+        : WINDOWS[target];
+      burnBucketIndex = defaultBurnBucketIndex(burnBucketChoicesForSpan(span), span);
+    });
+  });
+
+  function applyBurnBuckets(points: SeriesPoint[]): SeriesPoint[] {
+    return bucketBurnSeries(points, burnBucketSecs);
+  }
 
   const treemapWinSecs = $derived(WINDOWS[treemapWindow]);
   const treemapSince = $derived(treemapWindow === 'inception' ? 0 : now - treemapWinSecs);
@@ -731,24 +764,27 @@
   const lineSeries = $derived.by<Series[]>(() => {
     const ss = windowSamples.filter(passesScopeFilter);
     if (!ss.length) return [];
+    const burnMode = chartMetric === 'burn';
     if (scope === 'canisters') {
-      const byCan = new Map<string, { name: string; points: { t: number; v: number }[] }>();
+      const byCan = new Map<string, { name: string; samples: typeof ss }>();
       for (const s of ss) {
         let e = byCan.get(s.canister_id);
-        if (!e) { e = { name: s.canister || s.canister_id, points: [] }; byCan.set(s.canister_id, e); }
-        e.points.push({ t: s.ts, v: s.cycles });
+        if (!e) { e = { name: s.canister || s.canister_id, samples: [] }; byCan.set(s.canister_id, e); }
+        e.samples.push(s);
       }
       return [...byCan.values()].map((e, i) => ({
         name: e.name,
         color: colorAt(i),
-        points: dedupeSeriesPoints(e.points),
+        points: burnMode
+          ? applyBurnBuckets(burnIntervalSeriesFromSamples(e.samples))
+          : dedupeSeriesPoints(e.samples.map((s) => ({ t: s.ts, v: s.cycles }))),
       }));
     }
     if (scope === 'all') {
       return [{
         name: 'All',
         color: colorAt(0),
-        points: aggregateBalanceSeries(ss),
+        points: burnMode ? applyBurnBuckets(aggregateBurnIntervalSeries(ss)) : aggregateBalanceSeries(ss),
       }];
     }
     const keyOf =
@@ -765,8 +801,24 @@
     return [...byKey.entries()].map(([k, group], i) => ({
       name: k,
       color: colorAt(i),
-      points: aggregateBalanceSeries(group),
+      points: burnMode ? applyBurnBuckets(aggregateBurnIntervalSeries(group)) : aggregateBalanceSeries(group),
     }));
+  });
+
+  const chartBurnTotal = $derived.by(() => {
+    if (chartMetric !== 'burn' || !lineSeries.length) return null;
+    let total = 0;
+    for (const s of lineSeries) {
+      for (const p of s.points) total += p.v;
+    }
+    return total;
+  });
+
+  const chartBurnRateLabel = $derived.by(() => {
+    if (chartBurnTotal == null || chartBurnTotal <= 0) return null;
+    const span = Math.max(1, chartTimeEnd - chartTimeStart);
+    const tcPerDay = (chartBurnTotal / 1e12) * (86400 / span);
+    return `${tcPerDay.toLocaleString(undefined, { maximumFractionDigits: 2 })} TC/day avg`;
   });
 
   const canisterSeriesColors = $derived.by(() => {
@@ -1597,6 +1649,16 @@
             Cycles over time
             <CalculatedAtHint at={historyCalculatedAt} label="Chart data fetched" />
           </h2>
+          <p class="text-xs text-primary-400">
+            {#if chartMetric === 'burn'}
+              Cycles burnt per {burnBucketLabel} over {WINDOW_LABELS[windowKey]}.
+              {#if chartBurnRateLabel}
+                <span class="text-primary-500">{chartBurnRateLabel}</span>
+              {/if}
+            {:else}
+              Remaining cycle balance over time.
+            {/if}
+          </p>
           {#if historyFetching || !hasHistory}
             <p class="text-xs text-primary-400">
               {#if historyFetching}
@@ -1618,6 +1680,14 @@
             {/each}
           </div>
           <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+            {#each [['balance', 'Balance'], ['burn', 'Burn']] as opt (opt[0])}
+              <button
+                class="px-3 py-1.5 text-xs font-medium {chartMetric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+                onclick={() => (chartMetric = opt[0] as ChartMetric)}
+              >{opt[1]}</button>
+            {/each}
+          </div>
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
             {#each SCOPE_OPTIONS as opt (opt[0])}
               <button
                 class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
@@ -1627,6 +1697,30 @@
           </div>
         </div>
       </div>
+
+      {#if chartMetric === 'burn' && burnBucketChoices.length > 1}
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3 rounded-lg border border-[var(--color-border-primary)]/60 bg-primary-50/40 px-3 py-2.5">
+          <span class="text-xs font-medium text-primary-700 shrink-0">Bar width</span>
+          <span class="text-[11px] text-primary-400 shrink-0 w-8 text-right">{burnBucketChoices[0]?.label}</span>
+          <input
+            id="burn-bucket-slider"
+            type="range"
+            class="flex-1 min-w-[140px] max-w-md h-1.5 accent-primary-900 cursor-pointer"
+            min="0"
+            max={burnBucketChoices.length - 1}
+            step="1"
+            bind:value={burnBucketIndex}
+            aria-valuemin={0}
+            aria-valuemax={burnBucketChoices.length - 1}
+            aria-valuenow={burnBucketIndex}
+            aria-valuetext={burnBucketLabel}
+            aria-label="Burn bar width"
+          />
+          <span class="text-[11px] text-primary-400 shrink-0 w-8">{burnBucketChoices.at(-1)?.label}</span>
+          <span class="text-xs font-semibold text-primary-900 tabular-nums shrink-0 min-w-[2.5rem]">{burnBucketLabel}</span>
+          <span class="text-[11px] text-primary-400 hidden sm:inline">Wider bars = coarser time buckets</span>
+        </div>
+      {/if}
 
       {#snippet cyclesChartToolbar()}
         <div class="flex flex-wrap items-center gap-2 mb-3">
@@ -1655,10 +1749,22 @@
           {/if}
           <button
             type="button"
+            class="btn-secondary btn-sm btn-icon-tool"
+            aria-label="Fit Y-axis to visible data"
+            onclick={() => cyclesChartRef?.fitYAxis()}
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 4.5h14.25M3 9h9.75M3 13.5h5.25M17.25 3v18" />
+            </svg>
+          </button>
+          <button
+            type="button"
             class="btn-secondary btn-sm btn-icon-tool {chartMeasureActive ? 'btn-icon-tool--active' : ''}"
             aria-label={chartMeasureActive
               ? 'Measuring: click two points on the chart · Esc to exit'
-              : 'Measure rate — click two points to measure Δcycles and consumption'}
+              : chartMetric === 'burn'
+                ? 'Measure burn rate — click two points for TC/h and TC/day'
+                : 'Measure rate — click two points to measure Δcycles and consumption'}
             onclick={() => cyclesChartRef?.toggleMeasure()}
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -1783,6 +1889,8 @@
             bind:measureOverlayVisible={chartMeasureOverlay}
             toolbar={cyclesChartToolbar}
             series={lineSeries}
+            variant={chartMetric === 'burn' ? 'histogram' : 'line'}
+            barBucketSecs={chartMetric === 'burn' ? burnBucketSecs : undefined}
             format={formatCycles}
             timeStart={chartTimeStart}
             timeEnd={chartTimeEnd}

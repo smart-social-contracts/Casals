@@ -41,6 +41,11 @@ export interface BalanceSample {
   cycles: number;
 }
 
+/** Balance + cumulative funded amount — needed for net burn (Δdeposited − Δbalance). */
+export interface BurnSample extends BalanceSample {
+  deposited: number;
+}
+
 /**
  * Sort by time and collapse duplicate timestamps (last sample wins).
  * Required for Lightweight Charts, which needs strictly increasing unique times.
@@ -103,6 +108,202 @@ export function aggregateBalanceSeries(samples: BalanceSample[]): SeriesPoint[] 
     out.push({ t, v: sum });
   }
   return out;
+}
+
+/** Net burn since the first point: funded in minus balance change (ignores top-ups). */
+export function cumulativeBurnFromBaseline(
+  points: { t: number; cycles: number; deposited: number }[],
+): SeriesPoint[] {
+  if (!points.length) return [];
+  const base = points[0];
+  return points.map((p) => ({
+    t: p.t,
+    v: Math.max(0, (p.deposited - base.deposited) - (p.cycles - base.cycles)),
+  }));
+}
+
+/** Convert cumulative burn samples into per-interval burn (bar chart data). */
+export function intervalBurnFromCumulative(points: SeriesPoint[]): SeriesPoint[] {
+  const sorted = dedupeSeriesPoints(points);
+  if (sorted.length < 2) return [];
+  const out: SeriesPoint[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    out.push({
+      t: sorted[i].t,
+      v: Math.max(0, sorted[i].v - sorted[i - 1].v),
+    });
+  }
+  return out;
+}
+
+function dedupeBurnPoints(
+  points: { t: number; cycles: number; deposited: number }[],
+): { t: number; cycles: number; deposited: number }[] {
+  const sorted = [...points].sort((a, b) => a.t - b.t);
+  const out: typeof sorted = [];
+  for (const p of sorted) {
+    if (out.length && out[out.length - 1].t === p.t) {
+      out[out.length - 1] = p;
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Per-canister cumulative burn over a sample window. */
+export function burnSeriesFromSamples(samples: BurnSample[]): SeriesPoint[] {
+  if (!samples.length) return [];
+  const pts = dedupeBurnPoints(
+    samples.map((s) => ({ t: s.ts, cycles: s.cycles, deposited: s.deposited })),
+  );
+  return cumulativeBurnFromBaseline(pts);
+}
+
+/** Per-canister burn per sample interval (for bar charts). */
+export function burnIntervalSeriesFromSamples(samples: BurnSample[]): SeriesPoint[] {
+  return intervalBurnFromCumulative(burnSeriesFromSamples(samples));
+}
+
+/**
+ * Sum net burn across canisters at each sample time using forward-fill
+ * (same aggregation model as balance, but uses deposited + cycles).
+ */
+export function aggregateBurnSeries(samples: BurnSample[]): SeriesPoint[] {
+  if (!samples.length) return [];
+  const byCan = new Map<string, { t: number; cycles: number; deposited: number }[]>();
+  for (const s of samples) {
+    let pts = byCan.get(s.canister_id);
+    if (!pts) {
+      pts = [];
+      byCan.set(s.canister_id, pts);
+    }
+    pts.push({ t: s.ts, cycles: s.cycles, deposited: s.deposited });
+  }
+
+  const perCan: { t: number; cycles: number; deposited: number }[][] = [];
+  const allTs = new Set<number>();
+  for (const rawPts of byCan.values()) {
+    const deduped = dedupeBurnPoints(rawPts);
+    if (!deduped.length) continue;
+    perCan.push(deduped);
+    for (const p of deduped) allTs.add(p.t);
+  }
+  if (!perCan.length) return [];
+
+  const times = [...allTs].sort((a, b) => a - b);
+  const idx = perCan.map(() => 0);
+  const lastCyc = perCan.map(() => 0);
+  const lastDep = perCan.map(() => 0);
+  const aggPoints: { t: number; cycles: number; deposited: number }[] = [];
+
+  for (const t of times) {
+    let sumCyc = 0;
+    let sumDep = 0;
+    for (let c = 0; c < perCan.length; c++) {
+      const canPts = perCan[c];
+      while (idx[c] < canPts.length && canPts[idx[c]].t <= t) {
+        lastCyc[c] = canPts[idx[c]].cycles;
+        lastDep[c] = canPts[idx[c]].deposited;
+        idx[c]++;
+      }
+      sumCyc += lastCyc[c];
+      sumDep += lastDep[c];
+    }
+    aggPoints.push({ t, cycles: sumCyc, deposited: sumDep });
+  }
+
+  return cumulativeBurnFromBaseline(aggPoints);
+}
+
+/** Aggregated burn per sample interval across canisters (for bar charts). */
+export function aggregateBurnIntervalSeries(samples: BurnSample[]): SeriesPoint[] {
+  return intervalBurnFromCumulative(aggregateBurnSeries(samples));
+}
+
+/** Fixed bucket widths for burn bar charts (fine → coarse). */
+export const BURN_BUCKET_CHOICES: { secs: number; label: string }[] = [
+  { secs: 15 * 60, label: '15m' },
+  { secs: 30 * 60, label: '30m' },
+  { secs: 3600, label: '1h' },
+  { secs: 3 * 3600, label: '3h' },
+  { secs: 6 * 3600, label: '6h' },
+  { secs: 12 * 3600, label: '12h' },
+  { secs: 86400, label: '1d' },
+  { secs: 3 * 86400, label: '3d' },
+  { secs: 7 * 86400, label: '1w' },
+];
+
+/** Bucket choices that yield a readable bar count for the visible span. */
+export function burnBucketChoicesForSpan(spanSecs: number): { secs: number; label: string }[] {
+  const span = Math.max(1, spanSecs);
+  const minBars = 3;
+  const maxBars = 72;
+  const choices = BURN_BUCKET_CHOICES.filter((b) => {
+    const bars = span / b.secs;
+    return bars >= minBars && bars <= maxBars;
+  });
+  if (choices.length) return choices;
+  const fallback = BURN_BUCKET_CHOICES.find((b) => b.secs <= span) ?? BURN_BUCKET_CHOICES[0];
+  return [fallback];
+}
+
+/** Pick the bucket width that yields ~20 bars for the span. */
+export function defaultBurnBucketIndex(
+  choices: { secs: number; label: string }[],
+  spanSecs: number,
+): number {
+  if (!choices.length) return 0;
+  const span = Math.max(1, spanSecs);
+  const target = 20;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < choices.length; i++) {
+    const dist = Math.abs(span / choices[i].secs - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Label for a histogram bar bucket (``bucketEndSec`` is the bar's time coordinate). */
+export function formatBarBucketLabel(bucketEndSec: number, bucketSecs: number): string {
+  const start = bucketEndSec - bucketSecs;
+  if (bucketSecs >= 86400) return formatAxisDateShort(start);
+  if (bucketSecs >= 6 * 3600) return formatAxisDateShort(start);
+  return formatAxisClock(start);
+}
+
+/** Human-readable bucket interval for tooltips and crosshair labels. */
+export function formatBucketRangeLabel(startSec: number, endSec: number): string {
+  const start = new Date(startSec * 1000);
+  const end = new Date(endSec * 1000);
+  const dateOpts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+  const timeOpts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+  const sameDay = start.toDateString() === end.toDateString();
+  if (sameDay) {
+    const date = start.toLocaleDateString(undefined, dateOpts);
+    const t0 = start.toLocaleTimeString(undefined, timeOpts);
+    const t1 = end.toLocaleTimeString(undefined, timeOpts);
+    return `${date}, ${t0} – ${t1}`;
+  }
+  return `${start.toLocaleString(undefined, { ...dateOpts, ...timeOpts })} – ${end.toLocaleString(undefined, { ...dateOpts, ...timeOpts })}`;
+}
+
+/** Sum per-interval burn points into wider fixed-width buckets. */
+export function bucketBurnSeries(points: SeriesPoint[], bucketSecs: number): SeriesPoint[] {
+  if (!points.length || bucketSecs <= 0) return points;
+  const sorted = dedupeSeriesPoints(points);
+  const buckets = new Map<number, number>();
+  for (const p of sorted) {
+    const bucketEnd = (Math.floor(p.t / bucketSecs) + 1) * bucketSecs;
+    buckets.set(bucketEnd, (buckets.get(bucketEnd) ?? 0) + p.v);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, v]) => ({ t, v }));
 }
 
 export interface TreemapInput {
@@ -430,6 +631,104 @@ export function thinTicksByPixel(
   return out;
 }
 
+const AXIS_NICE_INTERVALS_SECS = [
+  15 * 60,
+  30 * 60,
+  3600,
+  2 * 3600,
+  3 * 3600,
+  6 * 3600,
+  12 * 3600,
+  86400,
+  2 * 86400,
+  7 * 86400,
+  14 * 86400,
+  30 * 86400,
+];
+
+/** Pick a readable axis tick interval from span and plot width. */
+export function axisTickInterval(
+  spanSecs: number,
+  plotWidthPx: number,
+  minLabelPx = 76,
+): number {
+  const span = Math.max(1, spanSecs);
+  const width = Math.max(1, plotWidthPx);
+  const targetTicks = Math.max(3, Math.floor(width / minLabelPx));
+  const raw = span / targetTicks;
+  for (const interval of AXIS_NICE_INTERVALS_SECS) {
+    if (interval >= raw) return interval;
+  }
+  return AXIS_NICE_INTERVALS_SECS[AXIS_NICE_INTERVALS_SECS.length - 1];
+}
+
+/** Generate axis ticks aligned to local hours/days when possible. */
+export function iterAlignedAxisTicks(
+  fromSec: number,
+  toSec: number,
+  intervalSecs: number,
+): number[] {
+  if (intervalSecs <= 0 || toSec <= fromSec) return [];
+
+  if (intervalSecs >= 86400 && intervalSecs % 86400 === 0) {
+    const days = iterLocalDayStarts(fromSec, toSec);
+    const stepDays = Math.max(1, Math.round(intervalSecs / 86400));
+    if (stepDays === 1) return days;
+    return days.filter((_, i) => i % stepDays === 0);
+  }
+
+  if (intervalSecs >= 3600 && intervalSecs % 3600 === 0) {
+    const hours = iterLocalHourTicks(fromSec, toSec);
+    const stepHours = Math.max(1, Math.round(intervalSecs / 3600));
+    if (stepHours === 1) return hours;
+    return hours.filter((_, i) => i % stepHours === 0);
+  }
+
+  const first = Math.ceil(fromSec / intervalSecs) * intervalSecs;
+  const out: number[] = [];
+  for (let t = first; t <= toSec + 1; t += intervalSecs) out.push(t);
+  return out;
+}
+
+/** Adaptive time-axis label for the visible span and tick interval. */
+export function formatAxisTick(tsSecs: number, intervalSecs: number, spanSecs: number): string {
+  const d = new Date(tsSecs * 1000);
+  const isMidnight = d.getHours() === 0 && d.getMinutes() === 0;
+
+  if (spanSecs <= 6 * 3600) {
+    return formatAxisClock(tsSecs);
+  }
+  if (spanSecs <= 2 * 86400) {
+    return isMidnight ? formatAxisDateShort(tsSecs) : formatAxisClock(tsSecs);
+  }
+  if (intervalSecs >= 86400) {
+    return formatAxisDateShort(tsSecs);
+  }
+  if (isMidnight || intervalSecs >= 12 * 3600) {
+    return formatAxisDateShort(tsSecs);
+  }
+  return formatAxisClock(tsSecs);
+}
+
+/** Drop date-band labels that would overlap on screen. */
+export function thinDateBandsByPixel<T extends { cx: number; x0: number; x1: number }>(
+  bands: T[],
+  minBandPx = 40,
+  minCenterPx = 72,
+): T[] {
+  const wide = bands.filter((b) => b.x1 - b.x0 >= minBandPx);
+  if (!wide.length) return [];
+  const out: T[] = [];
+  let lastCx = -Infinity;
+  for (const b of wide) {
+    if (out.length === 0 || b.cx - lastCx >= minCenterPx) {
+      out.push(b);
+      lastCx = b.cx;
+    }
+  }
+  return out;
+}
+
 export interface PlotPoint {
   t: number;
   v: number;
@@ -493,6 +792,42 @@ export function cyclesToTc(cycles: number): number {
 
 export function tcToCycles(tc: number): number {
   return tc * TC_TO_CYCLES;
+}
+
+/** Min/max TC values across visible chart series (for Y-axis fitting). */
+export function visibleTcRange(
+  seriesList: Series[],
+  visibleNames: Set<string>,
+): { min: number; max: number } | null {
+  let min = Infinity;
+  let max = -Infinity;
+  let any = false;
+  for (const s of seriesList) {
+    if (!visibleNames.has(s.name)) continue;
+    for (const p of s.points) {
+      any = true;
+      const v = cyclesToTc(p.v);
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  if (!any || !Number.isFinite(min)) return null;
+  return { min, max };
+}
+
+/** Pad a TC range for chart display; handles flat/near-zero series. */
+export function paddedTcPriceRange(min: number, max: number): { minValue: number; maxValue: number } {
+  if (max <= min) {
+    const mid = max;
+    const pad = mid > 0 ? Math.max(mid * 0.15, 1e-9) : 0.001;
+    return { minValue: Math.max(0, mid - pad), maxValue: mid + pad };
+  }
+  const span = max - min;
+  const pad = Math.max(span * 0.1, max * 0.02, 1e-9);
+  return {
+    minValue: Math.max(0, min - pad),
+    maxValue: max + pad,
+  };
 }
 
 export interface ChartEventMarker {

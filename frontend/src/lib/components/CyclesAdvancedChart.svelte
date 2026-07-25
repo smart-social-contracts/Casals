@@ -4,6 +4,8 @@
     createChart,
     CrosshairMode,
     LineType,
+    LineSeries,
+    HistogramSeries,
     ColorType,
     type IChartApi,
     type ISeriesApi,
@@ -15,14 +17,22 @@
     exportSeriesCsv,
     formatMeasureLabel,
     measureLineStats,
+    paddedTcPriceRange,
     snapPlotPointToSeries,
     dedupeSeriesPoints,
     tcToCycles,
     valueNearTime,
+    visibleTcRange,
     CHART_MARKER_LEGEND,
     buildDateAxisBands,
     formatAxisClock,
     formatAxisDateShort,
+    formatBarBucketLabel,
+    formatBucketRangeLabel,
+    axisTickInterval,
+    iterAlignedAxisTicks,
+    formatAxisTick,
+    thinDateBandsByPixel,
     iterLocalHourTicks,
     iterLocalDayStarts,
     thinTicksByPixel,
@@ -45,6 +55,8 @@
     isExpanded?: boolean;
     measureOverlayVisible?: boolean;
     showLegend?: boolean;
+    variant?: 'line' | 'histogram';
+    barBucketSecs?: number;
   }
 
   let {
@@ -60,16 +72,20 @@
     isExpanded = $bindable(false),
     measureOverlayVisible = $bindable(false),
     showLegend = true,
+    variant = 'line',
+    barBucketSecs,
   }: Props = $props();
+
+  type ChartSeriesApi = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>;
 
   let containerEl: HTMLDivElement | undefined = $state();
   let plotWrapEl: HTMLDivElement | undefined = $state();
   let panelEl: HTMLDivElement | undefined = $state();
 
   let chart: IChartApi | null = null;
-  let refSeries: ISeriesApi<'Line'> | null = null;
+  let refSeries: ChartSeriesApi | null = null;
   let appliedRange: { from: number; to: number } | null = null;
-  const lineSeriesMap = new Map<string, ISeriesApi<'Line'>>();
+  const seriesMap = new Map<string, ChartSeriesApi>();
 
   let visible = $state<Set<string>>(new Set());
   let visibleSeriesKey = '';
@@ -82,10 +98,19 @@
   let viewportH = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
   let hoveredMarker = $state<ChartEventMarker | null>(null);
   let hoverPos = $state<{ x: number; y: number } | null>(null);
+  let crosshairAxisLabel = $state<{ x: number; label: string } | null>(null);
+  let barSelection = $state<{
+    px: number;
+    py: number;
+    cycles: number;
+    startTs: number;
+    endTs: number;
+  } | null>(null);
 
   const MARKER_RADIUS = 9;
   const MARKER_HIT_RADIUS = 14;
-  const TIME_AXIS_HEIGHT = 40;
+  const BAR_HIT_RADIUS_PX = 18;
+  const TIME_AXIS_HEIGHT = 44;
   const MAX_HOUR_GRID_SPAN_SECS = 60 * 86400;
 
   let axisVersion = $state(0);
@@ -94,6 +119,10 @@
   let paneHeight = $state(0);
   let visibleRangeFrom = $state<number | null>(null);
   let visibleRangeTo = $state<number | null>(null);
+  let yAxisUserAdjusted = $state(false);
+  let lastFitPriceRange: { from: number; to: number } | null = null;
+  let autoFitDataKey = '';
+  let fittingYAxis = false;
   let axisLayout = $state({
     hourLines: [] as { x: number }[],
     dayLines: [] as { x: number }[],
@@ -106,6 +135,87 @@
       ? Math.max(320, viewportH - 168)
       : height,
   );
+
+  function clearCrosshairAxisLabel() {
+    crosshairAxisLabel = null;
+  }
+
+  function clearBarSelection() {
+    barSelection = null;
+  }
+
+  function nearestHistogramBar(x: number): { t: number; v: number; px: number; py: number } | null {
+    if (variant !== 'histogram') return null;
+    let best: { t: number; v: number; px: number; dist: number } | null = null;
+    for (const s of visibleSeries()) {
+      for (const p of s.points) {
+        const px = timeToX(p.t);
+        if (px === null) continue;
+        const dist = Math.abs(px - x);
+        if (!best || dist < best.dist) {
+          best = { t: p.t, v: p.v, px, dist };
+        }
+      }
+    }
+    if (!best || best.dist > BAR_HIT_RADIUS_PX) return null;
+    const py = valueToY(best.v);
+    if (py === null) return null;
+    return { t: best.t, v: best.v, px: best.px, py };
+  }
+
+  function updateCrosshairAxisLabel(param: { point?: { x: number; y: number }; time?: UTCTimestamp | number }) {
+    if (!param.point || !chart) {
+      clearCrosshairAxisLabel();
+      return;
+    }
+    let time: number | null = null;
+    if (typeof param.time === 'number') {
+      time = param.time;
+    } else {
+      const t = chart.timeScale().coordinateToTime(param.point.x);
+      if (typeof t === 'number') time = t;
+    }
+    if (time === null) {
+      clearCrosshairAxisLabel();
+      return;
+    }
+
+    if (variant === 'histogram' && barBucketSecs) {
+      const bar = nearestHistogramBar(param.point.x);
+      if (bar) {
+        const startTs = bar.t - barBucketSecs;
+        crosshairAxisLabel = {
+          x: bar.px,
+          label: formatBucketRangeLabel(startTs, bar.t),
+        };
+        return;
+      }
+    }
+
+    crosshairAxisLabel = {
+      x: param.point.x,
+      label: formatCrosshairTime(time as UTCTimestamp),
+    };
+  }
+
+  function selectHistogramBar(x: number) {
+    const bar = nearestHistogramBar(x);
+    if (!bar || !barBucketSecs) {
+      clearBarSelection();
+      return;
+    }
+    if (barSelection && barSelection.endTs === bar.t) {
+      clearBarSelection();
+      return;
+    }
+    barSelection = {
+      px: bar.px,
+      py: bar.py,
+      cycles: bar.v,
+      startTs: bar.t - barBucketSecs,
+      endTs: bar.t,
+    };
+  }
 
   function formatCrosshairTime(ts: UTCTimestamp): string {
     const d = new Date(Number(ts) * 1000);
@@ -136,7 +246,13 @@
 
   function chartTimeToX(t: number): number | null {
     if (!chart) return null;
-    return chart.timeScale().timeToCoordinate(t as UTCTimestamp);
+    const x = chart.timeScale().timeToCoordinate(t as UTCTimestamp);
+    if (x !== null) return x;
+    const from = visibleRangeFrom ?? timeStart ?? null;
+    const to = visibleRangeTo ?? timeEnd ?? null;
+    const plotW = tsPlotWidth || containerEl?.clientWidth || 0;
+    if (from == null || to == null || to <= from || plotW <= 0) return null;
+    return ((t - from) / (to - from)) * plotW;
   }
 
   function measurePlotMetrics(): { plotW: number; paneH: number; scaleW: number } {
@@ -174,47 +290,90 @@
       from = timeStart ?? null;
       to = timeEnd ?? null;
     }
-    if (from == null || to == null || to <= from || tsPlotWidth <= 0) {
+    if (from == null || to == null || to <= from) {
+      axisLayout = { hourLines: [], dayLines: [], hourLabels: [], dateBands: [] };
+      axisVersion++;
+      return;
+    }
+
+    let axisPlotW = plotW;
+    if (axisPlotW <= 0 && containerEl) {
+      axisPlotW = Math.max(0, containerEl.clientWidth - scaleW);
+      tsPlotWidth = axisPlotW;
+    }
+    if (axisPlotW <= 0) {
       axisLayout = { hourLines: [], dayLines: [], hourLabels: [], dateBands: [] };
       axisVersion++;
       return;
     }
 
     const span = to - from;
-    const hours = span <= MAX_HOUR_GRID_SPAN_SECS ? iterLocalHourTicks(from, to) : [];
-    const days = iterLocalDayStarts(from, to);
+    let hourLines: { x: number }[] = [];
+    let dayLines: { x: number }[] = [];
+    let hourLabels: { x: number; label: string }[] = [];
+    let dateBands: { x0: number; x1: number; cx: number; label: string }[] = [];
 
-    const hourLines: { x: number }[] = [];
-    for (const t of hours) {
-      const x = chartTimeToX(t);
-      if (x !== null && x >= -1 && x <= tsPlotWidth + 1) hourLines.push({ x });
-    }
+    if (variant === 'histogram') {
+      const bucketSecs = barBucketSecs ?? 86400;
+      const barTimes = [
+        ...new Set(visibleSeries().flatMap((s) => s.points.map((p) => p.t))),
+      ].sort((a, b) => a - b);
+      hourLabels = thinTicksByPixel(barTimes, chartTimeToX, 56)
+        .map((t) => {
+          const x = chartTimeToX(t);
+          if (x === null) return null;
+          return { x, label: formatBarBucketLabel(t, bucketSecs) };
+        })
+        .filter((row): row is { x: number; label: string } => row !== null)
+        .sort((a, b) => a.x - b.x);
+    } else {
+      const tickInterval = axisTickInterval(span, axisPlotW);
+      const longSpan = span > 2 * 86400;
+      const axisTicks = iterAlignedAxisTicks(from, to, longSpan ? Math.max(tickInterval, 86400) : tickInterval);
+      const showHourGrid = tickInterval <= 3600 && span <= MAX_HOUR_GRID_SPAN_SECS;
+      const hours = showHourGrid ? iterLocalHourTicks(from, to) : [];
+      const days = iterLocalDayStarts(from, to);
 
-    const dayLines: { x: number }[] = [];
-    for (const t of days) {
-      const x = chartTimeToX(t);
-      if (x !== null && x >= -1 && x <= tsPlotWidth + 1) dayLines.push({ x });
-    }
+      if (showHourGrid) {
+        for (const t of hours) {
+          const x = chartTimeToX(t);
+          if (x !== null && x >= -1 && x <= axisPlotW + 1) hourLines.push({ x });
+        }
+      }
 
-    const hourLabels = thinTicksByPixel(hours, chartTimeToX, 42)
-      .map((t) => {
+      for (const t of days) {
         const x = chartTimeToX(t);
-        return x === null ? null : { x, label: formatAxisClock(t) };
-      })
-      .filter((row): row is { x: number; label: string } => row !== null);
+        if (x !== null && x >= -1 && x <= axisPlotW + 1) dayLines.push({ x });
+      }
 
-    const dateBands = buildDateAxisBands(from, to)
-      .map((b) => {
-        const x0 = chartTimeToX(b.startTs) ?? 0;
-        const x1 = chartTimeToX(b.endTs) ?? tsPlotWidth;
-        return {
-          x0,
-          x1,
-          cx: (x0 + x1) / 2,
-          label: formatAxisDateShort(b.startTs),
-        };
-      })
-      .filter((b) => b.x1 > b.x0 + 12);
+      hourLabels = thinTicksByPixel(axisTicks, chartTimeToX, longSpan ? 64 : 76)
+        .map((t) => {
+          const x = chartTimeToX(t);
+          if (x === null) return null;
+          const label = longSpan
+            ? formatAxisDateShort(t)
+            : formatAxisTick(t, tickInterval, span);
+          return { x, label };
+        })
+        .filter((row): row is { x: number; label: string } => row !== null);
+
+      dateBands = longSpan
+        ? []
+        : thinDateBandsByPixel(
+          buildDateAxisBands(from, to)
+            .map((b) => {
+              const x0 = chartTimeToX(b.startTs) ?? 0;
+              const x1 = chartTimeToX(b.endTs) ?? axisPlotW;
+              return {
+                x0,
+                x1,
+                cx: (x0 + x1) / 2,
+                label: b.label,
+              };
+            })
+            .filter((b) => b.x1 > b.x0 + 12),
+        );
+    }
 
     axisLayout = { hourLines, dayLines, hourLabels, dateBands };
     axisVersion++;
@@ -223,6 +382,7 @@
   function clearMarkerHover() {
     hoveredMarker = null;
     hoverPos = null;
+    clearCrosshairAxisLabel();
   }
 
   interface MarkerPlacement {
@@ -249,7 +409,7 @@
       for (const s of markerTargetsForEvent(e, vis)) {
         const v = valueNearTime(s.points, e.time);
         if (v === null) continue;
-        const ls = lineSeriesMap.get(s.name);
+        const ls = seriesMap.get(s.name);
         const x = timeToX(e.time);
         const y = ls?.priceToCoordinate(cyclesToTc(v)) ?? valueToY(v);
         if (x === null || y === null) continue;
@@ -333,6 +493,50 @@
     snapToData = !snapToData;
   }
 
+  function checkPriceRangeUserChange() {
+    if (!chart || fittingYAxis || !lastFitPriceRange || yAxisUserAdjusted) return;
+    const range = chart.priceScale('right').getVisibleRange();
+    if (!range) return;
+    const span = Math.max(lastFitPriceRange.to - lastFitPriceRange.from, 1e-12);
+    const eps = span * 0.02;
+    if (
+      Math.abs(range.from - lastFitPriceRange.from) > eps
+      || Math.abs(range.to - lastFitPriceRange.to) > eps
+    ) {
+      yAxisUserAdjusted = true;
+    }
+  }
+
+  export function fitYAxis() {
+    if (!chart) return;
+    const range = visibleTcRange(series, visible);
+    if (!range) return;
+    const { minValue, maxValue } = paddedTcPriceRange(range.min, range.max);
+    fittingYAxis = true;
+    chart.priceScale('right').applyOptions({ autoScale: false });
+    chart.priceScale('right').setVisibleRange({ from: minValue, to: maxValue });
+    lastFitPriceRange = { from: minValue, to: maxValue };
+    yAxisUserAdjusted = false;
+    requestAnimationFrame(() => {
+      fittingYAxis = false;
+    });
+    bumpOverlay();
+  }
+
+  function chartDataFitKey(): string {
+    return series.map((s) => `${s.name}:${s.points.length}:${s.points.at(-1)?.t ?? ''}:${s.points.at(-1)?.v ?? ''}`).join('|');
+  }
+
+  function maybeAutoFitYAxis(force = false) {
+    const key = chartDataFitKey();
+    if (key !== autoFitDataKey) {
+      autoFitDataKey = key;
+      yAxisUserAdjusted = false;
+      force = true;
+    }
+    if (force || !yAxisUserAdjusted) fitYAxis();
+  }
+
   export { clearMeasureLines, toggleExpanded, exportCsv };
 
   function toggleSeries(name: string) {
@@ -340,12 +544,14 @@
     if (next.has(name)) next.delete(name);
     else next.add(name);
     visible = next;
-    lineSeriesMap.get(name)?.applyOptions({ visible: next.has(name) });
+    seriesMap.get(name)?.applyOptions({ visible: next.has(name) });
     pickRefSeries();
+    yAxisUserAdjusted = false;
+    fitYAxis();
   }
 
   function pickRefSeries() {
-    refSeries = [...lineSeriesMap.values()].find((ls) => ls.options().visible !== false) ?? null;
+    refSeries = [...seriesMap.values()].find((ls) => ls.options().visible !== false) ?? null;
   }
 
   function visibleSeries(): Series[] {
@@ -398,6 +604,24 @@
     overlayVersion++;
   }
 
+  function handleChartClick(param: { point?: { x: number; y: number } }) {
+    if (measureActive) {
+      handleMeasureClick(param);
+      return;
+    }
+    if (variant === 'histogram' && param.point) {
+      selectHistogramBar(param.point.x);
+    }
+  }
+
+  function handleCrosshairMove(param: {
+    point?: { x: number; y: number };
+    time?: UTCTimestamp | number;
+  }) {
+    handleMeasureMove(param);
+    updateCrosshairAxisLabel(param);
+  }
+
   function handleMeasureMove(param: { point?: { x: number; y: number } }) {
     if (!measureActive || !measureDraftStart || !param.point) return;
     const raw = coordToPlot(param.point.x, param.point.y);
@@ -426,40 +650,39 @@
     const names = new Set(series.map((s) => s.name));
     ensureVisibleNames(names);
 
-    for (const [name, ls] of [...lineSeriesMap]) {
+    for (const [name, ls] of [...seriesMap]) {
       if (!names.has(name)) {
         chart.removeSeries(ls);
-        lineSeriesMap.delete(name);
+        seriesMap.delete(name);
       }
     }
 
     for (const s of series) {
-      let ls = lineSeriesMap.get(s.name);
+      let ls = seriesMap.get(s.name);
+      const data = sortedLineData(s.points);
       if (!ls) {
-        ls = chart.addLineSeries({
-          color: s.color,
-          lineWidth: 2,
-          lineType: LineType.WithSteps,
-          crosshairMarkerVisible: true,
-          lastValueVisible: false,
-          priceLineVisible: false,
-          visible: visible.has(s.name),
-          autoscaleInfoProvider: (original) => {
-            const base = original();
-            if (!base) return base;
-            return {
-              ...base,
-              priceRange: {
-                minValue: 0,
-                maxValue: Math.max(base.priceRange.maxValue, 0.2),
-              },
-            };
-          },
-        });
-        lineSeriesMap.set(s.name, ls);
+        if (variant === 'histogram') {
+          ls = chart.addSeries(HistogramSeries, {
+            color: s.color,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            visible: visible.has(s.name),
+          });
+        } else {
+          ls = chart.addSeries(LineSeries, {
+            color: s.color,
+            lineWidth: 2,
+            lineType: LineType.WithSteps,
+            crosshairMarkerVisible: true,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            visible: visible.has(s.name),
+          });
+        }
+        seriesMap.set(s.name, ls);
       }
       ls.applyOptions({ color: s.color, visible: visible.has(s.name) });
-      ls.setData(sortedLineData(s.points));
+      ls.setData(data);
     }
 
     pickRefSeries();
@@ -479,7 +702,11 @@
 
     resizeOverlay();
     bumpOverlay();
-    requestAnimationFrame(() => rebuildAxisLayout());
+    maybeAutoFitYAxis();
+    requestAnimationFrame(() => {
+      rebuildAxisLayout();
+      requestAnimationFrame(() => rebuildAxisLayout());
+    });
   }
 
   function resizeOverlay(force = false) {
@@ -527,11 +754,19 @@
     return { a, b, label, mx, my, dashed };
   }
 
+  let scaleInteractionCleanup: (() => void) | null = null;
+
   function destroyChart() {
+    try {
+      scaleInteractionCleanup?.();
+    } catch {
+      // Chart DOM may already be gone when series unmounts during window changes.
+    }
+    scaleInteractionCleanup = null;
     if (!chart) return;
     chart.remove();
     chart = null;
-    lineSeriesMap.clear();
+    seriesMap.clear();
     refSeries = null;
     appliedRange = null;
   }
@@ -539,10 +774,17 @@
   function createChartInstance() {
     if (!containerEl || chart) return;
 
-    const onClick = (param: { point?: { x: number; y: number } }) => handleMeasureClick(param);
-    const onMove = (param: { point?: { x: number; y: number } }) => handleMeasureMove(param);
+    const onClick = (param: { point?: { x: number; y: number } }) => handleChartClick(param);
+    const onMove = (param: {
+      point?: { x: number; y: number };
+      time?: UTCTimestamp | number;
+    }) => handleCrosshairMove(param);
     const onRange = () => {
       bumpOverlay();
+      checkPriceRangeUserChange();
+    };
+    const onScaleInteraction = () => {
+      requestAnimationFrame(() => checkPriceRangeUserChange());
     };
 
     const c = createChart(containerEl, {
@@ -583,6 +825,13 @@
     c.subscribeClick(onClick);
     c.subscribeCrosshairMove(onMove);
     c.timeScale().subscribeVisibleTimeRangeChange(onRange);
+    const chartNode = containerEl;
+    chartNode.addEventListener('wheel', onScaleInteraction, { passive: true });
+    chartNode.addEventListener('pointerup', onScaleInteraction);
+    scaleInteractionCleanup = () => {
+      chartNode.removeEventListener('wheel', onScaleInteraction);
+      chartNode.removeEventListener('pointerup', onScaleInteraction);
+    };
   }
 
   // Mount / remount chart when the container or height changes.
@@ -590,6 +839,7 @@
     if (!containerEl || !plotWrapEl) return;
     chartHeight;
     isExpanded;
+    variant;
 
     destroyChart();
     createChartInstance();
@@ -624,11 +874,17 @@
     events;
     timeStart;
     timeEnd;
+    barBucketSecs;
     if (!chart) return;
     untrack(() => syncChartData());
   });
   $effect(() => {
     measureOverlayVisible = measureLines.length > 0 || measureDraftStart !== null;
+  });
+  $effect(() => {
+    variant;
+    barBucketSecs;
+    if (variant !== 'histogram') clearBarSelection();
   });
 
   // Lock page scroll while the chart overlay is open; resize with the window.
@@ -734,6 +990,15 @@
             </svg>
           {/key}
         {/if}
+        {#if barSelection}
+          <div
+            class="absolute z-20 pointer-events-none max-w-[280px] rounded-md border border-[var(--color-border-primary)] bg-white/95 px-2.5 py-1.5 shadow-md text-left"
+            style="left:{barSelection.px}px; top:{barSelection.py}px; transform: translate(-50%, calc(-100% - 10px));"
+          >
+            <p class="text-[11px] font-semibold text-primary-900 leading-snug">{format(barSelection.cycles)}</p>
+            <p class="text-[10px] text-primary-500 mt-0.5">{formatBucketRangeLabel(barSelection.startTs, barSelection.endTs)}</p>
+          </div>
+        {/if}
         {#if hoveredMarker && hoverPos}
           <div
             class="absolute z-20 pointer-events-none max-w-[240px] rounded-md border border-[var(--color-border-primary)] bg-white/95 px-2.5 py-1.5 shadow-md text-left"
@@ -795,6 +1060,9 @@
                     <line x1={d.x} y1="0" x2={d.x} y2={TIME_AXIS_HEIGHT} stroke="#94a3b8" stroke-width="1.25" />
                   {/each}
                   {#each axisLayout.hourLabels as l (l.x + l.label)}
+                    {#if variant === 'histogram'}
+                      <line x1={l.x} y1="0" x2={l.x} y2="8" stroke="#cbd5e1" stroke-width="1" />
+                    {/if}
                     <text x={l.x} y="16" text-anchor="middle" fill="#64748b" font-size="10">{l.label}</text>
                   {/each}
                   {#each axisLayout.dateBands as b (b.label + b.x0)}
@@ -802,6 +1070,14 @@
                   {/each}
                 </svg>
               {/key}
+            {/if}
+            {#if crosshairAxisLabel}
+              <div
+                class="absolute z-10 pointer-events-none rounded px-1.5 py-0.5 text-[10px] font-medium text-white whitespace-nowrap"
+                style="left:{crosshairAxisLabel.x}px; top:22px; transform: translateX(-50%); background:#334155;"
+              >
+                {crosshairAxisLabel.label}
+              </div>
             {/if}
           </div>
           <div class="shrink-0" style="width:{priceScaleWidth}px"></div>

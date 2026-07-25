@@ -27,6 +27,6 @@
     "@dfinity/ic-management": "^6.0.2",
     "@dfinity/principal": "^2.3.0",
     "@dfinity/utils": "^2.14.0",
-    "lightweight-charts": "^4.2.0"
+    "lightweight-charts": "^5.2.0"
   }
 }
