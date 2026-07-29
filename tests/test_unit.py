@@ -1090,3 +1090,29 @@ def test_install_mode_candid_motoko_requests_memory_keep():
     mode = lifecycle._install_mode_candid({"upgrade": None}, "motoko")
     assert "wasm_memory_persistence" in mode
     assert "keep" in mode
+
+
+# ── Principal aliases ─────────────────────────────────────────────────────────
+
+import util  # noqa: E402
+
+
+def test_validate_alias_name_accepts_simple_names():
+    assert util.validate_alias_name("deployer") == "deployer"
+    assert util.validate_alias_name("  cycleops  ") == "cycleops"
+    assert util.validate_alias_name("infra-baton") == "infra-baton"
+
+
+def test_validate_alias_name_rejects_invalid():
+    with pytest.raises(ValueError, match="required"):
+        util.validate_alias_name("")
+    with pytest.raises(ValueError, match="letters"):
+        util.validate_alias_name("bad name!")
+
+
+def test_validate_principal_text():
+    p = "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6-2ae"
+    assert util.validate_principal_text(p) == p
+    assert util.validate_principal_text("aaaaa-aa") == "aaaaa-aa"
+    with pytest.raises(ValueError):
+        util.validate_principal_text("bad")

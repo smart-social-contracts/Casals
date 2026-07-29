@@ -143,6 +143,8 @@ from lifecycle import (
     _destroy_ic_canister_gen,
     _destroy_realm_stand_gen,
     _retire_canister,
+    _safe_entity_delete,
+    repair_section_stands,
     _set_log_visibility,
     _spec_target_subnet,
     _target_subnet,
@@ -159,6 +161,7 @@ from models import (
     Stand,
     OrchestrationEvent,
     PooledCanister,
+    PrincipalAlias,
     Section,
     Settings,
     Canister,
@@ -214,6 +217,94 @@ _log = get_logger("casals")
 
 # The management canister's principal (used for hand-encoded calls below).
 MANAGEMENT_CANISTER_ID = "aaaaa-aa"
+
+
+# Inline alias validation (not imported from util — Basilisk lazy modules can
+# miss new util exports on upgrade; avoid `re` — not available in canister).
+_ALIAS_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def _is_valid_principal_text(p: str) -> bool:
+    if not p or "-" not in p:
+        return False
+    for ch in p:
+        if ch == "-":
+            continue
+        if not ("a" <= ch <= "z" or "A" <= ch <= "Z" or "0" <= ch <= "9"):
+            return False
+    return True
+
+
+def _validate_principal_text(principal: str) -> str:
+    p = (principal or "").strip()
+    if not p:
+        raise ValueError("principal is required")
+    if not _is_valid_principal_text(p):
+        raise ValueError(f"invalid principal '{p}'")
+    return p
+
+
+def _validate_alias_name(name: str) -> str:
+    n = (name or "").strip()
+    if not n:
+        raise ValueError("name is required")
+    if len(n) > 64:
+        raise ValueError("name must be at most 64 characters")
+    if any(ch not in _ALIAS_NAME_CHARS for ch in n):
+        raise ValueError(
+            "name must contain only letters, digits, '.', '_', or '-'"
+        )
+    return n
+
+
+def _validate_alias_description(description) -> str:
+    desc = (description or "").strip() if description is not None else ""
+    if len(desc) > 256:
+        raise ValueError("description must be at most 256 characters")
+    return desc[:256]
+
+
+def _alias_view(row: PrincipalAlias) -> dict:
+    return {
+        "principal": row.principal,
+        "name": row.name,
+        "description": row.description or "",
+        "created_by": row.created_by or "",
+        "updated_at": int(getattr(row, "updated_at", 0) or 0),
+    }
+
+
+def _list_principal_aliases_view() -> list:
+    list(PrincipalAlias.instances())
+    rows = [_alias_view(a) for a in PrincipalAlias.instances()]
+    rows.sort(key=lambda x: (x["name"].lower(), x["principal"]))
+    return rows
+
+
+def _principal_aliases_map() -> dict:
+    return {a["principal"]: a["name"] for a in _list_principal_aliases_view()}
+
+
+def _upsert_principal_alias(principal: str, name: str, description: str, created_by: str) -> dict:
+    p = _validate_principal_text(principal)
+    n = _validate_alias_name(name)
+    d = _validate_alias_description(description)
+    row = PrincipalAlias[p]
+    if row is None:
+        row = PrincipalAlias(principal=p)
+    row.name = n
+    row.description = d
+    row.created_by = (created_by or "").strip()
+    return _alias_view(row)
+
+
+def _remove_principal_alias_record(principal: str) -> str:
+    p = _validate_principal_text(principal)
+    row = PrincipalAlias[p]
+    if row is None:
+        raise ValueError(f"unknown alias for principal '{p}'")
+    row.delete()
+    return p
 
 
 
@@ -399,6 +490,7 @@ def get_status() -> text:
         "authorized_wasms": AuthorizedWasm.count(),
         "arrangements": Arrangement.count(),
         "events": OrchestrationEvent.count(),
+        "principal_aliases": PrincipalAlias.count(),
         "cycle_samples": CycleSample.count(),
         "cycle_samples_max_id": CycleSample.max_id(),
     })
@@ -458,7 +550,10 @@ def get_tree() -> text:
     list(Canister.instances())
     sections = [_section_view(s) for s in Section.instances()]
     sections.sort(key=lambda x: x["name"])
-    return json.dumps({"sections": sections})
+    return json.dumps({
+        "sections": sections,
+        "principal_aliases": _principal_aliases_map(),
+    })
 
 
 @query
@@ -1087,11 +1182,38 @@ def delete_section(args: text) -> text:
         for dk in list(sec.stands or []):
             for st in list(dk.canisters or []):
                 _pool_free(st.canister_id)
-                st.delete()
-            dk.delete()
+                _safe_entity_delete(st)
+            _safe_entity_delete(dk)
         sec.delete()
         _append_event("section_deleted", "", {"name": sec_name})
         return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def repair_section(args: text) -> text:
+    """Prune stale stand/canister registry rows for a section.
+
+    Use after ``destroy_realm_stand`` when ``get_tree`` still lists stands whose
+    IC canisters are already gone. Controller-only.
+
+    Args (JSON): {section, drop_all?}. ``drop_all`` removes every stand in the
+    section (for emptying Deployments after bulk realm teardown).
+    """
+    try:
+        _require_admin()
+        params = json.loads(args)
+        sec_name = (params.get("section") or "").strip()
+        if not sec_name:
+            return _err("section is required")
+        list(Section.instances())
+        sec = Section[sec_name]
+        if sec is None:
+            return _err(f"unknown section '{sec_name}'")
+        result = repair_section_stands(sec, drop_all=bool(params.get("drop_all")))
+        _append_event("section_repaired", "", {"section": sec_name, **result})
+        return _ok(section=sec_name, **result)
     except Exception as e:
         return _err(str(e))
 
@@ -1358,6 +1480,51 @@ def list_permissions() -> text:
     """Return the catalog of assignable commander permissions:
     [{key, label, group}]."""
     return json.dumps([{"key": k, "label": lbl, "group": grp} for (k, lbl, grp) in PERMISSIONS])
+
+
+@query
+def list_principal_aliases() -> text:
+    """Return all persisted principal aliases (friendly display names)."""
+    list(PrincipalAlias.instances())
+    return json.dumps({"aliases": _list_principal_aliases_view()})
+
+
+@update
+def set_principal_alias(args: text) -> text:
+    """Create or update a friendly alias for an IC principal. Controller-only.
+
+    Args (JSON): {principal, name, description?}. Aliases are display metadata
+    only; authorization still uses raw principals.
+    """
+    try:
+        _require_admin()
+        params = json.loads(args)
+        alias = _upsert_principal_alias(
+            params.get("principal") or "",
+            params.get("name") or "",
+            params.get("description"),
+            _caller(),
+        )
+        _append_event("principal_alias_set", "", {
+            "principal": alias["principal"],
+            "name": alias["name"],
+        })
+        return _ok(alias=alias)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def delete_principal_alias(args: text) -> text:
+    """Remove a principal alias. Controller-only. Args (JSON): {principal}."""
+    try:
+        _require_admin()
+        params = json.loads(args)
+        principal = _remove_principal_alias_record(params.get("principal") or "")
+        _append_event("principal_alias_deleted", "", {"principal": principal})
+        return _ok(principal=principal)
+    except Exception as e:
+        return _err(str(e))
 
 
 @update

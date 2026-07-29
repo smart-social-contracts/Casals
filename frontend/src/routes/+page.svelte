@@ -19,6 +19,7 @@
     getCyclesCached,
     listAuthorizedWasms,
     refreshControllersCache,
+    orchestrationStatus,
     canisterBrowse,
     canisterExec,
     shortHash,
@@ -35,11 +36,13 @@
     deleteCanister,
     destroyCanister,
     backendCanisterId,
+    frontendCanisterId,
+    listBackendControllers,
   } from '$lib/api';
   import type {
     Tree, Status, Section, Stand, Canister, UpdateResult,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
-    CanisterCycles, CanisterDeployment, IcRunStatus,
+    CanisterCycles, CanisterDeployment, IcRunStatus, OrchestrationStatus,
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
@@ -48,14 +51,22 @@
   import FormModal from '$lib/components/FormModal.svelte';
   import CreateCanisterModal from '$lib/components/CreateCanisterModal.svelte';
   import OrchestraDiagram from '$lib/components/OrchestraDiagram.svelte';
+  import CanisterGovernanceMeta from '$lib/components/CanisterGovernanceMeta.svelte';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
   import CanisterControllersBadge from '$lib/components/CanisterControllersBadge.svelte';
-  import CanisterTypeBadges from '$lib/components/CanisterTypeBadges.svelte';
   import { warmSubnetGeoCache } from '$lib/subnetGeo';
   import { governanceConsoleUrl } from '$lib/orchestrationNav';
   import { resolveWasmType, hasBasiliskFeatures } from '$lib/canisterTypes';
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
-  import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
+  import { buildPrincipalLabels } from '$lib/controllerLabels';
+  import {
+    sortCanistersForDisplay,
+    mergeBatonStatus,
+    findBatonsInTree,
+    resolveBatons,
+    augmentTreeWithCasals,
+    isCasalsCanister,
+  } from '$lib/orchestraGovernance';
   import { entityCommanders } from '$lib/commanderAccess';
   import type { Field } from '$lib/components/FormModal.svelte';
 
@@ -74,6 +85,8 @@
 
   let tree = $state<Tree | null>(null);
   let status = $state<Status | null>(null);
+  let orchStatus = $state<OrchestrationStatus | null>(null);
+  let casalsControllers = $state<{ backend?: string[]; frontend?: string[] }>({});
   let loading = $state(true);
   let error = $state('');
   let catalog = $state<AuthorizedWasm[]>([]);
@@ -104,16 +117,32 @@
   let orchestraView = $state<OrchestraView>('tree');
   let filterQuery = $state('');
 
-  const principalLabels = $derived.by(() => buildPrincipalLabels(tree, backendCanisterId()));
+  const displayTree = $derived.by(() => {
+    if (!tree) return null;
+    return augmentTreeWithCasals(
+      tree,
+      backendCanisterId(),
+      frontendCanisterId(),
+      casalsControllers,
+    );
+  });
+
+  const principalLabels = $derived.by(() =>
+    buildPrincipalLabels(displayTree, backendCanisterId(), displayTree?.principal_aliases),
+  );
+
+  const orchestraBatons = $derived(
+    mergeBatonStatus(findBatonsInTree(displayTree), resolveBatons(orchStatus, displayTree)),
+  );
 
   // Filtered view of the tree. A section is kept when any of its stands match,
   // a stand is kept when any of its canisters match or the stand itself matches.
   // Matching is case-insensitive substring against name, canister ID, WASM key,
   // status, description, commander, subnet.
   const filteredTree = $derived.by(() => {
-    if (!tree) return null;
+    if (!displayTree) return null;
     const q = filterQuery.trim().toLowerCase();
-    if (!q) return tree;
+    if (!q) return displayTree;
     const matchCanister = (s: Canister) =>
       [s.name, s.canister_id, s.wasm_key, s.wasm_hash, s.status, s.kind, s.subnet]
         .some((v) => (v ?? '').toLowerCase().includes(q));
@@ -123,7 +152,7 @@
     const matchSection = (sec: Section) =>
       [sec.name, sec.description, sec.subnet, sec.subnet_type, ...entityCommanders(sec).map((c) => c.principal)]
         .some((v) => (v ?? '').toLowerCase().includes(q));
-    const sections = tree.sections
+    const sections = displayTree.sections
       .map((sec) => {
         const stands = sec.stands
           .map((dk) => {
@@ -136,7 +165,7 @@
         return null;
       })
       .filter(Boolean) as Section[];
-    return { ...tree, sections };
+    return { ...displayTree, sections };
   });
 
   let modal = $state<ModalConfig | null>(null);
@@ -209,11 +238,20 @@
       if (missingControllers) {
         await refreshControllersCache().catch(() => undefined);
       }
-      [tree, status, catalog] = await Promise.all([
+      [tree, status, catalog, orchStatus] = await Promise.all([
         getTree(),
         getStatus(),
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
+        orchestrationStatus().catch(() => null),
       ]);
+      try {
+        const backendCtrls = await listBackendControllers();
+        if (backendCtrls.length) {
+          casalsControllers = { ...casalsControllers, backend: backendCtrls };
+        }
+      } catch {
+        /* open query; ignore */
+      }
       void warmSubnetGeoCache(collectSubnetIds(tree));
     } catch (e: any) {
       error = e?.message ?? String(e);
@@ -906,7 +944,11 @@
       <div class="text-center py-10 text-primary-400 text-sm">No results for <strong class="text-primary-700">"{filterQuery}"</strong></div>
     {:else if orchestraView === 'diagram'}
       <div class="card p-5">
-        <OrchestraDiagram tree={filteredTree} />
+        <OrchestraDiagram
+          tree={filteredTree}
+          orchestrationStatus={orchStatus}
+          {principalLabels}
+        />
       </div>
     {/if}
     {#if orchestraView === 'tree'}
@@ -1026,8 +1068,11 @@
                       {#if stand.canisters.length === 0}
                         <div class="text-xs text-primary-400 py-1">No canisters in this stand.</div>
                       {/if}
-                      {#each stand.canisters as canister, ci (`${standKey}/${canister.canister_id || canister.name}/${ci}`)}
-                        <div class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3">
+                      {#each sortCanistersForDisplay(stand.canisters) as canister, ci (`${standKey}/${canister.canister_id || canister.name}/${ci}`)}
+                        <div class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3
+                          {isCasalsCanister(canister) ? 'border-primary-200 bg-primary-50/30' : ''}
+                          {resolveWasmType(canister) === 'multisig' ? 'border-emerald-200 bg-emerald-50/30' : ''}
+                          {resolveWasmType(canister) === 'baton' ? 'border-orange-200 bg-orange-50/30' : ''}">
                           <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                             <div class="min-w-0 space-y-1.5">
                               <div class="flex items-center gap-2 flex-wrap">
@@ -1035,15 +1080,9 @@
                                 <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
                                   {canister.kind}
                                 </span>
-                                <CanisterTypeBadges {canister} />
                                 {#if canister.status}
                                   <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
-                                <CanisterControllersBadge
-                                  canisterId={canister.canister_id}
-                                  controllers={canister.controllers}
-                                  {principalLabels}
-                                />
                                 {#if canister.subnet || canister.canister_id}
                                   <span class="badge badge-neutral font-mono inline-flex items-center gap-1" title="subnet {canister.subnet || 'lookup…'}">
                                     ⬡ {canister.subnet ? shortId(canister.subnet) : 'subnet'}
@@ -1059,6 +1098,13 @@
                                   </a>
                                 {/if}
                               </div>
+                              <CanisterGovernanceMeta
+                                {canister}
+                                tree={filteredTree}
+                                batons={orchestraBatons}
+                                {principalLabels}
+                                mode="full"
+                              />
                               <div class="flex items-center gap-2 text-xs">
                                 <button
                                   class="font-mono text-primary-600 hover:text-primary-900 transition-colors inline-flex items-center gap-1"
@@ -1074,16 +1120,6 @@
                                   <span class="text-primary-400 font-mono" title={canister.wasm_hash}>· {shortHash(canister.wasm_hash)}</span>
                                 {/if}
                               </div>
-                              {#if canister.controllers?.length}
-                                <p class="text-[11px] text-primary-500 font-mono truncate">
-                                  controllers:
-                                  {#each canister.controllers as principal, i (`${canister.canister_id || canister.name}/${principal}/${i}`)}
-                                    {#if i > 0}<span>, </span>{/if}
-                                    {@const label = controllerLabel(principal, principalLabels)}
-                                    <span title={label.title}>{label.display}</span>
-                                  {/each}
-                                </p>
-                              {/if}
                             </div>
                             <div class="flex items-center gap-0.5 shrink-0">
                               <!-- Details toggle -->

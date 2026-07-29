@@ -88,6 +88,16 @@ export interface Permission {
 
 export interface Tree {
   sections: Section[];
+  /** Persisted friendly names for IC principals (principal → alias). */
+  principal_aliases?: Record<string, string>;
+}
+
+export interface PrincipalAlias {
+  principal: string;
+  name: string;
+  description: string;
+  created_by?: string;
+  updated_at?: number;
 }
 
 export interface Status {
@@ -548,6 +558,20 @@ function _backendCanisterId(): string {
 /** Backend canister id for this frontend deployment (from ic_env cookie or build). */
 export function backendCanisterId(): string {
   return _backendCanisterId();
+}
+
+/** This Casals UI asset canister id (ic_env cookie or page hostname). */
+export function frontendCanisterId(): string {
+  const fromEnv = _canisterEnv()['PUBLIC_CANISTER_ID:casals_frontend'];
+  if (fromEnv) return fromEnv;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const m =
+      host.match(/^([a-z0-9-]+)\.icp0\.io$/i) ??
+      host.match(/^([a-z0-9-]+)\.icp\.net$/i);
+    if (m) return m[1];
+  }
+  return '';
 }
 
 function _makeActorWithAgent(agent: HttpAgent): any {
@@ -1428,6 +1452,29 @@ export async function setPermissions(args: {
 
 export async function listPermissions(): Promise<Permission[]> {
   return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
+}
+
+export async function listPrincipalAliases(): Promise<PrincipalAlias[]> {
+  const res = _parseQuery<{ aliases?: PrincipalAlias[] }>(
+    await (await _actor()).list_principal_aliases(),
+  );
+  return res.aliases ?? [];
+}
+
+export async function setPrincipalAlias(args: {
+  principal: string;
+  name: string;
+  description?: string;
+}): Promise<PrincipalAlias> {
+  const res = _parseUpdate<{ alias?: PrincipalAlias }>(
+    await (await _actor(true)).set_principal_alias(JSON.stringify(args)),
+  );
+  if (!res.alias) throw new Error('Missing alias in response');
+  return res.alias;
+}
+
+export async function deletePrincipalAlias(principal: string): Promise<void> {
+  _parseUpdate(await (await _actor(true)).delete_principal_alias(JSON.stringify({ principal })));
 }
 
 export async function listBackendControllers(): Promise<string[]> {

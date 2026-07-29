@@ -121,8 +121,13 @@ def orchestration_governance_gate(
     ):
         return _err(f"caller not eligible to propose '{action}'")
 
+    section_name = (
+        section.name
+        if section is not None
+        else (payload.get("stand") or payload.get("canister") or "")
+    )
     record = new_governance_request(
-        section_name=section.name,
+        section_name=section_name,
         action=action,
         payload=payload,
         proposed_by=caller,
@@ -138,7 +143,7 @@ def orchestration_governance_gate(
             _append_event("governance_executed", "", {
                 "request_id": req.request_id,
                 "action": action,
-                "section": section.name,
+                "section": section_name,
             })
             if isinstance(result, str):
                 try:

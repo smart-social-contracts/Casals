@@ -6,6 +6,7 @@
     approveGovernanceRequest, rejectGovernanceRequest, listOrchestrationActions,
     type Tree, type Permission, type ApprovalPolicy,
   } from '$lib/api';
+  import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { entityCommanders } from '$lib/commanderAccess';
   import { identity, isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
@@ -65,6 +66,8 @@
   });
 
   const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
+
+  const principalLabels = $derived.by(() => buildPrincipalLabels(tree));
 
   // Flatten tree + Casals backend controllers into commander rows.
   const rows = $derived.by((): CommanderRow[] => {
@@ -338,7 +341,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Commanders</h1>
-      <p class="text-sm text-primary-500 mt-1">Section and stand commanders, Casals controllers, and their permissions</p>
+      <p class="text-sm text-primary-500 mt-1">Section and stand commanders and permissions</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -411,6 +414,7 @@
   {:else}
     <div class="space-y-3">
       {#each byPrincipal as [principal, pRows] (principal)}
+        {@const pl = controllerLabel(principal, principalLabels)}
         <div class="card overflow-hidden">
           <!-- Principal header -->
           <div class="flex items-center gap-3 px-4 py-3 bg-primary-50/60 border-b border-primary-100">
@@ -421,11 +425,12 @@
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2 min-w-0">
-                <div class="font-mono text-sm text-primary-800 truncate" title={principal}>{principal}</div>
+                <div class="font-medium text-sm text-primary-900 truncate" title={pl.title}>{pl.display}</div>
                 {#if pRows.some((r) => r.scope === 'controller')}
                   <span class="badge shrink-0 bg-amber-50 text-amber-800 border border-amber-200">controller</span>
                 {/if}
               </div>
+              <div class="font-mono text-xs text-primary-400 truncate mt-0.5" title={pl.title}>{pl.title}</div>
               <div class="text-xs text-primary-400 mt-0.5">{pRows.length} role{pRows.length !== 1 ? 's' : ''}</div>
             </div>
             <button class="icon-btn shrink-0" aria-label="Copy principal" onclick={() => copyToClipboard(principal)}>

@@ -13,7 +13,7 @@ import json
 from basilisk import Principal, ic
 from basilisk.canisters.management import management_canister
 from ic_python_logging import get_logger
-from models import Canister, CanisterKind, CanisterStatus, PooledCanister, Stand
+from models import Canister, CanisterKind, CanisterStatus, PooledCanister, Section, Stand
 from services import AssetCanisterService
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
@@ -458,7 +458,45 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
             unwrap_call_result(store_res)
             _append_event("canister_ids_written", canister_id,
                           {"realm_backend": backend_cid})
+            yield from _maybe_resync_extension_frontends(canister_id, backend_cid)
     return (count, total)
+
+
+def _maybe_resync_extension_frontends(frontend_cid: str, backend_cid: str):
+    """After a frontend bundle upload, re-copy /ext/ assets for installed extensions."""
+    if not frontend_cid or not backend_cid:
+        return
+    fr = (_settings().file_registry_canister_id or "").strip()
+    payload = json.dumps({
+        "registry_canister_id": fr,
+        "frontend_canister_id": frontend_cid,
+    })
+    escaped = payload.replace("\\", "\\\\").replace('"', '\\"')
+    candid_arg = f'("{escaped}")'
+    try:
+        res = yield ic.call_raw(
+            Principal.from_str(backend_cid),
+            "resync_extension_frontends",
+            ic.candid_encode(candid_arg),
+            0,
+        )
+        if isinstance(res, dict) and "Err" in res:
+            raise RuntimeError(str(res["Err"]))
+        _append_event(
+            "extension_frontends_resynced",
+            frontend_cid,
+            {"backend": backend_cid, "result": str(res)[:300]},
+        )
+    except Exception as e:
+        _log.warning(
+            f"extension frontend resync failed for frontend={frontend_cid} "
+            f"backend={backend_cid}: {e}"
+        )
+        _append_event(
+            "extension_frontends_resync_failed",
+            frontend_cid,
+            {"backend": backend_cid, "error": str(e)[:300]},
+        )
 
 
 # ── Management canister helpers ───────────────────────────────────────────────
@@ -1120,7 +1158,7 @@ def _destroy_canister_gen(st):
         st.delete()
         return {"name": name, "canister_id": "", "cycles_reclaimed": 0, "treasury_after": int(ic.canister_balance128())}
     result = yield from _destroy_ic_canister_gen(cid, name)
-    st.delete()
+    _safe_entity_delete(st)
     return result
 
 
@@ -1215,7 +1253,8 @@ def _destroy_realm_stand_gen(params: dict):
         if not errors:
             # Only drop the stand record once every canister was drained and
             # deleted; on partial failure the survivors stay retriable.
-            dk.delete()
+            _unlink_stand_from_section(dk)
+            _safe_entity_delete(dk)
         _append_event("stand_destroyed", "", {
             "stand": stand_name,
             "canisters": len(destroyed),
@@ -1242,3 +1281,66 @@ def _destroy_realm_stand_gen(params: dict):
         "total_cycles_reclaimed": total_cycles,
         "treasury_after": treasury_after,
     }
+
+
+def _safe_entity_delete(entity) -> bool:
+    """Delete an entity; return False when it was already purged (count drift)."""
+    if entity is None:
+        return False
+    try:
+        entity.delete()
+        return True
+    except ValueError as e:
+        if "cannot decrement further" in str(e):
+            return False
+        raise
+
+
+def _unlink_stand_from_section(dk) -> None:
+    """Remove a stand from its section's reverse index before entity deletion."""
+    sec = getattr(dk, "section", None)
+    if sec is None:
+        return
+    from ic_python_db.db_engine import Database
+
+    db = Database.get_instance()
+    db.reverse_index_remove(sec._type, sec._id, "stands", dk._id)
+
+
+def repair_section_stands(sec, *, drop_all: bool = False) -> dict:
+    """Prune stale stand/canister registry rows for ``sec``.
+
+    After ``destroy_realm_stand``, entity counts can drift while reverse indexes
+    still point at orphaned Stand/Canister rows — ``get_tree`` then lists stands
+    whose IC canisters are already gone. ``drop_all`` clears every stand in the
+    section (used once Deployments realms have been destroyed on-chain).
+    """
+    from ic_python_db.db_engine import Database
+
+    db = Database.get_instance()
+    removed_stands = []
+    removed_canisters = []
+    stand_ids = list(db.reverse_index_get(sec._type, sec._id, "stands"))
+    for sid in stand_ids:
+        dk = Stand.load(sid)
+        if dk is None:
+            db.reverse_index_remove(sec._type, sec._id, "stands", sid)
+            removed_stands.append({"id": sid, "reason": "dangling_ref"})
+            continue
+        if drop_all or Stand[dk.name] is None:
+            for st in list(dk.canisters or []):
+                name = st.name or st._id
+                if _safe_entity_delete(st):
+                    removed_canisters.append(name)
+                else:
+                    db.reverse_index_remove(dk._type, dk._id, "canisters", st._id)
+                    removed_canisters.append(name)
+            db.reverse_index_remove(sec._type, sec._id, "stands", sid)
+            reason = "purged" if _safe_entity_delete(dk) else "index_only"
+            removed_stands.append({"name": dk.name, "reason": reason})
+            continue
+        for cid in list(db.reverse_index_get(dk._type, dk._id, "canisters")):
+            if Canister.load(cid) is None:
+                db.reverse_index_remove(dk._type, dk._id, "canisters", cid)
+                removed_canisters.append({"stand": dk.name, "id": cid})
+    return {"removed_stands": removed_stands, "removed_canisters": removed_canisters}

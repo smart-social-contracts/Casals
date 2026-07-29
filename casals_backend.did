@@ -125,6 +125,7 @@ service : {
   "rename_stand" : (text) -> (text);
   "rename_canister" : (text) -> (text);
   "delete_section" : (text) -> (text);
+  "repair_section" : (text) -> (text);
   "delete_stand" : (text) -> (text);
   "delete_canister" : (text) -> (text);
   "destroy_canister" : (text) -> (text);
@@ -133,6 +134,9 @@ service : {
   "remove_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
   "list_permissions" : () -> (text) query;
+  "list_principal_aliases" : () -> (text) query;
+  "set_principal_alias" : (text) -> (text);
+  "delete_principal_alias" : (text) -> (text);
   "list_backend_controllers" : (text) -> (text);
   "register_canister" : (text) -> (text);
   "add_authorized_wasm" : (text) -> (text);

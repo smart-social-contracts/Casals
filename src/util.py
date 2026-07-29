@@ -2,6 +2,7 @@
 without a replica or the Basilisk CDK installed."""
 
 import hashlib
+import re
 
 # Mainnet Candid UI canister — used to build a human URL for backend canisters.
 CANDID_UI = "a4gq6-oaaaa-aaaab-qaa4q-cai"
@@ -106,3 +107,44 @@ def decide_topup(balance, freezing_threshold, min_cycles, topup_cycles,
     if spendable <= 0:
         return 0
     return min(topup_cycles, spendable)
+
+
+# ── Principal alias validation (display metadata) ───────────────────────────
+
+PRINCIPAL_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$", re.IGNORECASE)
+ALIAS_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,64}$")
+
+
+def normalize_principal(principal: str) -> str:
+    return (principal or "").strip()
+
+
+def validate_principal_text(principal: str) -> str:
+    """Return normalized principal or raise ValueError."""
+    p = normalize_principal(principal)
+    if not p:
+        raise ValueError("principal is required")
+    if not PRINCIPAL_RE.match(p):
+        raise ValueError(f"invalid principal '{p}'")
+    return p
+
+
+def validate_alias_name(name: str) -> str:
+    """Return normalized alias name or raise ValueError."""
+    n = (name or "").strip()
+    if not n:
+        raise ValueError("name is required")
+    if len(n) > 64:
+        raise ValueError("name must be at most 64 characters")
+    if not ALIAS_NAME_RE.match(n):
+        raise ValueError(
+            "name must contain only letters, digits, '.', '_', or '-'"
+        )
+    return n
+
+
+def validate_alias_description(description) -> str:
+    desc = (description or "").strip() if description is not None else ""
+    if len(desc) > 256:
+        raise ValueError("description must be at most 256 characters")
+    return desc[:256]

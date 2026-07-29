@@ -383,6 +383,19 @@ class GovernanceRequest(Entity, TimestampedMixin):
     result_json = String(max_length=16384, default="")
 
 
+class PrincipalAlias(Entity, TimestampedMixin):
+    """Friendly display name for an IC principal (controller, commander, signer).
+
+    Aliases are metadata only — authorization still uses raw principals.
+    """
+
+    __alias__ = "principal"
+    principal = String(min_length=1, max_length=64)
+    name = String(min_length=1, max_length=64)
+    description = String(max_length=256, default="")
+    created_by = String(max_length=64, default="")
+
+
 class OrchestrationEvent(Entity, TimestampedMixin):
     """Append-only audit block.
 
