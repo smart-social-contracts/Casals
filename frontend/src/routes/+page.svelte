@@ -971,7 +971,6 @@
         <OrchestraDiagram
           tree={filteredTree}
           orchestrationStatus={orchStatus}
-          {principalLabels}
         />
       </div>
     {/if}
