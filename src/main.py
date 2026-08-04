@@ -121,6 +121,7 @@ from helpers import (
     _principals_in,
     _parse_principal_subnet_auth_map,
     _require_unique_canister_name,
+    _find_canister_by_id,
     _settings,
     unwrap_call_result,
 )
@@ -2531,6 +2532,23 @@ def set_log_visibility(args: text) -> Async[text]:
 
 # ── Basilisk introspection relay (browse / shell) ──────────────────────────
 
+def _resolve_relay_canister(params: dict) -> tuple:
+    """Resolve (Canister entity | None, ic canister id) from name and/or canister_id."""
+    list(Canister.instances())
+    name = (params.get("canister") or "").strip()
+    cid_param = (params.get("canister_id") or "").strip()
+    if name:
+        st = Canister[name]
+        if st is not None and (st.canister_id or "").strip():
+            return st, (st.canister_id or "").strip()
+    if cid_param:
+        st = _find_canister_by_id(cid_param)
+        if st is not None and (st.canister_id or "").strip():
+            return st, (st.canister_id or "").strip()
+        return None, cid_param
+    return None, ""
+
+
 @update
 def canister_browse(args: text) -> Async[text]:
     """Read-only introspection of a Basilisk canister's stable data.
@@ -2539,18 +2557,19 @@ def canister_browse(args: text) -> Async[text]:
     was built with `__basilisk_features__` including "browse"). Read-only, so no
     privileged caller is required — the same data is already public on the canister.
 
-    Args (JSON): {"canister": "<name>", "query": {<browse query>}}
-      query defaults to {"action": "schema"}. Other actions: len / keys / get /
-      items, each with a target ("map"/"set"/"vec") plus optional key/limit/offset.
+    Args (JSON): {"canister": "<name>", "canister_id": "<id>", "query": {<browse query>}}
+      Either canister name or canister_id is required. canister_id allows relay to
+      canisters shown in the UI but not registered in the orchestra tree (e.g.
+      casals-backend). query defaults to {"action": "schema"}.
     """
     try:
         params = json.loads(args) if args else {}
-        list(Canister.instances())
-        st = Canister[(params.get("canister") or "").strip()]
-        if st is None or not st.canister_id:
-            return _err(f"unknown canister '{params.get('canister')}'")
+        _st, cid = _resolve_relay_canister(params)
+        if not cid:
+            target = params.get("canister") or params.get("canister_id") or ""
+            return _err(f"unknown canister '{target}'")
         q = params.get("query") or {"action": "schema"}
-        reply = yield from _canister_call(st.canister_id, "__browse__", json.dumps(q))
+        reply = yield from _canister_call(cid, "__browse__", json.dumps(q))
         try:
             return _ok(result=json.loads(reply))
         except Exception:
@@ -2568,18 +2587,21 @@ def canister_exec(args: text) -> Async[text]:
     actions (`_require_commander`): a configured commander, or — under open
     access — any authenticated caller for commander-less demo stands.
 
-    Args (JSON): {"canister": "<name>", "code": "<python>"}
+    Args (JSON): {"canister": "<name>", "canister_id": "<id>", "code": "<python>"}
     """
     try:
         params = json.loads(args)
-        list(Canister.instances())
-        st = Canister[(params.get("canister") or "").strip()]
-        if st is None or not st.canister_id:
-            return _err(f"unknown canister '{params.get('canister')}'")
-        _require_commander(st.stand, "canister.shell")
+        st, cid = _resolve_relay_canister(params)
+        if not cid:
+            target = params.get("canister") or params.get("canister_id") or ""
+            return _err(f"unknown canister '{target}'")
+        if st is not None:
+            _require_commander(st.stand, "canister.shell")
+        elif not _is_controller():
+            return _err("unauthorized: Casals controller required for unregistered canister")
         code = params.get("code") or ""
-        output = yield from _canister_call(st.canister_id, "__shell__", code)
-        _append_event("canister_exec", st.canister_id, {"name": st.name, "bytes": len(code)})
+        output = yield from _canister_call(cid, "__shell__", code)
+        _append_event("canister_exec", cid, {"name": st.name if st else cid, "bytes": len(code)})
         return _ok(output=output)
     except Exception as e:
         return _err(f"{e}")

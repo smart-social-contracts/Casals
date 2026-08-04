@@ -1629,15 +1629,23 @@ export interface ExecResult extends UpdateResult {
 export async function canisterBrowse(
   canister: string,
   query?: Record<string, unknown>,
+  canisterId?: string,
 ): Promise<BrowseResult> {
   const args: Record<string, unknown> = { canister };
+  if (canisterId) args.canister_id = canisterId;
   if (query) args.query = query;
   return _parseUpdate(await (await _actor()).canister_browse(JSON.stringify(args))) as BrowseResult;
 }
 
 // Run Python inside the canister (controller-gated). Requires auth.
-export async function canisterExec(canister: string, code: string): Promise<ExecResult> {
-  return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify({ canister, code }))) as ExecResult;
+export async function canisterExec(
+  canister: string,
+  code: string,
+  canisterId?: string,
+): Promise<ExecResult> {
+  const args: Record<string, unknown> = { canister, code };
+  if (canisterId) args.canister_id = canisterId;
+  return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify(args))) as ExecResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,7 +1917,7 @@ export function formatIsoTs(secs: number | undefined | null): string {
   return new Date(secs * 1000).toISOString();
 }
 
-const MAINNET_CANDID_UI = 'a4gq6-oaaaa-aaaab-qaa4q-cai';
+const MAINNET_CANDID_UI = 'rxs6w-5qaaa-aaaah-avp2a-cai';
 
 /** Populated from ic_env or frontend/static/local-network.json on local replica. */
 let _localCandidUiHint = '';
@@ -1953,7 +1961,7 @@ export function candidUiUrl(canisterId: string): string {
     const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
     return `http://${ui}.localhost:${port}/?id=${canisterId}`;
   }
-  return `https://${MAINNET_CANDID_UI}.raw.icp0.io/?id=${canisterId}`;
+  return `https://${MAINNET_CANDID_UI}.icp0.io/?id=${canisterId}`;
 }
 
 // The default served URL for a frontend canister, used as a fallback when the

@@ -12,7 +12,8 @@
     tree?: Tree | null;
     batons?: BatonRef[];
     principalLabels?: Map<string, string>;
-    /** compact = badge + short controller line; full = inline controller list */
+    /** compact = badge popover; full = inline list; hide controllers in summary row */
+    showControllers?: boolean;
     mode?: 'compact' | 'full';
   }
 
@@ -22,6 +23,7 @@
     batons = [],
     principalLabels = new Map(),
     mode = 'compact',
+    showControllers = true,
   }: Props = $props();
 
   const meta = $derived(canisterGovernanceMeta(canister, batons, tree));
@@ -46,18 +48,20 @@
     {/if}
   </div>
 
-  {#if mode === 'full'}
-    <CanisterControllersBadge
-      canisterId={canister.canister_id}
-      controllers={canister.controllers}
-      {principalLabels}
-      inline
-    />
-  {:else}
-    <CanisterControllersBadge
-      canisterId={canister.canister_id}
-      controllers={canister.controllers}
-      {principalLabels}
-    />
+  {#if showControllers}
+    {#if mode === 'full'}
+      <CanisterControllersBadge
+        canisterId={canister.canister_id}
+        controllers={canister.controllers}
+        {principalLabels}
+        inline
+      />
+    {:else}
+      <CanisterControllersBadge
+        canisterId={canister.canister_id}
+        controllers={canister.controllers}
+        {principalLabels}
+      />
+    {/if}
   {/if}
 </div>

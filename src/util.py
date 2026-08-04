@@ -5,7 +5,7 @@ import hashlib
 import re
 
 # Mainnet Candid UI canister — used to build a human URL for backend canisters.
-CANDID_UI = "a4gq6-oaaaa-aaaab-qaa4q-cai"
+CANDID_UI = "rxs6w-5qaaa-aaaah-avp2a-cai"
 
 
 def to_hex(v) -> str:
@@ -23,7 +23,7 @@ def canister_url(kind: str, canister_id: str, candid_ui: str = CANDID_UI) -> str
         return ""
     if kind == "frontend":
         return f"https://{canister_id}.icp0.io"
-    return f"https://{candid_ui}.raw.icp0.io/?id={canister_id}"
+    return f"https://{candid_ui}.icp0.io/?id={canister_id}"
 
 
 def audit_block_hash(idx, btype, canister_id, caller, ts, payload_json, parent_hash) -> str:

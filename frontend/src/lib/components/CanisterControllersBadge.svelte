@@ -18,6 +18,7 @@
   }: Props = $props();
 
   let open = $state(false);
+  let expanded = $state(false);
 
   const count = $derived(controllers.length);
 
@@ -42,30 +43,48 @@
 
 {#if inline}
   <div class="space-y-1">
-    <p class="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Controllers</p>
-    {#if count === 0}
-      <p class="text-xs text-primary-400">None cached — refresh Orchestra to load from IC.</p>
-    {:else}
-      <ul class="space-y-1">
-        {#each controllers as principal (principal)}
-          {@const label = controllerLabel(principal, principalLabels)}
-          <li class="flex items-center gap-2 min-w-0">
-            <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={label.title}>
-              {label.display}
-            </code>
-            <button
-              type="button"
-              class="shrink-0 p-1 rounded hover:bg-primary-50 text-primary-500"
-              title="Copy principal"
-              onclick={() => copy(principal)}
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m11.25 2.625v-3.375a1.125 1.125 0 00-1.125-1.125H15.75m4.5 0H18a1.125 1.125 0 01-1.125-1.125V3" />
-              </svg>
-            </button>
-          </li>
-        {/each}
-      </ul>
+    <button
+      type="button"
+      class="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary-500 hover:text-primary-700 transition-colors"
+      aria-expanded={expanded}
+      onclick={() => { expanded = !expanded; }}
+    >
+      <svg
+        class="w-3 h-3 transition-transform {expanded ? 'rotate-90' : ''}"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+      </svg>
+      Controllers{#if count > 0}<span class="font-normal normal-case"> ({count})</span>{/if}
+    </button>
+    {#if expanded}
+      {#if count === 0}
+        <p class="text-xs text-primary-400 pl-4">None cached — refresh Orchestra to load from IC.</p>
+      {:else}
+        <ul class="space-y-1 pl-4">
+          {#each controllers as principal (principal)}
+            {@const label = controllerLabel(principal, principalLabels)}
+            <li class="flex items-center gap-2 min-w-0">
+              <code class="text-[11px] font-mono text-primary-800 truncate flex-1" title={label.title}>
+                {label.display}
+              </code>
+              <button
+                type="button"
+                class="shrink-0 p-1 rounded hover:bg-primary-50 text-primary-500"
+                title="Copy principal"
+                onclick={() => copy(principal)}
+              >
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m11.25 2.625v-3.375a1.125 1.125 0 00-1.125-1.125H15.75m4.5 0H18a1.125 1.125 0 01-1.125-1.125V3" />
+                </svg>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </div>
 {:else}

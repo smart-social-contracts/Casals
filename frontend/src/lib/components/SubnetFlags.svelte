@@ -10,9 +10,11 @@
     subnetId?: string;
     canisterId?: string;
     size?: 'sm' | 'md';
+    /** When true, flags appear in a tooltip on hover of the parent `group/subnet` container. */
+    hoverOnly?: boolean;
   }
 
-  let { subnetId = '', canisterId = '', size = 'sm' }: Props = $props();
+  let { subnetId = '', canisterId = '', size = 'sm', hoverOnly = false }: Props = $props();
 
   let geo = $state<SubnetGeo | null>(null);
   let loading = $state(false);
@@ -55,18 +57,30 @@
   const flagClass = $derived(size === 'md' ? 'text-base leading-none' : 'text-sm leading-none');
 </script>
 
-{#if loading && !geo}
+{#if loading && !geo && !hoverOnly}
   <span class="text-primary-300 {flagClass}" aria-hidden="true">…</span>
 {:else if geo?.orderedCountries.length}
-  <span
-    class="inline-flex flex-wrap items-center gap-0.5 {flagClass}"
-    {title}
-    aria-label={title}
-  >
-    {#each geo.orderedCountries as country (country.code)}
-      <span class="subnet-flag" title="{country.region}: {country.name}">{country.flag}</span>
-    {/each}
-  </span>
+  {#if hoverOnly}
+    <span
+      class="subnet-flags-hover absolute left-0 top-full z-20 mt-0.5 hidden group-hover/subnet:flex flex-wrap items-center gap-0.5 rounded-md border border-[var(--color-border-primary)] bg-white px-1.5 py-1 shadow-md {flagClass}"
+      {title}
+      aria-label={title}
+    >
+      {#each geo.orderedCountries as country (country.code)}
+        <span class="subnet-flag" title="{country.region}: {country.name}">{country.flag}</span>
+      {/each}
+    </span>
+  {:else}
+    <span
+      class="inline-flex flex-wrap items-center gap-0.5 {flagClass}"
+      {title}
+      aria-label={title}
+    >
+      {#each geo.orderedCountries as country (country.code)}
+        <span class="subnet-flag" title="{country.region}: {country.name}">{country.flag}</span>
+      {/each}
+    </span>
+  {/if}
 {/if}
 
 <style>

@@ -386,7 +386,7 @@
     browseBusy[cid] = true;
     browseErr[cid] = '';
     try {
-      const r = await canisterBrowse(canister.name, query);
+      const r = await canisterBrowse(canister.name, query, canister.canister_id);
       browseData[cid] = r.result;
     } catch (e: any) {
       const msg = e?.message ?? String(e);
@@ -405,7 +405,7 @@
     consoleBusy[cid] = true;
     consoleErr[cid] = '';
     try {
-      const r = await canisterExec(canister.name, code);
+      const r = await canisterExec(canister.name, code, canister.canister_id);
       consoleOut[cid] = r.output ?? '';
     } catch (e: any) {
       const msg = e?.message ?? String(e);
@@ -898,8 +898,9 @@
           <div class="flex flex-col gap-0.5 sm:col-span-2">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Conductor hosting</span>
             <span class="inline-flex items-center gap-2 text-sm text-primary-700">
-              <span class="font-mono text-xs text-primary-500">{shortId(backendCanisterId())}</span>
-              <SubnetFlags canisterId={backendCanisterId()} size="md" />
+              <span class="font-mono text-xs text-primary-500 group/subnet relative">{shortId(backendCanisterId())}
+                <SubnetFlags canisterId={backendCanisterId()} size="md" hoverOnly />
+              </span>
             </span>
           </div>
         </div>
@@ -975,10 +976,10 @@
                   </div>
                 {/each}
                 {#if placementLabel(section)}
-                  <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-1 font-mono" title={section.subnet || section.subnet_type}>
+                  <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-1 font-mono group/subnet relative w-fit" title={section.subnet || section.subnet_type}>
                     <span>⬡ {placementLabel(section)}</span>
                     {#if section.subnet}
-                      <SubnetFlags subnetId={section.subnet} />
+                      <SubnetFlags subnetId={section.subnet} hoverOnly />
                     {/if}
                   </div>
                 {/if}
@@ -1030,10 +1031,10 @@
                           </div>
                         {/each}
                         {#if placementLabel(stand)}
-                          <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
+                          <div class="flex items-center gap-1.5 flex-wrap text-xs text-primary-400 mt-0.5 font-mono group/subnet relative w-fit" title={stand.subnet || stand.subnet_type}>
                             <span>⬡ {placementLabel(stand)}</span>
                             {#if stand.subnet}
-                              <SubnetFlags subnetId={stand.subnet} />
+                              <SubnetFlags subnetId={stand.subnet} hoverOnly />
                             {/if}
                           </div>
                         {/if}
@@ -1084,9 +1085,9 @@
                                   <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
                                 {#if canister.subnet || canister.canister_id}
-                                  <span class="badge badge-neutral font-mono inline-flex items-center gap-1" title="subnet {canister.subnet || 'lookup…'}">
+                                  <span class="badge badge-neutral font-mono inline-flex items-center gap-1 group/subnet relative" title="subnet {canister.subnet || 'lookup…'}">
                                     ⬡ {canister.subnet ? shortId(canister.subnet) : 'subnet'}
-                                    <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
+                                    <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} hoverOnly />
                                   </span>
                                 {/if}
                                 {#if governanceConsoleUrl(canister)}
@@ -1103,7 +1104,7 @@
                                 tree={filteredTree}
                                 batons={orchestraBatons}
                                 {principalLabels}
-                                mode="full"
+                                showControllers={false}
                               />
                               <div class="flex items-center gap-2 text-xs">
                                 <button
@@ -1170,8 +1171,11 @@
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                                 </button>
                                 <!-- Destroy (permanent) -->
-                                <button class="btn-sm bg-red-600 text-white hover:bg-red-700 px-2 py-1 text-xs font-medium rounded-md" title="Permanently destroy canister and reclaim cycles" onclick={() => openDestroyCanister(canister)}>
-                                  Destroy
+                                <button class="icon-btn text-red-600 hover:text-red-700 hover:bg-red-50" aria-label="Permanently destroy canister and reclaim cycles" title="Permanently destroy canister and reclaim cycles" onclick={() => openDestroyCanister(canister)}>
+                                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.362 5.214A8.252 8.252 0 0 1 12 21 8.25 8.25 0 0 1 6.038 7.047 8.287 8.287 0 0 0 9 9.601a8.983 8.983 0 0 1 3.361-6.867 8.21 8.21 0 0 0 3 2.48z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 18a3.75 3.75 0 0 0 .495-7.467 5.99 5.99 0 0 0-1.925 3.547 5.975 5.975 0 0 1-2.133-1.001A3.75 3.75 0 0 0 12 18z" />
+                                  </svg>
                                 </button>
                               {/if}
                             </div>
@@ -1206,9 +1210,9 @@
                                 {#if canister.snapshot_id}
                                   <span class="font-mono" title={canister.snapshot_id}>snapshot {shortHash(canister.snapshot_id)}</span>
                                 {/if}
-                                <span class="font-mono inline-flex items-center gap-1.5 flex-wrap" title={canister.subnet || 'default (conductor subnet)'}>
+                                <span class="font-mono inline-flex items-center gap-1.5 flex-wrap group/subnet relative w-fit" title={canister.subnet || 'default (conductor subnet)'}>
                                   subnet {canister.subnet ? shortId(canister.subnet) : '— default'}
-                                  <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} />
+                                  <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} hoverOnly />
                                 </span>
                               </div>
                               <CanisterControllersBadge
