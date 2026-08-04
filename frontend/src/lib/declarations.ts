@@ -65,6 +65,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     rename_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     rename_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     rename_canister:          IDL.Func([IDL.Text], [IDL.Text], []),
+    set_canister_tags:        IDL.Func([IDL.Text], [IDL.Text], []),
     delete_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     delete_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     delete_canister:          IDL.Func([IDL.Text], [IDL.Text], []),

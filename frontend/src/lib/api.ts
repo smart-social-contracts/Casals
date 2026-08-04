@@ -17,6 +17,7 @@ export interface Canister {
   kind: CanisterKind;
   wasm_type?: string;
   tags?: string[];
+  user_tags?: string[];
   url: string;
   wasm_key: string;
   wasm_hash: string;
@@ -1392,6 +1393,10 @@ export async function renameStand(args: { stand: string; new_name: string; descr
 
 export async function renameCanister(args: { canister: string; new_name: string }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).rename_canister(JSON.stringify(args)));
+}
+
+export async function setCanisterTags(args: { canister: string; tags: string[] }): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_canister_tags(JSON.stringify(args)));
 }
 
 export async function deleteSection(args: { section: string }): Promise<UpdateResult> {

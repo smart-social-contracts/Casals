@@ -21,6 +21,7 @@ PERMISSIONS = [
     ("canister.deploy",    "Deploy / upgrade canisters", "Canisters"),
     ("canister.delete",    "Delete canisters",           "Canisters"),
     ("canister.rename",    "Rename canisters",           "Canisters"),
+    ("canister.tag",       "Set canister tags",          "Canisters"),
     ("canister.snapshot",  "Create snapshots",           "Canisters"),
     ("canister.revert",    "Revert to snapshot",         "Canisters"),
     ("canister.lifecycle", "Start / stop canisters",     "Canisters"),

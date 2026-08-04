@@ -2,6 +2,7 @@
 without a replica or the Basilisk CDK installed."""
 
 import hashlib
+import json
 import re
 
 # Mainnet Candid UI canister — used to build a human URL for backend canisters.
@@ -148,3 +149,49 @@ def validate_alias_description(description) -> str:
     if len(desc) > 256:
         raise ValueError("description must be at most 256 characters")
     return desc[:256]
+
+
+_USER_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_MAX_USER_TAGS = 8
+_MAX_USER_TAG_LEN = 32
+
+
+def parse_user_tags_json(raw: str) -> list:
+    """Load commander-assigned tags from stable JSON."""
+    s = (raw or "").strip()
+    if not s:
+        return []
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(t).strip() for t in parsed if str(t).strip()]
+
+
+def normalize_user_tags(tags) -> list:
+    """Validate and normalize a tag list for storage (lowercase, deduped)."""
+    if tags is None:
+        return []
+    if not isinstance(tags, list):
+        raise ValueError("expected tags array")
+    out = []
+    seen = set()
+    for item in tags:
+        t = str(item).strip().lower()
+        if not t:
+            continue
+        if len(t) > _MAX_USER_TAG_LEN:
+            raise ValueError(f"tag too long (max {_MAX_USER_TAG_LEN} chars): {t[:20]}")
+        if not _USER_TAG_RE.match(t):
+            raise ValueError(
+                f"invalid tag '{t}': use letters, digits, hyphens, underscores"
+            )
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) > _MAX_USER_TAGS:
+            raise ValueError(f"at most {_MAX_USER_TAGS} tags")
+    return out

@@ -29,6 +29,10 @@ def infer_wasm_type(wasm_key: str) -> str:
         return BATON
     if "basilisk" in k:
         return BASILISK
+    # Realm-family backends are built with Basilisk (Python CDK) even though the
+    # key doesn't contain "basilisk" (e.g. realm-backend@main..., registry-backend@...).
+    if k.startswith(("realm-backend", "registry-backend", "installer-backend", "marketplace-backend")):
+        return BASILISK
     if "motoko" in k:
         return MOTOKO
     if "rust" in k:

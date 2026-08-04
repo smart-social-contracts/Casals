@@ -124,6 +124,8 @@ class Canister(Entity, TimestampedMixin):
     # Cached IC controller list (JSON array of principals), updated when Casals
     # or multisig governance sets controllers.
     ic_controllers = String(max_length=1024, default="")
+    # Commander-assigned labels (JSON array of strings), separate from wasm_type tags.
+    user_tags_json = String(max_length=512, default="")
 
     def _save(self):
         """Enforce unique ``name`` and ``canister_id`` via alias indexes (O(1))."""

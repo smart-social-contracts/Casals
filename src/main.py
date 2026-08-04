@@ -265,6 +265,47 @@ def _validate_alias_description(description) -> str:
     return desc[:256]
 
 
+_MAX_USER_TAGS = 8
+_MAX_USER_TAG_LEN = 32
+
+
+def _valid_user_tag(t: str) -> bool:
+    if not t or len(t) > _MAX_USER_TAG_LEN:
+        return False
+    c0 = t[0]
+    if not (("a" <= c0 <= "z") or ("0" <= c0 <= "9")):
+        return False
+    for ch in t[1:]:
+        if not (("a" <= ch <= "z") or ("0" <= ch <= "9") or ch in "-_"):
+            return False
+    return True
+
+
+def _normalize_user_tags(tags) -> list:
+    """Inline copy of util.normalize_user_tags (Basilisk may miss new util exports)."""
+    if tags is None:
+        return []
+    if not isinstance(tags, list):
+        raise ValueError("expected tags array")
+    out = []
+    seen = set()
+    for item in tags:
+        t = str(item).strip().lower()
+        if not t:
+            continue
+        if not _valid_user_tag(t):
+            raise ValueError(
+                f"invalid tag '{t}': use letters, digits, hyphens, underscores"
+            )
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) > _MAX_USER_TAGS:
+            raise ValueError(f"at most {_MAX_USER_TAGS} tags")
+    return out
+
+
 def _alias_view(row: PrincipalAlias) -> dict:
     return {
         "principal": row.principal,
@@ -1161,6 +1202,32 @@ def rename_canister(args: text) -> text:
         st.name = new_name
         _pool_mark_in_use(st.canister_id, new_name)
         _append_event("canister_renamed", st.canister_id, {"old": old_name, "new": new_name})
+        return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_canister_tags(args: text) -> text:
+    """Args (JSON): {canister, tags}. `tags` is a string array (max 8)."""
+    try:
+        params = json.loads(args)
+        name = params["canister"].strip()
+        tags_raw = params.get("tags", [])
+        list(Section.instances())
+        list(Stand.instances())
+        list(Canister.instances())
+        st = Canister[name]
+        if st is None:
+            return _err(f"unknown canister '{name}'")
+        _require_commander(st.stand, "canister.tag")
+        tags = _normalize_user_tags(tags_raw)
+        st.user_tags_json = json.dumps(tags)
+        _append_event(
+            "canister_tags_set",
+            st.canister_id,
+            {"canister": name, "tags": tags},
+        )
         return _ok()
     except Exception as e:
         return _err(str(e))

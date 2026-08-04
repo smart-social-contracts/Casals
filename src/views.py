@@ -17,6 +17,19 @@ def _canister_wasm_type(st) -> str:
     return infer_wasm_type(st.wasm_key or "")
 
 
+def _parse_user_tags_json(raw: str) -> list:
+    s = (raw or "").strip()
+    if not s:
+        return []
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(t).strip() for t in parsed if str(t).strip()]
+
+
 def _canister_view(st) -> dict:
     controllers = []
     raw = getattr(st, "ic_controllers", "") or ""
@@ -33,6 +46,7 @@ def _canister_view(st) -> dict:
         "kind": st.kind,
         "wasm_type": _canister_wasm_type(st),
         "tags": wasm_type_tags(_canister_wasm_type(st)),
+        "user_tags": _parse_user_tags_json(getattr(st, "user_tags_json", "") or ""),
         "url": canister_url(st.kind, st.canister_id),
         "wasm_key": st.wasm_key,
         "wasm_hash": st.wasm_hash,

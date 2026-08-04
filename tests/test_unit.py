@@ -483,7 +483,7 @@ def test_all_expected_permission_keys_present():
     for expected in [
         "canister.create", "canister.deploy", "canister.delete",
         "canister.snapshot", "canister.revert", "canister.lifecycle",
-        "canister.topup", "canister.shell",
+        "canister.topup", "canister.shell", "canister.tag",
         "stand.create", "stand.rename", "stand.delete",
         "commander.assign", "subnet.whitelist",
     ]:
@@ -1116,3 +1116,20 @@ def test_validate_principal_text():
     assert util.validate_principal_text("aaaaa-aa") == "aaaaa-aa"
     with pytest.raises(ValueError):
         util.validate_principal_text("bad")
+
+
+def test_normalize_user_tags_dedupes_and_lowercases():
+    assert util.normalize_user_tags(["Staging", "team-A", "staging"]) == ["staging", "team-a"]
+
+
+def test_normalize_user_tags_rejects_invalid():
+    with pytest.raises(ValueError, match="invalid tag"):
+        util.normalize_user_tags(["bad tag"])
+    with pytest.raises(ValueError, match="at most"):
+        util.normalize_user_tags([f"t{i}" for i in range(9)])
+
+
+def test_parse_user_tags_json():
+    assert util.parse_user_tags_json("") == []
+    assert util.parse_user_tags_json('["a", "b"]') == ["a", "b"]
+    assert util.parse_user_tags_json("not-json") == []

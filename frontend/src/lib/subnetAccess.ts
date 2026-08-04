@@ -1,18 +1,6 @@
-import type { Section, Stand, Tree } from './api';
+import type { Tree } from './api';
 import { entityCommanders } from './commanderAccess';
-
-function permissionsGrant(
-  permissions: string[] | undefined,
-  allPermissions: boolean | undefined,
-  key: string,
-): boolean {
-  if (allPermissions) return true;
-  if (!permissions?.length) return true;
-  if (permissions.includes(key)) return true;
-  // Legacy rows: governance commanders may manage the subnet whitelist.
-  if (key === 'subnet.whitelist' && permissions.includes('commander.assign')) return true;
-  return false;
-}
+import { permissionsGrant } from './commanderPermissions';
 
 function commanderGrantAllows(
   grant: { permissions?: string[]; all_permissions?: boolean },

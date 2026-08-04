@@ -17,6 +17,8 @@ export function inferWasmType(wasmKey: string | undefined): WasmType {
   if (isMultisigWasm(k) || k === 'multisig') return 'multisig';
   if (isBatonWasm(k) || k.includes('baton')) return 'baton';
   if (k.includes('basilisk')) return 'basilisk';
+  // Realm-family backends are Basilisk (Python CDK) even without "basilisk" in the key.
+  if (/^(realm-backend|registry-backend|installer-backend|marketplace-backend)/.test(k)) return 'basilisk';
   if (k.includes('motoko')) return 'motoko';
   if (k.includes('rust')) return 'rust';
   if (k.includes('frontend')) return 'assets';

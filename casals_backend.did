@@ -124,6 +124,7 @@ service : {
   "rename_section" : (text) -> (text);
   "rename_stand" : (text) -> (text);
   "rename_canister" : (text) -> (text);
+  "set_canister_tags" : (text) -> (text);
   "delete_section" : (text) -> (text);
   "repair_section" : (text) -> (text);
   "delete_stand" : (text) -> (text);
