@@ -1108,10 +1108,11 @@
                                   <span class="badge badge-neutral">{canister.status}</span>
                                 {/if}
                                 {#if canister.subnet || canister.canister_id}
-                                  <span class="badge badge-neutral font-mono inline-flex items-center gap-1 group/subnet relative" title="subnet {canister.subnet || 'lookup…'}">
-                                    ⬡ {canister.subnet ? shortId(canister.subnet) : 'subnet'}
-                                    <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} hoverOnly />
-                                  </span>
+                                  <SubnetFlags
+                                    subnetId={canister.subnet}
+                                    canisterId={canister.canister_id}
+                                    variant="badge"
+                                  />
                                 {/if}
                                 {#if governanceConsoleUrl(canister)}
                                   <a
@@ -1241,10 +1242,11 @@
                                 {#if canister.snapshot_id}
                                   <span class="font-mono" title={canister.snapshot_id}>snapshot {shortHash(canister.snapshot_id)}</span>
                                 {/if}
-                                <span class="font-mono inline-flex items-center gap-1.5 flex-wrap group/subnet relative w-fit" title={canister.subnet || 'default (conductor subnet)'}>
-                                  subnet {canister.subnet ? shortId(canister.subnet) : '— default'}
-                                  <SubnetFlags subnetId={canister.subnet} canisterId={canister.canister_id} hoverOnly />
-                                </span>
+                                <SubnetFlags
+                                  subnetId={canister.subnet}
+                                  canisterId={canister.canister_id}
+                                  variant="inline"
+                                />
                               </div>
                               <CanisterControllersBadge
                                 canisterId={canister.canister_id}

@@ -283,7 +283,12 @@ export function shortSubnetId(id: string): string {
   return `${s.slice(0, 5)}…${s.slice(-5)}`;
 }
 
+/** First four characters of a subnet principal (e.g. ``4ecn``). */
+export function subnetPrefix(id: string, len = 4): string {
+  return (id || '').trim().slice(0, len);
+}
+
 /** First five characters of a subnet principal (e.g. ``4ecnw``). */
 export function subnetShortLabel(id: string): string {
-  return (id || '').trim().slice(0, 5);
+  return subnetPrefix(id, 5);
 }
