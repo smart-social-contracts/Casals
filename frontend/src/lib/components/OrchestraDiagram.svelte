@@ -12,17 +12,20 @@
     isBatonCanister,
     isMultisigCanister,
     isCasalsCanister,
+    controllerEntries,
   } from '$lib/orchestraGovernance';
   import CanisterTypeBadges from '$lib/components/CanisterTypeBadges.svelte';
 
   interface Props {
     tree: Tree;
     orchestrationStatus?: OrchestrationStatus | null;
+    principalLabels?: Map<string, string>;
   }
 
   let {
     tree,
     orchestrationStatus = null,
+    principalLabels = new Map(),
   }: Props = $props();
 
   type HoverTarget = { section: string; stand: string; canister: Canister };
@@ -92,6 +95,7 @@
           <span class="w-3 h-2 rounded border border-blue-200 bg-blue-50 shrink-0"></span>
           frontend
         </span>
+        <span class="text-primary-400">· IC controllers listed on each canister</span>
       </div>
     </div>
 
@@ -154,6 +158,7 @@
                     {/if}
                     {#each sortCanistersForDisplay(stand.canisters) as canister, ci (canister.canister_id || `${section.name}/${stand.name}/${canister.name}/${ci}`)}
                       {@const gov = canisterGovernanceMeta(canister, batons, tree)}
+                      {@const ctrls = controllerEntries(canister.controllers, principalLabels)}
                       <a
                         href={chipLink(canister)}
                         target={chipTarget(canister)}
@@ -189,6 +194,21 @@
                             {/if}
                           </span>
                         {/if}
+
+                        <div class="pt-1 border-t border-black/5">
+                          <p class="text-[9px] font-semibold uppercase tracking-wider text-primary-500 mb-0.5">Controllers</p>
+                          {#if ctrls.length === 0}
+                            <p class="text-[10px] text-primary-400 italic">none cached</p>
+                          {:else}
+                            <ul class="space-y-0.5">
+                              {#each ctrls as ctrl (ctrl.principal)}
+                                <li class="text-[10px] font-mono text-primary-700 truncate" title={ctrl.title}>
+                                  {ctrl.display}
+                                </li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </div>
                       </a>
                     {/each}
                   </div>
@@ -211,17 +231,28 @@
     <div class="mt-4 pt-3 border-t border-[var(--color-border-primary)] flex flex-col sm:flex-row sm:items-start justify-between gap-2 text-xs text-primary-500">
       <div class="min-h-[1.25rem] font-mono text-[11px] text-primary-600">
         {#if hovered}
-          <div class="truncate">
-            {hovered.section} / {hovered.stand} / {hovered.canister.name}
-            {#if hovered.canister.canister_id}
-              · {hovered.canister.canister_id}
-            {/if}
-            {#if hovered.canister.wasm_hash}
-              · {shortHash(hovered.canister.wasm_hash)}
+          {@const hovCtrls = controllerEntries(hovered.canister.controllers, principalLabels)}
+          <div class="space-y-1">
+            <div class="truncate">
+              {hovered.section} / {hovered.stand} / {hovered.canister.name}
+              {#if hovered.canister.canister_id}
+                · {hovered.canister.canister_id}
+              {/if}
+              {#if hovered.canister.wasm_hash}
+                · {shortHash(hovered.canister.wasm_hash)}
+              {/if}
+            </div>
+            {#if hovCtrls.length}
+              <div class="font-sans text-primary-500">
+                controllers:
+                {#each hovCtrls as ctrl, i (ctrl.principal)}
+                  {#if i > 0}, {/if}<span title={ctrl.title}>{ctrl.display}</span>
+                {/each}
+              </div>
             {/if}
           </div>
         {:else}
-          <span class="text-primary-400 font-sans">Hover a canister for path, ID, and WASM hash.</span>
+          <span class="text-primary-400 font-sans">Hover a canister for path, ID, and controller details.</span>
         {/if}
       </div>
     </div>
