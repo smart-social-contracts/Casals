@@ -8,6 +8,8 @@
 
 Casals is **fully on-chain**: the conductor is a canister that creates, upgrades, snapshots, and rolls back other canisters by calling the IC management canister directly. Sheets, arrangements, WASM catalog, cycles policy, and audit history all live in Casals' stable state — there is no off-chain worker in the deploy path. The CLI and frontend are thin clients that submit update calls; execution and rollback logic run inside the conductor.
 
+**Used by:** Casals serves as the provisioning layer of the [gos.earth GOS-as-a-Service platform](https://github.com/smart-social-contracts/gos-as-a-service). [Realms GOS](https://github.com/smart-social-contracts/realms) is the first platform citizen and operates Casals conductor instances per network, driving rollouts via `realms rollout` and fleet config in `casals-config/`.
+
 Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to one or more **commanders** (principals or external governance canisters). Casals provides the structure and executes approved actions; it never embeds voting logic inside the conductor.
 
 > **Live demo** — https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io
