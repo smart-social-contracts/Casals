@@ -37,10 +37,22 @@ jobs:
           cp .basilisk/casals_backend/casals_backend.wasm.gz ./casals_conductor.wasm.gz
           cp casals_backend.did ./casals_conductor.did
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend assets
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+          tar czf casals_frontend.tar.gz -C dist .
+          echo "Frontend tarball: $(stat -c%s casals_frontend.tar.gz) bytes"
+
       - name: Compute release asset checksums
         run: |
           echo "# SHA-256 checksums for release assets" > checksums.txt
-          for f in casals_conductor.wasm.gz casals_conductor.did; do
+          for f in casals_conductor.wasm.gz casals_conductor.did casals_frontend.tar.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
           cat checksums.txt
@@ -54,4 +66,5 @@ jobs:
           files: |
             casals_conductor.wasm.gz
             casals_conductor.did
+            casals_frontend.tar.gz
             checksums.txt
