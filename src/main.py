@@ -88,6 +88,7 @@ from cycles import (
     _status_cycles,
     _status_freezing,
     _ic_run_status,
+    _fetch_canister_status_gen,
     _sync_treasury_baseline,
     _treasury_ledger_account_hex,
     treasury_deposit_fields,
@@ -3117,10 +3118,10 @@ def get_cycles() -> Async[text]:
                 "topup_cycles": topup_c,
             }
             try:
-                status_res = yield management_canister.canister_status(
-                    {"canister_id": Principal.from_str(st.canister_id)}
-                )
-                status = unwrap_call_result(status_res)
+                status = yield from _fetch_canister_status_gen(st)
+                if status is None:
+                    canisters_out.append(row)
+                    continue
                 bal = _status_cycles(status)
                 frz = _status_freezing(status)
                 label = cycles_status(bal, frz, min_c)
@@ -3163,13 +3164,21 @@ def get_cycles() -> Async[text]:
                 pool_free += 1
             bal = bal_by_cid.get(p.canister_id)
             if bal is None:
-                try:
-                    status_res = yield management_canister.canister_status(
-                        {"canister_id": Principal.from_str(p.canister_id)}
-                    )
-                    bal = _status_cycles(unwrap_call_result(status_res))
-                except Exception as e:
-                    prow["error"] = str(e)
+                owner = _find_canister_by_id(p.canister_id)
+                status = yield from _fetch_canister_status_gen(owner) if owner else None
+                if status is None and owner is None:
+                    try:
+                        status_res = yield management_canister.canister_status(
+                            {"canister_id": Principal.from_str(p.canister_id)}
+                        )
+                        status = unwrap_call_result(status_res)
+                    except Exception as e:
+                        prow["error"] = str(e)
+                        status = None
+                if status is not None:
+                    bal = _status_cycles(status)
+                elif owner is not None:
+                    pass  # baton/direct both failed — leave pool row uncached
             if bal is not None:
                 prow["cycles"] = bal
                 prow["refreshed_at"] = batch_ts
@@ -3473,10 +3482,10 @@ def refresh_canisters(args: text) -> Async[text]:
                 row["min_cycles_source"] = _min_cycles_source(st, s)
                 row["topup_cycles"] = topup_c
             try:
-                status_res = yield management_canister.canister_status(
-                    {"canister_id": Principal.from_str(st.canister_id)}
-                )
-                status = unwrap_call_result(status_res)
+                status = yield from _fetch_canister_status_gen(st)
+                if status is None:
+                    by_id[st.canister_id] = row
+                    continue
                 bal = _status_cycles(status)
                 frz = _status_freezing(status)
                 label = cycles_status(bal, frz, min_c)

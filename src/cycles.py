@@ -118,6 +118,29 @@ def _ic_run_status(status) -> str:
     return "unknown"
 
 
+def _fetch_canister_status_gen(canister_st):
+    """Try direct canister_status; on failure ask the stand's Baton (failure-soft).
+
+    Returns a management ``canister_status``-shaped dict, or ``None`` when neither
+    path succeeds (leave the cycles row uncached for the UI).
+    """
+    cid = (canister_st.canister_id or "").strip() if canister_st else ""
+    if not cid:
+        return None
+    try:
+        status_res = yield management_canister.canister_status(
+            {"canister_id": Principal.from_str(cid)}
+        )
+        return unwrap_call_result(status_res)
+    except Exception:
+        pass
+    try:
+        from orchestration_bridge import _canister_status_via_baton_gen
+        return (yield from _canister_status_via_baton_gen(canister_st))
+    except Exception:
+        return None
+
+
 def _policy_for(st: Canister, s=None):
     """Effective (min_cycles, topup_cycles) for a canister, inheriting up the
     tree."""

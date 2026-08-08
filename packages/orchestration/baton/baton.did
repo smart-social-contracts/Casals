@@ -121,5 +121,6 @@ service : (InitArgs) -> {
   "get_action" : (text) -> (text) query;
   "list_actions" : () -> (text) query;
   "read_cycle_balance" : (text) -> (text);
+  "get_managed_balances" : () -> (text);
   "__get_candid_interface_tmp_hack" : () -> (text) query;
 }

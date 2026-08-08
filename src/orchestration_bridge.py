@@ -559,3 +559,58 @@ def _execute_baton_action_gen(action_id: str, baton_name=""):
     if result.get("status") == "COMPLETE":
         _append_event("baton_upgrade_complete", "", {"action_id": action_id})
     return result
+
+
+def _baton_in_stand_optional(stand):
+    """Return the Baton canister in ``stand``, or None."""
+    if stand is None:
+        return None
+    for c in getattr(stand, "canisters", None) or []:
+        if _is_baton_canister(c) and c.canister_id:
+            return c
+    return None
+
+
+def status_dict_from_baton_balance(data: object) -> dict | None:
+    """Pure: map a Baton balance reply to a canister_status-shaped dict."""
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        return None
+    cycles = int(data.get("cycles") or 0)
+    freezing = int(data.get("freezing_threshold") or 0)
+    runtime = (data.get("runtime_status") or "unknown").strip().lower()
+    status_variant = (
+        {runtime: None}
+        if runtime in ("running", "stopped", "stopping")
+        else {"running": None}
+    )
+    return {
+        "cycles": cycles,
+        "settings": {"freezing_threshold": freezing},
+        "status": status_variant,
+    }
+
+
+def _baton_read_cycle_balance_gen(baton_st, target_cid: str):
+    """Generator: Baton read_cycle_balance; returns ok dict or None (failure-soft)."""
+    cid = (target_cid or "").strip()
+    if baton_st is None or not cid or not (baton_st.canister_id or "").strip():
+        return None
+    try:
+        raw = yield from _call_text_method(baton_st.canister_id, "read_cycle_balance", cid)
+        data = _parse_baton_json_reply(raw)
+        if isinstance(data, dict) and data.get("ok") is True:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _canister_status_via_baton_gen(canister_st):
+    """Generator: Baton-mediated canister_status-shaped dict, or None."""
+    if canister_st is None:
+        return None
+    baton = _baton_in_stand_optional(canister_st.stand)
+    if baton is None:
+        return None
+    data = yield from _baton_read_cycle_balance_gen(baton, canister_st.canister_id)
+    return status_dict_from_baton_balance(data)

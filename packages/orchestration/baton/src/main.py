@@ -767,6 +767,36 @@ def list_actions() -> text:
     return json.dumps(out)
 
 
+def _status_fields_from_management(st, cid: str) -> dict:
+    """Extract cycles report fields from a management canister_status result."""
+    cycles = int(st.get("cycles") if isinstance(st, dict) else getattr(st, "cycles", 0))
+    freezing = 0
+    settings = st.get("settings") if isinstance(st, dict) else getattr(st, "settings", None)
+    if settings is not None:
+        freezing = int(
+            settings.get("freezing_threshold") if isinstance(settings, dict)
+            else getattr(settings, "freezing_threshold", 0) or 0
+        )
+    runtime = "unknown"
+    run_st = st.get("status") if isinstance(st, dict) else getattr(st, "status", None)
+    if isinstance(run_st, dict):
+        for key in ("running", "stopped", "stopping"):
+            if key in run_st:
+                runtime = key
+                break
+    elif run_st is not None:
+        for key in ("running", "stopped", "stopping"):
+            if hasattr(run_st, key):
+                runtime = key
+                break
+    return {
+        "canister_id": cid,
+        "cycles": cycles,
+        "freezing_threshold": freezing,
+        "runtime_status": runtime,
+    }
+
+
 @update
 def read_cycle_balance(canister_id: text) -> Async[text]:
     """Requires read_cycle_balance capability (read-only native IC data)."""
@@ -779,5 +809,25 @@ def read_cycle_balance(canister_id: text) -> Async[text]:
     cid = canister_id.strip()
     st_res = yield management_canister.canister_status({"canister_id": _principal(cid)})
     st = _unwrap(st_res)
-    cycles = int(st.get("cycles") if isinstance(st, dict) else getattr(st, "cycles", 0))
-    return _ok(canister_id=cid, cycles=cycles)
+    return _ok(**_status_fields_from_management(st, cid))
+
+
+@update
+def get_managed_balances() -> Async[text]:
+    """Requires read_cycle_balance. JSON: {balances: {cid: {...}}, errors: {cid: msg}}."""
+    from basilisk.canisters.management import management_canister
+    from pipeline import _unwrap, _principal
+
+    caller = _caller()
+    if not has_capability(caller, CAP_READ_CYCLE_BALANCE, _commanders, _config):
+        return _err("missing capability: read_cycle_balance")
+    balances = {}
+    errors = {}
+    for cid in sorted(_managed.keys()):
+        try:
+            st_res = yield management_canister.canister_status({"canister_id": _principal(cid)})
+            st = _unwrap(st_res)
+            balances[cid] = _status_fields_from_management(st, cid)
+        except Exception as exc:
+            errors[cid] = str(exc)
+    return _ok(balances=balances, errors=errors)

@@ -1133,3 +1133,144 @@ def test_parse_user_tags_json():
     assert util.parse_user_tags_json("") == []
     assert util.parse_user_tags_json('["a", "b"]') == ["a", "b"]
     assert util.parse_user_tags_json("not-json") == []
+
+
+# ── Baton-mediated cycle balance reads ────────────────────────────────────────
+
+import orchestration_bridge as ob  # noqa: E402
+
+
+def test_status_dict_from_baton_balance_ok():
+    out = ob.status_dict_from_baton_balance({
+        "ok": True,
+        "canister_id": "aaaaa-aa",
+        "cycles": 5_000_000_000_000,
+        "freezing_threshold": 100,
+        "runtime_status": "running",
+    })
+    assert out["cycles"] == 5_000_000_000_000
+    assert out["settings"]["freezing_threshold"] == 100
+    assert "running" in out["status"]
+
+
+def test_status_dict_from_baton_balance_failure_soft():
+    assert ob.status_dict_from_baton_balance({"ok": False, "error": "missing capability"}) is None
+    assert ob.status_dict_from_baton_balance(None) is None
+
+
+class _ErrResult:
+    Err = "not a controller"
+
+
+class _OkStatus:
+    Ok = {
+        "cycles": 42,
+        "settings": {"freezing_threshold": 7},
+        "status": {"running": None},
+    }
+
+
+def _drive_fetch_gen(st, responses):
+    import cycles as cycles_mod
+
+    gen = cycles_mod._fetch_canister_status_gen(st)
+    try:
+        next(gen)
+        while True:
+            if not responses:
+                pytest.fail("fetch_canister_status_gen requested more responses than provided")
+            gen.send(responses.pop(0))
+    except StopIteration as done:
+        return done.value
+
+
+def test_fetch_canister_status_gen_direct_success(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _OkStatus()
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+
+    class St:
+        canister_id = "aaaaa-aa"
+        stand = None
+
+    status = _drive_fetch_gen(St(), [_OkStatus()])
+    assert cycles_mod._status_cycles(status) == 42
+    assert cycles_mod._status_freezing(status) == 7
+
+
+def test_fetch_canister_status_gen_baton_fallback(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _ErrResult()
+
+    baton_calls = []
+
+    def fake_baton_gen(canister_st):
+        baton_calls.append(canister_st.canister_id)
+        yield
+        return {
+            "cycles": 999,
+            "settings": {"freezing_threshold": 3},
+            "status": {"stopped": None},
+        }
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton_gen)
+
+    class St:
+        canister_id = "bbbbb-bb"
+        stand = object()
+
+    status = _drive_fetch_gen(St(), [_ErrResult(), None])
+    assert baton_calls == ["bbbbb-bb"]
+    assert cycles_mod._status_cycles(status) == 999
+    assert cycles_mod._ic_run_status(status) == "stopped"
+
+
+def test_fetch_canister_status_gen_failure_soft(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _ErrResult()
+
+    def fake_baton_gen(_canister_st):
+        yield
+        return None
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton_gen)
+
+    class St:
+        canister_id = "ccccc-cc"
+        stand = object()
+
+    status = _drive_fetch_gen(St(), [_ErrResult(), None])
+    assert status is None
