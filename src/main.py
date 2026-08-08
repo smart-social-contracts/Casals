@@ -1741,7 +1741,11 @@ def _create_canister_impl_gen(params: dict) -> Async[str]:
     list(Canister.instances())
     existing = Canister[name]
     if existing is not None:
-        if existing.status == CanisterStatus.CREATED and not (existing.canister_id or "").strip():
+        if not (existing.canister_id or "").strip():
+            _log.info(
+                f"deleting orphan canister row '{name}' "
+                f"(status={existing.status}, empty canister_id)"
+            )
             existing.delete()
         else:
             return _err(f"canister '{name}' already exists")

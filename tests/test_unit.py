@@ -1274,3 +1274,91 @@ def test_fetch_canister_status_gen_failure_soft(monkeypatch):
 
     status = _drive_fetch_gen(St(), [_ErrResult(), None])
     assert status is None
+
+
+# ── create_canister orphan row cleanup ───────────────────────────────────────
+
+def _drive_create_canister_impl(params, monkeypatch, *, existing=None):
+    import json
+    import main
+    from unittest.mock import MagicMock
+
+    mock_stand = MagicMock()
+    mock_stand.section = "sec-a"
+    mock_wasm = MagicMock()
+    mock_wasm.key = "test-wasm"
+    mock_wasm.kind = "backend"
+    mock_wasm.wasm_hash = "ab" * 32
+
+    def stand_getitem(_self, key):
+        return mock_stand if key == params["stand"] else None
+
+    def canister_getitem(_self, key):
+        return existing if key == params["name"] else None
+
+    monkeypatch.setattr(main, "Stand", MagicMock(instances=lambda: [], __getitem__=stand_getitem))
+    monkeypatch.setattr(main, "Canister", MagicMock(instances=lambda: [], __getitem__=canister_getitem))
+    monkeypatch.setattr(main, "_resolve_authorized_wasm", lambda key, section: mock_wasm)
+    monkeypatch.setattr(main, "_install_arg_for", lambda w: b"")
+
+    def fake_provision(dk, name, kind, w, init_arg=None):
+        if False:
+            yield
+        st = MagicMock()
+        st.name = name
+        st.canister_id = "aaaaa-aa"
+        st.wasm_hash = "ab" * 32
+        return st
+
+    monkeypatch.setattr(main, "_provision_canister", fake_provision)
+
+    gen = main._create_canister_impl_gen(params)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as done:
+        return json.loads(done.value)
+
+
+def _orphan_canister_row(status, canister_id=""):
+    from unittest.mock import MagicMock
+
+    row = MagicMock()
+    row.status = status
+    row.canister_id = canister_id
+    row.delete = MagicMock()
+    return row
+
+
+def test_create_canister_deletes_created_orphan_with_empty_id(monkeypatch):
+    from models import CanisterStatus
+
+    orphan = _orphan_canister_row(CanisterStatus.CREATED)
+    params = {"stand": "stand-a", "name": "be-1", "wasm_key": "test-wasm"}
+    res = _drive_create_canister_impl(params, monkeypatch, existing=orphan)
+    orphan.delete.assert_called_once()
+    assert res["ok"] is True
+    assert res["name"] == "be-1"
+    assert res["canister_id"] == "aaaaa-aa"
+
+
+def test_create_canister_deletes_non_created_orphan_with_empty_id(monkeypatch):
+    from models import CanisterStatus
+
+    orphan = _orphan_canister_row(CanisterStatus.FAILED)
+    params = {"stand": "stand-a", "name": "be-1", "wasm_key": "test-wasm"}
+    res = _drive_create_canister_impl(params, monkeypatch, existing=orphan)
+    orphan.delete.assert_called_once()
+    assert res["ok"] is True
+    assert res["canister_id"] == "aaaaa-aa"
+
+
+def test_create_canister_rejects_existing_row_with_canister_id(monkeypatch):
+    from models import CanisterStatus
+
+    existing = _orphan_canister_row(CanisterStatus.INSTALLED, canister_id="bbbbb-bb")
+    params = {"stand": "stand-a", "name": "be-1", "wasm_key": "test-wasm"}
+    res = _drive_create_canister_impl(params, monkeypatch, existing=existing)
+    existing.delete.assert_not_called()
+    assert res["ok"] is False
+    assert "already exists" in res["error"]
