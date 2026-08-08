@@ -71,7 +71,8 @@ async function _verifyLoginAccess(id: Identity, backendCanisterId?: string): Pro
 
   if (!commander && !controller) {
     accessDenied.set({
-      message: 'Log in with a principal listed on the Commanders page.',
+      message:
+        "You don't have commander access to this orchestra. Send your principal to the platform administrator so they can grant you commander access.",
       principal: caller,
     });
     if (_authClient) await _authClient.logout();

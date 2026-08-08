@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
+  import { copyText } from '$lib/clipboard';
 
   interface Props {
     message: string;
@@ -8,6 +9,16 @@
   }
 
   let { message, principal, onclose }: Props = $props();
+
+  let copied = $state(false);
+
+  async function copyPrincipal() {
+    if (!(await copyText(principal))) return;
+    copied = true;
+    setTimeout(() => {
+      copied = false;
+    }, 1500);
+  }
 </script>
 
 <div
@@ -41,8 +52,18 @@
 
     <div class="mb-6">
       <p class="text-xs font-medium text-primary-500 mb-1.5">Your principal</p>
-      <div class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2.5 font-mono text-sm text-primary-800 break-all">
-        {principal}
+      <div class="flex items-start gap-2">
+        <div class="flex-1 min-w-0 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2.5 font-mono text-sm text-primary-800 break-all">
+          {principal}
+        </div>
+        <button
+          type="button"
+          class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs"
+          aria-label="Copy principal"
+          onclick={copyPrincipal}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
       </div>
     </div>
 
