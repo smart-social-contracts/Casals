@@ -20,6 +20,7 @@ from lifecycle import (
     _add_controllers,
     _backend_cid_for_stand,
     _merge_controllers,
+    _parse_extra_controller_principals,
     _resolve_authorized_wasm,
     _governance_multisig_id,
     _persist_ic_controllers,
@@ -294,19 +295,11 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
 
     target_cid = target_st.canister_id
     baton_id = baton_st.canister_id
-    multisig_id = _governance_multisig_id()
+    extra = _parse_extra_controller_principals()
 
     current = yield from _fetch_canister_controllers(target_cid)
-    if baton_id not in current:
-        # Add the Baton as a co-controller, preserving the existing controller
-        # set (multisig / Casals / deploy identities). Tightening to sole-baton
-        # control is a separate, explicit multisig action.
-        if current:
-            desired = _merge_controllers(current, [baton_id])
-        elif multisig_id:
-            desired = _merge_controllers([multisig_id], [baton_id])
-        else:
-            desired = _merge_controllers([ic.id().to_str()], [baton_id])
+    desired = _merge_controllers([baton_id], extra)
+    if set(current) != set(desired):
         yield from _set_ic_controllers_gen(target_cid, desired)
         controllers = desired
     else:

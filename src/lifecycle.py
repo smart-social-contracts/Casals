@@ -658,7 +658,22 @@ def _refresh_controllers_cache_gen():
     return updated, failed
 
 
-def _resolve_provision_controllers(dk):
+def _parse_extra_controller_principals() -> list:
+    """Extra IC controllers configured via set_settings (e.g. test-mode deployer)."""
+    s = _settings()
+    raw = (getattr(s, "extra_controller_principals_json", None) or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(p).strip() for p in data if str(p).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _resolve_provision_controllers(dk, w=None):
     """Generator: controller set for a canister Casals is provisioning.
 
     Casals, optional monitor, stand commanders, and controllers inherited from
@@ -670,9 +685,31 @@ def _resolve_provision_controllers(dk):
     (extension/codex installs run against the realm backend, which trusts its
     IC controllers). Tightening to sole-multisig control is an explicit
     post-deploy governance action, not part of provisioning.
+
+    Baton canisters get [multisig] (+ extra_controller_principals). Other
+    canisters keep Casals in the set during provisioning; realm canisters are
+    tightened to [baton] (+ extras) by orchestration_hand_to_baton.
     """
     s = _settings()
     self_id = ic.id().to_str()
+    extra = _parse_extra_controller_principals()
+    wasm_type = ""
+    wasm_key = ""
+    if w is not None:
+        wasm_type = (getattr(w, "wasm_type", None) or "").strip()
+        wasm_key = (getattr(w, "key", None) or "").strip()
+
+    is_baton = wasm_type == "baton" or wasm_key.startswith("orchestration-baton")
+    is_multisig = wasm_type == "multisig" or wasm_key.startswith("orchestration-multisig")
+
+    if is_baton:
+        mid = _governance_multisig_id()
+        base = ([mid] if mid else [self_id]) + extra
+        return base[:MAX_CONTROLLERS]
+
+    if is_multisig:
+        return _merge_controllers([self_id], extra)[:MAX_CONTROLLERS]
+
     base = []
     mid = _governance_multisig_id()
     if mid:
@@ -686,7 +723,7 @@ def _resolve_provision_controllers(dk):
         inherited.append(commander)
         inherited.extend((yield from _fetch_canister_controllers(commander)))
 
-    merged = _merge_controllers(base, inherited)
+    merged = _merge_controllers(base, inherited, extra)
     # The IC caps a canister at 10 controllers and rejects longer lists at the
     # candid layer, so an oversized union must be truncated. Keep canister
     # principals (multisig/baton, Casals, monitor, commanders — the governance
@@ -911,7 +948,7 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
     try:
-        controllers = yield from _resolve_provision_controllers(dk)
+        controllers = yield from _resolve_provision_controllers(dk, w)
         if controllers:
             yield from _add_controllers(cid, controllers)
     except Exception:
@@ -983,7 +1020,7 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
             raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
         wasm_hash = actual
         status = CanisterStatus.INSTALLED
-        controllers = yield from _resolve_provision_controllers(dk)
+        controllers = yield from _resolve_provision_controllers(dk, w)
         if controllers:
             yield from _add_controllers(cid, controllers)
         try:

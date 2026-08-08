@@ -1002,7 +1002,8 @@ def set_settings(args: text) -> text:
      alert_emails: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
      cycles_autopilot: bool, cycles_check_interval_secs: int,
-     cycles_icp_autoconvert: bool}."""
+     cycles_icp_autoconvert: bool,
+     extra_controller_principals: [str]}."""
     try:
         _require_admin()
         params = json.loads(args)
@@ -1039,6 +1040,11 @@ def set_settings(args: text) -> text:
             s.treasury_reserve = max(0, int(params["treasury_reserve"]))
         if "create_cycles" in params:
             s.create_cycles = max(0, int(params["create_cycles"]))
+        if "extra_controller_principals" in params:
+            principals = params["extra_controller_principals"]
+            if isinstance(principals, list):
+                cleaned = [str(p).strip() for p in principals if str(p).strip()]
+                s.extra_controller_principals_json = json.dumps(cleaned)
         if "display_currency" in params:
             cur = ((params["display_currency"] or "USD").strip().upper())[:8]
             if cur:

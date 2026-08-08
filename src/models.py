@@ -282,6 +282,8 @@ class Settings(Entity):
     # deployment (e.g. lower for a cheap demo, higher for production canisters).
     # 0 => fall back to the CREATE_CYCLES code default.
     create_cycles = Integer(default=2_000_000_000_000)         # 2T
+    # JSON array of extra IC controller principals (e.g. gaas deployer in test mode).
+    extra_controller_principals_json = String(max_length=512, default="")
     # Autopilot: when enabled, a re-arming timer periodically reconciles every
     # canister's balance against its policy. Interval is in seconds.
     cycles_autopilot = Integer(default=1)
