@@ -8,6 +8,7 @@ import {
   type BatonManagedUpgradeTarget,
   type BatonUpdateResult,
 } from './batonClient';
+import { createHttpAgent } from './asyncAgent';
 import { icHost, isLocalHost } from './ic-host';
 
 export async function fetchCanisterModuleHash(
@@ -21,10 +22,9 @@ export async function fetchCanisterModuleHash(
     import('@dfinity/ic-management'),
     import('@dfinity/principal'),
   ]);
-  const { HttpAgent } = await import('@dfinity/agent');
   const agent = opts?.identity
-    ? new HttpAgent({ host: icHost(), identity: opts.identity })
-    : new HttpAgent({ host: icHost() });
+    ? createHttpAgent({ host: icHost(), identity: opts.identity })
+    : createHttpAgent({ host: icHost() });
   if (isLocalHost()) await agent.fetchRootKey().catch(() => {});
 
   const mgmt = ICManagementCanister.create({ agent });

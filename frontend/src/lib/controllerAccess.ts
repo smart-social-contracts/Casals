@@ -1,4 +1,5 @@
-import { HttpAgent, type Identity } from '@dfinity/agent';
+import type { Identity } from '@dfinity/agent';
+import { createHttpAgent } from './asyncAgent';
 import { icHost, isLocalHost } from './ic-host';
 
 const CONTROLLER_FETCH_TIMEOUT_MS = 8_000;
@@ -18,7 +19,7 @@ async function _fetchControllers(canisterId: string, identity: Identity): Promis
     import('@dfinity/ic-management'),
     import('@dfinity/principal'),
   ]);
-  const agent = new HttpAgent({ identity, host: icHost() });
+  const agent = createHttpAgent({ identity, host: icHost() });
   if (isLocalHost()) await agent.fetchRootKey().catch(() => {});
   const mgmt = ICManagementCanister.create({ agent });
   const res = await mgmt.canisterStatus(Principal.fromText(canisterId));

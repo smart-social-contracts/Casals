@@ -1,4 +1,5 @@
 import { Actor, HttpAgent } from '@dfinity/agent';
+import { createHttpAgent } from './asyncAgent';
 import { idlFactory } from './declarations';
 import { get } from 'svelte/store';
 import { identity } from './auth';
@@ -518,7 +519,7 @@ let _rootKeyReady: Promise<void> | null = null;
 
 function _getAgent(): HttpAgent {
   if (!_sharedAgent) {
-    _sharedAgent = new HttpAgent({ host: icHost() });
+    _sharedAgent = createHttpAgent({ host: icHost() });
     if (IS_LOCAL) {
       _rootKeyReady = _sharedAgent.fetchRootKey().then(() => {});
     } else {
@@ -594,7 +595,7 @@ async function _actor(authenticated = false): Promise<any> {
     // We must also fetch (and await) the root key into this agent on local
     // networks — sharing the shared-agent's key promise is not enough because
     // each HttpAgent instance manages its own root key buffer.
-    const agent = new HttpAgent({ identity: id, host: icHost() });
+    const agent = createHttpAgent({ identity: id, host: icHost() });
     if (IS_LOCAL) await agent.fetchRootKey();
     return _makeActorWithAgent(agent);
   }
@@ -1784,7 +1785,7 @@ export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRe
     import('@dfinity/ic-management'),
     import('@dfinity/principal'),
   ]);
-  const agent = new HttpAgent({ host: icHost() });
+  const agent = createHttpAgent({ host: icHost() });
   if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
   const mgmt = ICManagementCanister.create({ agent });
   const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));

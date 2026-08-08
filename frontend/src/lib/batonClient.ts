@@ -1,4 +1,5 @@
 import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
+import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
 import { icHost, isLocalHost } from './ic-host';
@@ -83,7 +84,7 @@ function parseJsonText<T>(raw: string): T {
 }
 
 async function agent(identity?: Identity | null): Promise<HttpAgent> {
-  const a = new HttpAgent({ host: icHost(), identity: identity ?? undefined });
+  const a = createHttpAgent({ host: icHost(), identity: identity ?? undefined });
   if (isLocalHost()) await a.fetchRootKey().catch(() => {});
   return a;
 }
