@@ -298,20 +298,26 @@
     ensureCyclesCache();
   });
 
-  function sectionOpen(name: string): boolean {
+  function sectionKey(name: string, index: number): string {
+    return `${name}|${index}`;
+  }
+  function standKey(sectionName: string, sectionIndex: number, standName: string): string {
+    return `${sectionName}|${sectionIndex}/${standName}`;
+  }
+  function sectionOpen(key: string): boolean {
     // Auto-expand when a filter is active so matches are visible.
     if (filterQuery.trim()) return true;
-    return expandedSections[name] !== false;
+    return expandedSections[key] !== false;
   }
   function standOpen(key: string): boolean {
     if (filterQuery.trim()) return true;
     return expandedStands[key] !== false;
   }
-  function toggleSection(name: string) {
-    expandedSections[name] = !sectionOpen(name);
+  function toggleSection(key: string) {
+    expandedSections = { ...expandedSections, [key]: !sectionOpen(key) };
   }
   function toggleStand(key: string) {
-    expandedStands[key] = !standOpen(key);
+    expandedStands = { ...expandedStands, [key]: !standOpen(key) };
   }
 
   let cyclesPrimeStarted = false;
@@ -1024,12 +1030,13 @@
     {#if orchestraView === 'tree'}
     <div class="space-y-4">
       {#each filteredTree.sections as section, si (`${section.name}|${si}`)}
+        {@const secKey = sectionKey(section.name, si)}
         <div class="card overflow-hidden">
           <!-- Section header -->
           <div class="flex items-start justify-between gap-3 p-4 bg-primary-50/60">
-            <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleSection(section.name)}>
+            <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleSection(secKey)}>
               <svg
-                class="w-4 h-4 mt-0.5 text-primary-400 transition-transform shrink-0 {sectionOpen(section.name) ? 'rotate-90' : ''}"
+                class="w-4 h-4 mt-0.5 text-primary-400 transition-transform shrink-0 {sectionOpen(secKey) ? 'rotate-90' : ''}"
                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
               >
                 <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
@@ -1072,19 +1079,19 @@
             {/if}
           </div>
 
-          {#if sectionOpen(section.name)}
+          {#if sectionOpen(secKey)}
             <div class="divide-y divide-[var(--color-border-primary)]">
               {#if section.stands.length === 0}
                 <div class="px-4 py-3 text-xs text-primary-400">No stands in this section.</div>
               {/if}
               {#each section.stands as stand, di (`${section.name}/${stand.name}/${di}`)}
-                {@const standKey = `${section.name}/${stand.name}`}
+                {@const stKey = standKey(section.name, si, stand.name)}
                 <div>
                   <!-- Stand header -->
                   <div class="flex items-start justify-between gap-3 px-4 py-3 pl-6">
-                    <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleStand(standKey)}>
+                    <button class="flex items-start gap-2.5 min-w-0 text-left" onclick={() => toggleStand(stKey)}>
                       <svg
-                        class="w-3.5 h-3.5 mt-1 text-primary-400 transition-transform shrink-0 {standOpen(standKey) ? 'rotate-90' : ''}"
+                        class="w-3.5 h-3.5 mt-1 text-primary-400 transition-transform shrink-0 {standOpen(stKey) ? 'rotate-90' : ''}"
                         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
                       >
                         <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
@@ -1133,12 +1140,12 @@
                     {/if}
                   </div>
 
-                  {#if standOpen(standKey)}
+                  {#if standOpen(stKey)}
                     <div class="px-4 pb-3 pl-12 space-y-2">
                       {#if stand.canisters.length === 0}
                         <div class="text-xs text-primary-400 py-1">No canisters in this stand.</div>
                       {/if}
-                      {#each sortCanistersForDisplay(stand.canisters) as canister, ci (`${standKey}/${canister.canister_id || canister.name}/${ci}`)}
+                      {#each sortCanistersForDisplay(stand.canisters) as canister, ci (`${stKey}/${canister.canister_id || canister.name}/${ci}`)}
                         <div class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3
                           {isCasalsCanister(canister) ? 'border-primary-200 bg-primary-50/30' : ''}
                           {resolveWasmType(canister) === 'multisig' ? 'border-emerald-200 bg-emerald-50/30' : ''}

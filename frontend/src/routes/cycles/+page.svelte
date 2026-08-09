@@ -33,6 +33,9 @@
     orchestraCanisterNames,
     isPoolUnassigned,
     getEvents,
+    treasuryLedgerIcpE8s,
+    isMislabeledTreasuryIcp,
+    normalizeCyclesReport,
   } from '$lib/api';
   import type {
     CyclesReport,
@@ -309,17 +312,23 @@
   }
 
   function applyCachedReport(cached: CyclesReport, md: Metadata | null) {
+    const mislabeledIcp = isMislabeledTreasuryIcp(
+      cached.treasury?.icp_e8s,
+      cached.treasury?.icp_cycles_per_e8s,
+    );
+    const normalized = normalizeCyclesReport(cached);
     if (md) {
-      cached.treasury.autopilot = md.cycles_autopilot;
-      cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
-      cached.treasury.interval_secs = md.cycles_check_interval_secs;
-      const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
-      cached.treasury.reserve = reserve;
-      cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
+      normalized.treasury.autopilot = md.cycles_autopilot;
+      normalized.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
+      normalized.treasury.interval_secs = md.cycles_check_interval_secs;
+      const reserve = md.treasury_reserve ?? normalized.treasury.reserve ?? 0;
+      normalized.treasury.reserve = reserve;
+      normalized.treasury.spendable = Math.max(0, (normalized.treasury.balance ?? 0) - reserve);
     }
-    report = cached;
-    cachedAt = cached.cached_at ?? null;
-    applyOffChainMonitorState(cached, md);
+    report = normalized;
+    cachedAt = normalized.cached_at ?? null;
+    applyOffChainMonitorState(normalized, md);
+    if (mislabeledIcp) void refreshTreasuryOnly();
   }
 
   async function loadDeferredHistory() {
@@ -594,11 +603,12 @@
         : 16175,
   );
 
-  const treasuryIcpE8s = $derived(report?.treasury?.icp_e8s ?? 0);
+  const ledgerIcpE8s = $derived(treasuryLedgerIcpE8s(report?.treasury));
+  const treasuryIcpE8s = $derived(ledgerIcpE8s ?? 0);
   const treasuryIcpAsCycles = $derived(
-    report?.treasury?.icp_e8s !== undefined && treasuryIcpE8s > 0
+    ledgerIcpE8s !== undefined && treasuryIcpE8s > 0
       ? treasuryIcpE8s * icpCyclesPerE8s
-      : report?.treasury?.icp_e8s !== undefined
+      : ledgerIcpE8s !== undefined
         ? 0
         : null,
   );
@@ -616,7 +626,7 @@
     if (!$isAuthenticated) return 'Log in with Internet Identity as a Casals controller.';
     if ($isController === null) return 'Checking controller access…';
     if ($isController === false) return 'Your principal is not a Casals controller.';
-    if (report?.treasury?.icp_e8s === undefined) return 'ICP balance unknown — refresh and try again.';
+    if (ledgerIcpE8s === undefined) return 'ICP balance unknown — refresh and try again.';
     if (convertibleIcpE8s <= 0) {
       return `Not enough ICP to cover the ledger transfer fee (${formatIcp(ICP_TRANSFER_FEE_E8S)}).`;
     }
@@ -1647,8 +1657,8 @@
         <div class="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3.5">
           <p class="text-[11px] font-medium uppercase tracking-wide text-amber-700">ICP on ledger</p>
           <p class="text-2xl font-semibold font-mono text-amber-950 mt-1 inline-flex items-center gap-1">
-            {#if report.treasury.icp_e8s !== undefined}
-              {formatIcp(report.treasury.icp_e8s)}
+            {#if ledgerIcpE8s !== undefined}
+              {formatIcp(ledgerIcpE8s)}
               <CalculatedAtHint at={treasuryCalculatedAt()} label="Ledger ICP calculated" />
             {:else if refreshingTreasury}
               <span class="text-base text-amber-700/70">Refreshing…</span>
@@ -2786,8 +2796,8 @@
           <div class="flex justify-between gap-4">
             <dt class="text-primary-500">Ledger ICP</dt>
             <dd class="font-mono font-semibold text-primary-900">
-              {#if report.treasury.icp_e8s !== undefined}
-                {formatIcp(report.treasury.icp_e8s)}
+              {#if ledgerIcpE8s !== undefined}
+                {formatIcp(ledgerIcpE8s)}
               {:else}
                 —
               {/if}

@@ -1079,10 +1079,39 @@ const EMPTY_CYCLE_TOTALS: CyclesReport['totals'] = {
   canisters: 0, ok: 0, low: 0, critical: 0, frozen: 0, error: 0,
 };
 
+/** True when ``icp_e8s`` is a CMC rate (or rate×1e8) mis-stored as a ledger balance. */
+export function isMislabeledTreasuryIcp(
+  icpE8s: number | undefined | null,
+  icpCyclesPerE8s: number | undefined | null,
+): boolean {
+  if (icpE8s === undefined || icpE8s === null || icpE8s <= 0) return false;
+  if (icpCyclesPerE8s && icpCyclesPerE8s > 0) {
+    if (icpE8s === icpCyclesPerE8s) return true;
+    if (icpE8s === Math.round(icpCyclesPerE8s * 1e8)) return true;
+  }
+  return false;
+}
+
+/** Ledger ICP balance in e8s, or undefined when absent / mislabeled. */
+export function treasuryLedgerIcpE8s(treasury: Treasury | undefined | null): number | undefined {
+  if (!treasury || treasury.icp_e8s === undefined) return undefined;
+  if (isMislabeledTreasuryIcp(treasury.icp_e8s, treasury.icp_cycles_per_e8s)) return undefined;
+  return treasury.icp_e8s;
+}
+
+export function normalizeTreasury(treasury: Treasury): Treasury {
+  const t = { ...treasury };
+  if (isMislabeledTreasuryIcp(t.icp_e8s, t.icp_cycles_per_e8s)) {
+    delete t.icp_e8s;
+  }
+  return t;
+}
+
 /** Backend may return a treasury-only stub before the first full get_cycles snapshot. */
 export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
   return {
     ...raw,
+    treasury: raw.treasury ? normalizeTreasury(raw.treasury) : raw.treasury,
     canisters: raw.canisters ?? [],
     totals: raw.totals ?? EMPTY_CYCLE_TOTALS,
     pool: raw.pool
