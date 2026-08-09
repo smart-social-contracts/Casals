@@ -3,6 +3,8 @@
   import {
     getCycles,
     getCyclesCached,
+    getCyclesCachedOnChain,
+    getCyclesCachedFromMonitor,
     getCycleHistory,
     getTreasuryFlow,
     topUp,
@@ -305,35 +307,57 @@
     snapshotPartial = false;
   }
 
+  function applyCachedReport(cached: CyclesReport, md: Metadata | null) {
+    if (md) {
+      cached.treasury.autopilot = md.cycles_autopilot;
+      cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
+      cached.treasury.interval_secs = md.cycles_check_interval_secs;
+      const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
+      cached.treasury.reserve = reserve;
+      cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
+    }
+    report = cached;
+    cachedAt = cached.cached_at ?? null;
+    applyOffChainMonitorState(cached, md);
+  }
+
+  async function loadDeferredHistory() {
+    try {
+      const h = await getCycleHistory({ window_secs: WINDOWS[windowKey] });
+      history = h;
+      loadedWindowKey = windowKey;
+      await loadChartEvents(windowKey);
+    } catch {
+      // History and chart markers are non-critical for the initial treasury view.
+    }
+  }
+
   async function loadCached(): Promise<Metadata | null> {
     loading = true;
     error = '';
     let md: Metadata | null = null;
     try {
-      const [cached, h, metadata] = await Promise.all([
-        getCyclesCached(),
-        getCycleHistory({ window_secs: WINDOWS[windowKey] }),
-        casalsMetadata().catch(() => null),
-      ]);
+      const metadataP = casalsMetadata().catch(() => null);
+      const canisterP = getCyclesCachedOnChain();
+      const monitorP = getCyclesCachedFromMonitor();
+
+      const [stub, metadata] = await Promise.all([canisterP, metadataP]);
       md = metadata;
       meta = md;
-      history = h;
-      loadedWindowKey = windowKey;
-      void reloadTreasuryFlow(flowPeriod);
-      if (cached?.treasury) {
-        if (md) {
-          cached.treasury.autopilot = md.cycles_autopilot;
-          cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
-          cached.treasury.interval_secs = md.cycles_check_interval_secs;
-          const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
-          cached.treasury.reserve = reserve;
-          cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
-        }
-        report = cached;
-        cachedAt = cached.cached_at ?? null;
-        applyOffChainMonitorState(cached, md);
+      if (stub?.treasury) {
+        applyCachedReport(stub, md);
+        loading = false;
       }
-      await loadChartEvents(windowKey);
+
+      const cached = await monitorP;
+      if (cached?.treasury) {
+        applyCachedReport(cached, md);
+      } else if (!stub?.treasury) {
+        error = 'Could not load cycles data';
+      }
+
+      void reloadTreasuryFlow(flowPeriod);
+      void loadDeferredHistory();
       loadFx();
     } catch (e: any) {
       error = e?.message ?? String(e);
@@ -525,7 +549,7 @@
 
   onMount(() => {
     void (async () => {
-      await loadCached();
+      await load();
       getTree().then((t) => { tree = t; }).catch(() => {});
     })();
   });

@@ -646,6 +646,15 @@ async function _monitorBase(): Promise<string> {
   return ((md?.monitor_service_url) || '').trim();
 }
 
+const MONITOR_FETCH_TIMEOUT_MS = 20_000;
+
+function _monitorFetchSignal(): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
+    return AbortSignal.timeout(MONITOR_FETCH_TIMEOUT_MS);
+  }
+  return undefined;
+}
+
 /** GET a path under the off-chain monitor base. Returns null when monitoring is
  *  on-chain or the service is unreachable, so callers can fall back to the canister. */
 async function _monitorGet<T>(path: string): Promise<T | null> {
@@ -654,7 +663,10 @@ async function _monitorGet<T>(path: string): Promise<T | null> {
   const url = `${base.replace(/\/$/, '')}${path}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      const res = await fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: _monitorFetchSignal(),
+      });
       if (!res.ok) continue;
       return (await res.json()) as T;
     } catch {
@@ -678,6 +690,7 @@ async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> 
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: body === undefined ? '{}' : JSON.stringify(body),
+      signal: _monitorFetchSignal(),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
@@ -696,6 +709,7 @@ async function _monitorPostOrThrow<T>(path: string, body?: unknown): Promise<T> 
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: body === undefined ? '{}' : JSON.stringify(body),
+      signal: _monitorFetchSignal(),
     });
   } catch {
     throw new Error('Could not reach the off-chain monitor');
@@ -1063,16 +1077,34 @@ export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
   };
 }
 
-export async function getCyclesCached(): Promise<CyclesReport | null> {
-  const offChain = await _monitorBase();
+async function _getCyclesCachedOnChain(): Promise<CyclesReport | null> {
+  try {
+    const raw = _parseQuery<CyclesReport>(await (await _actor()).get_cycles_cached());
+    if (!raw?.treasury) return null;
+    return normalizeCyclesReport(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Fast canister-only cached cycles (stub when no live snapshot exists yet). */
+export async function getCyclesCachedOnChain(): Promise<CyclesReport | null> {
+  return _getCyclesCachedOnChain();
+}
+
+/** Off-chain monitor snapshot only (null when monitor is not configured or unreachable). */
+export async function getCyclesCachedFromMonitor(): Promise<CyclesReport | null> {
   const off = await _monitorGet<CyclesReport>('/cycles');
-  if (off?.treasury) return normalizeCyclesReport(off);
-  if (offChain) return null;
-  const raw = _parseQuery<CyclesReport>(
-    await (await _actor()).get_cycles_cached()
-  );
-  if (!raw || !raw.treasury) return null;
-  return normalizeCyclesReport(raw);
+  if (!off?.treasury) return null;
+  return normalizeCyclesReport(off);
+}
+
+export async function getCyclesCached(): Promise<CyclesReport | null> {
+  const [off, raw] = await Promise.all([
+    getCyclesCachedFromMonitor(),
+    _getCyclesCachedOnChain(),
+  ]);
+  return off ?? raw;
 }
 
 /** Live balance refresh for named canisters only (faster than get_cycles). */
