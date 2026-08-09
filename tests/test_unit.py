@@ -1552,3 +1552,131 @@ def test_repair_section_verify_onchain_prunes_dead(monkeypatch):
     assert result["pruned_stands"] == 1
     assert result["kept"] == 1
     assert result["errors"] == []
+
+
+# ── cycle sampler snapshot merge ─────────────────────────────────────────────
+
+def _drive_sample_all_gen(ts, responses):
+    import cycles as cycles_mod
+
+    gen = cycles_mod._sample_all_gen(ts)
+    try:
+        next(gen)
+        while True:
+            if not responses:
+                pytest.fail("_sample_all_gen requested more responses than provided")
+            gen.send(responses.pop(0))
+    except StopIteration as done:
+        return done.value
+
+
+def test_sample_all_merges_snapshot_rows(monkeypatch):
+    import json
+    import cycles as cycles_mod
+    import models as models_mod
+
+    class FakeSnap:
+        def __init__(self):
+            self.snapshot_json = ""
+            self.updated_at = 0
+            self.key = "singleton"
+
+        def save(self):
+            pass
+
+    singleton_snap = FakeSnap()
+
+    class FakeCyclesSnapshotMeta(type):
+        def __getitem__(cls, key):
+            return singleton_snap if key == "singleton" else None
+
+    class FakeCyclesSnapshot(metaclass=FakeCyclesSnapshotMeta):
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(models_mod, "CyclesSnapshot", FakeCyclesSnapshot)
+
+    class S:
+        cycles_sampling = True
+        default_min_cycles = 0
+        default_topup_cycles = 0
+        treasury_reserve = 0
+        cycles_autopilot = False
+        cycles_check_interval_secs = 3600
+        cycles_icp_autoconvert = None
+        treasury_last_cycles = 0
+        treasury_last_icp_e8s = 0
+        treasury_watch_initialized = 0
+        display_currency = "USD"
+
+    monkeypatch.setattr(cycles_mod, "_settings", lambda: S())
+    monkeypatch.setattr(cycles_mod, "_last_sample_ts", 0)
+    monkeypatch.setattr(cycles_mod, "SAMPLE_MIN_GAP_SECS", 120)
+    initial = {
+        "treasury": {"balance": 0, "reserve": 0, "spendable": 0},
+        "canisters": [],
+        "totals": {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0},
+        "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
+    }
+    cycles_mod._cycles_cache = json.dumps(initial)
+    singleton_snap.snapshot_json = cycles_mod._cycles_cache
+    monkeypatch.setattr(cycles_mod, "finalize_cycle_sample_batch", lambda ts: None)
+    monkeypatch.setattr(cycles_mod, "_record_cycle_sample", lambda *a: None)
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class _DeadResult:
+        Err = "IC0536 Canister does not exist"
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            if args["canister_id"] == "dead-id":
+                return _DeadResult()
+            return _OkStatus()
+
+    def fake_baton(_st):
+        yield
+        return None
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton)
+
+    class St:
+        def __init__(self, name, cid):
+            self.name = name
+            self.canister_id = cid
+            self.stand = None
+            self.kind = "backend"
+            self.min_cycles = 0
+            self.topup_cycles = 0
+
+    live = St("live-c", "live-id")
+    dead = St("dead-c", "dead-id")
+
+    monkeypatch.setattr(
+        cycles_mod,
+        "Canister",
+        type("Canister", (), {"instances": staticmethod(lambda: [live, dead])}),
+    )
+
+    batch_ts = 5000
+    n = _drive_sample_all_gen(batch_ts, [_OkStatus(), _DeadResult(), None])
+    assert n == 1
+
+    data = json.loads(cycles_mod._cycles_cache)
+    assert data["cached_at"] == batch_ts
+    assert data["totals"]["canisters"] == 2
+    assert data["totals"]["ok"] == 1
+    assert data["totals"]["error"] == 1
+
+    by_cid = {r["canister_id"]: r for r in data["canisters"]}
+    assert by_cid["live-id"]["cycles"] == 42
+    assert by_cid["live-id"]["status"] == "ok"
+    assert by_cid["dead-id"]["status"] == "error"
+    assert "exist" in by_cid["dead-id"]["error"].lower()
+    assert singleton_snap.snapshot_json == cycles_mod._cycles_cache

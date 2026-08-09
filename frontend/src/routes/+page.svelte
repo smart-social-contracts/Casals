@@ -17,6 +17,10 @@
     getCanisterLogs,
     getCanisterDeployment,
     getCyclesCached,
+    getCyclesCachedOnChain,
+    refreshCanisters,
+    casalsMetadata,
+    orchestraCanisterNames,
     listAuthorizedWasms,
     refreshControllersCache,
     orchestrationStatus,
@@ -310,16 +314,58 @@
     expandedStands[key] = !standOpen(key);
   }
 
+  let cyclesPrimeStarted = false;
+
   async function ensureCyclesCache() {
     if (Object.keys(canisterCycles).length) return;
     try {
       const cached = await getCyclesCached();
-      if (!cached?.canisters) return;
-      const map: Record<string, CanisterCycles> = {};
-      for (const row of cached.canisters) map[row.canister_id] = row;
-      canisterCycles = map;
+      if (cached?.canisters?.length) {
+        const map: Record<string, CanisterCycles> = {};
+        for (const row of cached.canisters) map[row.canister_id] = row;
+        canisterCycles = map;
+        return;
+      }
     } catch {
       /* cycles snapshot optional — details still show without it */
+    }
+    void primeCyclesCacheIfEmpty();
+  }
+
+  async function primeCyclesCacheIfEmpty() {
+    if (cyclesPrimeStarted) return;
+    cyclesPrimeStarted = true;
+    const CANISTER_REFRESH_BATCH = 3;
+    try {
+      const meta = await casalsMetadata().catch(() => null);
+      if ((meta?.monitor_service_url || '').trim()) return;
+
+      const onChain = await getCyclesCachedOnChain().catch(() => null);
+      if ((onChain?.canisters?.length ?? 0) > 0) {
+        const map: Record<string, CanisterCycles> = {};
+        for (const row of onChain!.canisters) map[row.canister_id] = row;
+        canisterCycles = map;
+        return;
+      }
+
+      const treeData = await getTree().catch(() => null);
+      const names = orchestraCanisterNames(treeData);
+      if (!names.length) return;
+
+      for (let i = 0; i < names.length; i += CANISTER_REFRESH_BATCH) {
+        await refreshCanisters({
+          canisters: names.slice(i, i + CANISTER_REFRESH_BATCH),
+        });
+      }
+
+      const refreshed = await getCyclesCachedOnChain().catch(() => null);
+      if (refreshed?.canisters?.length) {
+        const map: Record<string, CanisterCycles> = {};
+        for (const row of refreshed.canisters) map[row.canister_id] = row;
+        canisterCycles = map;
+      }
+    } catch (e) {
+      console.warn('background cycles prime failed', e);
     }
   }
 

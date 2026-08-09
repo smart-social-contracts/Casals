@@ -831,6 +831,20 @@ export function orchestraCanisterIds(tree: Tree): Set<string> {
   return ids;
 }
 
+/** Registered canister names in the orchestra tree (for refresh_canisters batches). */
+export function orchestraCanisterNames(tree: Tree | null | undefined): string[] {
+  const names: string[] = [];
+  if (!tree) return names;
+  for (const sec of tree.sections) {
+    for (const st of sec.stands) {
+      for (const c of st.canisters) {
+        if (c.canister_id && c.name) names.push(c.name);
+      }
+    }
+  }
+  return names;
+}
+
 /** True when a pool entry is not backing any live orchestra canister. */
 export function isPoolUnassigned(
   canisterId: string,

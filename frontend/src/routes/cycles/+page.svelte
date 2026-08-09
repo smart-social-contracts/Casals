@@ -30,6 +30,7 @@
     backendCanisterId,
     getTree,
     orchestraCanisterIds,
+    orchestraCanisterNames,
     isPoolUnassigned,
     getEvents,
   } from '$lib/api';
@@ -492,8 +493,12 @@
       liveSynced = false;
       loadFx();
 
+      const treeData = tree ?? await getTree().catch(() => null);
+      if (treeData) tree = treeData;
+
       const names = [
         ...new Set([
+          ...orchestraCanisterNames(treeData),
           ...(merged.canisters ?? []).map((c) => c.name),
           ...(history?.samples ?? []).map((s) => s.canister_name),
         ].filter(Boolean)),

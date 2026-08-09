@@ -309,25 +309,108 @@ def finalize_cycle_sample_batch(ts: int) -> None:
 
 # ── Sampler timer ─────────────────────────────────────────────────────────────
 
+def _merge_sampler_rows_into_snapshot(rows, batch_ts: int) -> None:
+    """Merge sampler-built canister rows into the persisted cycles snapshot.
+
+    Preserves treasury and pool fields; recomputes totals and ``cached_at``.
+  """
+    global _cycles_cache
+    if not rows:
+        return
+    try:
+        from models import CyclesSnapshot
+
+        snap = CyclesSnapshot["singleton"]
+        raw = (snap.snapshot_json if snap else None) or _cycles_cache
+        if raw:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return
+        else:
+            s = _settings()
+            treasury = dict(treasury_deposit_fields())
+            overlay_treasury_baselines(treasury, s)
+            data = {
+                "treasury": treasury,
+                "pool": {"total": 0, "free": 0, "in_use": 0, "canisters": []},
+            }
+
+        by_id = {
+            c["canister_id"]: dict(c)
+            for c in (data.get("canisters") or [])
+            if c.get("canister_id")
+        }
+        for row in rows:
+            cid = (row.get("canister_id") or "").strip()
+            if not cid:
+                continue
+            merged = dict(by_id.get(cid, {}))
+            merged.update(row)
+            by_id[cid] = merged
+
+        canisters_out = sorted(
+            by_id.values(),
+            key=lambda x: (x.get("section") or "", x.get("stand") or "", x.get("name") or ""),
+        )
+        data["canisters"] = canisters_out
+        data["totals"] = _recompute_cycle_totals(canisters_out)
+        data["cached_at"] = int(batch_ts)
+
+        treasury = data.setdefault("treasury", {})
+        if isinstance(treasury, dict):
+            overlay_treasury_settings(treasury, _settings())
+
+        patched = json.dumps(data)
+        _cycles_cache = patched
+        if snap is None:
+            snap = CyclesSnapshot(key="singleton")
+        snap.snapshot_json = patched
+        snap.updated_at = int(batch_ts)
+        snap.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"merge sampler rows into snapshot failed: {e}")
+
+
 def _sample_all_gen(ts: int):
-    """Generator: read every canister's balance and record a sample (no
-    top-ups)."""
+    """Generator: read every canister's balance, record a sample (no top-ups),
+    and merge per-canister rows into the persisted cycles snapshot."""
     if not should_record_cycle_sample(ts):
         return 0
     list(Canister.instances())
+    s = _settings()
     n = 0
+    snapshot_rows = []
     for st in Canister.instances():
         if not st.canister_id:
             continue
+        dk = st.stand
+        sec = dk.section if dk else None
+        min_c, topup_c = _policy_for(st, s)
+        row = {
+            "section": sec.name if sec else "",
+            "stand": dk.name if dk else "",
+            "name": st.name,
+            "canister_id": st.canister_id,
+            "kind": st.kind,
+            "min_cycles": min_c,
+            "min_cycles_override": int(st.min_cycles or 0),
+            "min_cycles_source": _min_cycles_source(st, s),
+            "topup_cycles": topup_c,
+        }
         try:
-            status_res = yield management_canister.canister_status(
-                {"canister_id": Principal.from_str(st.canister_id)}
+            status, err = yield from _fetch_canister_status_result_gen(st)
+            label, bal = apply_canister_balance_to_row(
+                row, status, err, min_c, topup_c, ts
             )
-            status = unwrap_call_result(status_res)
-            _record_cycle_sample(st, ts, _status_cycles(status))
-            n += 1
+            if label != "error" and bal is not None:
+                _record_cycle_sample(st, ts, bal)
+                n += 1
         except Exception as e:  # pragma: no cover - per-canister, keep going
+            row.update({"status": "error", "error": str(e)})
             _log.error(f"sample {st.name} failed: {e}")
+        snapshot_rows.append(row)
+    if snapshot_rows:
+        _merge_sampler_rows_into_snapshot(snapshot_rows, ts)
     if n:
         finalize_cycle_sample_batch(ts)
     return n
