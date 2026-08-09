@@ -89,6 +89,8 @@ from cycles import (
     _status_freezing,
     _ic_run_status,
     _fetch_canister_status_gen,
+    _fetch_canister_status_result_gen,
+    apply_canister_balance_to_row,
     _sync_treasury_baseline,
     _treasury_ledger_account_hex,
     treasury_deposit_fields,
@@ -147,6 +149,7 @@ from lifecycle import (
     _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
+    repair_section_stands_gen,
     _set_log_visibility,
     _spec_target_subnet,
     _target_subnet,
@@ -1267,14 +1270,16 @@ def delete_section(args: text) -> text:
 
 
 @update
-def repair_section(args: text) -> text:
+def repair_section(args: text) -> Async[text]:
     """Prune stale stand/canister registry rows for a section.
 
     Use after ``destroy_realm_stand`` when ``get_tree`` still lists stands whose
     IC canisters are already gone. Controller-only.
 
-    Args (JSON): {section, drop_all?}. ``drop_all`` removes every stand in the
-    section (for emptying Deployments after bulk realm teardown).
+    Args (JSON): {section, drop_all?, verify_onchain?}. ``drop_all`` removes
+    every stand in the section (for emptying Deployments after bulk realm
+    teardown). ``verify_onchain`` calls ``canister_status`` per registered
+    canister and prunes rows whose principal no longer exists on the IC.
     """
     try:
         _require_admin()
@@ -1286,7 +1291,14 @@ def repair_section(args: text) -> text:
         sec = Section[sec_name]
         if sec is None:
             return _err(f"unknown section '{sec_name}'")
-        result = repair_section_stands(sec, drop_all=bool(params.get("drop_all")))
+        drop_all = bool(params.get("drop_all"))
+        verify_onchain = bool(params.get("verify_onchain"))
+        if verify_onchain:
+            result = yield from repair_section_stands_gen(
+                sec, drop_all=drop_all, verify_onchain=True
+            )
+        else:
+            result = repair_section_stands(sec, drop_all=drop_all)
         _append_event("section_repaired", "", {"section": sec_name, **result})
         return _ok(section=sec_name, **result)
     except Exception as e:
@@ -3122,22 +3134,19 @@ def get_cycles() -> Async[text]:
                 "topup_cycles": topup_c,
             }
             try:
-                status = yield from _fetch_canister_status_gen(st)
-                if status is None:
-                    canisters_out.append(row)
-                    continue
-                bal = _status_cycles(status)
-                frz = _status_freezing(status)
-                label = cycles_status(bal, frz, min_c)
-                row.update({"cycles": bal, "freezing_threshold": frz,
-                            "headroom": bal - frz, "status": label,
-                            "runtime_status": _ic_run_status(status),
-                            "refreshed_at": batch_ts})
-                counts[label] = counts.get(label, 0) + 1
-                bal_by_cid[st.canister_id] = bal
-                if do_sample:
-                    _record_cycle_sample(st, batch_ts, bal)
-                    sampled = True
+                status, err = yield from _fetch_canister_status_result_gen(st)
+                label, bal = apply_canister_balance_to_row(
+                    row, status, err, min_c, topup_c, batch_ts
+                )
+                if label == "error":
+                    counts["error"] += 1
+                else:
+                    counts[label] = counts.get(label, 0) + 1
+                    if bal is not None:
+                        bal_by_cid[st.canister_id] = bal
+                    if do_sample:
+                        _record_cycle_sample(st, batch_ts, bal)
+                        sampled = True
             except Exception as e:
                 row.update({"status": "error", "error": str(e)})
                 counts["error"] += 1
@@ -3486,23 +3495,12 @@ def refresh_canisters(args: text) -> Async[text]:
                 row["min_cycles_source"] = _min_cycles_source(st, s)
                 row["topup_cycles"] = topup_c
             try:
-                status = yield from _fetch_canister_status_gen(st)
-                if status is None:
-                    by_id[st.canister_id] = row
-                    continue
-                bal = _status_cycles(status)
-                frz = _status_freezing(status)
-                label = cycles_status(bal, frz, min_c)
-                row.update({
-                    "cycles": bal,
-                    "freezing_threshold": frz,
-                    "headroom": bal - frz,
-                    "status": label,
-                    "runtime_status": _ic_run_status(status),
-                    "refreshed_at": batch_ts,
-                })
-                row.pop("error", None)
-                bal_by_cid[st.canister_id] = bal
+                status, err = yield from _fetch_canister_status_result_gen(st)
+                label, bal = apply_canister_balance_to_row(
+                    row, status, err, min_c, topup_c, batch_ts
+                )
+                if bal is not None:
+                    bal_by_cid[st.canister_id] = bal
             except Exception as e:
                 row.update({"status": "error", "error": str(e)})
             by_id[st.canister_id] = row

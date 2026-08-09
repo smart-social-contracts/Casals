@@ -1362,3 +1362,193 @@ def test_create_canister_rejects_existing_row_with_canister_id(monkeypatch):
     existing.delete.assert_not_called()
     assert res["ok"] is False
     assert "already exists" in res["error"]
+
+
+# ── on-chain repair + error-tolerant cycles refresh ─────────────────────────
+
+def test_is_canister_not_found_error_matches_ic_rejects():
+    assert lifecycle._is_canister_not_found_error("IC0536 Canister does not exist")
+    assert lifecycle._is_canister_not_found_error("canister_not_found")
+    assert lifecycle._is_canister_not_found_error("Error: NOT FOUND on subnet")
+    assert not lifecycle._is_canister_not_found_error("not a controller")
+    assert not lifecycle._is_canister_not_found_error("")
+
+
+def _drive_fetch_result_gen(st, responses):
+    import cycles as cycles_mod
+
+    gen = cycles_mod._fetch_canister_status_result_gen(st)
+    try:
+        next(gen)
+        while True:
+            if not responses:
+                pytest.fail("_fetch_canister_status_result_gen requested more responses than provided")
+            gen.send(responses.pop(0))
+    except StopIteration as done:
+        return done.value
+
+
+def _drive_repair_section_gen(sec, responses, **kwargs):
+    gen = lifecycle.repair_section_stands_gen(sec, **kwargs)
+    try:
+        next(gen)
+        while True:
+            if not responses:
+                pytest.fail("repair_section_stands_gen requested more responses than provided")
+            gen.send(responses.pop(0))
+    except StopIteration as done:
+        return done.value
+
+
+def test_apply_canister_balance_to_row_marks_error():
+    import cycles as cycles_mod
+
+    row = {"name": "gone"}
+    label, bal = cycles_mod.apply_canister_balance_to_row(
+        row, None, "IC0536 Canister does not exist", 1_000, 500, 123
+    )
+    assert label == "error"
+    assert bal is None
+    assert row["status"] == "error"
+    assert "does not exist" in row["error"].lower()
+
+
+def test_cycles_refresh_includes_all_rows_when_one_dead(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class _DeadResult:
+        Err = "IC0536 Canister does not exist"
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            if args["canister_id"] == "dead-id":
+                return _DeadResult()
+            return _OkStatus()
+
+    def fake_baton(_st):
+        yield
+        return None
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton)
+
+    class St:
+        def __init__(self, name, cid):
+            self.name = name
+            self.canister_id = cid
+            self.stand = None
+
+    batch_ts = 99
+    rows_out = []
+    counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
+    for st in [St("live", "live-id"), St("dead", "dead-id")]:
+        row = {"name": st.name, "canister_id": st.canister_id}
+        responses = [_OkStatus()] if st.canister_id == "live-id" else [_DeadResult(), None]
+        status, err = _drive_fetch_result_gen(st, responses)
+        label, _bal = cycles_mod.apply_canister_balance_to_row(row, status, err, 0, 0, batch_ts)
+        counts[label if label in counts else "error"] += 1
+        rows_out.append(row)
+
+    assert len(rows_out) == 2
+    assert rows_out[0]["status"] != "error"
+    assert rows_out[0]["cycles"] == 42
+    assert rows_out[1]["status"] == "error"
+    assert "does not exist" in rows_out[1]["error"].lower()
+    assert counts["error"] == 1
+    assert counts["ok"] == 1
+
+
+def test_repair_section_verify_onchain_prunes_dead(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    sec = SimpleNamespace(_type="Section", _id=1)
+    stand_live = SimpleNamespace(
+        name="live-stand", _type="Stand", _id=10, section=sec, canisters=[],
+        delete=MagicMock(),
+    )
+    stand_dead = SimpleNamespace(
+        name="dead-stand", _type="Stand", _id=11, section=sec, canisters=[],
+        delete=MagicMock(),
+    )
+    can_live = SimpleNamespace(name="live-c", _id=100, canister_id="live-id", delete=MagicMock())
+    can_dead = SimpleNamespace(name="dead-c", _id=101, canister_id="dead-id", delete=MagicMock())
+
+    index = {
+        ("Section", 1, "stands"): [10, 11],
+        ("Stand", 10, "canisters"): [100],
+        ("Stand", 11, "canisters"): [101],
+    }
+    db = MagicMock()
+    db.reverse_index_get = lambda t, i, k: list(index.get((t, i, k), []))
+
+    def _remove(t, i, k, v):
+        key = (t, i, k)
+        if key in index and v in index[key]:
+            index[key] = [x for x in index[key] if x != v]
+
+    db.reverse_index_remove = _remove
+
+    stand_by_id = {10: stand_live, 11: stand_dead}
+    can_by_id = {100: can_live, 101: can_dead}
+
+    class FakeStandMeta(type):
+        def __getitem__(cls, name):
+            return {"live-stand": stand_live, "dead-stand": stand_dead}.get(name)
+
+    class FakeStand(metaclass=FakeStandMeta):
+        @staticmethod
+        def load(sid):
+            return stand_by_id.get(sid)
+
+        @staticmethod
+        def instances():
+            return list(stand_by_id.values())
+
+    class FakeCanister:
+        @staticmethod
+        def load(cid):
+            return can_by_id.get(cid)
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class _DeadResult:
+        Err = "IC0536 Canister does not exist"
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            if args["canister_id"] == "dead-id":
+                return _DeadResult()
+            return _OkStatus()
+
+    monkeypatch.setattr("ic_python_db.db_engine.Database.get_instance", lambda: db)
+    monkeypatch.setattr(lifecycle, "Stand", FakeStand)
+    monkeypatch.setattr(lifecycle, "Canister", FakeCanister)
+    monkeypatch.setattr(lifecycle, "Principal", FakePrincipal)
+    monkeypatch.setattr(lifecycle, "management_canister", FakeMgmt)
+
+    result = _drive_repair_section_gen(
+        sec,
+        [_OkStatus(), _DeadResult()],
+        verify_onchain=True,
+    )
+
+    can_dead.delete.assert_called_once()
+    stand_dead.delete.assert_called_once()
+    can_live.delete.assert_not_called()
+    stand_live.delete.assert_not_called()
+    assert result["pruned_canisters"] == 1
+    assert result["pruned_stands"] == 1
+    assert result["kept"] == 1
+    assert result["errors"] == []

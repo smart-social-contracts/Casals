@@ -124,21 +124,60 @@ def _fetch_canister_status_gen(canister_st):
     Returns a management ``canister_status``-shaped dict, or ``None`` when neither
     path succeeds (leave the cycles row uncached for the UI).
     """
+    status, _err = yield from _fetch_canister_status_result_gen(canister_st)
+    return status
+
+
+def _fetch_canister_status_result_gen(canister_st):
+    """Try direct canister_status; on failure ask the stand's Baton (failure-soft).
+
+    Returns ``(status_dict | None, error_message | None)``. When both paths fail,
+    ``error_message`` carries the last reject for per-row snapshot reporting.
+    """
     cid = (canister_st.canister_id or "").strip() if canister_st else ""
     if not cid:
-        return None
+        return (None, "missing canister_id")
+    err_msg = None
     try:
         status_res = yield management_canister.canister_status(
             {"canister_id": Principal.from_str(cid)}
         )
-        return unwrap_call_result(status_res)
-    except Exception:
-        pass
+        return (unwrap_call_result(status_res), None)
+    except Exception as e:
+        err_msg = str(e)
     try:
         from orchestration_bridge import _canister_status_via_baton_gen
-        return (yield from _canister_status_via_baton_gen(canister_st))
-    except Exception:
-        return None
+        status = yield from _canister_status_via_baton_gen(canister_st)
+        if status is not None:
+            return (status, None)
+    except Exception as e:
+        err_msg = err_msg or str(e)
+    return (None, err_msg or "canister_status unavailable")
+
+
+def apply_canister_balance_to_row(row, status, error, min_c, topup_c, batch_ts):
+    """Merge a canister_status result into a cycles snapshot row.
+
+    Returns ``(status_label, balance_or_none)`` for aggregate counting.
+    """
+    if status is not None:
+        bal = _status_cycles(status)
+        frz = _status_freezing(status)
+        label = cycles_status(bal, frz, min_c)
+        row.update({
+            "cycles": bal,
+            "freezing_threshold": frz,
+            "headroom": bal - frz,
+            "status": label,
+            "runtime_status": _ic_run_status(status),
+            "refreshed_at": batch_ts,
+        })
+        row.pop("error", None)
+        return label, bal
+    row.update({"status": "error", "error": error or "canister_status unavailable"})
+    for key in ("cycles", "freezing_threshold", "headroom", "runtime_status", "refreshed_at"):
+        row.pop(key, None)
+    return "error", None
 
 
 def _policy_for(st: Canister, s=None):
@@ -607,7 +646,10 @@ def patch_cycles_snapshot_remove_canisters(canister_ids) -> None:
         pool["free"] = sum(1 for p in pool_cans if (p.get("status") or "") == "free")
         data["pool"] = pool
 
-        data["cached_at"] = _now_secs()
+        try:
+            data["cached_at"] = _now_secs()
+        except Exception:
+            data["cached_at"] = 0
         data["partial_refresh"] = True
         data["removed_canisters"] = sorted(remove)
         patched = json.dumps(data)

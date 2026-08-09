@@ -1344,6 +1344,21 @@ def _unlink_stand_from_section(dk) -> None:
     db.reverse_index_remove(sec._type, sec._id, "stands", dk._id)
 
 
+def _is_canister_not_found_error(msg: str) -> bool:
+    """True when an IC management ``canister_status`` reject means the canister is gone."""
+    m = (msg or "").lower()
+    if not m:
+        return False
+    needles = (
+        "ic0536",
+        "canister_not_found",
+        "does not exist",
+        "not found",
+        "no canister",
+    )
+    return any(n in m for n in needles)
+
+
 def repair_section_stands(sec, *, drop_all: bool = False) -> dict:
     """Prune stale stand/canister registry rows for ``sec``.
 
@@ -1381,3 +1396,84 @@ def repair_section_stands(sec, *, drop_all: bool = False) -> dict:
                 db.reverse_index_remove(dk._type, dk._id, "canisters", cid)
                 removed_canisters.append({"stand": dk.name, "id": cid})
     return {"removed_stands": removed_stands, "removed_canisters": removed_canisters}
+
+
+def repair_section_stands_gen(sec, *, drop_all: bool = False, verify_onchain: bool = False):
+    """Generator: prune stale registry rows; optionally verify IC canister liveness.
+
+  When ``verify_onchain`` is true, each registered canister's principal is
+  checked via ``canister_status``. Rows whose canister no longer exists on-chain
+  are deleted; stands left with zero canisters are removed too. Other rejects
+  (e.g. not-controller) leave the row intact and are listed under ``errors``.
+    """
+    base = repair_section_stands(sec, drop_all=drop_all)
+    if not verify_onchain or drop_all:
+        return base
+
+    from ic_python_db.db_engine import Database
+
+    db = Database.get_instance()
+    pruned_canisters = 0
+    pruned_stands = 0
+    kept = 0
+    errors = []
+
+    stand_ids = list(db.reverse_index_get(sec._type, sec._id, "stands"))
+    for sid in stand_ids:
+        dk = Stand.load(sid)
+        if dk is None:
+            continue
+        surviving = 0
+        for cid in list(db.reverse_index_get(dk._type, dk._id, "canisters")):
+            st = Canister.load(cid)
+            if st is None:
+                continue
+            ic_cid = (st.canister_id or "").strip()
+            if not ic_cid:
+                kept += 1
+                surviving += 1
+                continue
+            try:
+                status_res = yield management_canister.canister_status(
+                    {"canister_id": Principal.from_str(ic_cid)}
+                )
+                unwrap_call_result(status_res)
+                kept += 1
+                surviving += 1
+            except Exception as e:
+                msg = str(e)
+                if _is_canister_not_found_error(msg):
+                    name = st.name or st._id
+                    if _safe_entity_delete(st):
+                        pruned_canisters += 1
+                    else:
+                        db.reverse_index_remove(dk._type, dk._id, "canisters", cid)
+                        pruned_canisters += 1
+                    base.setdefault("removed_canisters", []).append(
+                        {"stand": dk.name, "name": name, "canister_id": ic_cid, "reason": "not_on_chain"}
+                    )
+                else:
+                    errors.append({
+                        "stand": dk.name,
+                        "canister": st.name,
+                        "canister_id": ic_cid,
+                        "error": msg,
+                    })
+                    kept += 1
+                    surviving += 1
+        if surviving == 0:
+            _unlink_stand_from_section(dk)
+            reason = "purged" if _safe_entity_delete(dk) else "index_only"
+            if reason == "purged":
+                pruned_stands += 1
+            base.setdefault("removed_stands", []).append(
+                {"name": dk.name, "reason": "empty_after_onchain_prune"}
+            )
+
+    return {
+        **base,
+        "pruned_canisters": pruned_canisters,
+        "pruned_stands": pruned_stands,
+        "kept": kept,
+        "errors": errors,
+    }
