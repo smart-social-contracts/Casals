@@ -699,37 +699,6 @@ async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> 
   }
 }
 
-/** POST to the off-chain monitor; throws on network/HTTP errors (for writes). */
-async function _monitorPostOrThrow<T>(path: string, body?: unknown): Promise<T> {
-  const base = await _monitorBase();
-  if (!base) throw new Error('Off-chain monitor is not configured');
-  let res: Response;
-  try {
-    res = await fetch(`${base.replace(/\/$/, '')}${path}`, {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: body === undefined ? '{}' : JSON.stringify(body),
-      signal: _monitorFetchSignal(),
-    });
-  } catch {
-    throw new Error('Could not reach the off-chain monitor');
-  }
-  let data: unknown = null;
-  try {
-    data = await res.json();
-  } catch {
-    data = null;
-  }
-  if (!res.ok) {
-    const detail =
-      data && typeof data === 'object' && !Array.isArray(data) && typeof (data as { detail?: unknown }).detail === 'string'
-        ? (data as { detail: string }).detail
-        : '';
-    throw new Error(detail || `Monitor request failed (${res.status})`);
-  }
-  return data as T;
-}
-
 /** Ask the monitor to fetch live treasury data from the conductor, then return the report. */
 export async function monitorPollTreasury(): Promise<CyclesReport | null> {
   const res = await _monitorPost<{ report?: CyclesReport }>('/poll/treasury');
@@ -1276,17 +1245,6 @@ export async function topUp(args: {
   amount?: number;
   source?: 'manual' | 'autotopup';
 }): Promise<UpdateResult> {
-  if (await _monitorBase()) {
-    if (!args.canister || args.amount == null) {
-      throw new Error('Off-chain top-up requires canister and amount');
-    }
-    const res = await _monitorPost<UpdateResult & { report?: CyclesReport }>(
-      '/top-up',
-      { canister: args.canister, amount: args.amount },
-    );
-    if (res?.ok !== false && !res?.error) return { ok: true, ...res };
-    throw new Error(res?.error || 'Top-up failed');
-  }
   return _parseUpdate(
     await (await _actor(true)).top_up(
       JSON.stringify({ ...args, source: args.source ?? 'manual' }),
@@ -1324,23 +1282,6 @@ export async function returnCycles(args: {
   canister_id?: string;
   amount: number;
 }): Promise<UpdateResult> {
-  if (await _monitorBase()) {
-    const payload: {
-      canister: string;
-      amount: number;
-      canister_id?: string;
-    } = {
-      canister: args.canister,
-      amount: args.amount,
-    };
-    if (args.canister_id) payload.canister_id = args.canister_id;
-    const res = await _monitorPostOrThrow<UpdateResult & { report?: CyclesReport }>(
-      '/return-cycles',
-      payload,
-    );
-    if (res?.ok === false || res?.error) throw new Error(res?.error || 'Return failed');
-    return { ok: true, ...res };
-  }
   const body: { canister: string; amount: number; canister_id?: string } = {
     canister: args.canister,
     amount: args.amount,
@@ -1354,11 +1295,6 @@ export async function reconcile(): Promise<UpdateResult> {
 }
 
 export async function convertTreasuryIcp(): Promise<UpdateResult> {
-  if (await _monitorBase()) {
-    const res = await _monitorPost<UpdateResult & { report?: CyclesReport }>('/convert-icp');
-    if (res?.ok !== false && !res?.error) return { ok: true, ...res };
-    throw new Error(res?.error || 'Conversion failed');
-  }
   return _parseUpdate(await (await _actor(true)).convert_treasury_icp());
 }
 
