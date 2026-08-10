@@ -16,3 +16,4 @@ frontend/static/local-network.json
 # mappings live in .icp/data and MUST be kept, so they are re-included.
 /.icp/*
 !/.icp/data/
+.venv-basilisk/
