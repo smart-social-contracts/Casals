@@ -103,12 +103,21 @@ npm --prefix frontend install        # frontend deps (one-time)
 icp network start -e local
 
 # Terminal 2 — build, deploy, seed
-make deploy                          # builds WASMs + deploys all 3 canisters + syncs assets
+make deploy                          # builds + deploys canisters; wires file-registry into Casals (--wire-registry-only)
 icp canister top-up --amount 100t casals_backend -e local   # fund the treasury (see note)
-python3 scripts/seed.py -e local --deploy   # upload templates + deploy demo orchestra
+python3 scripts/seed.py -e local --deploy   # upload catalog + bootstrap Casals/System
 ```
 
 Open **http://casals_frontend.local.localhost:8000/** to see the app.
+
+**Default bootstrap.** After `make deploy` + `seed.py --deploy`, the orchestra tree is **Casals → System** with `file_registry` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
+
+**Hello-world demo (opt-in).** `seed/sheets/demo.json` is not loaded by default. To stand up the multi-language demo orchestra:
+
+```bash
+python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json --arrangement demo
+# or: make seed-demo
+```
 
 Re-deploy after code changes: `make deploy && python3 scripts/seed.py -e local --deploy`
 
@@ -255,16 +264,18 @@ icp deploy -e ic --identity casals --mode upgrade -y casals_backend
 
 Use `--mode reinstall` only if you intend to **wipe all backend state**.
 
-### Post-deploy seeding (optional)
+### Post-deploy seeding
 
-Upload + authorize catalog WASMs and optionally stand up the demo orchestra:
+Upload + authorize catalog WASMs and optionally deploy a sheet:
 
 ```bash
-python3 scripts/seed.py -e ic --identity casals              # catalog only
-python3 scripts/seed.py -e ic --identity casals --deploy      # catalog + deploy_sheet
+python3 scripts/seed.py -e ic --identity casals                        # catalog only
+python3 scripts/seed.py -e ic --identity casals --deploy               # catalog + bootstrap Casals/System
+python3 scripts/seed.py -e ic --identity casals --deploy \
+  --sheet seed/sheets/demo.json --arrangement demo                     # opt-in hello-world demo
 ```
 
-Or via Makefile: `make seed-ic` (catalog only).
+Makefile: `make seed-ic` (catalog only), `make seed-demo-ic` (demo sheet).
 
 ### Via GitHub Actions (recommended)
 
@@ -431,10 +442,9 @@ placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
 A **sheet** is a single declarative document describing the desired orchestra —
 `Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM by
 `wasm_key`. Sheets hold **no** template/WASM definitions; those are the catalog
-(see below). The default sheet is bundled in `src/default_sheet.py` and its
-on-disk twin is `seed/sheets/demo.json` (keep them in sync): a **Demo** section
-with one stand per language (**Motoko**, **Rust**, **Python**), each holding a
-backend canister and a certified-assets **frontend** canister.
+(see below). The default sheet is bundled in `src/default_sheet.py`: a
+**Casals → System** stand with `file_registry` (registered) and `multisig`.
+The hello-world demo is `seed/sheets/demo.json` (opt-in via `seed.py --deploy --sheet`).
 
 The live sheet is **persistent**: it is stored in stable storage (the bundled
 default only seeds the first boot) and survives restarts/upgrades. `set_sheet`
@@ -610,9 +620,10 @@ funding instructions (ledger account ID + `deposit-cycles` CLI).
 
 ## Catalog templates & seeding
 
-Casals ships a small catalog of hello-world templates so a fresh deployment is
-useful out of the box. Sources live in `templates/`, prebuilt (gzipped) WASMs
-in `seed/templates/`:
+`scripts/seed.py` wires Casals to the deployed file-registry, uploads catalog
+WASMs, and authorizes them. With `--deploy` it also runs `deploy_sheet` on the
+bundled bootstrap sheet (Casals/System). Sources live in `templates/`, prebuilt
+(gzipped) WASMs in `seed/templates/`:
 
 | Key | Runtime | Source |
 |-----|---------|--------|
@@ -639,15 +650,20 @@ git add seed/templates && git commit -m "chore: rebuild templates"
 ```
 
 `seed/templates.json` is the **catalog**: which committed WASMs to upload to the
-file-registry and authorize on Casals. `scripts/seed.py` does exactly that
-(idempotent — safe to re-run); the orchestra itself is stood up separately by
-deploying a sheet.
+file-registry and authorize on Casals. Re-running is idempotent.
 
 ```bash
-make seed                              # catalog only, local replica
-make seed-ic                           # catalog only, IC mainnet (casals identity, demo deployment)
-python3 scripts/seed.py -e ic --identity casals --deploy   # catalog + deploy the sheet
+make seed                              # catalog only, local
+make seed-ic                           # catalog only, IC mainnet
+python3 scripts/seed.py -e local --deploy                  # catalog + bootstrap Casals/System
+python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json   # opt-in demo orchestra
+make seed-demo                         # demo sheet + arrangement + orchestration wiring
 ```
+
+**`seed.py` flags:** `--deploy` (run `deploy_sheet`), `--sheet PATH` (sheet file;
+default: bundled bootstrap), `--wire-registry-only` (registry settings only;
+`make deploy` uses this), `--arrangement NAME`, `--arrangement-only`,
+`--apply-arrangement`, `--config-dir`.
 
 > The file-registry does **not** compute a SHA-256 on chain (hashing multi-MB
 > WASMs exceeds the IC single-message instruction limit under WASI CPython).

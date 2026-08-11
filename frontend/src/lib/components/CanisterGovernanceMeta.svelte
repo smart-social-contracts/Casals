@@ -15,6 +15,8 @@
     /** compact = badge popover; full = inline list; hide controllers in summary row */
     showControllers?: boolean;
     mode?: 'compact' | 'full';
+    /** inline = sit in a parent flex row (tree summary) */
+    inline?: boolean;
   }
 
   let {
@@ -24,12 +26,13 @@
     principalLabels = new Map(),
     mode = 'compact',
     showControllers = true,
+    inline = false,
   }: Props = $props();
 
   const meta = $derived(canisterGovernanceMeta(canister, batons, tree));
 </script>
 
-<div class="space-y-1.5">
+<div class={inline ? 'inline-flex items-center gap-1.5 flex-wrap' : 'space-y-1.5'}>
   <div class="flex items-center gap-1.5 flex-wrap">
     <CanisterTypeBadges {canister} />
     {#if meta.managedBy}

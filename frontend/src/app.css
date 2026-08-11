@@ -40,6 +40,15 @@
 
   --gradient-institutional: linear-gradient(135deg, #404040 0%, #171717 100%);
   --gradient-light-institutional: linear-gradient(135deg, #737373 0%, #525252 100%);
+
+  --app-sidebar-width: 16rem;
+  --app-header-height: 3.5rem;
+}
+
+.app-sidebar-desktop {
+  position: sticky;
+  top: var(--app-header-height);
+  height: calc(100vh - var(--app-header-height));
 }
 
 html, body {

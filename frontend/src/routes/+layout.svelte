@@ -30,7 +30,9 @@
   ];
 
   let sidebarOpen = $state(false);
+  let isDesktop = $state(false);
   let currentPath = $derived($page.url.pathname);
+  let mobileSidebarOpen = $derived(sidebarOpen && !isDesktop);
 
   function toggleSidebar() {
     sidebarOpen = !sidebarOpen;
@@ -45,7 +47,7 @@
   }
 
   $effect(() => {
-    if (!sidebarOpen) return;
+    if (!mobileSidebarOpen) return;
     const onKeydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeSidebar();
     };
@@ -56,6 +58,15 @@
   onMount(() => {
     void initAuth(backendCanisterId());
     void initLocalNetworkHints();
+
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const syncViewport = () => {
+      isDesktop = mq.matches;
+      if (mq.matches) closeSidebar();
+    };
+    syncViewport();
+    mq.addEventListener('change', syncViewport);
+    return () => mq.removeEventListener('change', syncViewport);
   });
 
   $effect(() => {
@@ -72,14 +83,52 @@
   }
 </script>
 
-<div class="min-h-screen flex flex-col bg-[var(--color-bg-secondary)]" class:overflow-hidden={sidebarOpen}>
+{#snippet sidebarNav()}
+  <nav class="flex-1 overflow-y-auto px-3 py-4">
+    <ul class="space-y-1">
+      {#each navLinks as link (link.href)}
+        <li>
+          <a
+            href={link.href}
+            onclick={closeSidebar}
+            class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
+              ? 'bg-primary-100 text-primary-900'
+              : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
+          >
+            <span>{link.label}</span>
+            {#if link.href === '/commanders' && $pendingGovernanceCount > 0}
+              <span
+                class="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none inline-flex items-center justify-center"
+                aria-hidden="true"
+              >
+                {pendingBadge($pendingGovernanceCount)}
+              </span>
+            {/if}
+          </a>
+        </li>
+      {/each}
+    </ul>
+  </nav>
+{/snippet}
+
+{#snippet sidebarFooter()}
+  {#if $isAuthenticated}
+    <div class="px-4 py-3 border-t border-[var(--color-border-primary)] shrink-0">
+      <p class="text-xs text-primary-400 font-mono truncate" title={$principal}>
+        {$principal.slice(0, 5)}…{$principal.slice(-5)}
+      </p>
+    </div>
+  {/if}
+{/snippet}
+
+<div class="min-h-screen flex flex-col bg-[var(--color-bg-secondary)]" class:overflow-hidden={mobileSidebarOpen}>
   <!-- Header -->
   <header class="sticky top-0 z-30 bg-white border-b border-[var(--color-border-primary)]" style="box-shadow: var(--shadow-sm);">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+    <div class="w-full px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
       <div class="flex items-center gap-3 min-w-0">
         <button
           type="button"
-          class="btn-ghost btn-sm p-2 relative"
+          class="btn-ghost btn-sm p-2 relative lg:hidden"
           onclick={toggleSidebar}
           aria-expanded={sidebarOpen}
           aria-controls="app-sidebar"
@@ -145,76 +194,55 @@
     </div>
   </header>
 
-  {#if sidebarOpen}
-    <button
-      type="button"
-      class="fixed inset-0 z-40 cursor-default"
-      style="background: var(--color-bg-overlay);"
-      aria-label="Close menu"
-      onclick={closeSidebar}
-      transition:fade={{ duration: 200 }}
-    ></button>
-
+  <div class="flex flex-1 min-w-0">
     <aside
       id="app-sidebar"
-      class="fixed top-0 left-0 z-50 h-full w-64 bg-white border-r border-[var(--color-border-primary)] flex flex-col"
-      style="box-shadow: var(--shadow-xl);"
-      transition:fly={{ x: -256, duration: 200 }}
+      class="app-sidebar-desktop hidden lg:flex w-64 shrink-0 flex-col bg-white border-r border-[var(--color-border-primary)]"
+      aria-label="Main navigation"
     >
-      <div class="h-14 flex items-center gap-2.5 px-4 border-b border-[var(--color-border-primary)] shrink-0">
-        <img src="/logo.png" alt="" class="w-7 h-7 object-contain" width="28" height="28" />
-        <span class="text-base font-semibold text-primary-900">Casals</span>
-      </div>
+      {@render sidebarNav()}
+      {@render sidebarFooter()}
+    </aside>
 
-      <nav class="flex-1 overflow-y-auto px-3 py-4">
-        <ul class="space-y-1">
-          {#each navLinks as link (link.href)}
-            <li>
-              <a
-                href={link.href}
-                onclick={closeSidebar}
-                class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
-                  ? 'bg-primary-100 text-primary-900'
-                  : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
-              >
-                <span>{link.label}</span>
-                {#if link.href === '/commanders' && $pendingGovernanceCount > 0}
-                  <span
-                    class="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none inline-flex items-center justify-center"
-                    aria-hidden="true"
-                  >
-                    {pendingBadge($pendingGovernanceCount)}
-                  </span>
-                {/if}
-              </a>
-            </li>
-          {/each}
-        </ul>
-      </nav>
+    {#if mobileSidebarOpen}
+      <button
+        type="button"
+        class="fixed inset-0 z-40 cursor-default lg:hidden"
+        style="background: var(--color-bg-overlay);"
+        aria-label="Close menu"
+        onclick={closeSidebar}
+        transition:fade={{ duration: 200 }}
+      ></button>
 
-      {#if $isAuthenticated}
-        <div class="px-4 py-3 border-t border-[var(--color-border-primary)] shrink-0">
-          <p class="text-xs text-primary-400 font-mono truncate" title={$principal}>
-            {$principal.slice(0, 5)}…{$principal.slice(-5)}
+      <aside
+        class="fixed top-0 left-0 z-50 h-full w-64 bg-white border-r border-[var(--color-border-primary)] flex flex-col lg:hidden"
+        style="box-shadow: var(--shadow-xl);"
+        transition:fly={{ x: -256, duration: 200 }}
+      >
+        <div class="h-14 flex items-center gap-2.5 px-4 border-b border-[var(--color-border-primary)] shrink-0">
+          <img src="/logo.png" alt="" class="w-7 h-7 object-contain" width="28" height="28" />
+          <span class="text-base font-semibold text-primary-900">Casals</span>
+        </div>
+
+        {@render sidebarNav()}
+        {@render sidebarFooter()}
+      </aside>
+    {/if}
+
+    <div class="flex-1 flex flex-col min-w-0">
+      <main class="flex-1 w-full px-4 sm:px-6 py-6 sm:py-8">
+        {@render children?.()}
+      </main>
+
+      <footer class="border-t border-[var(--color-border-primary)]">
+        <div class="w-full px-4 sm:px-6 py-4">
+          <p class="text-xs text-primary-400 text-center">
+            Casals &middot; Canister lifecycle orchestrator on the Internet Computer
           </p>
         </div>
-      {/if}
-    </aside>
-  {/if}
-
-  <!-- Main content -->
-  <main class="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-    {@render children?.()}
-  </main>
-
-  <!-- Footer -->
-  <footer class="border-t border-[var(--color-border-primary)]">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4">
-      <p class="text-xs text-primary-400 text-center">
-        Casals &middot; Canister lifecycle orchestrator on the Internet Computer
-      </p>
+      </footer>
     </div>
-  </footer>
+  </div>
 </div>
 
 <Toast />

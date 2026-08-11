@@ -93,9 +93,18 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 pip install ic-basilisk-toolkit
 icp network start -e local          # terminal 1 — keep replica running
 
-make deploy                         # build + local deploy (backend, registry, frontend)
+make deploy                         # build + deploy (backend, registry, frontend); wires registry into Casals
 icp canister top-up --amount 100t casals_backend -e local   # fund treasury for creates
-python3 scripts/seed.py -e local --deploy --arrangement demo   # templates + demo orchestra
+python3 scripts/seed.py -e local --deploy   # catalog + bootstrap Casals/System (file_registry + multisig)
+```
+
+A fresh deploy leaves a **Casals → System** stand with `file_registry` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
+
+The hello-world demo orchestra is **opt-in**:
+
+```bash
+python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json --arrangement demo
+# or: make seed-demo
 ```
 
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
@@ -106,7 +115,8 @@ Mainnet:
 
 ```bash
 make deploy-ic
-make seed-ic
+python3 scripts/seed.py -e ic --identity casals --deploy   # catalog + bootstrap Casals/System
+# optional demo: make seed-demo-ic
 ```
 
 ---

@@ -3,16 +3,18 @@
 
 What it does (idempotently):
   1. Point Casals at the deployed file-registry (set_settings).
-  2. For each template in seed/templates.json: gunzip the committed WASM, upload
+  2. Ensure the Casals/System section+stand exist and register the file-registry
+     canister there (not part of the sheet).
+  3. For each template in seed/templates.json: gunzip the committed WASM, upload
      it to the file-registry (chunked), and authorize it on Casals.
-  3. With --deploy: also deploy the live sheet (the backend's default orchestra),
-     standing up its canisters (reusing pooled canisters before creating new ones).
+  4. With --deploy or --core: deploy the bundled core sheet (Casals/System +
+     multisig). With --deploy --sheet <path>: deploy an explicit sheet instead
+     (e.g. the hello-world demo).
 
-The sheet itself is NOT created here — it is persisted in the backend (seeded
-from src/default_sheet.py on first boot, then editable and saved across
-restarts) and is deployed via the frontend Deploy button or `deploy_sheet`.
-Seeding only ensures the catalog of authorized WASMs that a sheet's canisters
-reference.
+The sheet itself is persisted in the backend (seeded from src/default_sheet.py on
+first boot, then editable and saved across restarts) and is deployed via the
+frontend Deploy button or `deploy_sheet`. Default seeding only ensures the WASM
+catalog and registers the file-registry; it does not stand up demo canisters.
 
 Re-running is safe: templates already authorized with a matching hash are
 skipped; deploy_sheet is itself idempotent.
@@ -24,7 +26,8 @@ environment.
 Usage:
     python3 scripts/seed.py -e local
     python3 scripts/seed.py -e ic --identity casals
-    python3 scripts/seed.py -e ic --identity casals --deploy
+    python3 scripts/seed.py -e local --core
+    python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json
 """
 
 import argparse
@@ -153,6 +156,103 @@ def identity_principal(cli_args) -> str:
     return out.split()[-1] if out else ""
 
 
+CORE_SECTION = "Casals"
+CORE_STAND = "System"
+FILE_REGISTRY_CANISTER_NAME = "file_registry"
+
+
+def _find_section(tree: dict, name: str) -> dict | None:
+    for sec in tree.get("sections") or []:
+        if (sec.get("name") or "").strip() == name:
+            return sec
+    return None
+
+
+def _find_stand(section: dict, name: str) -> dict | None:
+    for stand in section.get("stands") or []:
+        if (stand.get("name") or "").strip() == name:
+            return stand
+    return None
+
+
+def _load_core_sheet() -> dict:
+    src = os.path.join(REPO_ROOT, "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    from default_sheet import DEFAULT_SHEET
+
+    return json.loads(json.dumps(DEFAULT_SHEET))
+
+
+def ensure_core_section_stand(cli_args) -> None:
+    """Ensure the Casals/System section and stand exist."""
+    tree = call(CASALS, "get_tree", cli_args)
+    if not isinstance(tree, dict):
+        sys.exit("could not read orchestra tree from casals_backend")
+
+    if _find_section(tree, CORE_SECTION) is None:
+        res = call(CASALS, "create_section", cli_args, json.dumps({"name": CORE_SECTION}))
+        if not (isinstance(res, dict) and res.get("ok")):
+            sys.exit(f"create_section '{CORE_SECTION}' failed: {res}")
+        print(f"  created section '{CORE_SECTION}'")
+        tree = call(CASALS, "get_tree", cli_args)
+
+    casals_sec = _find_section(tree, CORE_SECTION)
+    if casals_sec is None:
+        sys.exit(f"section '{CORE_SECTION}' missing after create")
+
+    if _find_stand(casals_sec, CORE_STAND) is None:
+        res = call(
+            CASALS,
+            "create_stand",
+            cli_args,
+            json.dumps({"section": CORE_SECTION, "name": CORE_STAND}),
+        )
+        if not (isinstance(res, dict) and res.get("ok")):
+            sys.exit(f"create_stand '{CORE_STAND}' failed: {res}")
+        print(f"  created stand '{CORE_SECTION}/{CORE_STAND}'")
+
+
+def register_file_registry(cli_args, registry_id: str) -> None:
+    """Register the deployed file-registry canister under Casals/System."""
+    tree = call(CASALS, "get_tree", cli_args)
+    if not isinstance(tree, dict):
+        sys.exit("could not read orchestra tree from casals_backend")
+
+    ids = _canister_ids_from_tree(tree)
+    existing = ids.get(FILE_REGISTRY_CANISTER_NAME, "")
+    if existing:
+        if existing == registry_id:
+            print(f"  {FILE_REGISTRY_CANISTER_NAME} already registered ({registry_id})")
+        else:
+            print(
+                f"  WARN: {FILE_REGISTRY_CANISTER_NAME} already registered as "
+                f"{existing}, expected {registry_id}"
+            )
+        return
+
+    res = call(
+        CASALS,
+        "register_canister",
+        cli_args,
+        json.dumps({
+            "stand": CORE_STAND,
+            "name": FILE_REGISTRY_CANISTER_NAME,
+            "canister_id": registry_id,
+            "kind": "backend",
+        }),
+    )
+    if not (isinstance(res, dict) and res.get("ok")):
+        sys.exit(f"register_canister '{FILE_REGISTRY_CANISTER_NAME}' failed: {res}")
+    print(f"  registered {FILE_REGISTRY_CANISTER_NAME} -> {registry_id}")
+
+
+def ensure_core_bootstrap(cli_args, registry_id: str) -> None:
+    """Ensure Casals/System exists and register the file-registry canister."""
+    ensure_core_section_stand(cli_args)
+    register_file_registry(cli_args, registry_id)
+
+
 def _canister_ids_from_tree(tree: dict) -> dict:
     """Return {canister_name: canister_id} from a get_tree payload."""
     out = {}
@@ -184,26 +284,12 @@ def _baton_names_from_tree(tree: dict) -> list:
     return out
 
 
-def wire_orchestration_demo(cli_args, casals_id: str) -> None:
-    """Post-deploy: configure multisig and wire every stand's Baton."""
-    tree = call(CASALS, "get_tree", cli_args)
-    if not isinstance(tree, dict):
-        print("  orchestration wire: could not read tree; skipping")
-        return
-    ids = _canister_ids_from_tree(tree)
-    baton_names = _baton_names_from_tree(tree)
-    if "multisig" not in ids:
-        print("  orchestration wire: multisig not in tree; skipping")
-        return
-    if not baton_names:
-        print("  orchestration wire: no Baton canisters in tree; skipping")
-        return
-
+def configure_multisig(cli_args, casals_id: str, multisig_id: str) -> None:
+    """Configure multisig signers (1-of-1 with LOCAL_CONDUCTOR + Casals)."""
     conductor = (os.environ.get("LOCAL_CONDUCTOR") or "").strip()
     if not conductor:
         conductor = identity_principal(cli_args) or DEFAULT_LOCAL_CONDUCTOR
 
-    multisig_id = ids["multisig"]
     signers = [conductor]
     if casals_id and casals_id not in signers:
         signers.append(casals_id)
@@ -233,6 +319,25 @@ def wire_orchestration_demo(cli_args, casals_id: str) -> None:
             )
     else:
         print(f"  WARN: multisig configure returned {cfg!r}")
+
+
+def wire_orchestration_demo(cli_args, casals_id: str) -> None:
+    """Post-deploy: configure multisig and wire every stand's Baton."""
+    tree = call(CASALS, "get_tree", cli_args)
+    if not isinstance(tree, dict):
+        print("  orchestration wire: could not read tree; skipping")
+        return
+    ids = _canister_ids_from_tree(tree)
+    baton_names = _baton_names_from_tree(tree)
+    if "multisig" not in ids:
+        print("  orchestration wire: multisig not in tree; skipping")
+        return
+
+    multisig_id = ids["multisig"]
+    configure_multisig(cli_args, casals_id, multisig_id)
+    if not baton_names:
+        print("  orchestration wire: no Baton canisters in tree; multisig only")
+        return
 
     caps = (
         'vec { "propose:managed_upgrade"; "submit_approval:managed_upgrade"; '
@@ -405,7 +510,12 @@ def main():
                          "this at a consumer repo's own config (e.g. realms/casals-config) "
                          "so environment-specific objects live outside the engine repo.")
     ap.add_argument("--deploy", action="store_true",
-                    help="deploy seed/sheets/demo.json and wire orchestration canisters")
+                    help="deploy a sheet (core by default; use --sheet for demo.json)")
+    ap.add_argument("--core", action="store_true",
+                    help="deploy the bundled core sheet (Casals/System + multisig)")
+    ap.add_argument("--sheet", default=None,
+                    help="explicit sheet JSON to deploy with --deploy "
+                         "(e.g. seed/sheets/demo.json)")
     ap.add_argument("--arrangement", default=None,
                     help="seed an arrangement by name from seed/arrangements/<name>.json "
                          "(upsert + activate if marked active)")
@@ -458,6 +568,11 @@ def main():
 
     # 1. Wire Casals to the registry (+ browse UI canister when deployed).
     casals_id = wire_registry_settings(args)
+    registry_id = canister_id(REGISTRY, args)
+
+    # 1b. Ensure Casals/System exists (file-registry is registered after deploy).
+    print("bootstrapping Casals/System…")
+    ensure_core_section_stand(args)
 
     # Existing authorized wasms (key -> hash) for idempotency.
     existing = {}
@@ -537,17 +652,26 @@ def main():
         print(f"seeding arrangement '{args.arrangement}'…")
         seed_arrangement(args, args.arrangement)
 
-    # 3. Optionally deploy the live sheet (stand up the orchestra). The sheet is
-    #    the backend's default (loaded at canister start); deploy_sheet is
-    #    idempotent and reuses pooled canisters before creating new ones. With
-    #    --apply-arrangement it also runs the active arrangement's post-deploy
-    #    steps in the same call, so the environment comes up fully configured.
-    if args.deploy:
-        demo_sheet_path = os.path.join(SHEETS_DIR, "demo.json")
-        with open(demo_sheet_path) as f:
-            demo_sheet = json.load(f)
-        print("deploying demo sheet (this creates/reuses canisters)…")
-        deploy_args = {"sheet": demo_sheet, "apply_arrangement": True}
+    # 3. Optionally deploy a sheet (stand up canisters). Default --deploy/--core
+    #    uses the bundled core sheet; pass --sheet for an explicit orchestra
+    #    (e.g. the hello-world demo).
+    should_deploy = args.deploy or args.core
+    if should_deploy:
+        if args.sheet:
+            sheet_path = os.path.abspath(args.sheet)
+            if not os.path.isfile(sheet_path):
+                sys.exit(f"sheet file not found: {sheet_path}")
+            with open(sheet_path) as f:
+                sheet = json.load(f)
+            sheet_label = os.path.relpath(sheet_path, REPO_ROOT)
+            apply_arrangement = bool(args.apply_arrangement or args.sheet)
+        else:
+            sheet = _load_core_sheet()
+            sheet_label = "core (src/default_sheet.py)"
+            apply_arrangement = bool(args.apply_arrangement)
+
+        print(f"deploying {sheet_label} (this creates/reuses canisters)…")
+        deploy_args = {"sheet": sheet, "apply_arrangement": apply_arrangement}
         res = call(CASALS, "deploy_sheet", args, json.dumps(deploy_args))
         if not (isinstance(res, dict) and res.get("ok")):
             sys.exit(f"deploy_sheet failed: {res}")
@@ -561,8 +685,12 @@ def main():
         if isinstance(arr, dict):
             print(f"  arrangement '{arr.get('arrangement', '')}': "
                   f"{arr.get('applied', 0)} applied, {arr.get('failed', 0)} failed")
-        print("wiring orchestration demo (multisig configure + baton controllers)…")
+        print("wiring orchestration (multisig configure + baton controllers)…")
         wire_orchestration_demo(args, casals_id)
+
+    # Register file-registry last: deploy_sheet retires canisters not in the sheet.
+    print("registering file-registry canister…")
+    register_file_registry(args, registry_id)
 
     print("Seed complete.")
 

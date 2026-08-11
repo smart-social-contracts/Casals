@@ -1023,7 +1023,6 @@
         <OrchestraDiagram
           tree={filteredTree}
           orchestrationStatus={orchStatus}
-          {principalLabels}
         />
       </div>
     {/if}
@@ -1151,53 +1150,50 @@
                           {resolveWasmType(canister) === 'multisig' ? 'border-emerald-200 bg-emerald-50/30' : ''}
                           {resolveWasmType(canister) === 'baton' ? 'border-orange-200 bg-orange-50/30' : ''}">
                           <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                            <div class="min-w-0 space-y-1.5">
-                              <div class="flex items-center gap-2 flex-wrap">
-                                <span class="text-sm font-medium text-primary-900">{canister.name}</span>
-                                <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
-                                  {canister.kind}
-                                </span>
-                                {#if canister.status}
-                                  <span class="badge badge-neutral">{canister.status}</span>
-                                {/if}
-                                {#if canister.subnet || canister.canister_id}
-                                  <SubnetFlags
-                                    subnetId={canister.subnet}
-                                    canisterId={canister.canister_id}
-                                    variant="badge"
-                                  />
-                                {/if}
-                                {#if governanceConsoleUrl(canister)}
-                                  <a
-                                    href={governanceConsoleUrl(canister)!}
-                                    class="btn-sm btn-secondary text-xs px-2 py-1"
-                                  >
-                                    {governanceConsoleLabel(canister)}
-                                  </a>
-                                {/if}
-                              </div>
+                            <div class="min-w-0 flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span class="text-sm font-medium text-primary-900">{canister.name}</span>
+                              <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">
+                                {canister.kind}
+                              </span>
+                              {#if canister.status && canister.status !== 'installed' && canister.status !== 'registered'}
+                                <span class="badge badge-neutral">{canister.status}</span>
+                              {/if}
+                              {#if canister.subnet || canister.canister_id}
+                                <SubnetFlags
+                                  subnetId={canister.subnet}
+                                  canisterId={canister.canister_id}
+                                  variant="badge"
+                                />
+                              {/if}
+                              {#if governanceConsoleUrl(canister)}
+                                <a
+                                  href={governanceConsoleUrl(canister)!}
+                                  class="btn-sm btn-secondary text-xs px-2 py-1"
+                                >
+                                  {governanceConsoleLabel(canister)}
+                                </a>
+                              {/if}
                               <CanisterGovernanceMeta
                                 {canister}
                                 tree={filteredTree}
                                 batons={orchestraBatons}
                                 {principalLabels}
                                 showControllers={false}
+                                inline
                               />
-                              <div class="flex items-center gap-2 text-xs">
-                                <button
-                                  class="font-mono text-primary-600 hover:text-primary-900 transition-colors inline-flex items-center gap-1"
-                                  title="Copy canister id"
-                                  onclick={() => copy(canister.canister_id)}
-                                >
-                                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m11.25 2.625v-3.375a1.125 1.125 0 00-1.125-1.125H15.75m4.5 0H18a1.125 1.125 0 01-1.125-1.125V3" />
-                                  </svg>
-                                  {canister.canister_id || '—'}
-                                </button>
-                                {#if canister.wasm_hash}
-                                  <span class="text-primary-400 font-mono" title={canister.wasm_hash}>· {shortHash(canister.wasm_hash)}</span>
-                                {/if}
-                              </div>
+                              <button
+                                class="text-xs font-mono text-primary-600 hover:text-primary-900 transition-colors inline-flex items-center gap-1"
+                                title="Copy canister id"
+                                onclick={() => copy(canister.canister_id)}
+                              >
+                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m11.25 2.625v-3.375a1.125 1.125 0 00-1.125-1.125H15.75m4.5 0H18a1.125 1.125 0 01-1.125-1.125V3" />
+                                </svg>
+                                {canister.canister_id || '—'}
+                              </button>
+                              {#if canister.wasm_hash}
+                                <span class="text-xs text-primary-400 font-mono" title={canister.wasm_hash}>· {shortHash(canister.wasm_hash)}</span>
+                              {/if}
                             </div>
                             <div class="flex items-center gap-0.5 shrink-0">
                               <!-- Details toggle -->
