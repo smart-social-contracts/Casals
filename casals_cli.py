@@ -27,6 +27,7 @@ Commands:
     arrangement activate NAME  mark an arrangement active
     arrangement apply [NAME]   run an arrangement's post-deploy steps
     arrangement delete NAME    delete an arrangement
+    new [IDS.json]             build, deploy, and seed a Casals instance
 
 Examples::
 
@@ -43,6 +44,7 @@ directory that contains your ``icp.yaml`` (your Casals project root).
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -52,6 +54,23 @@ import tempfile
 _CWD = os.getcwd()
 
 CASALS = "casals_backend"
+
+_ICP_CANISTERS = frozenset({
+    "casals_backend",
+    "casals_frontend",
+    "ic_file_registry",
+    "ic_file_registry_frontend",
+})
+
+_ID_ALIASES = {
+    "casal_frontend": "casals_frontend",
+    "file_registry": "ic_file_registry",
+    "file_registry_frontend": "ic_file_registry_frontend",
+}
+
+_DEFAULT_LOCAL_CONDUCTOR = (
+    "kpvwp-c7tzf-sybdw-2j6l2-4c3cd-wnkt6-ryzf2-lsjit-dfqve-g5rfb-tae"
+)
 
 _CANDID_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\", "'": "'"}
 
@@ -63,7 +82,7 @@ def _base_flags(args) -> list:
     return flags
 
 
-def _icp(argv, args, timeout=300):
+def _icp(argv, args, timeout=300, check=True):
     result = subprocess.run(
         ["icp"] + argv,
         cwd=_CWD,
@@ -71,12 +90,179 @@ def _icp(argv, args, timeout=300):
         text=True,
         timeout=timeout,
     )
-    if result.returncode != 0:
+    if check and result.returncode != 0:
         raise RuntimeError(
             f"icp {' '.join(argv)} failed:\n"
             f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
         )
     return result
+
+
+def _progress(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def _mapping_paths(env: str, root: str | None = None) -> tuple[str, str]:
+    base = root if root is not None else _CWD
+    data = os.path.join(base, ".icp", "data", "mappings", f"{env}.ids.json")
+    cache = os.path.join(base, ".icp", "cache", "mappings", f"{env}.ids.json")
+    return data, cache
+
+
+def _normalize_instance_ids(raw: dict) -> dict:
+    """Normalize a plain or nested canister-ID map (aliases → canonical keys)."""
+    merged: dict = {}
+    if isinstance(raw.get("canisters"), dict):
+        merged.update(raw["canisters"])
+    for key, val in raw.items():
+        if key == "canisters":
+            continue
+        merged[key] = val
+
+    out: dict[str, str] = {}
+    for key, val in merged.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            continue
+        canonical = _ID_ALIASES.get(key, key)
+        cid = val.strip()
+        if cid:
+            out[canonical] = cid
+    return out
+
+
+def _write_env_mappings(env: str, ids: dict, root: str | None = None) -> None:
+    """Write icp canister IDs to data + cache mapping files (only provided keys)."""
+    icp_ids = {k: v for k, v in ids.items() if k in _ICP_CANISTERS}
+    for path in _mapping_paths(env, root):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(icp_ids, f, indent=2)
+            f.write("\n")
+
+
+def _clear_env_mappings(env: str, root: str | None = None) -> None:
+    """Remove mapping files so icp creates fresh canisters."""
+    for path in _mapping_paths(env, root):
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def _require_icp_yaml() -> None:
+    if not os.path.isfile(os.path.join(_CWD, "icp.yaml")):
+        raise RuntimeError(
+            "icp.yaml not found in current directory; run from project root"
+        )
+
+
+def _load_instance_ids_file(path: str) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return _normalize_instance_ids(json.load(f))
+
+
+def _canister_id_from_status(name: str, args) -> str:
+    out = _icp(["canister", "status", name] + _base_flags(args), args).stdout
+    m = re.search(r"Canister Id:\s*([a-z0-9-]+)", out)
+    return m.group(1) if m else ""
+
+
+def _resolve_deployed_canister_ids(args) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name in sorted(_ICP_CANISTERS):
+        cid = _canister_id_from_status(name, args)
+        if cid:
+            out[name] = cid
+    return out
+
+
+def _run_make_build() -> None:
+    _progress("running make build…")
+    result = subprocess.run(
+        ["make", "build"],
+        cwd=_CWD,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "make build failed:\n"
+            f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
+        )
+
+
+def _run_icp_deploy(args) -> None:
+    _progress(f"deploying with icp (-e {args.env})…")
+    _icp(
+        ["deploy"] + _base_flags(args) + ["--mode", "upgrade", "-y"],
+        args,
+        timeout=900,
+    )
+
+
+def _add_local_conductor(args) -> None:
+    conductor = (os.environ.get("LOCAL_CONDUCTOR") or "").strip()
+    if not conductor:
+        conductor = _DEFAULT_LOCAL_CONDUCTOR
+    _progress(f"adding local conductor {conductor}…")
+    for canister in ("casals_backend", "casals_frontend"):
+        _icp(
+            ["canister", "settings", "update", canister,
+             "--add-controller", conductor, "-f"] + _base_flags(args),
+            args,
+            check=False,
+        )
+
+
+def _run_seed_script(args, deploy: bool) -> None:
+    cmd = [sys.executable, os.path.join("scripts", "seed.py"), "-e", args.env]
+    if args.identity:
+        cmd += ["--identity", args.identity]
+    if deploy:
+        cmd.append("--deploy")
+    _progress("running seed.py…")
+    result = subprocess.run(
+        cmd,
+        cwd=_CWD,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"seed.py failed:\n"
+            f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
+        )
+
+
+def _register_multisig_canister(args, multisig_id: str) -> None:
+    """Register an existing multisig under Casals/System (idempotent)."""
+    tree = call(CASALS, "get_tree", args, None)
+    if isinstance(tree, dict):
+        for sec in tree.get("sections") or []:
+            for stand in sec.get("stands") or []:
+                for c in stand.get("canisters") or []:
+                    if (c.get("name") or "").strip() != "multisig":
+                        continue
+                    existing = (c.get("canister_id") or "").strip()
+                    if existing == multisig_id:
+                        _progress(f"multisig already registered ({multisig_id})")
+                        return
+                    raise RuntimeError(
+                        f"multisig already registered as {existing}, "
+                        f"expected {multisig_id}"
+                    )
+
+    payload = {
+        "stand": "System",
+        "name": "multisig",
+        "canister_id": multisig_id,
+        "kind": "backend",
+        "wasm_type": "multisig",
+    }
+    res = call(CASALS, "register_canister", args, json.dumps(payload))
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"register_canister 'multisig' failed: {res}")
+    _progress(f"registered multisig -> {multisig_id}")
 
 
 def _candid_unescape(s: str) -> str:
@@ -255,6 +441,70 @@ def cmd_arrangement_delete(args):
     _out(call(CASALS, "delete_arrangement", args, json.dumps({"name": args.name})))
 
 
+def cmd_new(args):
+    """Build, deploy, and optionally seed a Casals instance."""
+    _require_icp_yaml()
+
+    multisig_id: str | None = None
+    ids: dict[str, str] = {}
+    if args.ids_file:
+        ids = _load_instance_ids_file(args.ids_file)
+        multisig_id = ids.get("multisig") or None
+        icp_ids = {k: v for k, v in ids.items() if k in _ICP_CANISTERS}
+        if not icp_ids and not multisig_id:
+            raise RuntimeError(
+                f"{args.ids_file} has no known Casals canister IDs "
+                "(casals_backend, casals_frontend, ic_file_registry, "
+                "ic_file_registry_frontend, multisig)"
+            )
+        _write_env_mappings(args.env, ids)
+        mode = "upgrade"
+        _progress(f"using canister IDs from {args.ids_file}")
+    else:
+        if not args.yes:
+            if not sys.stdin.isatty():
+                raise RuntimeError(
+                    "fresh create requires -y/--yes when stdin is not a TTY"
+                )
+            prompt = (
+                f"Create new canisters for environment '{args.env}'? [y/N] "
+            )
+            answer = input(prompt).strip().lower()
+            if answer not in ("y", "yes"):
+                raise RuntimeError("aborted")
+        _clear_env_mappings(args.env)
+        mode = "create"
+        _progress(f"fresh create for environment '{args.env}'")
+
+    _run_make_build()
+    _run_icp_deploy(args)
+
+    if args.env == "local":
+        _add_local_conductor(args)
+
+    canisters = _resolve_deployed_canister_ids(args)
+    # Persist resolved IDs so subsequent `casals` / `icp` commands resolve names.
+    if canisters:
+        _write_env_mappings(args.env, canisters)
+
+    seeded = False
+    if not args.no_seed:
+        if multisig_id:
+            _run_seed_script(args, deploy=False)
+            _register_multisig_canister(args, multisig_id)
+        else:
+            _run_seed_script(args, deploy=True)
+        seeded = True
+
+    _out({
+        "ok": True,
+        "mode": mode,
+        "canisters": canisters,
+        "multisig": multisig_id,
+        "seeded": seeded,
+    })
+
+
 # ── arg parser ───────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -268,7 +518,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "  casals status\n"
             "  casals -e ic --identity casals tree\n"
             "  casals sheet deploy my-sheet.json\n"
-            "  casals cycles -e ic"
+            "  casals cycles -e ic\n"
+            "  casals new -e local -y\n"
+            "  casals new ids.json -e ic --identity casals"
         ),
     )
     ap.add_argument("-e", "--env", default="local", metavar="ENV",
@@ -321,6 +573,23 @@ def _build_parser() -> argparse.ArgumentParser:
     arr_del_p = arr_sub.add_parser("delete", help="delete an arrangement")
     arr_del_p.add_argument("name", metavar="NAME", help="arrangement name")
 
+    new_p = sub.add_parser(
+        "new",
+        help="build, deploy, and seed a Casals instance",
+    )
+    new_p.add_argument(
+        "ids_file", nargs="?", metavar="IDS.json",
+        help="optional canister ID map (plain or under \"canisters\")",
+    )
+    new_p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="skip confirmation for fresh create (required when not a TTY)",
+    )
+    new_p.add_argument(
+        "--no-seed", action="store_true",
+        help="skip seed.py after deploy",
+    )
+
     return ap
 
 
@@ -361,6 +630,8 @@ def main():
                 cmd_arrangement_apply(args)
             elif args.arrangement_command == "delete":
                 cmd_arrangement_delete(args)
+        elif args.command == "new":
+            cmd_new(args)
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
         sys.exit(1)

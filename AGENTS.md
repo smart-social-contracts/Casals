@@ -352,8 +352,11 @@ make cli ARGS="<command>"
 | `sheet set FILE` | `set_sheet` |
 | `sheet deploy [FILE]` | `set_sheet` (if FILE given) then `deploy_sheet` |
 | `arrangement list/get/set/activate/apply/delete` | arrangement endpoints |
+| `new [IDS.json]` | `make build` + `icp deploy` + optional `seed.py`; writes `.icp/*/mappings/{env}.ids.json` |
 
 Common flags on every command: `-e local|ic` (default `local`), `--identity <id>`.
+
+`new` additionally accepts `-y`/`--yes` (skip fresh-create confirmation; required when stdin is not a TTY) and `--no-seed` (skip seeding after deploy). Pass an optional `IDS.json` with icp canister IDs (and optionally `multisig`) to upgrade an existing deployment; omit it to create fresh canisters.
 
 There is no CLI wrapper yet for `assign_pool_canister` — use the UI or a direct
 canister call.

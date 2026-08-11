@@ -157,6 +157,86 @@ class TestCandidTextArg:
         assert r == '("")'
 
 
+# ── _normalize_instance_ids ───────────────────────────────────────────────────
+
+class TestNormalizeInstanceIds:
+    def test_plain_map_passthrough(self):
+        raw = {
+            "casals_backend": "aaaaa-aa",
+            "ic_file_registry": "bbbbb-bb",
+        }
+        assert cli._normalize_instance_ids(raw) == raw
+
+    def test_aliases_normalized(self):
+        raw = {
+            "casal_frontend": "cccc-c",
+            "file_registry": "ddddd-dd",
+            "file_registry_frontend": "eeeee-ee",
+            "multisig": "fffff-ff",
+        }
+        assert cli._normalize_instance_ids(raw) == {
+            "casals_frontend": "cccc-c",
+            "ic_file_registry": "ddddd-dd",
+            "ic_file_registry_frontend": "eeeee-ee",
+            "multisig": "fffff-ff",
+        }
+
+    def test_nested_canisters_merged_with_top_level(self):
+        raw = {
+            "canisters": {
+                "casals_backend": "aaaaa-aa",
+                "casals_frontend": "bbbbb-bb",
+            },
+            "ic_file_registry": "ccccc-cc",
+            "multisig": "ddddd-dd",
+        }
+        assert cli._normalize_instance_ids(raw) == {
+            "casals_backend": "aaaaa-aa",
+            "casals_frontend": "bbbbb-bb",
+            "ic_file_registry": "ccccc-cc",
+            "multisig": "ddddd-dd",
+        }
+
+    def test_top_level_overrides_nested_canisters(self):
+        raw = {
+            "canisters": {"casals_backend": "old-id"},
+            "casals_backend": "new-id",
+        }
+        assert cli._normalize_instance_ids(raw)["casals_backend"] == "new-id"
+
+    def test_strips_whitespace_and_skips_empty(self):
+        raw = {"casals_backend": "  aaaaa-aa  ", "casals_frontend": "   "}
+        assert cli._normalize_instance_ids(raw) == {"casals_backend": "aaaaa-aa"}
+
+
+# ── env mapping helpers ───────────────────────────────────────────────────────
+
+class TestEnvMappings:
+    def test_write_only_icp_canister_keys(self, tmp_path):
+        ids = {
+            "casals_backend": "aaaaa-aa",
+            "multisig": "bbbbb-bb",
+            "casals_frontend": "ccccc-cc",
+        }
+        cli._write_env_mappings("local", ids, root=str(tmp_path))
+        for sub in ("data", "cache"):
+            path = tmp_path / ".icp" / sub / "mappings" / "local.ids.json"
+            assert path.is_file()
+            written = json.loads(path.read_text())
+            assert written == {
+                "casals_backend": "aaaaa-aa",
+                "casals_frontend": "ccccc-cc",
+            }
+            assert "multisig" not in written
+
+    def test_clear_removes_both_mapping_files(self, tmp_path):
+        cli._write_env_mappings("ic", {"casals_backend": "aaaaa-aa"}, root=str(tmp_path))
+        cli._clear_env_mappings("ic", root=str(tmp_path))
+        for sub in ("data", "cache"):
+            path = tmp_path / ".icp" / sub / "mappings" / "ic.ids.json"
+            assert not path.exists()
+
+
 # ── _build_parser ────────────────────────────────────────────────────────────
 
 class TestParser:
@@ -262,6 +342,33 @@ class TestParser:
     def test_flags_before_command(self):
         args = self._parse(["-e", "ic", "--identity", "me", "status"])
         assert args.env == "ic" and args.identity == "me"
+
+    # new command
+    def test_new_no_ids_file(self):
+        args = self._parse(["new"])
+        assert args.command == "new"
+        assert args.ids_file is None
+        assert args.yes is False
+        assert args.no_seed is False
+
+    def test_new_with_ids_file(self):
+        args = self._parse(["new", "/tmp/ids.json"])
+        assert args.command == "new" and args.ids_file == "/tmp/ids.json"
+
+    def test_new_no_seed(self):
+        args = self._parse(["new", "--no-seed"])
+        assert args.no_seed is True
+
+    def test_new_yes_short_and_long(self):
+        assert self._parse(["new", "-y"]).yes is True
+        assert self._parse(["new", "--yes"]).yes is True
+
+    def test_new_with_env_and_identity(self):
+        args = self._parse(["-e", "ic", "--identity", "casals", "new", "ids.json", "-y"])
+        assert args.env == "ic"
+        assert args.identity == "casals"
+        assert args.ids_file == "ids.json"
+        assert args.yes is True
 
 
 # ── _load_sheet_file ─────────────────────────────────────────────────────────

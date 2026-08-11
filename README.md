@@ -146,6 +146,9 @@ casals arrangement list                            # post-deploy config overlays
 casals arrangement set demo.json                   # create/update an arrangement
 casals arrangement activate test                   # make one arrangement active
 casals arrangement apply                           # run the active arrangement's steps (batched until done)
+casals new [-y]                                    # build, deploy, and seed (fresh canisters)
+casals new ids.json [-y]                           # deploy with existing canister IDs
+casals new -e ic --identity casals ids.json        # mainnet upgrade from ID map
 
 casals -e ic --identity casals status              # mainnet, explicit identity
 ```
