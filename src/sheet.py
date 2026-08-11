@@ -1,10 +1,11 @@
 """Live orchestra sheet management.
 
 The sheet is a JSON document describing the desired orchestra (sections,
-stands, and their WASM assignments).  It is EPHEMERAL: held only in the
-Wasm heap, loaded from stable storage at canister start, and reset on every
-restart/upgrade.  Editing it (``set_sheet``) changes nothing on-chain until
-``deploy_sheet`` is called; deploy reconciles real canisters to the sheet.
+stands, and their WASM assignments).  It is persisted in stable storage
+(the source of truth) and cached in the Wasm heap; edits survive restarts
+and upgrades.  On first boot only, the bundled default seeds stable storage.
+Editing it (``set_sheet``) changes nothing on-chain until ``deploy_sheet``
+is called; deploy reconciles real canisters to the sheet.
 """
 
 import json

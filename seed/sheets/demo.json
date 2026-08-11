@@ -1,5 +1,5 @@
 {
-  "$comment": "A sheet: the desired orchestra (Sections > Stands > Canisters), where each canister references an authorized WASM by `wasm_key`. Sheets hold no template definitions (see seed/templates.json). Deploying a sheet is idempotent: missing sections/stands/canisters are created (reusing pooled canisters), canisters no longer listed are retired back to the pool. Mirror of src/default_sheet.py.",
+  "$comment": "Opt-in hello-world demo orchestra (not the bundled default in src/default_sheet.py). A sheet describes the desired orchestra (Sections > Stands > Canisters), where each canister references an authorized WASM by `wasm_key`. Sheets hold no template definitions (see seed/templates.json). Deploy explicitly: python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json",
   "name": "demo",
   "description": "Default Casals demo orchestra: hello-world stands per language, each with its own Baton, plus a shared Multisig top commander.",
   "sections": [

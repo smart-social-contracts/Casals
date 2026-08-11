@@ -529,7 +529,8 @@ def main():
                          "its authorized-WASM catalog.")
     ap.add_argument("--wire-registry-only", action="store_true",
                     help="ONLY wire Casals to the deployed file-registry canisters "
-                         "(set_settings); skip template upload and sheet deploy.")
+                         "(set_settings, which also bootstraps Casals/System + file_registry); "
+                         "skip template upload and sheet deploy.")
     args = ap.parse_args()
 
     # Allow a consumer repo to own its seed data outside this engine repo: point
@@ -560,6 +561,8 @@ def main():
 
     if args.wire_registry_only:
         wire_registry_settings(args)
+        # set_settings triggers backend _ensure_core_bootstrap (Casals/System + file_registry).
+        print("core bootstrap handled by casals_backend set_settings hook")
         return
 
     with open(CATALOG) as f:

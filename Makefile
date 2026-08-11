@@ -91,10 +91,10 @@ seed-ic:
 
 # Full demo: authorize templates, deploy demo sheet (incl. multisig + baton), wire + greet.
 seed-demo:
-	python3 scripts/seed.py -e local --deploy --arrangement demo
+	python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json --arrangement demo
 
 seed-demo-ic:
-	python3 scripts/seed.py -e ic --identity casals --deploy --arrangement demo
+	python3 scripts/seed.py -e ic --identity casals --deploy --sheet seed/sheets/demo.json --arrangement demo
 
 # Thin CLI for querying and commanding a deployed Casals backend.
 # Usage: make cli ARGS="status"

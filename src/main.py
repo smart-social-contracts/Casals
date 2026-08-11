@@ -57,6 +57,7 @@ from commanders import (
 )
 from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
+from bootstrap import _ensure_core_bootstrap
 from orchestration_bridge import (
     _baton_in_stand,
     _configure_baton_gen,
@@ -368,6 +369,10 @@ def _bootstrap() -> None:
     try:
         _settings()
         _load_sheet()
+        try:
+            _ensure_core_bootstrap()
+        except Exception as e:  # pragma: no cover - defensive at install time
+            _log.error(f"core bootstrap error: {e}")
         _arm_autopilot()
         _arm_cycle_sampler()
     except Exception as e:  # pragma: no cover - defensive at install time
@@ -1033,6 +1038,10 @@ def set_settings(args: text) -> text:
             s.open_access = 1 if params["open_access"] else 0
         if "file_registry_canister_id" in params:
             s.file_registry_canister_id = (params["file_registry_canister_id"] or "").strip()
+            try:
+                _ensure_core_bootstrap()
+            except Exception as e:
+                _log.error(f"core bootstrap after set_settings: {e}")
         if "file_registry_frontend_canister_id" in params:
             s.file_registry_frontend_canister_id = (
                 params["file_registry_frontend_canister_id"] or ""

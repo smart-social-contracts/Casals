@@ -26,9 +26,11 @@ The **Multisig** is the sole IC controller of every orchestra canister (includin
 
 The Baton never upgrades itself. The multisig upgrades Batons with a plain `install_code`.
 
-## Casals demo
+## Casals demo (opt-in)
 
-The default demo sheet (`seed/sheets/demo.json`) has:
+The bundled default sheet (`src/default_sheet.py`) is a minimal core orchestra:
+**Casals → System → multisig**. The hello-world demo is separate and opt-in
+(`seed/sheets/demo.json`):
 
 - **Orchestration → Governance** — shared `multisig` (top commander for all Batons)
 - **Demo → Motoko / Rust / Python** — each stand has its own `{stand}-baton` plus backend + frontend

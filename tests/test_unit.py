@@ -1680,3 +1680,21 @@ def test_sample_all_merges_snapshot_rows(monkeypatch):
     assert by_cid["dead-id"]["status"] == "error"
     assert "exist" in by_cid["dead-id"]["error"].lower()
     assert singleton_snap.snapshot_json == cycles_mod._cycles_cache
+
+
+# ── default sheet ───────────────────────────────────────────────────────────
+
+def test_default_sheet_structure():
+    """Bundled default is minimal core: Casals > System > multisig."""
+    import default_sheet
+
+    sheet = default_sheet.DEFAULT_SHEET
+    assert sheet["name"] == "casals-core"
+    assert [s["name"] for s in sheet["sections"]] == ["Casals"]
+
+    casals = sheet["sections"][0]
+    assert [st["name"] for st in casals["stands"]] == ["System"]
+
+    system = casals["stands"][0]
+    assert [c["name"] for c in system["canisters"]] == ["multisig"]
+    assert system["canisters"][0]["wasm_key"] == "orchestration-multisig"

@@ -1,6 +1,6 @@
 /** Orchestra governance helpers — multisig, batons, controllers, managed-canister links. */
 
-import type { Canister, Tree, OrchestrationStatus, BatonStatus } from './api';
+import type { Canister, Tree, Section, Stand, OrchestrationStatus, BatonStatus } from './api';
 import {
   isBatonWasm,
   isMultisigWasm,
@@ -233,19 +233,80 @@ export function treeContainsCanisterId(tree: Tree | null | undefined, canisterId
   return false;
 }
 
+function isCasalsSectionName(name: string): boolean {
+  return name === 'Casals' || name === 'Conductor';
+}
+
+function canisterMatches(a: Canister, b: Canister): boolean {
+  if (a.canister_id && b.canister_id && a.canister_id === b.canister_id) return true;
+  if (a.name && b.name && a.name === b.name) return true;
+  return false;
+}
+
+function sectionHasCanister(section: Section, canister: Canister): boolean {
+  return section.stands.some((stand) => stand.canisters.some((c) => canisterMatches(c, canister)));
+}
+
+function sectionHasMultisig(section: Section): boolean {
+  return section.stands.some((stand) => stand.canisters.some((c) => isMultisigCanister(c)));
+}
+
+function peelCasalsCanisters(
+  canisters: Canister[],
+  backendId: string,
+  frontendId: string,
+  found: { backend: Canister | null; frontend: Canister | null },
+): Canister[] {
+  const kept = [];
+  for (const c of canisters) {
+    if ((backendId && c.canister_id === backendId) || c.name === 'casals-backend') {
+      if (!found.backend) found.backend = c;
+      continue;
+    }
+    if ((frontendId && c.canister_id === frontendId) || c.name === 'casals-frontend') {
+      if (!found.frontend) found.frontend = c;
+      continue;
+    }
+    kept.push(c);
+  }
+  return kept;
+}
+
 /** Pull multisig and Casals front/back out of the tree for re-homing under Casals. */
 function extractCasalsCanisters(
   tree: Tree,
   backendId: string,
   frontendId: string,
-): { multisig: Canister | null; backend: Canister | null; frontend: Canister | null; rest: Tree } {
+): {
+  multisig: Canister | null;
+  backend: Canister | null;
+  frontend: Canister | null;
+  existingCasals: Section | null;
+  rest: Tree;
+} {
   let multisig: Canister | null = null;
   let backend: Canister | null = null;
   let frontend: Canister | null = null;
+  let existingCasals: Section | null = null;
 
   const sections = [];
   for (const sec of tree.sections) {
-    if (sec.name === 'Casals' || sec.name === 'Conductor') continue;
+    if (isCasalsSectionName(sec.name)) {
+      const stands = [];
+      for (const stand of sec.stands) {
+        const found = { backend, frontend };
+        const canisters = peelCasalsCanisters(stand.canisters, backendId, frontendId, found);
+        backend = found.backend;
+        frontend = found.frontend;
+        for (const c of canisters) {
+          if (isMultisigCanister(c) && !multisig) multisig = c;
+        }
+        if (canisters.length) stands.push({ ...stand, canisters });
+      }
+      if (stands.length) existingCasals = { ...sec, stands };
+      continue;
+    }
+
     const stands = [];
     for (const stand of sec.stands) {
       const canisters = [];
@@ -269,7 +330,102 @@ function extractCasalsCanisters(
     if (stands.length) sections.push({ ...sec, stands });
   }
 
-  return { multisig, backend, frontend, rest: { sections, principal_aliases: tree.principal_aliases } };
+  return {
+    multisig,
+    backend,
+    frontend,
+    existingCasals,
+    rest: { sections, principal_aliases: tree.principal_aliases },
+  };
+}
+
+function resolveCasalsBackend(
+  fromTree: Canister | null,
+  backendId: string,
+  controllers?: string[],
+): Canister | null {
+  if (fromTree) {
+    return { ...fromTree, controllers: fromTree.controllers ?? controllers };
+  }
+  if (!backendId) return null;
+  return {
+    name: 'casals-backend',
+    canister_id: backendId,
+    kind: 'backend',
+    wasm_key: 'casals-backend',
+    wasm_type: 'basilisk',
+    wasm_hash: '',
+    status: 'installed',
+    url: '',
+    snapshot_id: '',
+    controllers,
+  };
+}
+
+function resolveCasalsFrontend(
+  fromTree: Canister | null,
+  frontendId: string,
+  controllers?: string[],
+): Canister | null {
+  if (fromTree) {
+    return { ...fromTree, controllers: fromTree.controllers ?? controllers };
+  }
+  if (!frontendId) return null;
+  return {
+    name: 'casals-frontend',
+    canister_id: frontendId,
+    kind: 'frontend',
+    wasm_key: 'casals-frontend',
+    wasm_type: 'assets',
+    wasm_hash: '',
+    status: 'installed',
+    url: '',
+    snapshot_id: '',
+    controllers,
+  };
+}
+
+function mergeCanistersIntoStand(stand: Stand, additions: Canister[]): Stand {
+  const merged = [...stand.canisters];
+  for (const c of additions) {
+    if (!merged.some((existing) => canisterMatches(existing, c))) merged.push(c);
+  }
+  return { ...stand, canisters: sortCanistersForDisplay(merged) };
+}
+
+/** Merge extracted governance canisters into an existing Casals section. */
+function augmentExistingCasalsSection(
+  section: Section,
+  multisig: Canister | null,
+  backend: Canister | null,
+  frontend: Canister | null,
+): Section {
+  const additions: Canister[] = [];
+  if (multisig && !sectionHasMultisig(section) && !sectionHasCanister(section, multisig)) {
+    additions.push(multisig);
+  }
+  if (backend && !sectionHasCanister(section, backend)) additions.push(backend);
+  if (frontend && !sectionHasCanister(section, frontend)) additions.push(frontend);
+  if (!additions.length) return section;
+
+  if (!section.stands.length) {
+    return {
+      ...section,
+      stands: [{
+        name: 'System',
+        description: 'Multisig, backend, and frontend',
+        commander_principal: '',
+        canisters: sortCanistersForDisplay(additions),
+      }],
+    };
+  }
+
+  const systemIdx = section.stands.findIndex((stand) => stand.name === 'System');
+  const targetIdx = systemIdx >= 0 ? systemIdx : 0;
+  const stands = section.stands.map((stand, idx) =>
+    idx === targetIdx ? mergeCanistersIntoStand(stand, additions) : stand,
+  );
+  return { ...section, stands };
 }
 
 /** Prepend Casals section (multisig + front/back) above Deployments, Infra, etc. */
@@ -279,51 +435,26 @@ export function augmentTreeWithCasals(
   frontendId: string,
   controllers: { backend?: string[]; frontend?: string[] } = {},
 ): Tree {
-  const { multisig, backend: backendFromTree, frontend: frontendFromTree, rest } =
-    extractCasalsCanisters(tree, backendId, frontendId);
+  const {
+    multisig,
+    backend: backendFromTree,
+    frontend: frontendFromTree,
+    existingCasals,
+    rest,
+  } = extractCasalsCanisters(tree, backendId, frontendId);
+
+  const backend = resolveCasalsBackend(backendFromTree, backendId, controllers.backend);
+  const frontend = resolveCasalsFrontend(frontendFromTree, frontendId, controllers.frontend);
+
+  if (existingCasals) {
+    const casalsSection = augmentExistingCasalsSection(existingCasals, multisig, backend, frontend);
+    return { sections: [casalsSection, ...rest.sections], principal_aliases: tree.principal_aliases };
+  }
 
   const casalsCanisters: Canister[] = [];
   if (multisig) casalsCanisters.push(multisig);
-
-  if (backendFromTree) {
-    casalsCanisters.push({
-      ...backendFromTree,
-      controllers: backendFromTree.controllers ?? controllers.backend,
-    });
-  } else if (backendId) {
-    casalsCanisters.push({
-      name: 'casals-backend',
-      canister_id: backendId,
-      kind: 'backend',
-      wasm_key: 'casals-backend',
-      wasm_type: 'basilisk',
-      wasm_hash: '',
-      status: 'installed',
-      url: '',
-      snapshot_id: '',
-      controllers: controllers.backend,
-    });
-  }
-
-  if (frontendFromTree) {
-    casalsCanisters.push({
-      ...frontendFromTree,
-      controllers: frontendFromTree.controllers ?? controllers.frontend,
-    });
-  } else if (frontendId) {
-    casalsCanisters.push({
-      name: 'casals-frontend',
-      canister_id: frontendId,
-      kind: 'frontend',
-      wasm_key: 'casals-frontend',
-      wasm_type: 'assets',
-      wasm_hash: '',
-      status: 'installed',
-      url: '',
-      snapshot_id: '',
-      controllers: controllers.frontend,
-    });
-  }
+  if (backend) casalsCanisters.push(backend);
+  if (frontend) casalsCanisters.push(frontend);
 
   if (!casalsCanisters.length) return tree;
 
