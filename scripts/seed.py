@@ -588,9 +588,13 @@ def main():
 
     if args.wire_registry_only:
         wire_registry_settings(args)
-        # set_settings triggers backend _ensure_core_bootstrap (Casals/System +
-        # file_registry [+ file_registry_frontend]).
-        print("core bootstrap handled by casals_backend set_settings hook")
+        # Also register from the client so existing backends (pre-bootstrap-hook)
+        # pick up file_registry_frontend without a casals_backend upgrade.
+        # Upgraded backends already run _ensure_core_bootstrap on set_settings;
+        # register_* helpers are idempotent.
+        registry_id = canister_id(REGISTRY, args)
+        registry_frontend_id = canister_id_optional(REGISTRY_FRONTEND, args) or ""
+        ensure_core_bootstrap(args, registry_id, registry_frontend_id)
         return
 
     with open(CATALOG) as f:
