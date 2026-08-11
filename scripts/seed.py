@@ -4,7 +4,7 @@
 What it does (idempotently):
   1. Point Casals at the deployed file-registry (set_settings).
   2. Ensure the Casals/System section+stand exist and register the file-registry
-     canister there (not part of the sheet).
+     canisters there (backend + browse UI when deployed; not part of the sheet).
   3. For each template in seed/templates.json: gunzip the committed WASM, upload
      it to the file-registry (chunked), and authorize it on Casals.
   4. With --deploy or --core: deploy the bundled core sheet (Casals/System +
@@ -159,6 +159,7 @@ def identity_principal(cli_args) -> str:
 CORE_SECTION = "Casals"
 CORE_STAND = "System"
 FILE_REGISTRY_CANISTER_NAME = "file_registry"
+FILE_REGISTRY_FRONTEND_CANISTER_NAME = "file_registry_frontend"
 
 
 def _find_section(tree: dict, name: str) -> dict | None:
@@ -213,44 +214,69 @@ def ensure_core_section_stand(cli_args) -> None:
         print(f"  created stand '{CORE_SECTION}/{CORE_STAND}'")
 
 
-def register_file_registry(cli_args, registry_id: str) -> None:
-    """Register the deployed file-registry canister under Casals/System."""
+def register_canister_on_system_stand(
+    cli_args,
+    name: str,
+    canister_id: str,
+    kind: str,
+    *,
+    wasm_type: str = "",
+) -> None:
+    """Register an existing IC canister under Casals/System (idempotent)."""
     tree = call(CASALS, "get_tree", cli_args)
     if not isinstance(tree, dict):
         sys.exit("could not read orchestra tree from casals_backend")
 
     ids = _canister_ids_from_tree(tree)
-    existing = ids.get(FILE_REGISTRY_CANISTER_NAME, "")
+    existing = ids.get(name, "")
     if existing:
-        if existing == registry_id:
-            print(f"  {FILE_REGISTRY_CANISTER_NAME} already registered ({registry_id})")
+        if existing == canister_id:
+            print(f"  {name} already registered ({canister_id})")
         else:
             print(
-                f"  WARN: {FILE_REGISTRY_CANISTER_NAME} already registered as "
-                f"{existing}, expected {registry_id}"
+                f"  WARN: {name} already registered as "
+                f"{existing}, expected {canister_id}"
             )
         return
 
-    res = call(
-        CASALS,
-        "register_canister",
-        cli_args,
-        json.dumps({
-            "stand": CORE_STAND,
-            "name": FILE_REGISTRY_CANISTER_NAME,
-            "canister_id": registry_id,
-            "kind": "backend",
-        }),
-    )
+    payload = {
+        "stand": CORE_STAND,
+        "name": name,
+        "canister_id": canister_id,
+        "kind": kind,
+    }
+    if wasm_type:
+        payload["wasm_type"] = wasm_type
+    res = call(CASALS, "register_canister", cli_args, json.dumps(payload))
     if not (isinstance(res, dict) and res.get("ok")):
-        sys.exit(f"register_canister '{FILE_REGISTRY_CANISTER_NAME}' failed: {res}")
-    print(f"  registered {FILE_REGISTRY_CANISTER_NAME} -> {registry_id}")
+        sys.exit(f"register_canister '{name}' failed: {res}")
+    print(f"  registered {name} -> {canister_id}")
 
 
-def ensure_core_bootstrap(cli_args, registry_id: str) -> None:
-    """Ensure Casals/System exists and register the file-registry canister."""
+def register_file_registry(cli_args, registry_id: str) -> None:
+    """Register the deployed file-registry backend canister under Casals/System."""
+    register_canister_on_system_stand(
+        cli_args, FILE_REGISTRY_CANISTER_NAME, registry_id, "backend"
+    )
+
+
+def register_file_registry_frontend(cli_args, frontend_id: str) -> None:
+    """Register the deployed file-registry browse UI under Casals/System."""
+    register_canister_on_system_stand(
+        cli_args,
+        FILE_REGISTRY_FRONTEND_CANISTER_NAME,
+        frontend_id,
+        "frontend",
+        wasm_type="assets",
+    )
+
+
+def ensure_core_bootstrap(cli_args, registry_id: str, registry_frontend_id: str = "") -> None:
+    """Ensure Casals/System exists and register file-registry canisters."""
     ensure_core_section_stand(cli_args)
     register_file_registry(cli_args, registry_id)
+    if registry_frontend_id:
+        register_file_registry_frontend(cli_args, registry_frontend_id)
 
 
 def _canister_ids_from_tree(tree: dict) -> dict:
@@ -529,7 +555,8 @@ def main():
                          "its authorized-WASM catalog.")
     ap.add_argument("--wire-registry-only", action="store_true",
                     help="ONLY wire Casals to the deployed file-registry canisters "
-                         "(set_settings, which also bootstraps Casals/System + file_registry); "
+                         "(set_settings, which also bootstraps Casals/System + "
+                         "file_registry [+ file_registry_frontend]); "
                          "skip template upload and sheet deploy.")
     args = ap.parse_args()
 
@@ -561,7 +588,8 @@ def main():
 
     if args.wire_registry_only:
         wire_registry_settings(args)
-        # set_settings triggers backend _ensure_core_bootstrap (Casals/System + file_registry).
+        # set_settings triggers backend _ensure_core_bootstrap (Casals/System +
+        # file_registry [+ file_registry_frontend]).
         print("core bootstrap handled by casals_backend set_settings hook")
         return
 
@@ -691,9 +719,13 @@ def main():
         print("wiring orchestration (multisig configure + baton controllers)…")
         wire_orchestration_demo(args, casals_id)
 
-    # Register file-registry last: deploy_sheet retires canisters not in the sheet.
+    # Register file-registry canisters last: deploy_sheet retires canisters not in the sheet.
+    registry_frontend_id = canister_id_optional(REGISTRY_FRONTEND, args)
     print("registering file-registry canister…")
     register_file_registry(args, registry_id)
+    if registry_frontend_id:
+        print("registering file-registry frontend canister…")
+        register_file_registry_frontend(args, registry_frontend_id)
 
     print("Seed complete.")
 

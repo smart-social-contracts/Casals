@@ -1046,6 +1046,10 @@ def set_settings(args: text) -> text:
             s.file_registry_frontend_canister_id = (
                 params["file_registry_frontend_canister_id"] or ""
             ).strip()
+            try:
+                _ensure_core_bootstrap()
+            except Exception as e:
+                _log.error(f"core bootstrap after set_settings: {e}")
         if "casals_frontend_canister_id" in params:
             s.casals_frontend_canister_id = (
                 params["casals_frontend_canister_id"] or ""
@@ -1679,6 +1683,9 @@ def register_canister(args: text) -> text:
         st.stand = dk
         st.canister_id = (params.get("canister_id") or "").strip()
         st.kind = params.get("kind") or CanisterKind.BACKEND
+        wasm_type = (params.get("wasm_type") or "").strip()
+        if wasm_type:
+            st.wasm_type = wasm_type
         st.status = CanisterStatus.REGISTERED
         st.created_by = _caller()
         list(PooledCanister.instances())

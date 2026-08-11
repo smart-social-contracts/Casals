@@ -95,10 +95,10 @@ icp network start -e local          # terminal 1 — keep replica running
 
 make deploy                         # build + deploy (backend, registry, frontend); wires registry into Casals
 icp canister top-up --amount 100t casals_backend -e local   # fund treasury for creates
-python3 scripts/seed.py -e local --deploy   # catalog + bootstrap Casals/System (file_registry + multisig)
+python3 scripts/seed.py -e local --deploy   # catalog + bootstrap Casals/System (file_registry, file_registry_frontend + multisig)
 ```
 
-A fresh deploy leaves a **Casals → System** stand with `file_registry` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
+A fresh deploy leaves a **Casals → System** stand with `file_registry`, `file_registry_frontend` (registered from the `icp.yaml` deploy), and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
 
 The hello-world demo orchestra is **opt-in**:
 

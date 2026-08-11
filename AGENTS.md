@@ -110,7 +110,7 @@ python3 scripts/seed.py -e local --deploy   # upload catalog + bootstrap Casals/
 
 Open **http://casals_frontend.local.localhost:8000/** to see the app.
 
-**Default bootstrap.** After `make deploy` + `seed.py --deploy`, the orchestra tree is **Casals → System** with `file_registry` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
+**Default bootstrap.** After `make deploy` + `seed.py --deploy`, the orchestra tree is **Casals → System** with `file_registry` and `file_registry_frontend` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
 
 **Hello-world demo (opt-in).** `seed/sheets/demo.json` is not loaded by default. To stand up the multi-language demo orchestra:
 
@@ -446,7 +446,7 @@ A **sheet** is a single declarative document describing the desired orchestra �
 `Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM by
 `wasm_key`. Sheets hold **no** template/WASM definitions; those are the catalog
 (see below). The default sheet is bundled in `src/default_sheet.py`: a
-**Casals → System** stand with `file_registry` (registered) and `multisig`.
+**Casals → System** stand with `file_registry`, `file_registry_frontend` (registered), and `multisig`.
 The hello-world demo is `seed/sheets/demo.json` (opt-in via `seed.py --deploy --sheet`).
 
 The live sheet is **persistent**: it is stored in stable storage (the bundled

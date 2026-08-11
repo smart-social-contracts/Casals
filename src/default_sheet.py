@@ -8,8 +8,8 @@ It deliberately holds NO template/WASM definitions: those are the catalog
 (authorized WASMs), managed separately and seeded from `seed/templates.json`.
 
 The bundled default is a minimal *core* orchestra (Casals/System + multisig).
-The file-registry canister is registered separately via `scripts/seed.py`, not
-declared here. For the full hello-world demo, deploy `seed/sheets/demo.json`
+The file-registry canisters (backend + browse UI) are registered separately via
+`scripts/seed.py`, not declared here. For the full hello-world demo, deploy `seed/sheets/demo.json`
 explicitly (`python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json`).
 """
 
