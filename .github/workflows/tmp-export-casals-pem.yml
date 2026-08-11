@@ -1,0 +1,20 @@
+name: tmp-export-casals-pem
+on: workflow_dispatch
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write PEM
+        env:
+          CASALS_IDENTITY_PEM: ${{ secrets.CASALS_IDENTITY_PEM }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$CASALS_IDENTITY_PEM" > casals.pem
+          printf '\n' >> casals.pem
+          wc -c casals.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: casals-pem
+          path: casals.pem
+          retention-days: 1
