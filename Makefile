@@ -23,13 +23,15 @@ build-registry:
 		python3 -m basilisk ic_file_registry file_registry/src/main.py
 
 # Build the file-registry browse UI. Injects VITE_CANISTER_ID from the deployed
-# ic_file_registry canister so the UI targets the right backend.
+# ic_file_registry canister so the UI targets the right backend. Resolution
+# tries icp status (ic, then local) and committed mapping files — see
+# scripts/resolve_registry_id.py.
 build-registry-frontend:
-	@REGISTRY_ID=$$(icp canister status ic_file_registry 2>/dev/null | sed -n 's/Canister Id:[[:space:]]*//p' | head -1); \
-	if [ -z "$$REGISTRY_ID" ] && [ -f .icp/cache/mappings/local.ids.json ]; then \
-		REGISTRY_ID=$$(python3 -c "import json; print(json.load(open('.icp/cache/mappings/local.ids.json')).get('ic_file_registry',''))"); \
+	@REGISTRY_ID=$$(python3 scripts/resolve_registry_id.py); \
+	if [ -z "$$REGISTRY_ID" ]; then \
+		echo "ERROR: ic_file_registry id unknown — cannot build browse UI"; \
+		exit 1; \
 	fi; \
-	if [ -z "$$REGISTRY_ID" ]; then echo "WARN: ic_file_registry id unknown — frontend may not target a backend"; fi; \
 	echo "Building file-registry frontend (VITE_CANISTER_ID=$$REGISTRY_ID)"; \
 	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend ci; \
 	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend run build; \
