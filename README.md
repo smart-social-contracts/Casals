@@ -4,11 +4,11 @@
 
 # Casals
 
-**Canister lifecycle orchestrator for the Internet Computer.**
+**General-purpose canister lifecycle orchestrator for the Internet Computer.**
 
 Casals is **fully on-chain**: the conductor is a canister that creates, upgrades, snapshots, and rolls back other canisters by calling the IC management canister directly. Sheets, arrangements, WASM catalog, cycles policy, and audit history all live in Casals' stable state — there is no off-chain worker in the deploy path. The CLI and frontend are thin clients that submit update calls; execution and rollback logic run inside the conductor.
 
-**Used by:** Casals serves as the provisioning layer of the [gos.earth GOS-as-a-Service platform](https://github.com/smart-social-contracts/gos-as-a-service). [Realms GOS](https://github.com/smart-social-contracts/realms) is the first platform citizen and operates Casals conductor instances per network, driving rollouts via `realms rollout` and fleet config in `casals-config/`.
+Any project can operate its own Casals conductor to manage a canister fleet. [Realms GOS](https://github.com/smart-social-contracts/realms) is the **reference consumer** — it deploys Casals per network and drives rollouts from consumer-side fleet config. Casals also powers provisioning on the [gos.earth GOS-as-a-Service platform](https://github.com/smart-social-contracts/gos-as-a-service).
 
 Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to one or more **commanders** (principals or external governance canisters). Casals provides the structure and executes approved actions; it never embeds voting logic inside the conductor.
 
@@ -33,7 +33,7 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 - **Lifecycle** — create, chunked install/upgrade, snapshot, `module_hash` verification, all-or-nothing rollback across a stand.
 - **Sheets** — declare a whole orchestra in one JSON document; `deploy_sheet` idempotently brings it to life.
-- **Arrangements** — per-environment config overlays applied *after* a deploy: a flat `parameters` map plus ordered, declarative post-deploy `steps` (`{target, method, args}`) Casals runs against managed canisters. One active per instance; Casals forwards the data without interpreting it (so app concepts like extensions stay out of the orchestrator).
+- **Arrangements** — per-environment config overlays applied *after* a deploy: a flat `parameters` map plus ordered, declarative post-deploy `steps` (`{target, method, args}`) Casals runs against managed canisters. One active per instance; Casals forwards the data without interpreting it (so app concepts like extensions stay out of the orchestrator). Post-provision work — e.g. extension frontend resync — belongs here, not in Casals lifecycle code.
 - **Canister pool** — reuses existing canisters before creating new ones (creation is expensive).
 - **Cycles management** — native treasury, per-section/stand/canister policy, optional on-chain autopilot, or an **off-chain monitor** (`casals-monitor`) that polls balances, runs auto top-ups, and serves the Cycles UI without burning conductor cycles on hourly samplers.
 - **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend) plus orchestration templates (Baton, multisig); more added via governed list.
@@ -65,7 +65,7 @@ See [AGENTS.md](AGENTS.md) for API details and local-development notes.
 
 ## Off-chain cycle monitor
 
-For production Realms deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers:
+For production deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers:
 
 1. Deploy `casals-monitor` (FastAPI + SQLite) with an IC identity that is a Casals controller.
 2. In **Settings → Cycle operations**, choose **Off-chain monitor** and set:
@@ -74,6 +74,8 @@ For production Realms deployments, cycle observation and auto top-ups can run in
 3. Save and run **Sync controllers** so the monitor is co-controller on managed canisters.
 
 This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Optional **Alert emails** in Settings notify operators when the treasury cannot fund a top-up.
+
+For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `monitor_url`, `monitor_principal`, `casals_backend`, `casals_frontend`).
 
 ---
 

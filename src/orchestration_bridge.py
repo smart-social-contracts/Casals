@@ -21,6 +21,7 @@ from lifecycle import (
     _backend_cid_for_stand,
     _merge_controllers,
     _parse_extra_controller_principals,
+    _render_canister_ids_js,
     _resolve_authorized_wasm,
     _governance_multisig_id,
     _persist_ic_controllers,
@@ -453,6 +454,27 @@ def _prepare_managed_upgrade_gen(target_name: str, wasm_key: str, baton_name="")
     }
 
 
+def _baton_provision_assets_gen(target_cid: str, stand, template_str: str):
+    """Build Baton ``extra_files`` and ``grant_commit`` for /canister_ids.js."""
+    extra_files = []
+    grant_commit = []
+    backend_cid = _backend_cid_for_stand(target_cid, stand)
+    if not backend_cid:
+        return extra_files, grant_commit
+    grant_commit.append(backend_cid)
+    fr = (_settings().file_registry_canister_id or "").strip()
+    js = _render_canister_ids_js(
+        template_str, backend_cid=backend_cid, file_registry_cid=fr,
+    )
+    if js:
+        extra_files.append({
+            "key": "/canister_ids.js",
+            "content_type": "application/javascript",
+            "content_b64": base64.b64encode(js.encode()).decode(),
+        })
+    return extra_files, grant_commit
+
+
 def _prepare_asset_provision_gen(target_name: str, wasm_key: str = "",
                                  bundle_namespace: str = "", baton_name=""):
     """Generator: propose a Baton managed_asset_provision for a frontend
@@ -475,6 +497,7 @@ def _prepare_asset_provision_gen(target_name: str, wasm_key: str = "",
     target_cid = target_st.canister_id
     stand = target_st.stand
 
+    w = None
     namespace = (bundle_namespace or "").strip()
     if not namespace:
         if not (wasm_key or "").strip():
@@ -489,25 +512,8 @@ def _prepare_asset_provision_gen(target_name: str, wasm_key: str = "",
     if target_cid not in managed:
         yield from _hand_to_baton_gen(target_name, baton_name)
 
-    # Per-deployment /canister_ids.js wiring this SPA frontend to its paired
-    # backend (mirrors lifecycle._upload_bundle's final-batch write).
-    extra_files = []
-    grant_commit = []
-    backend_cid = _backend_cid_for_stand(target_cid, stand)
-    if backend_cid:
-        grant_commit.append(backend_cid)
-        ids = ('{realm_backend:"' + backend_cid
-               + '",internet_identity:"https://identity.ic0.app"')
-        fr = (_settings().file_registry_canister_id or "").strip()
-        if fr:
-            ids += ',file_registry:"' + fr + '"'
-        ids += "}"
-        js = "globalThis.__CANISTER_IDS=" + ids + ";"
-        extra_files.append({
-            "key": "/canister_ids.js",
-            "content_type": "application/javascript",
-            "content_b64": base64.b64encode(js.encode()).decode(),
-        })
+    template_str = (getattr(w, "canister_ids_template", "") or "") if w is not None else ""
+    extra_files, grant_commit = _baton_provision_assets_gen(target_cid, stand, template_str)
 
     action_id = f"assets-{target_name}-{uuid.uuid4().hex[:8]}"
     propose_payload = json.dumps({

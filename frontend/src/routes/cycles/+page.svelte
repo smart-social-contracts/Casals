@@ -16,7 +16,7 @@
     monitorPollFlow,
     setCyclePolicy,
     destroyCanister,
-    destroyRealmStand,
+    destroyStand,
     reconcile,
     convertTreasuryIcp,
     formatCycles,
@@ -1257,7 +1257,7 @@
     try {
       for (const st of plan.stands) {
         try {
-          const res = await destroyRealmStand({ stand: st.stand });
+          const res = await destroyStand({ stand: st.stand });
           if (!res.ok) throw new Error(res.error || 'Stand destroy failed');
           for (const d of st.canisters) destroyedIds.add(d.canister_id);
           reclaimedTotal += Number(res.total_cycles_reclaimed ?? 0);

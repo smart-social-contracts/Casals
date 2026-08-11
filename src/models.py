@@ -126,6 +126,9 @@ class Canister(Entity, TimestampedMixin):
     ic_controllers = String(max_length=1024, default="")
     # Commander-assigned labels (JSON array of strings), separate from wasm_type tags.
     user_tags_json = String(max_length=512, default="")
+    # Teardown order for stand destruction: lower values are destroyed first;
+    # ties break on canister name. Set per sheet canister (default 50).
+    teardown_priority = Integer(default=50)
 
     def _save(self):
         """Enforce unique ``name`` and ``canister_id`` via alias indexes (O(1))."""
@@ -242,6 +245,9 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     # canister, so the bundle is uploaded per canister; speed is addressed by the
     # batch-commit API, and incremental (changed-file-only) upgrades.
     bundle_namespace = String(max_length=256, default="")
+    # JSON template for per-deployment /canister_ids.js (frontend WASMs). Placeholders:
+    # $BACKEND, $FILE_REGISTRY, $INTERNET_IDENTITY. Empty => Casals default template.
+    canister_ids_template = String(max_length=512, default="")
 
 
 class Settings(Entity):
@@ -253,13 +259,13 @@ class Settings(Entity):
     # may (deployer can flip this for experimentation / dev / demo).
     open_access = Integer(default=0)
     file_registry_canister_id = String(max_length=64, default="")
-    # Optional browse UI for the registry (separate asset canister in Realms;
-    # bundled as ic_file_registry_frontend in standalone Casals deployments).
+    # Optional browse UI for the registry (separate asset canister; bundled as
+    # ic_file_registry_frontend in standalone Casals deployments).
     file_registry_frontend_canister_id = String(max_length=64, default="")
     # Asset canister serving this Casals SPA (for off-chain cycle monitoring).
     casals_frontend_canister_id = String(max_length=64, default="")
-    # realm_installer canister allowed to call destroy_realm_stand (alpha teardown).
-    realm_installer_canister_id = String(max_length=64, default="")
+    # Principals allowed to call destroy_stand (JSON array of principal strings).
+    delegated_destroy_principals_json = String(max_length=512, default="[]")
     # Off-chain monitor (casals-monitor): when enabled, its principal is added as
     # a co-controller of managed canisters so it can read canister_status and
     # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot
@@ -366,8 +372,7 @@ class Arrangement(Entity, TimestampedMixin):
     # Flat JSON map of config values handed to canisters (opaque to Casals).
     parameters_json = String(max_length=16000, default="{}")
     # Ordered JSON list of declarative post-deploy steps: [{target, method, args}].
-    # Sized for a full-fidelity environment (e.g. realms test = 3 realms × ~31
-    # steps incl. per-realm identity/manifesto text ≈ 20 KB).
+    # Sized for a full-fidelity environment with many post-deploy steps.
     steps_json = String(max_length=131072, default="[]")
     created_by = String(max_length=64, default="")
 

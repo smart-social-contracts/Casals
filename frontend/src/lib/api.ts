@@ -1427,7 +1427,7 @@ export async function destroyCanister(args: { canister?: string; canister_id?: s
   return _parseUpdate(await (await _actor(true)).destroy_canister(JSON.stringify(args)));
 }
 
-export async function destroyRealmStand(args: {
+export async function destroyStand(args: {
   stand?: string;
   backend_canister_id?: string;
   frontend_canister_id?: string;
@@ -1438,7 +1438,7 @@ export async function destroyRealmStand(args: {
   total_cycles_reclaimed?: number;
   treasury_after?: number;
 }> {
-  return _parseUpdate(await (await _actor(true)).destroy_realm_stand(JSON.stringify(args)));
+  return _parseUpdate(await (await _actor(true)).destroy_stand(JSON.stringify(args)));
 }
 
 export async function setCommander(args: {

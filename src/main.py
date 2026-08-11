@@ -145,7 +145,7 @@ from lifecycle import (
     _resolve_authorized_wasm,
     _destroy_canister_gen,
     _destroy_ic_canister_gen,
-    _destroy_realm_stand_gen,
+    _destroy_stand_gen,
     _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
@@ -153,6 +153,7 @@ from lifecycle import (
     _set_log_visibility,
     _spec_target_subnet,
     _target_subnet,
+    _teardown_priority_from_spec,
     _upload_bundle,
     _verify_module_hash,
     _versions_in_family,
@@ -400,15 +401,29 @@ def _require_admin() -> None:
         raise Exception("unauthorized: caller is not a Casals controller")
 
 
-def _require_admin_or_realm_installer() -> None:
-    """Casals controllers or the configured realm_installer may destroy user realms."""
+def _parse_delegated_destroy_principals() -> list:
+    """Principals allowed to call destroy_stand (from Settings JSON array)."""
+    raw = (getattr(_settings(), "delegated_destroy_principals_json", None) or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(p).strip() for p in data if str(p).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _require_admin_or_delegated_destroy() -> None:
+    """Casals controllers or configured delegated principals may destroy stands."""
     if _is_controller():
         return
-    installer_id = (_settings().realm_installer_canister_id or "").strip()
-    if installer_id and _caller() == installer_id:
+    caller = _caller()
+    if caller in _parse_delegated_destroy_principals():
         return
     raise Exception(
-        "unauthorized: caller is not a Casals controller or configured realm installer"
+        "unauthorized: caller is not a Casals controller or delegated destroy principal"
     )
 
 
@@ -551,7 +566,7 @@ def casals_metadata() -> text:
         "file_registry_canister_id": s.file_registry_canister_id,
         "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
         "casals_frontend_canister_id": s.casals_frontend_canister_id,
-        "realm_installer_canister_id": s.realm_installer_canister_id,
+        "delegated_destroy_principals": _parse_delegated_destroy_principals(),
         "monitor_enabled": bool(s.monitor_enabled),
         "monitor_principal": s.monitor_principal,
         "monitor_service_url": (s.monitor_service_url or ""),
@@ -657,6 +672,8 @@ def list_authorized_wasms(args: text) -> text:
             "asset_namespace": w.asset_namespace,
             "asset_path": w.asset_path,
             "asset_content_type": w.asset_content_type,
+            "bundle_namespace": w.bundle_namespace,
+            "canister_ids_template": w.canister_ids_template,
         })
     # Group by family, newest version first within each family.
     out.sort(key=lambda x: (x["family"], [-c for c in _ver_tuple(x["version"])]))
@@ -1001,7 +1018,7 @@ def set_settings(args: text) -> text:
     {open_access: bool, file_registry_canister_id: str,
      file_registry_frontend_canister_id: str,
      casals_frontend_canister_id: str,
-     realm_installer_canister_id: str,
+     delegated_destroy_principals: [str],
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
      alert_emails: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
@@ -1024,10 +1041,11 @@ def set_settings(args: text) -> text:
             s.casals_frontend_canister_id = (
                 params["casals_frontend_canister_id"] or ""
             ).strip()
-        if "realm_installer_canister_id" in params:
-            s.realm_installer_canister_id = (
-                params["realm_installer_canister_id"] or ""
-            ).strip()
+        if "delegated_destroy_principals" in params:
+            principals = params["delegated_destroy_principals"]
+            if isinstance(principals, list):
+                cleaned = [str(p).strip() for p in principals if str(p).strip()]
+                s.delegated_destroy_principals_json = json.dumps(cleaned)
         if "monitor_enabled" in params:
             s.monitor_enabled = 1 if params["monitor_enabled"] else 0
         if "monitor_principal" in params:
@@ -1273,11 +1291,11 @@ def delete_section(args: text) -> text:
 def repair_section(args: text) -> Async[text]:
     """Prune stale stand/canister registry rows for a section.
 
-    Use after ``destroy_realm_stand`` when ``get_tree`` still lists stands whose
+    Use after ``destroy_stand`` when ``get_tree`` still lists stands whose
     IC canisters are already gone. Controller-only.
 
     Args (JSON): {section, drop_all?, verify_onchain?}. ``drop_all`` removes
-    every stand in the section (for emptying Deployments after bulk realm
+    every stand in the section (for emptying a section after bulk stand
     teardown). ``verify_onchain`` calls ``canister_status`` per registered
     canister and prunes rows whose principal no longer exists on the IC.
     """
@@ -1389,18 +1407,19 @@ def destroy_canister(args: text) -> Async[text]:
 
 
 @update
-def destroy_realm_stand(args: text) -> Async[text]:
-    """Destroy all canisters for a user-provisioned alpha realm; cycles → Casals treasury.
+def destroy_stand(args: text) -> Async[text]:
+    """Destroy all canisters for a stand; cycles → Casals treasury.
 
-    Authorization: Casals controller or ``Settings.realm_installer_canister_id``.
+    Authorization: Casals controller or a principal in
+    ``Settings.delegated_destroy_principals_json``.
     Args (JSON): {stand?, backend_canister_id?, frontend_canister_id?} — at least one
     locator. When the stand is registered, every canister in it is destroyed and the
     stand record is removed; otherwise the supplied raw canister ids are destroyed.
     """
     try:
-        _require_admin_or_realm_installer()
+        _require_admin_or_delegated_destroy()
         params = json.loads(args)
-        result = yield from _destroy_realm_stand_gen(params)
+        result = yield from _destroy_stand_gen(params)
         yield from _sync_treasury_baseline_gen()
         removed = [
             (d.get("canister_id") or "").strip()
@@ -1411,7 +1430,7 @@ def destroy_realm_stand(args: text) -> Async[text]:
             patch_cycles_snapshot_remove_canisters(removed)
         return _ok(**result)
     except Exception as e:
-        _log.error(f"destroy_realm_stand error: {e}")
+        _log.error(f"destroy_stand error: {e}")
         return _err(str(e))
 
 
@@ -1667,7 +1686,11 @@ def add_authorized_wasm(args: text) -> text:
     """Controller only — represents an approved decision to authorize a WASM.
     Args (JSON):
     {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, wasm_type?,
-     description?, asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?}.
+     description?, asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?,
+     canister_ids_template?}.
+
+    `canister_ids_template` (frontend WASMs): JSON object string with placeholders
+    $BACKEND, $FILE_REGISTRY, $INTERNET_IDENTITY for per-deployment /canister_ids.js.
 
     `bundle_namespace` (frontend WASMs): the file-registry namespace holding a
     whole multi-file static bundle to upload into each canister built from this
@@ -1705,11 +1728,18 @@ def add_authorized_wasm(args: text) -> text:
         w.registry_path = (params.get("registry_path") or "").strip()
         w.wasm_hash = (params.get("wasm_hash") or "").strip().lower()
         w.kind = params.get("kind") or CanisterKind.BACKEND
-        w.wasm_type = ((params.get("wasm_type") or infer_wasm_type(key)).strip())[:32]
+        explicit_wasm_type = (params.get("wasm_type") or "").strip()
+        if not explicit_wasm_type:
+            _log.warning(
+                f"add_authorized_wasm({key!r}): wasm_type not set; "
+                "set wasm_type explicitly in the catalog entry"
+            )
+        w.wasm_type = explicit_wasm_type[:32]
         w.description = (params.get("description") or "")[:512]
         w.asset_namespace = (params.get("asset_namespace") or "").strip()
         w.asset_path = (params.get("asset_path") or "").strip()
         w.bundle_namespace = (params.get("bundle_namespace") or "").strip()
+        w.canister_ids_template = (params.get("canister_ids_template") or "").strip()
         if params.get("asset_content_type"):
             w.asset_content_type = params["asset_content_type"].strip()
         w.added_by = _caller()
@@ -1923,6 +1953,7 @@ def deploy_sheet(args: text) -> Async[text]:
                         "kind": canister_spec.get("kind") or CanisterKind.BACKEND,
                         "wasm_key": (canister_spec.get("wasm_key") or "").strip(),
                         "install_arg": canister_spec.get("install_arg"),
+                        "teardown_priority": _teardown_priority_from_spec(canister_spec),
                     }
 
         # Pass 2: retire canisters no longer in the sheet (canisters -> pool).
@@ -1944,6 +1975,7 @@ def deploy_sheet(args: text) -> Async[text]:
                 list(Canister.instances())
                 existing = Canister[stname]
                 if existing is not None:
+                    existing.teardown_priority = spec["teardown_priority"]
                     if (existing.wasm_key == w.key and existing.wasm_hash == w.wasm_hash
                             and existing.status == CanisterStatus.INSTALLED):
                         # Always repair the stand FK in case it points to a stale
@@ -1978,6 +2010,7 @@ def deploy_sheet(args: text) -> Async[text]:
                 # Missing: provision from the pool (reuse) or create.
                 free_before = _pool_take_free() != ""
                 st = yield from _provision_canister(dk, stname, spec["kind"], w, init_arg)
+                st.teardown_priority = spec["teardown_priority"]
                 if free_before:
                     result["reused_canisters"].append(st.name)
                 else:
@@ -3031,7 +3064,7 @@ def orchestration_prepare_managed_upgrade(args: text) -> Async[text]:
 @update
 def orchestration_prepare_asset_provision(args: text) -> Async[text]:
     """Propose a Baton managed_asset_provision (frontend bundle re-provision)
-    and submit Casals' approval. Under a 2-of-2 policy the realm backend must
+    and submit Casals' approval. Under a 2-of-2 policy the consumer backend must
     still approve before the Baton executes.
 
     Args (JSON): {"target": "<frontend canister>", "wasm_key"?: "<frontend template>",

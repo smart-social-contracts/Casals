@@ -512,6 +512,8 @@ def main():
             authorize["asset_namespace"] = namespace
             authorize["asset_path"] = asset["path"]
             authorize["asset_content_type"] = asset.get("content_type", "text/html")
+        if tpl.get("canister_ids_template"):
+            authorize["canister_ids_template"] = tpl["canister_ids_template"]
 
         res = call(CASALS, "add_authorized_wasm", args, json.dumps(authorize))
         if isinstance(res, dict) and res.get("ok"):

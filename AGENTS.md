@@ -1,11 +1,14 @@
 # Casals — Agent Guide
 
-Casals is a canister lifecycle orchestrator for the Internet Computer. It lets
-projects manage their canisters (create / upgrade / snapshot / rollback / stop /
-start) in a structured hierarchy: **Section → Stand → Canister** (a Canister is one
-deployed canister). Approval is delegated — each Section or Stand registers a
-*commander* principal (the project's own governance canister) whose decisions
-Casals executes. Casals never embeds voting logic.
+Casals is a general-purpose canister lifecycle orchestrator for the Internet
+Computer. It lets projects manage their canisters (create / upgrade / snapshot /
+rollback / stop / start) in a structured hierarchy: **Section → Stand →
+Canister** (a Canister is one deployed canister). Approval is delegated — each
+Section or Stand registers a *commander* principal (the project's own governance
+canister) whose decisions Casals executes. Casals never embeds voting logic.
+Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/realms))
+deploy their own conductor instances and supply sheets, arrangements, and fleet
+config from their own repos.
 
 ## Repository layout
 
@@ -34,7 +37,8 @@ seed/templates.json  — default template catalog (what to upload + authorize)
 seed/templates/      — committed, gzipped template WASMs
 seed/sheets/         — sheets (desired orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
-scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper)
+scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper);
+                       examples/wire_monitor.py (off-chain monitor wiring example)
 tests/               — pytest unit + integration + e2e suites (incl. test_cli_unit.py)
 .icp/data/           — committed canister-ID mappings for the demo deployment (do NOT delete)
 dist/                  — SvelteKit static build output (repo root; consumed by icp.yaml)
@@ -55,7 +59,7 @@ git submodule update --init
 
 These are smart-social-contracts' own instance of Casals, deployed on IC mainnet
 for development and demonstration purposes. They are **not a production service**
-— projects that use Casals (such as Realms) deploy their own separate instances.
+— consumer projects deploy their own separate instances.
 
 | Canister          | ID                              | URL |
 |-------------------|---------------------------------|-----|
@@ -509,9 +513,26 @@ its tree (e.g. a consumer's backends).
 - **One active at a time.** `set_active_arrangement` is exclusive — activating one
   deactivates the others.
 
-This is how a consumer like Realms reinstalls extensions/codices, sets runtime
-flags, installs branding, and registers realms after a sheet reinstall — see the
-realms repo's `casals-config/arrangements/`.
+This is how a consumer drives post-deploy configuration after a sheet reinstall
+— e.g. calling `greet` on each hello-world backend in the demo orchestra:
+
+```json
+{
+  "name": "demo-post-deploy",
+  "steps": [
+    { "target": "motoko-backend", "method": "greet", "args": { "name": "Motoko" } },
+    { "target": "rust-backend", "method": "greet", "args": { "name": "Rust" } },
+    { "target": "python-backend", "method": "greet", "args": { "name": "Python" } }
+  ]
+}
+```
+
+Consumer-specific steps (extensions, branding, registry hooks, etc.) live in the
+consumer's own arrangement files, not in Casals lifecycle code. Casals does **not**
+embed consumer-specific post-provision hooks (e.g. resyncing extension frontends after
+a bundle upload). Those steps belong as explicit arrangement entries and are applied
+via `apply_arrangement` (or `deploy_sheet` with `apply_arrangement: true`) after the
+sheet is reconciled.
 
 ## Asset provisioning & the paired-backend Commit grant
 
@@ -520,8 +541,9 @@ When Casals provisions a frontend (certified-assets) canister — on install or 
 also grants **the paired backend** (the backend canister in the same stand)
 `Commit` on that asset canister (`_grant_backend_commit` in `lifecycle.py`). This
 lets the backend write assets to its own frontend after a reinstall (which wipes
-the asset canister and its permissions) — e.g. a realm backend pulling per-realm
-branding from the file-registry and `store`-ing it. On the final batch Casals also
+the asset canister and its permissions) — e.g. a consumer backend pulling
+deployment-specific assets from the file-registry and `store`-ing them. On the final
+batch Casals also
 writes a deployment-specific `/canister_ids.js` wiring the SPA to its backend.
 
 ## Cycle history & charts

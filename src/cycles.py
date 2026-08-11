@@ -694,7 +694,7 @@ def patch_cycles_snapshot_treasury(cycles: int, icp_e8s=None) -> None:
 def patch_cycles_snapshot_remove_canisters(canister_ids) -> None:
     """Drop destroyed canister rows from the persisted cycles snapshot.
 
-    Called after realm teardown so ``get_cycles_cached`` reflects reclaimed
+    Called after stand teardown so ``get_cycles_cached`` reflects reclaimed
     treasury and no longer lists deleted canisters until the next full refresh.
     """
     global _cycles_cache

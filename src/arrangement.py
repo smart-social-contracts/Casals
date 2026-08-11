@@ -37,7 +37,7 @@ def _resolve_target_canister_id(target: str) -> str:
 
     A registered canister name wins; otherwise the value is assumed to already be
     a raw canister id. The latter lets an arrangement address canisters Casals
-    does not manage in its tree (e.g. realm backends in a legacy-provisioned env).
+    does not manage in its tree (e.g. consumer backends in a legacy-provisioned env).
     """
     target = (target or "").strip()
     if not target:

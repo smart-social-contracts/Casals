@@ -61,6 +61,16 @@ MANAGEMENT_CANISTER_ID = "aaaaa-aa"
 # The NNS Cycles Minting Canister.
 CMC_CANISTER_ID = "rkp4c-7iaaa-aaaaa-aaaca-cai"
 
+# Default /canister_ids.js template when AuthorizedWasm.canister_ids_template is empty.
+DEFAULT_CANISTER_IDS_TEMPLATE = (
+    '{"backend":"$BACKEND","internet_identity":"$INTERNET_IDENTITY",'
+    '"file_registry":"$FILE_REGISTRY"}'
+)
+INTERNET_IDENTITY_DEFAULT = "https://identity.ic0.app"
+
+# Default teardown_priority when a sheet canister omits the field.
+DEFAULT_TEARDOWN_PRIORITY = 50
+
 
 # ── WASM family helpers (DB-backed) ──────────────────────────────────────────
 
@@ -82,7 +92,7 @@ def _resolve_authorized_wasm(wasm_key: str, section):
     """Resolve a wasm key to an AuthorizedWasm. A bare family name ("foo")
     resolves to the latest version in that family; a pinned key ("foo@1.2.0")
     resolves to that exact version; ``foo@main`` resolves to the newest
-    main-channel snapshot in that family (same rule as ``realms rollout -v main``)."""
+    main-channel snapshot in that family (same rule as pinning ``@main``)."""
     from models import AuthorizedWasm
     list(AuthorizedWasm.instances())
     family, version = _split_key(wasm_key)
@@ -120,7 +130,7 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
 
     Supported references:
       - a raw Candid text string, e.g. ``(record { name = "X"; ... })`` —
-        encoded verbatim (used by realm_installer for token canisters).
+        encoded verbatim (e.g. for token canisters with custom init args).
       - ``{"top_commander": "$canister:<name>"}`` — Baton init arg pointing at
         another registered canister (must already be deployed).
       - ``{"top_commander": "$self"}`` — Baton init arg pointing at this Casals
@@ -302,10 +312,81 @@ def _backend_cid_for_stand(frontend_cid: str, stand=None) -> str:
     return ""
 
 
+def _render_canister_ids_js(template_str: str, *, backend_cid: str = "",
+                            file_registry_cid: str = "") -> str:
+    """Render ``globalThis.__CANISTER_IDS=…;`` from a JSON template with placeholders.
+
+    Placeholders: ``$BACKEND``, ``$FILE_REGISTRY``, ``$INTERNET_IDENTITY``.
+    Keys whose substituted value is empty are omitted from the output object.
+    Returns "" when the result would be empty (e.g. no backend for a $BACKEND slot).
+    """
+    tpl = (template_str or "").strip() or DEFAULT_CANISTER_IDS_TEMPLATE
+    try:
+        obj = json.loads(tpl)
+    except json.JSONDecodeError as e:
+        raise Exception(f"invalid canister_ids_template JSON: {e}") from e
+    if not isinstance(obj, dict):
+        raise Exception("canister_ids_template must be a JSON object")
+
+    repl = {
+        "$BACKEND": (backend_cid or "").strip(),
+        "$FILE_REGISTRY": (file_registry_cid or "").strip(),
+        "$INTERNET_IDENTITY": INTERNET_IDENTITY_DEFAULT,
+    }
+    out = {}
+    for key, val in obj.items():
+        if not isinstance(val, str):
+            out[key] = val
+            continue
+        rendered = val
+        for placeholder, replacement in repl.items():
+            rendered = rendered.replace(placeholder, replacement)
+        if rendered:
+            out[key] = rendered
+    if not out:
+        return ""
+    if "$BACKEND" in tpl and not repl["$BACKEND"]:
+        return ""
+    return "globalThis.__CANISTER_IDS=" + json.dumps(out, separators=(",", ":")) + ";"
+
+
+def write_canister_ids_js(asset_canister_principal: str, stand_name: str, template_str: str):
+    """Generator: write /canister_ids.js on a certified-assets canister from ``template_str``.
+
+    ``stand_name`` resolves the paired backend canister in the same stand.
+    No-op when no backend is found or the rendered script would be empty.
+    """
+    stand = None
+    sn = (stand_name or "").strip()
+    if sn:
+        list(Stand.instances())
+        stand = Stand[sn]
+    backend_cid = _backend_cid_for_stand(asset_canister_principal, stand)
+    if not backend_cid:
+        return
+    fr = (_settings().file_registry_canister_id or "").strip()
+    js = _render_canister_ids_js(
+        template_str, backend_cid=backend_cid, file_registry_cid=fr,
+    )
+    if not js:
+        return
+    asset = AssetCanisterService(Principal.from_str(asset_canister_principal))
+    store_res = yield asset.store({
+        "key": "/canister_ids.js",
+        "content_type": "application/javascript",
+        "content_encoding": "identity",
+        "content": js.encode(),
+        "sha256": None,
+    })
+    unwrap_call_result(store_res)
+    _append_event("canister_ids_written", asset_canister_principal,
+                  {"backend": backend_cid, "stand": sn})
+
+
 def _grant_backend_commit(asset, frontend_cid: str, stand=None):
-    """Generator: grant the paired realm backend Commit on its frontend asset
+    """Generator: grant the paired consumer backend Commit on its frontend asset
     canister, so the backend can write deployment-specific assets after install
-    (e.g. /custom/ branding, extension frontend bundles).
+    (e.g. /custom/ branding, consumer frontend bundles).
 
     A frontend (re)install resets the certified-assets canister's permission
     list, so this must be re-granted on every provision — not only at first
@@ -354,24 +435,9 @@ def _provision_assets(canister_id: str, w, stand=None):
     unwrap_call_result(store_res)
     _append_event("assets_uploaded", canister_id, {"wasm_key": w.key, "bytes": len(content)})
 
-    backend_cid = _backend_cid_for_stand(canister_id, stand)
-    if backend_cid:
-        ids = ('{realm_backend:"' + backend_cid
-               + '",internet_identity:"https://identity.ic0.app"')
-        fr = (_settings().file_registry_canister_id or "").strip()
-        if fr:
-            ids += ',file_registry:"' + fr + '"'
-        ids += "}"
-        js = ("globalThis.__CANISTER_IDS=" + ids + ";").encode()
-        store_res = yield asset.store({
-            "key": "/canister_ids.js",
-            "content_type": "application/javascript",
-            "content_encoding": "identity",
-            "content": js,
-            "sha256": None,
-        })
-        unwrap_call_result(store_res)
-        _append_event("canister_ids_written", canister_id, {"realm_backend": backend_cid})
+    stand_name = stand.name if stand is not None else ""
+    template_str = (getattr(w, "canister_ids_template", "") or "")
+    yield from write_canister_ids_js(canister_id, stand_name, template_str)
 
 
 def _list_registry_files(namespace: str):
@@ -388,7 +454,8 @@ def _list_registry_files(namespace: str):
     return parsed if isinstance(parsed, list) else []
 
 
-def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int = 0):
+def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int = 0,
+                   stand=None, template_str: str = ""):
     """Generator: upload a multi-file frontend bundle from the file-registry
     into a certified-assets canister. Returns (uploaded_in_batch, total_files).
 
@@ -411,7 +478,7 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
         "permission": {"Commit": None},
     })
     unwrap_call_result(grant_res)
-    backend_cid = yield from _grant_backend_commit(asset, canister_id)
+    yield from _grant_backend_commit(asset, canister_id, stand)
     count = 0
     for f in files[start:end]:
         path = (f.get("path") or "").strip()
@@ -433,70 +500,15 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
                   {"namespace": namespace, "files": count, "offset": start, "total": total})
     # On the final batch, write the per-deployment /canister_ids.js that wires
     # this SPA frontend to its paired backend canister. It is deployment-specific
-    # (the backend id differs per realm/env) so it cannot live in the shared
-    # registry bundle: the frontend's app.html loads /canister_ids.js and
-    # lib/canisters.js reads globalThis.__CANISTER_IDS.realm_backend. Casals holds
-    # Commit on the freshly (re)installed asset canister and knows the backend in
-    # the same stand, so it is the natural writer (mirrors what the legacy
-    # off-chain installer used to do).
+    # (the backend id differs per stand/deployment) so it cannot live in the shared
+    # registry bundle: the frontend loads /canister_ids.js and reads
+    # globalThis.__CANISTER_IDS. Casals holds Commit on the freshly (re)installed
+    # asset canister and knows the backend in the same stand, so it is the
+    # natural writer (mirrors what the legacy off-chain installer used to do).
     if end >= total:
-        if backend_cid:
-            ids = ('{realm_backend:"' + backend_cid
-                   + '",internet_identity:"https://identity.ic0.app"')
-            fr = (_settings().file_registry_canister_id or "").strip()
-            if fr:
-                ids += ',file_registry:"' + fr + '"'
-            ids += "}"
-            js = ("globalThis.__CANISTER_IDS=" + ids + ";").encode()
-            store_res = yield asset.store({
-                "key": "/canister_ids.js",
-                "content_type": "application/javascript",
-                "content_encoding": "identity",
-                "content": js,
-                "sha256": None,
-            })
-            unwrap_call_result(store_res)
-            _append_event("canister_ids_written", canister_id,
-                          {"realm_backend": backend_cid})
-            yield from _maybe_resync_extension_frontends(canister_id, backend_cid)
+        stand_name = stand.name if stand is not None else ""
+        yield from write_canister_ids_js(canister_id, stand_name, template_str)
     return (count, total)
-
-
-def _maybe_resync_extension_frontends(frontend_cid: str, backend_cid: str):
-    """After a frontend bundle upload, re-copy /ext/ assets for installed extensions."""
-    if not frontend_cid or not backend_cid:
-        return
-    fr = (_settings().file_registry_canister_id or "").strip()
-    payload = json.dumps({
-        "registry_canister_id": fr,
-        "frontend_canister_id": frontend_cid,
-    })
-    escaped = payload.replace("\\", "\\\\").replace('"', '\\"')
-    candid_arg = f'("{escaped}")'
-    try:
-        res = yield ic.call_raw(
-            Principal.from_str(backend_cid),
-            "resync_extension_frontends",
-            ic.candid_encode(candid_arg),
-            0,
-        )
-        if isinstance(res, dict) and "Err" in res:
-            raise RuntimeError(str(res["Err"]))
-        _append_event(
-            "extension_frontends_resynced",
-            frontend_cid,
-            {"backend": backend_cid, "result": str(res)[:300]},
-        )
-    except Exception as e:
-        _log.warning(
-            f"extension frontend resync failed for frontend={frontend_cid} "
-            f"backend={backend_cid}: {e}"
-        )
-        _append_event(
-            "extension_frontends_resync_failed",
-            frontend_cid,
-            {"backend": backend_cid, "error": str(e)[:300]},
-        )
 
 
 # ── Management canister helpers ───────────────────────────────────────────────
@@ -681,13 +693,13 @@ def _resolve_provision_controllers(dk, w=None):
     orchestra it is included as the first co-controller — but never the sole
     one: Casals must keep direct control so provisioning can proceed
     (asset grants, baton hand-offs), and the commander-inherited set is what
-    authorizes the installer to drive post-install bootstrap on new realms
-    (extension/codex installs run against the realm backend, which trusts its
-    IC controllers). Tightening to sole-multisig control is an explicit
-    post-deploy governance action, not part of provisioning.
+    authorizes the installer to drive post-install bootstrap on new stands
+    (consumer backends trust their IC controllers for follow-on install calls).
+    Tightening to sole-multisig control is an explicit post-deploy governance
+    action, not part of provisioning.
 
     Baton canisters get [multisig] (+ extra_controller_principals). Other
-    canisters keep Casals in the set during provisioning; realm canisters are
+    canisters keep Casals in the set during provisioning; application canisters are
     tightened to [baton] (+ extras) by orchestration_hand_to_baton.
     """
     s = _settings()
@@ -1067,7 +1079,9 @@ def _maybe_provision_assets(canister_id: str, w, stand=None):
         return
     try:
         if bundle_ns:
-            yield from _upload_bundle(canister_id, bundle_ns)
+            template_str = (getattr(w, "canister_ids_template", "") or "")
+            yield from _upload_bundle(canister_id, bundle_ns, stand=stand,
+                                      template_str=template_str)
         else:
             yield from _provision_assets(canister_id, w, stand)
     except Exception as ae:
@@ -1215,26 +1229,38 @@ def _find_stand_for_canister(canister_id: str):
     return None
 
 
-def _destroy_sort_key(canister_name: str) -> tuple:
-    """Order canister teardown: quarters → frontend → backend → baton → other."""
-    name = (canister_name or "").lower()
-    if "quarter" in name:
-        return (0, name)
-    if name.endswith("-frontend"):
-        return (1, name)
-    if name.endswith("-backend") and "baton" not in name:
-        return (2, name)
-    if "baton" in name:
-        return (3, name)
-    return (4, name)
+def _teardown_priority_from_spec(spec) -> int:
+    """Parse ``teardown_priority`` from a sheet canister spec (default 50)."""
+    if not isinstance(spec, dict):
+        return DEFAULT_TEARDOWN_PRIORITY
+    raw = spec.get("teardown_priority")
+    if raw is None:
+        return DEFAULT_TEARDOWN_PRIORITY
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TEARDOWN_PRIORITY
 
 
-def _destroy_realm_stand_gen(params: dict):
-    """Generator: destroy a wizard/user realm stand and reclaim cycles to Casals.
+def _destroy_sort_key(canister) -> tuple:
+    """Order canister teardown: lower ``teardown_priority`` first, then name."""
+    priority = getattr(canister, "teardown_priority", None)
+    if priority is None:
+        priority = DEFAULT_TEARDOWN_PRIORITY
+    else:
+        try:
+            priority = int(priority)
+        except (TypeError, ValueError):
+            priority = DEFAULT_TEARDOWN_PRIORITY
+    return (priority, (canister.name or "").lower())
+
+
+def _destroy_stand_gen(params: dict):
+    """Generator: destroy a stand and reclaim cycles to Casals.
 
     Locates the stand by explicit name and/or backend/frontend canister ids.
     When the stand is registered in Casals, every canister in it is destroyed
-    (including batons and auto-provisioned quarters). Otherwise falls back to
+    in ``teardown_priority`` order (lower first, then name). Otherwise falls back to
     destroying the supplied raw canister ids.
 
     Each canister is drained into the Casals treasury before deletion; a
@@ -1266,7 +1292,7 @@ def _destroy_realm_stand_gen(params: dict):
         stand_name = dk.name or stand_name
         canisters = sorted(
             list(dk.canisters or []),
-            key=lambda c: _destroy_sort_key(c.name or ""),
+            key=_destroy_sort_key,
         )
         for c in canisters:
             cid = (c.canister_id or "").strip()
@@ -1362,10 +1388,10 @@ def _is_canister_not_found_error(msg: str) -> bool:
 def repair_section_stands(sec, *, drop_all: bool = False) -> dict:
     """Prune stale stand/canister registry rows for ``sec``.
 
-    After ``destroy_realm_stand``, entity counts can drift while reverse indexes
+    After ``destroy_stand``, entity counts can drift while reverse indexes
     still point at orphaned Stand/Canister rows — ``get_tree`` then lists stands
     whose IC canisters are already gone. ``drop_all`` clears every stand in the
-    section (used once Deployments realms have been destroyed on-chain).
+    section (used once deployment stands have been destroyed on-chain).
     """
     from ic_python_db.db_engine import Database
 

@@ -579,7 +579,7 @@
     openModal({
       title: 'Create section',
       fields: [
-        { name: 'name', label: 'Name', required: true, placeholder: 'Deployed realms' },
+        { name: 'name', label: 'Name', required: true, placeholder: 'Production' },
         { name: 'description', label: 'Description', type: 'textarea' },
         { name: 'commander_principal', label: 'Commander principal', placeholder: 'aaaaa-aa' },
       ],
@@ -593,7 +593,7 @@
       title: 'Create stand',
       description: `In section "${section.name}"`,
       fields: [
-        { name: 'name', label: 'Name', required: true, placeholder: 'Agora' },
+        { name: 'name', label: 'Name', required: true, placeholder: 'my-app' },
         { name: 'description', label: 'Description', type: 'textarea' },
         { name: 'commander_principal', label: 'Commander principal', placeholder: 'aaaaa-aa' },
       ],
@@ -607,7 +607,7 @@
       title: 'Register canister',
       description: `In stand "${stand.name}" — registers an existing canister`,
       fields: [
-        { name: 'name', label: 'Name', required: true, placeholder: 'realm_frontend' },
+        { name: 'name', label: 'Name', required: true, placeholder: 'app-frontend' },
         { name: 'canister_id', label: 'Canister id', required: true, placeholder: 'aaaaa-aa' },
         {
           name: 'kind',

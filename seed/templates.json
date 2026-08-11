@@ -59,7 +59,8 @@
         "file": "index.html",
         "path": "hello-world-frontend/index.html",
         "content_type": "text/html"
-      }
+      },
+      "canister_ids_template": "{\"backend\":\"$BACKEND\",\"internet_identity\":\"$INTERNET_IDENTITY\"}"
     },
     {
       "key": "orchestration-baton",
