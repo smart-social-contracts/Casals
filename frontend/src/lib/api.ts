@@ -147,6 +147,8 @@ export interface Metadata {
   backend_canister_id?: string;
   /** 64-char hex ICP ledger account id for exchange withdrawals. */
   ledger_account_id?: string;
+  /** Principals allowed to call destroy_stand without being an IC controller. */
+  delegated_destroy_principals?: string[];
 }
 
 export interface SectionSummary {

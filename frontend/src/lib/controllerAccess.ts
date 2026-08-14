@@ -39,11 +39,19 @@ export async function checkIsCanisterController(
   identity: Identity,
   canisterId: string,
 ): Promise<boolean> {
+  const caller = identity.getPrincipal().toText();
   try {
-    const caller = identity.getPrincipal().toText();
     const controllers = await listCanisterControllers(canisterId, identity);
     return controllers.includes(caller);
   } catch {
-    return false;
+    // Browser management-canister reads fail for non-controllers and can also
+    // fail for controllers (gateway/timeout). Casals can report its own list.
+    try {
+      const { listBackendControllers } = await import('./api');
+      const controllers = await listBackendControllers();
+      return controllers.includes(caller);
+    } catch {
+      return false;
+    }
   }
 }

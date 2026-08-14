@@ -141,6 +141,16 @@ html::-webkit-scrollbar-thumb:hover { background-color: #A3A3A3; }
   border-color: #FCA5A5;
   transform: translateY(-1px);
 }
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+.btn-danger:disabled:hover {
+  background: #FEF2F2;
+  border-color: #FECACA;
+  transform: none;
+}
 
 .btn-sm {
   @apply px-3 py-1.5 text-xs;

@@ -50,7 +50,7 @@
     Tree,
     OrchestrationEvent,
   } from '$lib/api';
-  import { isAuthenticated, isController } from '$lib/auth';
+  import { isAuthenticated, isController, principal } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
@@ -1039,6 +1039,26 @@
 
   const destroyPlan = $derived(computeDestroyPlan(selectedCanisters, report?.canisters ?? []));
   const destroyProtectedSelection = $derived(selectedCanisters.some(isDestroyProtected));
+  const isDelegatedDestroy = $derived(
+    Boolean($principal && (meta?.delegated_destroy_principals ?? []).includes($principal)),
+  );
+  const canDestroySelection = $derived(
+    $isController === true
+    || (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0),
+  );
+  const destroyBlockedReason = $derived.by(() => {
+    if (!selectedCanisterIds.size) return '';
+    if (destroyProtectedSelection) return 'Casals infrastructure canisters cannot be destroyed here';
+    if (!$isAuthenticated) return 'Log in with Internet Identity';
+    if ($isController === null && !isDelegatedDestroy) return 'Checking controller access…';
+    if (!canDestroySelection) {
+      if (isDelegatedDestroy && destroyPlan.canisters.length > 0) {
+        return 'Delegated destroy can only remove a complete stand — select every canister in the stand';
+      }
+      return 'Casals controller access required';
+    }
+    return '';
+  });
   const destroyEstimatedReclaim = $derived(
     selectedCanisters.reduce((sum, c) => sum + (c.cycles ?? 0), 0),
   );
@@ -1233,7 +1253,18 @@
   }
 
   function openDestroyForSelection() {
-    if (!selectedCanisters.length || destroyProtectedSelection) return;
+    if (!selectedCanisters.length) {
+      toasts.error('Select canisters first');
+      return;
+    }
+    if (destroyProtectedSelection) {
+      toasts.error('Casals infrastructure canisters cannot be destroyed here');
+      return;
+    }
+    if (!canDestroySelection) {
+      toasts.error(destroyBlockedReason || 'Casals controller access required');
+      return;
+    }
     destroyAck = false;
     destroyConfirmText = '';
     destroyOpen = true;
@@ -2125,21 +2156,12 @@
                 onclick={openDestroyForSelection}
                 disabled={
                   !selectedCanisterIds.size
-                  || !$isAuthenticated
-                  || $isController !== true
                   || bulkBusy
-                  || destroyProtectedSelection
+                  || Boolean(destroyBlockedReason)
                 }
                 title={
-                  !$isAuthenticated
-                    ? 'Log in with Internet Identity'
-                    : $isController === false
-                      ? 'Casals controller access required'
-                      : destroyProtectedSelection
-                        ? 'Casals infrastructure canisters cannot be destroyed here'
-                        : !selectedCanisterIds.size
-                          ? 'Select canisters first'
-                          : undefined
+                  destroyBlockedReason
+                    || (!selectedCanisterIds.size ? 'Select canisters first' : undefined)
                 }
               >
                 {busy === 'bulk:destroy' ? 'Destroying…' : 'Destroy'}
@@ -2148,6 +2170,9 @@
           </div>
           {#if canisterFilterText.trim() && filteredCanisters.length === 0}
             <p class="text-xs text-primary-400">No canisters match this filter.</p>
+          {/if}
+          {#if destroyBlockedReason}
+            <p class="text-xs text-red-600">{destroyBlockedReason}</p>
           {/if}
         </div>
         <table class="w-full text-sm">
