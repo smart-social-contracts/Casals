@@ -1698,3 +1698,66 @@ def test_default_sheet_structure():
     system = casals["stands"][0]
     assert [c["name"] for c in system["canisters"]] == ["multisig"]
     assert system["canisters"][0]["wasm_key"] == "orchestration-multisig"
+
+
+# ── destroy auth ─────────────────────────────────────────────────────────────
+
+def test_governance_multisig_id_empty_when_missing(monkeypatch):
+    monkeypatch.setattr(lifecycle.Canister, "instances", lambda: [], raising=False)
+    monkeypatch.setattr(lifecycle.Canister, "__getitem__", lambda _self, key: None, raising=False)
+    assert lifecycle._governance_multisig_id() == ""
+
+
+def test_destroy_canister_auth_allows_controller(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: True)
+    main._require_admin_or_governance_multisig()
+
+
+def test_destroy_canister_auth_allows_governance_multisig(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    monkeypatch.setattr(main, "_caller", lambda: "multisig-aa")
+    monkeypatch.setattr(main, "_governance_multisig_id", lambda: "multisig-aa")
+    main._require_admin_or_governance_multisig()
+
+
+def test_destroy_canister_auth_rejects_delegated_only(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    monkeypatch.setattr(main, "_caller", lambda: "delegated-bb")
+    monkeypatch.setattr(main, "_governance_multisig_id", lambda: "multisig-aa")
+    with pytest.raises(Exception, match="governance multisig"):
+        main._require_admin_or_governance_multisig()
+
+
+def test_destroy_stand_auth_allows_delegated(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    monkeypatch.setattr(main, "_is_governance_multisig_caller", lambda: False)
+    monkeypatch.setattr(main, "_caller", lambda: "delegated-bb")
+    monkeypatch.setattr(main, "_parse_delegated_destroy_principals", lambda: ["delegated-bb"])
+    main._require_admin_or_delegated_destroy()
+
+
+def test_destroy_stand_auth_allows_governance_multisig(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    monkeypatch.setattr(main, "_is_governance_multisig_caller", lambda: True)
+    main._require_admin_or_delegated_destroy()
+
+
+def test_destroy_stand_auth_rejects_unauthorized(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    monkeypatch.setattr(main, "_is_governance_multisig_caller", lambda: False)
+    monkeypatch.setattr(main, "_caller", lambda: "random-cc")
+    monkeypatch.setattr(main, "_parse_delegated_destroy_principals", lambda: [])
+    with pytest.raises(Exception, match="governance multisig"):
+        main._require_admin_or_delegated_destroy()

@@ -16,9 +16,11 @@ type BatonAction = variant {
     remove : vec principal;
     new_threshold : opt nat;
   };
+  DestroyStand : record { casals_backend : principal; stand : text };
+  DestroyCanister : record { casals_backend : principal; canister_id : principal };
 };
 
-type ProposalStatus = variant { pending; executed; rejected; expired };
+type ProposalStatus = variant { pending; executed; rejected; failed; expired };
 
 type Proposal = record {
   id : nat;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Tree } from '$lib/api';
-  import { getTree } from '$lib/api';
+  import { backendCanisterId, getTree } from '$lib/api';
   import { get } from 'svelte/store';
   import { identity } from '$lib/auth';
   import {
@@ -29,7 +29,7 @@
   let actionType = $state<MultisigActionType>('SetCanisterControllers');
   let busy = $state(false);
   let error = $state('');
-  let loadedTree = $state<Tree | null>(tree);
+  let loadedTree = $state<Tree | null>(null);
 
   let targetCanister = $state('');
   let controllersText = $state('');
@@ -38,6 +38,7 @@
   let newThreshold = $state('');
   let batonId = $state('');
   let commander = $state('');
+  let standName = $state('');
 
   const canisterOptions = $derived.by(() => {
     const src = loadedTree ?? tree;
@@ -68,6 +69,7 @@
     newThreshold = '';
     batonId = '';
     commander = '';
+    standName = '';
   }
 
   async function toggle() {
@@ -101,6 +103,9 @@
         policy_json: '{}',
         add_controllers: '',
         remove_controllers: '',
+        casals_backend: backendCanisterId(),
+        stand: standName,
+        canister_id: targetCanister,
       });
       await multisigPropose(canisterId, action, id);
       open = false;
@@ -129,6 +134,8 @@
         <option value="ManageSigners">Manage signers</option>
         <option value="AddCommander">Add baton commander</option>
         <option value="RemoveCommander">Remove baton commander</option>
+        <option value="DestroyStand">Destroy stand</option>
+        <option value="DestroyCanister">Destroy canister</option>
       </select>
 
       {#if actionType === 'SetCanisterControllers'}
@@ -151,6 +158,20 @@
         <textarea id="ms-rem" class="input text-xs font-mono min-h-[56px]" bind:value={removeSigners}></textarea>
         <label class="label" for="ms-th">New threshold</label>
         <input id="ms-th" class="input text-sm" type="number" min="1" bind:value={newThreshold} placeholder="optional" />
+      {:else if actionType === 'DestroyStand'}
+        <label class="label" for="ms-stand">Stand name</label>
+        <input id="ms-stand" class="input text-sm" bind:value={standName} placeholder="stand name" />
+      {:else if actionType === 'DestroyCanister'}
+        <label class="label" for="ms-destroy-target">Canister</label>
+        {#if canisterOptions.length}
+          <select id="ms-destroy-target" class="input text-xs font-mono" bind:value={targetCanister}>
+            {#each canisterOptions as opt (opt.id)}
+              <option value={opt.id}>{opt.label}</option>
+            {/each}
+          </select>
+        {:else}
+          <input id="ms-destroy-target" class="input text-xs font-mono" bind:value={targetCanister} placeholder="aaaaa-aa" />
+        {/if}
       {:else}
         <label class="label" for="ms-baton">Baton id</label>
         <input id="ms-baton" class="input text-xs font-mono" bind:value={batonId} placeholder="aaaaa-aa" />

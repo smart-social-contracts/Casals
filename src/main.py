@@ -147,6 +147,7 @@ from lifecycle import (
     _destroy_canister_gen,
     _destroy_ic_canister_gen,
     _destroy_stand_gen,
+    _governance_multisig_id,
     _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
@@ -406,6 +407,23 @@ def _require_admin() -> None:
         raise Exception("unauthorized: caller is not a Casals controller")
 
 
+def _is_governance_multisig_caller() -> bool:
+    """True when the caller is the deployed governance multisig canister."""
+    mid = _governance_multisig_id()
+    return bool(mid) and _caller() == mid
+
+
+def _require_admin_or_governance_multisig() -> None:
+    """Casals controllers or the governance multisig may destroy canisters."""
+    if _is_controller():
+        return
+    if _is_governance_multisig_caller():
+        return
+    raise Exception(
+        "unauthorized: caller is not a Casals controller or governance multisig"
+    )
+
+
 def _parse_delegated_destroy_principals() -> list:
     """Principals allowed to call destroy_stand (from Settings JSON array)."""
     raw = (getattr(_settings(), "delegated_destroy_principals_json", None) or "").strip()
@@ -421,14 +439,17 @@ def _parse_delegated_destroy_principals() -> list:
 
 
 def _require_admin_or_delegated_destroy() -> None:
-    """Casals controllers or configured delegated principals may destroy stands."""
+    """Casals controllers, delegated principals, or governance multisig may destroy stands."""
     if _is_controller():
+        return
+    if _is_governance_multisig_caller():
         return
     caller = _caller()
     if caller in _parse_delegated_destroy_principals():
         return
     raise Exception(
-        "unauthorized: caller is not a Casals controller or delegated destroy principal"
+        "unauthorized: caller is not a Casals controller, delegated destroy principal, "
+        "or governance multisig"
     )
 
 
@@ -1391,11 +1412,11 @@ def destroy_canister(args: text) -> Async[text]:
     cycles into the Casals treasury (via the embedded cycles-sweep helper),
     then stops and deletes it, removes any pool entry, and deletes the
     Canister record. If the drain fails the canister is left intact so cycles
-    are never burned. Irreversible. Controller-only.
+    are never burned. Irreversible. Controller or governance multisig only.
     Args (JSON): {canister: <registered name>} or {canister_id: <raw id>} to
     destroy a pooled/orphan canister by id."""
     try:
-        _require_admin()
+        _require_admin_or_governance_multisig()
         params = json.loads(args)
         canister_name = (params.get("canister") or "").strip()
         raw_id = (params.get("canister_id") or "").strip()
@@ -1423,7 +1444,7 @@ def destroy_canister(args: text) -> Async[text]:
 def destroy_stand(args: text) -> Async[text]:
     """Destroy all canisters for a stand; cycles → Casals treasury.
 
-    Authorization: Casals controller or a principal in
+    Authorization: Casals controller, governance multisig, or a principal in
     ``Settings.delegated_destroy_principals_json``.
     Args (JSON): {stand?, backend_canister_id?, frontend_canister_id?} — at least one
     locator. When the stand is registered, every canister in it is destroyed and the

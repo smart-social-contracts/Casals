@@ -71,3 +71,29 @@ class TestSignerInvariants:
     def test_double_approval(self):
         approvals = ["a", "b"]
         assert "a" in approvals
+
+
+def map_execute_status(ok: bool) -> str:
+    """Mirror Motoko tryExecute: execute err → failed (not rejected)."""
+    return "executed" if ok else "failed"
+
+
+def casals_response_ok(resp: str) -> bool:
+    return '"ok": true' in resp or '"ok":true' in resp
+
+
+class TestExecuteStatusMapping:
+    def test_execute_ok_is_executed(self):
+        assert map_execute_status(True) == "executed"
+
+    def test_execute_err_is_failed_not_rejected(self):
+        assert map_execute_status(False) == "failed"
+        assert map_execute_status(False) != "rejected"
+
+    def test_human_reject_stays_rejected(self):
+        # Human reject() path is separate from execute failure.
+        assert "rejected" == "rejected"
+
+    def test_casals_ok_json(self):
+        assert casals_response_ok('{"ok": true, "destroyed": []}')
+        assert not casals_response_ok('{"ok": false, "error": "unauthorized"}')

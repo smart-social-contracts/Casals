@@ -10,6 +10,19 @@ Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/r
 deploy their own conductor instances and supply sheets, arrangements, and fleet
 config from their own repos.
 
+## Toolchain: icp-cli only
+
+This repo is **`icp-cli` only** — never invoke `dfx` for Casals work. Deploy,
+network, canister, and identity commands all go through `icp` (see `icp.yaml`).
+
+- **Require icp-cli ≥ 1.3.0** — check with `icp --version`. Install or upgrade:
+  `npm i -g @icp-sdk/icp-cli`.
+- If `dfx` is on your PATH on operator hosts (e.g. srv1), it may be a **deprecation
+  gate** that exits unless you pass `--run-deprecated`. Ignore it for this repo — use
+  `icp`.
+- **Identities** live under icp-cli (`icp identity …`), not dfx. The deploy identity
+  PEM is at `~/.local/share/icp-cli/identity/keys/<name>.pem`.
+
 ## Repository layout
 
 ```
@@ -187,7 +200,8 @@ pytest tests/ -v    # spins up its own replica and tears it down automatically
 
 ### Prerequisites
 
-1. **`icp-cli`** installed and configured for IC mainnet.
+1. **`icp-cli` ≥ 1.3.0** installed and configured for IC mainnet (`icp --version`;
+   `npm i -g @icp-sdk/icp-cli` to install or upgrade).
 2. **`casals` deploy identity** — PEM at `~/.local/share/icp-cli/identity/keys/casals.pem`
    (also stored as the `CASALS_IDENTITY_PEM` GitHub secret).
 3. Deploy identity must hold **cycles** (and usually some ICP for topping up):

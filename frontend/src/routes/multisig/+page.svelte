@@ -9,6 +9,7 @@
     multisigApprove,
     multisigReject,
     actionSummary,
+    type MultisigEvent,
     type MultisigProposal,
   } from '$lib/multisigClient';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
@@ -21,6 +22,7 @@
   let signers = $state<string[]>([]);
   let threshold = $state(0);
   let proposals = $state<MultisigProposal[]>([]);
+  let events = $state<MultisigEvent[]>([]);
   let busyProposal = $state<string | null>(null);
 
   const pending = $derived(proposals.filter((p) => p.status === 'pending'));
@@ -35,7 +37,25 @@
   function statusTone(status: string): string {
     if (status === 'executed') return 'text-emerald-700 bg-emerald-50';
     if (status === 'pending') return 'text-amber-800 bg-amber-50';
+    if (status === 'failed') return 'text-red-700 bg-red-50';
+    if (status === 'rejected') return 'text-slate-600 bg-slate-50';
     return 'text-primary-500 bg-primary-50';
+  }
+
+  function failureDetail(p: MultisigProposal): string {
+    if (p.status !== 'failed') return '';
+    let best: MultisigEvent | null = null;
+    let bestDelta: bigint | null = null;
+    for (const e of events) {
+      if (e.kind !== 'execute_failed') continue;
+      if (e.at < p.created_at) continue;
+      const delta = e.at - p.created_at;
+      if (bestDelta === null || delta < bestDelta) {
+        bestDelta = delta;
+        best = e;
+      }
+    }
+    return best?.detail ?? '';
   }
 
   async function load() {
@@ -52,6 +72,7 @@
       signers = snap.signers.signers;
       threshold = snap.signers.threshold;
       proposals = snap.proposals;
+      events = snap.events;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -235,11 +256,19 @@
         <h2 class="text-sm font-medium text-primary-900">History</h2>
         <ul class="divide-y divide-[var(--color-border-primary)] rounded-lg border border-[var(--color-border-primary)] bg-white">
           {#each history.slice(0, 30) as p (p.id.toString())}
-            <li class="px-3 py-2 flex flex-wrap items-center gap-2 text-sm">
-              <span class="text-xs font-mono text-primary-400">#{Number(p.id)}</span>
-              <span class="text-xs px-1.5 py-0.5 rounded {statusTone(p.status)}">{p.status}</span>
-              <span class="text-primary-700 truncate min-w-0 flex-1">{actionSummary(p.action)}</span>
-              <span class="text-xs text-primary-400 shrink-0">{fmtNs(p.created_at)}</span>
+            <li class="px-3 py-2">
+              <div class="flex flex-wrap items-center gap-2 text-sm">
+                <span class="text-xs font-mono text-primary-400">#{Number(p.id)}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded {statusTone(p.status)}">{p.status}</span>
+                <span class="text-primary-700 truncate min-w-0 flex-1">{actionSummary(p.action)}</span>
+                <span class="text-xs text-primary-400 shrink-0">{fmtNs(p.created_at)}</span>
+              </div>
+              {#if p.status === 'failed'}
+                {@const detail = failureDetail(p)}
+                {#if detail}
+                  <p class="text-xs text-red-600 mt-1">{detail}</p>
+                {/if}
+              {/if}
             </li>
           {/each}
         </ul>

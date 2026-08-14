@@ -26,6 +26,20 @@ The **Multisig** is the sole IC controller of every orchestra canister (includin
 
 The Baton never upgrades itself. The multisig upgrades Batons with a plain `install_code`.
 
+### Destroy (ops vs portal)
+
+| Path | Who | Mechanism |
+|------|-----|-----------|
+| **Portal / realm teardown** | `realm_installer` via `delegated_destroy_principals` | Direct Casals `destroy_stand` (no multisig vote) |
+| **Casals Cycles ops** | Multisig signers | Propose `DestroyStand` / `DestroyCanister` → threshold auto-executes → multisig calls Casals |
+| **Emergency** | Casals IC controllers | Direct `destroy_stand` / `destroy_canister` from Cycles UI |
+
+Execute failures land as proposal status `#failed` (audit `execute_failed`); human `reject` stays `#rejected`.
+
+### Multisig `BatonAction` variants (v1.2)
+
+Includes baton/controller actions plus **`DestroyStand`** / **`DestroyCanister`** (payload carries `casals_backend` + stand name or canister id). `SetCanisterControllers` only succeeds when the multisig is already an IC controller of the target.
+
 ## Casals demo (opt-in)
 
 The bundled default sheet (`src/default_sheet.py`) is a minimal core orchestra:

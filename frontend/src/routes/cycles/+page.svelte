@@ -50,7 +50,16 @@
     Tree,
     OrchestrationEvent,
   } from '$lib/api';
-  import { isAuthenticated, isController, principal } from '$lib/auth';
+  import { get } from 'svelte/store';
+  import { isAuthenticated, isController, identity, principal } from '$lib/auth';
+  import {
+    buildMultisigAction,
+    multisigListEvents,
+    multisigListProposals,
+    multisigListSigners,
+    multisigPropose,
+  } from '$lib/multisigClient';
+  import { resolveMultisigCanisterId } from '$lib/resolveMultisigId';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
@@ -98,6 +107,9 @@
   let destroyOpen = $state(false);
   let destroyAck = $state(false);
   let destroyConfirmText = $state('');
+  let multisigCanisterId = $state('');
+  let multisigSigners = $state<string[]>([]);
+  let multisigSignersLoading = $state(false);
   let assignPoolTarget = $state<string | null>(null);
   let canisterFilterText = $state('');
   let selectedCanisterIds = $state<Set<string>>(new Set());
@@ -561,11 +573,39 @@
     if (!meta?.monitor_service_url) await refreshLiveOnChain();
   }
 
+  async function loadMultisigSigners() {
+    multisigSignersLoading = true;
+    try {
+      const msId = await resolveMultisigCanisterId();
+      multisigCanisterId = msId;
+      if (!msId) {
+        multisigSigners = [];
+        return;
+      }
+      const { signers } = await multisigListSigners(msId);
+      multisigSigners = signers;
+    } catch {
+      multisigSigners = [];
+    } finally {
+      multisigSignersLoading = false;
+    }
+  }
+
   onMount(() => {
     void (async () => {
       await load();
       getTree().then((t) => { tree = t; }).catch(() => {});
     })();
+  });
+
+  $effect(() => {
+    if ($isAuthenticated) {
+      void loadMultisigSigners();
+    } else {
+      multisigCanisterId = '';
+      multisigSigners = [];
+      multisigSignersLoading = false;
+    }
   });
 
   async function reloadTreasuryFlow(
@@ -1042,23 +1082,43 @@
   const isDelegatedDestroy = $derived(
     Boolean($principal && (meta?.delegated_destroy_principals ?? []).includes($principal)),
   );
+  const isMultisigSigner = $derived(
+    Boolean($principal && multisigSigners.includes($principal)),
+  );
+  const isProposeDestroy = $derived($isController !== true && isMultisigSigner);
   const canDestroySelection = $derived(
     $isController === true
-    || (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0),
+    || (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0)
+    || (isMultisigSigner && (destroyPlan.stands.length > 0 || destroyPlan.canisters.length > 0)),
   );
   const destroyBlockedReason = $derived.by(() => {
     if (!selectedCanisterIds.size) return '';
     if (destroyProtectedSelection) return 'Casals infrastructure canisters cannot be destroyed here';
     if (!$isAuthenticated) return 'Log in with Internet Identity';
-    if ($isController === null && !isDelegatedDestroy) return 'Checking controller access…';
+    if (($isController === null || multisigSignersLoading) && !isDelegatedDestroy && !isMultisigSigner) {
+      return 'Checking access…';
+    }
     if (!canDestroySelection) {
       if (isDelegatedDestroy && destroyPlan.canisters.length > 0) {
         return 'Delegated destroy can only remove a complete stand — select every canister in the stand';
+      }
+      if ($isController === false && !isMultisigSigner && !isDelegatedDestroy) {
+        return 'Your principal is not a Casals controller or multisig signer';
       }
       return 'Casals controller access required';
     }
     return '';
   });
+  const destroyButtonLabel = $derived(
+    busy === 'bulk:destroy'
+      ? (isProposeDestroy ? 'Proposing…' : 'Destroying…')
+      : (isProposeDestroy ? 'Propose destroy' : 'Destroy'),
+  );
+  const destroyConfirmButtonLabel = $derived(
+    busy === 'bulk:destroy'
+      ? (isProposeDestroy ? 'Proposing…' : 'Destroying…')
+      : (isProposeDestroy ? 'Propose destroy' : 'Destroy permanently'),
+  );
   const destroyEstimatedReclaim = $derived(
     selectedCanisters.reduce((sum, c) => sum + (c.cycles ?? 0), 0),
   );
@@ -1276,8 +1336,124 @@
     destroyConfirmText = '';
   }
 
+  async function confirmProposeDestroy() {
+    const id = get(identity);
+    if (!id) {
+      toasts.error('Login required');
+      return;
+    }
+    const msId = multisigCanisterId;
+    if (!msId) {
+      toasts.error('No multisig canister found in this orchestra');
+      return;
+    }
+    const casals = backendCanisterId();
+    if (!casals) {
+      toasts.error('Backend canister id unavailable');
+      return;
+    }
+
+    busy = 'bulk:destroy';
+    const plan = destroyPlan;
+    const proposalIds: bigint[] = [];
+    let proposed = 0;
+    let executed = 0;
+    let pending = 0;
+    let lastErr = '';
+
+    try {
+      for (const st of plan.stands) {
+        try {
+          const action = buildMultisigAction('DestroyStand', {
+            casals_backend: casals,
+            stand: st.stand,
+          });
+          const pid = await multisigPropose(msId, action, id);
+          proposalIds.push(pid);
+          proposed += 1;
+        } catch (e: unknown) {
+          lastErr = e instanceof Error ? e.message : String(e);
+        }
+      }
+      for (const c of plan.canisters) {
+        try {
+          const action = buildMultisigAction('DestroyCanister', {
+            casals_backend: casals,
+            canister_id: c.canister_id,
+          });
+          const pid = await multisigPropose(msId, action, id);
+          proposalIds.push(pid);
+          proposed += 1;
+        } catch (e: unknown) {
+          lastErr = e instanceof Error ? e.message : String(e);
+        }
+      }
+
+      if (proposed > 0) {
+        const allProposals = await multisigListProposals(msId);
+        const snapEvents = await multisigListEvents(msId).catch(() => []);
+        for (const pid of proposalIds) {
+          const p = allProposals.find((pr) => pr.id === pid);
+          if (p?.status === 'executed') executed += 1;
+          else if (p?.status === 'pending') pending += 1;
+          else if (p?.status === 'failed' || p?.status === 'rejected' || p?.status === 'expired') {
+            let detail = '';
+            if (p.status === 'failed') {
+              let bestAt: bigint | null = null;
+              for (const e of snapEvents) {
+                if (e.kind !== 'execute_failed' || e.at < p.created_at) continue;
+                if (bestAt === null || e.at - p.created_at < bestAt) {
+                  bestAt = e.at - p.created_at;
+                  detail = e.detail;
+                }
+              }
+            }
+            lastErr = lastErr || detail || `Proposal #${pid} ${p.status}`;
+          }
+        }
+
+        if (executed > 0) {
+          const destroyedIds = new Set<string>();
+          for (const st of plan.stands) {
+            for (const c of st.canisters) destroyedIds.add(c.canister_id);
+          }
+          for (const c of plan.canisters) destroyedIds.add(c.canister_id);
+          selectedCanisterIds = new Set(
+            [...selectedCanisterIds].filter((id) => !destroyedIds.has(id)),
+          );
+          toasts.success(
+            executed === proposed
+              ? `Destroy executed for ${executed} proposal${executed === 1 ? '' : 's'}`
+              : `Destroy executed for ${executed} of ${proposed} proposals`,
+          );
+          closeDestroy();
+          await Promise.all([
+            loadCached(),
+            refreshTreasuryOnly(),
+            getTree().then((t) => { tree = t; }).catch(() => {}),
+          ]);
+        } else if (pending > 0) {
+          toasts.success(
+            `Proposed ${pending} destroy action${pending === 1 ? '' : 's'} — approve on the Multisig page`,
+          );
+          closeDestroy();
+        }
+
+        if (lastErr) toasts.error(lastErr);
+      } else {
+        toasts.error(lastErr || 'Propose destroy failed');
+      }
+    } finally {
+      busy = '';
+    }
+  }
+
   async function confirmDestroy() {
     if (!destroyConfirmValid || !report) return;
+    if (isProposeDestroy) {
+      await confirmProposeDestroy();
+      return;
+    }
     busy = 'bulk:destroy';
     const plan = destroyPlan;
     const destroyedIds = new Set<string>();
@@ -2164,7 +2340,7 @@
                     || (!selectedCanisterIds.size ? 'Select canisters first' : undefined)
                 }
               >
-                {busy === 'bulk:destroy' ? 'Destroying…' : 'Destroy'}
+                {destroyButtonLabel}
               </button>
             </div>
           </div>
@@ -2723,12 +2899,25 @@
       ></button>
       <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6 border border-red-200">
         <h3 class="text-lg font-semibold text-red-900 mb-1">
-          Destroy {selectedCanisters.length === 1 ? selectedCanisters[0].name : `${selectedCanisters.length} canisters`}
+          {isProposeDestroy ? 'Propose destroy' : 'Destroy'}
+          {selectedCanisters.length === 1 ? ` ${selectedCanisters[0].name}` : ` ${selectedCanisters.length} canisters`}
         </h3>
         <p class="text-sm text-primary-600 mb-4">
-          Permanently deletes the selected canister{selectedCanisters.length === 1 ? '' : 's'} on the Internet Computer.
-          Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+          {#if isProposeDestroy}
+            Submits a multisig proposal to permanently delete the selected canister{selectedCanisters.length === 1 ? '' : 's'}.
+            Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+          {:else}
+            Permanently deletes the selected canister{selectedCanisters.length === 1 ? '' : 's'} on the Internet Computer.
+            Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+          {/if}
         </p>
+
+        {#if isProposeDestroy}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            With a 1-of-1 threshold the proposal may execute immediately; otherwise approve on the
+            <a href="/multisig" class="font-medium underline hover:text-amber-900">Multisig</a> page.
+          </p>
+        {/if}
 
         {#if destroyPlan.stands.length === 1 && destroyPlan.canisters.length === 0}
           <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
@@ -2746,9 +2935,13 @@
           </p>
         {/if}
 
-        {#if busy === 'bulk:destroy'}
+        {#if busy === 'bulk:destroy' && !isProposeDestroy}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
             Destroying canisters drains cycles and deletes each canister on-chain. This can take several minutes — please keep this dialog open.
+          </p>
+        {:else if busy === 'bulk:destroy' && isProposeDestroy}
+          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Submitting destroy proposal{destroyPlan.stands.length + destroyPlan.canisters.length === 1 ? '' : 's'}…
           </p>
         {/if}
 
@@ -2795,7 +2988,7 @@
             disabled={!destroyConfirmValid || busy === 'bulk:destroy'}
             onclick={confirmDestroy}
           >
-            {busy === 'bulk:destroy' ? 'Destroying…' : 'Destroy permanently'}
+            {destroyConfirmButtonLabel}
           </button>
         </div>
       </div>

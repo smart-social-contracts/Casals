@@ -92,9 +92,19 @@ persistent actor {
       };
       case (#err(e)) {
         log("execute_failed", e);
-        { p with status = #rejected };
+        { p with status = #failed };
       };
     };
+  };
+
+  /// Casals destroy_* returns JSON ``{"ok": true, ...}`` or ``{"ok": false, "error": "..."}``.
+  private func casalsResponseOk(resp : Text) : Bool {
+    Text.contains(resp, #text "\"ok\": true") or Text.contains(resp, #text "\"ok\":true");
+  };
+
+  private func casalsErrorDetail(resp : Text) : Text {
+    // Prefer the JSON body when present; fall back to a short label.
+    if (Text.size(resp) == 0) { "casals returned empty response" } else { resp };
   };
 
   private func encodeCaps(caps : [Capability]) : Text {
@@ -227,6 +237,26 @@ persistent actor {
           case (#ok) { signers := filtered; threshold := th; #ok };
           case (#err(e)) { #err(e) };
         };
+      };
+      case (#DestroyStand(a)) {
+        let casals = actor (Principal.toText(a.casals_backend)) : actor {
+          destroy_stand : shared Text -> async Text;
+        };
+        let payload = "{\"stand\":\"" # a.stand # "\"}";
+        try {
+          let resp = await casals.destroy_stand(payload);
+          if (casalsResponseOk(resp)) { #ok } else { #err(casalsErrorDetail(resp)) };
+        } catch (_) { #err("destroy_stand failed") };
+      };
+      case (#DestroyCanister(a)) {
+        let casals = actor (Principal.toText(a.casals_backend)) : actor {
+          destroy_canister : shared Text -> async Text;
+        };
+        let payload = "{\"canister_id\":\"" # Principal.toText(a.canister_id) # "\"}";
+        try {
+          let resp = await casals.destroy_canister(payload);
+          if (casalsResponseOk(resp)) { #ok } else { #err(casalsErrorDetail(resp)) };
+        } catch (_) { #err("destroy_canister failed") };
       };
     };
   };

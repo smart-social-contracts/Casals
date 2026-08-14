@@ -187,6 +187,15 @@
       "kind": "backend",
       "wasm_type": "multisig",
       "description": "Multisig v1.1 — per-proposal expiry override on propose()."
+    },
+    {
+      "key": "orchestration-multisig",
+      "version": "1.2.0",
+      "file": "orchestration-multisig@1.2.0.wasm.gz",
+      "path": "orchestration-multisig@1.2.0.wasm",
+      "kind": "backend",
+      "wasm_type": "multisig",
+      "description": "Multisig v1.2 — DestroyStand/DestroyCanister actions; execute failure status #failed."
     }
   ]
 }

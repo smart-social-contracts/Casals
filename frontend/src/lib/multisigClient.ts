@@ -39,11 +39,20 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
       remove: I.Vec(I.Principal),
       new_threshold: I.Opt(I.Nat),
     }),
+    DestroyStand: I.Record({
+      casals_backend: I.Principal,
+      stand: I.Text,
+    }),
+    DestroyCanister: I.Record({
+      casals_backend: I.Principal,
+      canister_id: I.Principal,
+    }),
   });
   const ProposalStatus = I.Variant({
     pending: I.Null,
     executed: I.Null,
     rejected: I.Null,
+    failed: I.Null,
     expired: I.Null,
   });
   const Proposal = I.Record({
@@ -74,7 +83,7 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
   });
 };
 
-export type MultisigProposalStatus = 'pending' | 'executed' | 'rejected' | 'expired';
+export type MultisigProposalStatus = 'pending' | 'executed' | 'rejected' | 'failed' | 'expired';
 
 export interface MultisigProposal {
   id: bigint;
@@ -95,7 +104,9 @@ export interface MultisigEvent {
 function statusKey(s: unknown): MultisigProposalStatus {
   if (s && typeof s === 'object') {
     const k = Object.keys(s as object)[0];
-    if (k === 'pending' || k === 'executed' || k === 'rejected' || k === 'expired') return k;
+    if (k === 'pending' || k === 'executed' || k === 'rejected' || k === 'failed' || k === 'expired') {
+      return k;
+    }
   }
   return 'pending';
 }
@@ -119,6 +130,10 @@ function actionSummary(action: Record<string, unknown>): string {
       return 'Manage signers';
     case 'RemoveCommander':
       return `Remove commander from ${fmtPrincipal(payload?.baton_id)}`;
+    case 'DestroyStand':
+      return `Destroy stand ${String(payload?.stand ?? '—')}`;
+    case 'DestroyCanister':
+      return `Destroy canister ${fmtPrincipal(payload?.canister_id)}`;
     default:
       return key;
   }
@@ -215,7 +230,9 @@ export type MultisigActionType =
   | 'AddCommander'
   | 'RemoveCommander'
   | 'SetPolicy'
-  | 'UpdateBatonSettings';
+  | 'UpdateBatonSettings'
+  | 'DestroyStand'
+  | 'DestroyCanister';
 
 function parsePrincipalLines(text: unknown): Principal[] {
   return String(text ?? '')
@@ -307,6 +324,30 @@ export function buildMultisigAction(
           baton_id: Principal.fromText(baton),
           add_controllers: add,
           remove_controllers: remove,
+        },
+      };
+    }
+    case 'DestroyStand': {
+      const casals = fieldStr(fields.casals_backend);
+      const stand = fieldStr(fields.stand);
+      if (!casals) throw new Error('Casals backend id is required');
+      if (!stand) throw new Error('Stand name is required');
+      return {
+        DestroyStand: {
+          casals_backend: Principal.fromText(casals),
+          stand,
+        },
+      };
+    }
+    case 'DestroyCanister': {
+      const casals = fieldStr(fields.casals_backend);
+      const canisterId = fieldStr(fields.canister_id);
+      if (!casals) throw new Error('Casals backend id is required');
+      if (!canisterId) throw new Error('Canister id is required');
+      return {
+        DestroyCanister: {
+          casals_backend: Principal.fromText(casals),
+          canister_id: Principal.fromText(canisterId),
         },
       };
     }
