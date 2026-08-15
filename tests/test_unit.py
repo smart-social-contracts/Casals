@@ -1039,6 +1039,24 @@ def test_install_mode_candid_basilisk_uses_plain_upgrade():
     assert "upgrade = null" in mode
 
 
+def test_pull_and_install_raises_on_zero_size(monkeypatch):
+    class FakeFR:
+        def get_file_size_icc(self, namespace, path):
+            return "size_call"
+
+    monkeypatch.setattr(lifecycle, "_file_registry", lambda: FakeFR())
+    monkeypatch.setattr(lifecycle, "unwrap_call_result", lambda _res: '{"size": 0}')
+    monkeypatch.setattr(lifecycle, "_append_event", lambda *a, **k: None)
+
+    gen = lifecycle._pull_and_install(
+        "cid", "casals-templates", "orchestration-baton@1.3.0.wasm",
+        "abc123", {"install": None},
+    )
+    next(gen)
+    with pytest.raises(Exception, match=r"size=0; re-seed the template"):
+        gen.send(None)
+
+
 # ── orchestration_governance ─────────────────────────────────────────────────
 
 def test_create_permission_for_wasm_splits_orchestration():

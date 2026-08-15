@@ -223,6 +223,11 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
     if "error" in size_json:
         raise Exception(f"file-registry: {size_json['error']}")
     total = int(size_json["size"])
+    if total <= 0:
+        raise Exception(
+            f"file-registry returned no bytes for {namespace}/{path} "
+            f"(size=0; re-seed the template)"
+        )
     _append_event("wasm_download_start", target_id, {"path": path, "size_bytes": total})
 
     target = Principal.from_str(target_id)
@@ -248,7 +253,10 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
             break
 
     if not chunk_hashes:
-        raise Exception(f"file-registry returned no bytes for {namespace}/{path}")
+        raise Exception(
+            f"file-registry returned no bytes for {namespace}/{path} "
+            f"(size=0; re-seed the template)"
+        )
     _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
     yield from _install_chunked_code_raw(
         target_id, chunk_hashes, expected_hash_hex, init_arg, install_mode, wasm_type)

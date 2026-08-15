@@ -452,6 +452,22 @@ def _read_asset_bytes(file_name: str) -> bytes:
         return f.read()
 
 
+def registry_file_hashes(args, namespace: str) -> dict:
+    """Return {path: sha256} from file-registry list_files."""
+    listed = call(REGISTRY, "list_files", args, json.dumps({"namespace": namespace}))
+    if isinstance(listed, list):
+        return {
+            item.get("path"): item.get("sha256", "")
+            for item in listed
+            if isinstance(item, dict) and item.get("path")
+        }
+    return {}
+
+
+def template_needs_upload(authorized_hash: str, registry_hash: str, digest: str) -> bool:
+    return (authorized_hash or "") != digest or (registry_hash or "") != digest
+
+
 def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> str:
     """Chunk-upload bytes into the file-registry; return the recorded sha256.
 
@@ -617,6 +633,7 @@ def main():
 
     # 2. Templates: upload WASM (+ any asset) and authorize. Each catalog entry
     #    is one version of a family; the authorized key is "<family>@<version>".
+    registry_hashes = registry_file_hashes(args, namespace)
     seeded_families = set()
     for tpl in catalog["templates"]:
         family = tpl["key"]
@@ -626,7 +643,8 @@ def main():
         data = _read_template_bytes(tpl["file"])
         digest = hashlib.sha256(data).hexdigest()
         asset = tpl.get("asset")
-        wasm_current = existing.get(key) == digest
+        authorized_hash = existing.get(key, "")
+        registry_hash = registry_hashes.get(tpl["path"], "")
 
         # A frontend template may carry an asset (e.g. index.html). The asset's
         # bytes can change independently of the WASM (you edit the served page),
@@ -639,11 +657,17 @@ def main():
             print(f"    + uploading asset {asset['path']} ({len(asset_bytes)} bytes)…")
             upload_wasm(args, namespace, asset["path"], asset_bytes, asset_digest)
 
-        if wasm_current:
+        if not template_needs_upload(authorized_hash, registry_hash, digest):
             print(f"  = {key} already authorized ({digest[:12]}…), wasm unchanged")
             continue
 
-        print(f"  + uploading {key} ({len(data)} bytes)…")
+        if authorized_hash == digest and registry_hash != digest:
+            print(
+                f"  ~ {key} authorized on Casals but registry copy is "
+                f"missing/stale ({registry_hash[:12] or 'none'}…); re-uploading…"
+            )
+        else:
+            print(f"  + uploading {key} ({len(data)} bytes)…")
         uploaded = upload_wasm(args, namespace, tpl["path"], data, digest)
         if uploaded != digest:
             sys.exit(f"hash mismatch for {key}: local {digest} != registry {uploaded}")
