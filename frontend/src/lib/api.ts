@@ -648,11 +648,15 @@ async function _monitorBase(): Promise<string> {
   return ((md?.monitor_service_url) || '').trim();
 }
 
-const MONITOR_FETCH_TIMEOUT_MS = 20_000;
+/** Cached GETs hit local SQLite and finish in a few seconds. */
+const MONITOR_GET_TIMEOUT_MS = 20_000;
+/** POSTs trigger an IC update (`refresh_treasury` etc.). Those routinely take
+ *  20–30s on mainnet and the monitor CLI budget is 120s — 20s aborts first. */
+const MONITOR_POST_TIMEOUT_MS = 90_000;
 
-function _monitorFetchSignal(): AbortSignal | undefined {
+function _monitorFetchSignal(timeoutMs: number): AbortSignal | undefined {
   if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
-    return AbortSignal.timeout(MONITOR_FETCH_TIMEOUT_MS);
+    return AbortSignal.timeout(timeoutMs);
   }
   return undefined;
 }
@@ -667,7 +671,7 @@ async function _monitorGet<T>(path: string): Promise<T | null> {
     try {
       const res = await fetch(url, {
         headers: { accept: 'application/json' },
-        signal: _monitorFetchSignal(),
+        signal: _monitorFetchSignal(MONITOR_GET_TIMEOUT_MS),
       });
       if (!res.ok) continue;
       return (await res.json()) as T;
@@ -692,7 +696,7 @@ async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> 
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: body === undefined ? '{}' : JSON.stringify(body),
-      signal: _monitorFetchSignal(),
+      signal: _monitorFetchSignal(MONITOR_POST_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
