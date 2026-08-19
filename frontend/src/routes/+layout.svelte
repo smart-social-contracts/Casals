@@ -4,7 +4,7 @@
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied } from '$lib/auth';
-  import { backendCanisterId, initLocalNetworkHints } from '$lib/api';
+  import { backendCanisterId, casalsMetadata, initLocalNetworkHints } from '$lib/api';
   import {
     pendingGovernanceCount,
     startGovernancePolling,
@@ -31,6 +31,7 @@
 
   let sidebarOpen = $state(false);
   let isDesktop = $state(false);
+  let orchestraName = $state('');
   let currentPath = $derived($page.url.pathname);
   let mobileSidebarOpen = $derived(sidebarOpen && !isDesktop);
 
@@ -58,6 +59,11 @@
   onMount(() => {
     void initAuth(backendCanisterId());
     void initLocalNetworkHints();
+    void casalsMetadata()
+      .then((md) => {
+        orchestraName = (md.orchestra_name ?? '').trim();
+      })
+      .catch(() => {});
 
     const mq = window.matchMedia('(min-width: 1024px)');
     const syncViewport = () => {
@@ -82,6 +88,10 @@
     return n > 9 ? '9+' : String(n);
   }
 </script>
+
+<svelte:head>
+  <title>Casals{orchestraName ? ` · ${orchestraName}` : ''}</title>
+</svelte:head>
 
 {#snippet sidebarNav()}
   <nav class="flex-1 overflow-y-auto px-3 py-4">
@@ -161,8 +171,8 @@
             width="32"
             height="32"
           />
-          <span class="text-lg font-semibold text-primary-900 group-hover:text-primary-700 transition-colors">
-            Casals
+          <span class="text-lg font-semibold text-primary-900 group-hover:text-primary-700 transition-colors truncate">
+            Casals{#if orchestraName}<span class="text-primary-500 font-medium"> · {orchestraName}</span>{/if}
           </span>
         </a>
       </div>
@@ -221,7 +231,9 @@
       >
         <div class="h-14 flex items-center gap-2.5 px-4 border-b border-[var(--color-border-primary)] shrink-0">
           <img src="/logo.png" alt="" class="w-7 h-7 object-contain" width="28" height="28" />
-          <span class="text-base font-semibold text-primary-900">Casals</span>
+          <span class="text-base font-semibold text-primary-900 truncate">
+            Casals{#if orchestraName}<span class="text-primary-500 font-medium"> · {orchestraName}</span>{/if}
+          </span>
         </div>
 
         {@render sidebarNav()}

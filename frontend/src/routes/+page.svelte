@@ -91,6 +91,7 @@
 
   let tree = $state<Tree | null>(null);
   let status = $state<Status | null>(null);
+  let orchestraName = $state('');
   let orchStatus = $state<OrchestrationStatus | null>(null);
   let casalsControllers = $state<{ backend?: string[]; frontend?: string[] }>({});
   let loading = $state(true);
@@ -250,6 +251,11 @@
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
         orchestrationStatus().catch(() => null),
       ]);
+      orchestraName = (status?.orchestra_name ?? '').trim();
+      if (!orchestraName) {
+        const meta = await casalsMetadata().catch(() => null);
+        orchestraName = (meta?.orchestra_name ?? '').trim();
+      }
       try {
         const backendCtrls = await listBackendControllers();
         if (backendCtrls.length) {
@@ -852,6 +858,9 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Orchestra</h1>
+      {#if orchestraName}
+        <p class="text-base font-medium text-primary-700 mt-0.5">{orchestraName}</p>
+      {/if}
       <p class="text-sm text-primary-500 mt-1">Section → Stand → Canister lifecycle orchestration</p>
     </div>
     <div class="flex items-center gap-2 self-start">

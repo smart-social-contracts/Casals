@@ -323,6 +323,10 @@ class Settings(Entity):
     fx_currency = String(max_length=8, default="")
     fx_updated = Integer(default=0)
     fx_error = String(max_length=256, default="")
+    # Durable orchestra identity (one Casals = one orchestra). When empty, queries
+    # fall back read-only to the live sheet's name/description — never persisted.
+    orchestra_name = String(max_length=64, default="")
+    orchestra_description = String(max_length=512, default="")
     version = String(max_length=32, default="0.1.0")
 
 

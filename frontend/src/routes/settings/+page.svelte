@@ -29,6 +29,8 @@
   // Editable form state — populated from the backend after load() (not in an
   // $effect, to keep reactivity explicit).
   let openAccess = $state(false);
+  let orchestraName = $state('');
+  let orchestraDescription = $state('');
   let fileRegistryId = $state('');
   let fileRegistryFrontendId = $state('');
   /** Where balance sampling + refresh run: on the conductor or an external monitor. */
@@ -90,6 +92,8 @@
     error = '';
     try {
       meta = await casalsMetadata();
+      orchestraName = meta.orchestra_name ?? '';
+      orchestraDescription = meta.orchestra_description ?? '';
       openAccess = meta.open_access;
       fileRegistryId = meta.file_registry_canister_id ?? '';
       fileRegistryFrontendId = meta.file_registry_frontend_canister_id ?? '';
@@ -133,6 +137,8 @@
     saving = true;
     try {
       const patch: SettingsPatch = {
+        orchestra_name: orchestraName.trim(),
+        orchestra_description: orchestraDescription.trim(),
         open_access: openAccess,
         file_registry_canister_id: fileRegistryId.trim(),
         file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
@@ -175,6 +181,8 @@
       if (meta) {
         meta = {
           ...meta,
+          orchestra_name: orchestraName.trim(),
+          orchestra_description: orchestraDescription.trim(),
           open_access: openAccess,
           file_registry_canister_id: fileRegistryId.trim(),
           file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
@@ -377,6 +385,29 @@
         </div>
       {:else}
         <form class="space-y-5" onsubmit={save}>
+          <div class="space-y-4">
+            <div>
+              <label class="label" for="orchestraName">Orchestra name</label>
+              <input
+                id="orchestraName"
+                type="text"
+                class="input"
+                placeholder="e.g. realmsgos-shared-infra"
+                bind:value={orchestraName}
+              />
+              <p class="text-xs text-primary-400 mt-1">Shown in the header and Orchestra page. Leave blank to use just "Casals".</p>
+            </div>
+            <div>
+              <label class="label" for="orchestraDescription">Description</label>
+              <textarea
+                id="orchestraDescription"
+                class="input min-h-[72px] resize-y"
+                placeholder="Optional short description of this orchestra"
+                bind:value={orchestraDescription}
+              ></textarea>
+            </div>
+          </div>
+
           <label class="flex items-center gap-2.5 cursor-pointer">
             <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={openAccess} />
             <span class="text-sm font-medium text-primary-700">Open access</span>

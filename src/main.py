@@ -126,6 +126,7 @@ from helpers import (
     _parse_principal_subnet_auth_map,
     _require_unique_canister_name,
     _find_canister_by_id,
+    _orchestra_identity,
     _settings,
     unwrap_call_result,
 )
@@ -569,6 +570,7 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 
 @query
 def get_status() -> text:
+    orchestra_name, orchestra_description = _orchestra_identity()
     return json.dumps({
         "version": VERSION,
         "sections": Section.count(),
@@ -580,12 +582,15 @@ def get_status() -> text:
         "principal_aliases": PrincipalAlias.count(),
         "cycle_samples": CycleSample.count(),
         "cycle_samples_max_id": CycleSample.max_id(),
+        "orchestra_name": orchestra_name,
+        "orchestra_description": orchestra_description,
     })
 
 
 @query
 def casals_metadata() -> text:
     s = _settings()
+    orchestra_name, orchestra_description = _orchestra_identity()
     return json.dumps({
         "version": VERSION,
         "open_access": bool(s.open_access),
@@ -616,6 +621,8 @@ def casals_metadata() -> text:
         "fx_currencies": FX_SUPPORTED_CURRENCIES,
         "subnet_whitelist": subnet_whitelist(),
         "canister_type": "orchestrator",
+        "orchestra_name": orchestra_name,
+        "orchestra_description": orchestra_description,
         **treasury_deposit_fields(),
     })
 
@@ -1047,6 +1054,7 @@ def set_settings(args: text) -> text:
      delegated_destroy_principals: [str],
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
      alert_emails: str,
+     orchestra_name: str, orchestra_description: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
      cycles_autopilot: bool, cycles_check_interval_secs: int,
      cycles_icp_autoconvert: bool,
@@ -1088,6 +1096,15 @@ def set_settings(args: text) -> text:
             s.monitor_service_url = (params["monitor_service_url"] or "").strip()
         if "alert_emails" in params:
             s.alert_emails = (params["alert_emails"] or "").strip()[:512]
+        if "orchestra_name" in params:
+            name = (params["orchestra_name"] or "").strip()
+            if "\n" in name or "\r" in name:
+                return _err("orchestra_name must not contain newlines")
+            if any(ord(ch) < 32 for ch in name):
+                return _err("orchestra_name must not contain control characters")
+            s.orchestra_name = name[:64]
+        if "orchestra_description" in params:
+            s.orchestra_description = (params["orchestra_description"] or "").strip()[:512]
         if "default_min_cycles" in params:
             s.default_min_cycles = max(0, int(params["default_min_cycles"]))
         if "default_topup_cycles" in params:

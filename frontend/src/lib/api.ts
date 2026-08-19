@@ -109,10 +109,14 @@ export interface Status {
   canisters: number;
   authorized_wasms: number;
   events: number;
+  orchestra_name?: string;
+  orchestra_description?: string;
 }
 
 export interface Metadata {
   version: string;
+  orchestra_name?: string;
+  orchestra_description?: string;
   open_access: boolean;
   file_registry_canister_id: string;
   file_registry_frontend_canister_id?: string;
@@ -1319,6 +1323,8 @@ export async function setCyclePolicy(args: {
 // ---------------------------------------------------------------------------
 
 export interface SettingsPatch {
+  orchestra_name?: string;
+  orchestra_description?: string;
   open_access?: boolean;
   file_registry_canister_id?: string;
   file_registry_frontend_canister_id?: string;

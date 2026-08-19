@@ -207,6 +207,26 @@ def _settings() -> Settings:
     return s
 
 
+def _orchestra_identity() -> tuple:
+    """Return (name, description) for this Casals instance.
+
+    Prefer stripped Settings fields. When a field is empty, read-only fallback
+    to the live sheet's ``name`` / ``description`` (never persisted).
+    """
+    s = _settings()
+    name = (s.orchestra_name or "").strip()
+    description = (s.orchestra_description or "").strip()
+    if not name or not description:
+        from sheet import get_live_sheet
+
+        sheet = get_live_sheet() or {}
+        if not name:
+            name = (sheet.get("name") or "").strip()
+        if not description:
+            description = (sheet.get("description") or "").strip()
+    return name, description
+
+
 # ── Inter-canister service factories ─────────────────────────────────────────
 
 def _file_registry() -> FileRegistryService:

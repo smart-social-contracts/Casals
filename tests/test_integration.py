@@ -167,6 +167,51 @@ class TestSettingsAndCommander:
             "aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aaaaa-aa",
         }
 
+    def test_orchestra_name_roundtrip(self, canister):
+        _ok("set_settings", {
+            "orchestra_name": "My Orchestra",
+            "orchestra_description": "A test deployment",
+        })
+        md = call_canister("casals_metadata")
+        st = call_canister("get_status")
+        assert md["orchestra_name"] == "My Orchestra"
+        assert md["orchestra_description"] == "A test deployment"
+        assert st["orchestra_name"] == "My Orchestra"
+        assert st["orchestra_description"] == "A test deployment"
+        _ok("set_settings", {"orchestra_name": "", "orchestra_description": ""})
+
+    def test_orchestra_name_sheet_fallback(self, canister):
+        _ok("set_settings", {"orchestra_name": "", "orchestra_description": ""})
+        _ok("set_sheet", {
+            "name": "sheet-orchestra",
+            "description": "from the sheet",
+            "sections": [],
+        })
+        md = call_canister("casals_metadata")
+        st = call_canister("get_status")
+        assert md["orchestra_name"] == "sheet-orchestra"
+        assert md["orchestra_description"] == "from the sheet"
+        assert st["orchestra_name"] == "sheet-orchestra"
+        assert st["orchestra_description"] == "from the sheet"
+
+    def test_orchestra_name_clears(self, canister):
+        _ok("set_settings", {
+            "orchestra_name": "Stored Name",
+            "orchestra_description": "Stored desc",
+        })
+        _ok("set_settings", {"orchestra_name": "", "orchestra_description": ""})
+        _ok("set_sheet", {"name": "fallback-name", "description": "fallback-desc", "sections": []})
+        md = call_canister("casals_metadata")
+        assert md["orchestra_name"] == "fallback-name"
+        assert md["orchestra_description"] == "fallback-desc"
+        _ok("set_sheet", {"name": "", "description": "", "sections": []})
+        md = call_canister("casals_metadata")
+        st = call_canister("get_status")
+        assert md["orchestra_name"] == ""
+        assert md["orchestra_description"] == ""
+        assert st["orchestra_name"] == ""
+        assert st["orchestra_description"] == ""
+
 
 class TestLifecycleValidation:
     def test_create_canister_unknown_stand(self, canister):
