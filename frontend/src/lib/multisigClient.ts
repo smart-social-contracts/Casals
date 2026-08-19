@@ -227,12 +227,32 @@ export async function multisigReject(canisterId: string, proposalId: bigint, ide
 export type MultisigActionType =
   | 'ManageSigners'
   | 'SetCanisterControllers'
+  | 'AddCanisterControllers'
+  | 'RemoveCanisterControllers'
   | 'AddCommander'
   | 'RemoveCommander'
   | 'SetPolicy'
   | 'UpdateBatonSettings'
   | 'DestroyStand'
   | 'DestroyCanister';
+
+/** Merge add/remove into a full IC controller list (update_settings replaces). */
+export function mergeControllerList(
+  current: string[],
+  add: string[] = [],
+  remove: string[] = [],
+): string[] {
+  const next = new Set(current.map((p) => p.trim()).filter(Boolean));
+  for (const p of add) {
+    const t = p.trim();
+    if (t) next.add(t);
+  }
+  for (const p of remove) {
+    const t = p.trim();
+    if (t) next.delete(t);
+  }
+  return [...next];
+}
 
 function parsePrincipalLines(text: unknown): Principal[] {
   return String(text ?? '')
@@ -271,6 +291,36 @@ export function buildMultisigAction(
         SetCanisterControllers: {
           canister_id: Principal.fromText(target),
           controllers,
+        },
+      };
+    }
+    case 'AddCanisterControllers':
+    case 'RemoveCanisterControllers': {
+      const target = fieldStr(fields.target_canister);
+      if (!target) throw new Error('Target canister id is required');
+      const current = parsePrincipalLines(fields.current_controllers).map((p) => p.toText());
+      const delta = parsePrincipalLines(fields.controllers);
+      if (!current.length) {
+        throw new Error(
+          'Current controllers are unknown. Wait for the live list to load, then try again.',
+        );
+      }
+      if (!delta.length) {
+        throw new Error(
+          type === 'AddCanisterControllers'
+            ? 'Add at least one controller principal'
+            : 'Remove at least one controller principal',
+        );
+      }
+      const texts =
+        type === 'AddCanisterControllers'
+          ? mergeControllerList(current, delta.map((p) => p.toText()), [])
+          : mergeControllerList(current, [], delta.map((p) => p.toText()));
+      if (!texts.length) throw new Error('Cannot remove the last controller');
+      return {
+        SetCanisterControllers: {
+          canister_id: Principal.fromText(target),
+          controllers: texts.map((p) => Principal.fromText(p)),
         },
       };
     }

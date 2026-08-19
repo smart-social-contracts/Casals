@@ -3,11 +3,14 @@
   import { backendCanisterId, getTree } from '$lib/api';
   import { get } from 'svelte/store';
   import { identity } from '$lib/auth';
+  import { resolveCanisterControllers } from '$lib/controllerAccess';
   import {
     buildMultisigAction,
     multisigPropose,
     type MultisigActionType,
   } from '$lib/multisigClient';
+  import { batonForStand } from '$lib/orchestraGovernance';
+  import { findStandForCanister } from '$lib/orchestrationNav';
 
   interface Props {
     canisterId: string;
@@ -40,6 +43,17 @@
   let commander = $state('');
   let standName = $state('');
 
+  let liveControllers = $state<string[]>([]);
+  let controllersLoading = $state(false);
+  let controllersError = $state('');
+  let knownControllersText = $state('');
+
+  const isControllerAction = $derived(
+    actionType === 'SetCanisterControllers' ||
+      actionType === 'AddCanisterControllers' ||
+      actionType === 'RemoveCanisterControllers',
+  );
+
   const canisterOptions = $derived.by(() => {
     const src = loadedTree ?? tree;
     if (!src) return [];
@@ -54,10 +68,166 @@
     return out;
   });
 
+  const cachedControllers = $derived.by(() => {
+    const src = loadedTree ?? tree;
+    if (!src || !targetCanister) return [];
+    for (const sec of src.sections) {
+      for (const stand of sec.stands) {
+        for (const c of stand.canisters) {
+          if (c.canister_id === targetCanister) {
+            return c.controllers ?? [];
+          }
+        }
+      }
+    }
+    return [];
+  });
+
+  const currentControllers = $derived.by(() => {
+    if (cachedControllers.length) return cachedControllers;
+    if (liveControllers.length) return liveControllers;
+    return knownControllersText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  });
+
+  const showKnownControllersInput = $derived(
+    (actionType === 'AddCanisterControllers' ||
+      actionType === 'RemoveCanisterControllers') &&
+      (controllersError ||
+        (!controllersLoading &&
+          !cachedControllers.length &&
+          !liveControllers.length)),
+  );
+
+  const submitDisabled = $derived(
+    busy ||
+      (controllersLoading &&
+        (actionType === 'AddCanisterControllers' ||
+          actionType === 'RemoveCanisterControllers')),
+  );
+
+  function patchTreeControllers(canisterId: string, controllers: string[]) {
+    if (!loadedTree) return;
+    loadedTree = {
+      ...loadedTree,
+      sections: loadedTree.sections.map((sec) => ({
+        ...sec,
+        stands: sec.stands.map((stand) => ({
+          ...stand,
+          canisters: stand.canisters.map((c) =>
+            c.canister_id === canisterId ? { ...c, controllers } : c,
+          ),
+        })),
+      })),
+    };
+  }
+
+  function clearControllerFetchState() {
+    liveControllers = [];
+    controllersLoading = false;
+    controllersError = '';
+    knownControllersText = '';
+  }
+
+  async function loadLiveControllers() {
+    if (!isControllerAction || !targetCanister) {
+      clearControllerFetchState();
+      return;
+    }
+
+    if (cachedControllers.length) {
+      clearControllerFetchState();
+      return;
+    }
+
+    controllersLoading = true;
+    controllersError = '';
+    liveControllers = [];
+
+    try {
+      const list = await resolveCanisterControllers(targetCanister, get(identity));
+      liveControllers = list;
+      if (list.length) {
+        patchTreeControllers(targetCanister, list);
+      }
+    } catch (e: unknown) {
+      controllersError = e instanceof Error ? e.message : String(e);
+      liveControllers = [];
+    } finally {
+      controllersLoading = false;
+    }
+  }
+
+  function syncControllersTextForAction() {
+    if (actionType === 'SetCanisterControllers') {
+      controllersText = currentControllers.join('\n');
+    } else if (
+      actionType === 'AddCanisterControllers' ||
+      actionType === 'RemoveCanisterControllers'
+    ) {
+      controllersText = '';
+    }
+  }
+
+  async function onActionTypeChange() {
+    syncControllersTextForAction();
+    if (isControllerAction) {
+      await loadLiveControllers();
+    } else {
+      clearControllerFetchState();
+    }
+  }
+
+  async function onCanisterChange() {
+    syncControllersTextForAction();
+    await loadLiveControllers();
+  }
+
   async function ensureTree() {
     if (loadedTree ?? tree) return loadedTree ?? tree;
     loadedTree = await getTree().catch(() => null);
     return loadedTree;
+  }
+
+  function multisigControlsTarget(controllers: string[]): boolean {
+    return controllers.some((c) => c.toLowerCase() === canisterId.toLowerCase());
+  }
+
+  function multisigNotControllerError(controllers: string[]): Error {
+    const treeSrc = loadedTree ?? tree;
+    const standLoc = findStandForCanister(treeSrc, targetCanister);
+    const standBaton = standLoc ? batonForStand(treeSrc, standLoc.stand) : null;
+    const controllerList = controllers.length ? controllers.join(', ') : 'unknown';
+
+    let message =
+      'This multisig is not an IC controller of the target, so `update_settings` will fail. ' +
+      `Current controllers: ${controllerList}.`;
+
+    if (standBaton?.canister_id) {
+      const batonLabel = standBaton.name
+        ? `${standBaton.canister_id} (${standBaton.name})`
+        : standBaton.canister_id;
+      message +=
+        ` After baton hand-off, this stand is controlled by baton ${batonLabel}.` +
+        ' Add this multisig via an existing controller first, or use that controller directly.';
+    }
+
+    return new Error(message);
+  }
+
+  async function resolveControllersForSubmit(identity: NonNullable<ReturnType<typeof get>>) {
+    let controllers = currentControllers;
+    if (!controllers.length) {
+      const list = await resolveCanisterControllers(targetCanister, identity);
+      liveControllers = list;
+      controllers = list;
+      if (list.length) {
+        patchTreeControllers(targetCanister, list);
+      }
+    }
+    return controllers;
   }
 
   function resetFields() {
@@ -70,6 +240,8 @@
     batonId = '';
     commander = '';
     standName = '';
+    clearControllerFetchState();
+    syncControllersTextForAction();
   }
 
   async function toggle() {
@@ -78,6 +250,9 @@
     if (open) {
       await ensureTree();
       resetFields();
+      await loadLiveControllers();
+    } else {
+      clearControllerFetchState();
     }
   }
 
@@ -91,12 +266,21 @@
     }
     busy = true;
     try {
+      let controllers = currentControllers;
+      if (isControllerAction) {
+        controllers = await resolveControllersForSubmit(id);
+        if (!multisigControlsTarget(controllers)) {
+          throw multisigNotControllerError(controllers);
+        }
+      }
+
       const action = buildMultisigAction(actionType, {
         add_signers: addSigners,
         remove_signers: removeSigners,
         new_threshold: newThreshold,
         target_canister: targetCanister,
         controllers: controllersText,
+        current_controllers: controllers.join('\n'),
         baton_id: batonId,
         commander,
         capabilities: 'propose:managed_upgrade',
@@ -129,8 +313,15 @@
       onsubmit={submit}
     >
       <label class="label" for="ms-type">Action</label>
-      <select id="ms-type" class="input text-sm" bind:value={actionType}>
+      <select
+        id="ms-type"
+        class="input text-sm"
+        bind:value={actionType}
+        onchange={onActionTypeChange}
+      >
         <option value="SetCanisterControllers">Set controllers</option>
+        <option value="AddCanisterControllers">Add controllers</option>
+        <option value="RemoveCanisterControllers">Remove controllers</option>
         <option value="ManageSigners">Manage signers</option>
         <option value="AddCommander">Add baton commander</option>
         <option value="RemoveCommander">Remove baton commander</option>
@@ -138,19 +329,69 @@
         <option value="DestroyCanister">Destroy canister</option>
       </select>
 
-      {#if actionType === 'SetCanisterControllers'}
+      {#if isControllerAction}
         <label class="label" for="ms-target">Canister</label>
         {#if canisterOptions.length}
-          <select id="ms-target" class="input text-xs font-mono" bind:value={targetCanister}>
+          <select
+            id="ms-target"
+            class="input text-xs font-mono"
+            bind:value={targetCanister}
+            onchange={onCanisterChange}
+          >
             {#each canisterOptions as opt (opt.id)}
               <option value={opt.id}>{opt.label}</option>
             {/each}
           </select>
         {:else}
-          <input id="ms-target" class="input text-xs font-mono" bind:value={targetCanister} placeholder="aaaaa-aa" />
+          <input
+            id="ms-target"
+            class="input text-xs font-mono"
+            bind:value={targetCanister}
+            placeholder="aaaaa-aa"
+            onchange={onCanisterChange}
+          />
         {/if}
-        <label class="label" for="ms-ctls">Controllers (one per line)</label>
-        <textarea id="ms-ctls" class="input text-xs font-mono min-h-[72px]" bind:value={controllersText}></textarea>
+
+        <p class="label">Current controllers</p>
+        {#if controllersLoading}
+          <p class="text-xs text-[var(--color-text-secondary)]">Loading current controllers…</p>
+        {/if}
+        {#if controllersError}
+          <p class="text-xs text-red-700">{controllersError}</p>
+        {/if}
+        {#if cachedControllers.length || liveControllers.length}
+          <ul class="rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-secondary)] px-2 py-1 space-y-0.5 max-h-24 overflow-y-auto">
+            {#each currentControllers as ctrl (ctrl)}
+              <li class="text-xs font-mono break-all">{ctrl}</li>
+            {/each}
+          </ul>
+        {:else if actionType === 'SetCanisterControllers' && !controllersLoading}
+          <p class="text-xs text-[var(--color-text-secondary)]">
+            Could not determine current controllers. You can still use Set controllers.
+          </p>
+        {/if}
+        {#if showKnownControllersInput}
+          <label class="label" for="ms-known-ctls">Current controllers (one per line)</label>
+          <textarea
+            id="ms-known-ctls"
+            class="input text-xs font-mono min-h-[72px]"
+            bind:value={knownControllersText}
+          ></textarea>
+          <p class="text-xs text-[var(--color-text-secondary)]">
+            Paste the existing controller principals so Add/Remove can merge. Or use Set controllers.
+          </p>
+        {/if}
+
+        {#if actionType === 'SetCanisterControllers'}
+          <label class="label" for="ms-ctls">Controllers (one per line)</label>
+          <textarea id="ms-ctls" class="input text-xs font-mono min-h-[72px]" bind:value={controllersText}></textarea>
+        {:else if actionType === 'AddCanisterControllers'}
+          <label class="label" for="ms-add-ctls">Principals to add (one per line)</label>
+          <textarea id="ms-add-ctls" class="input text-xs font-mono min-h-[72px]" bind:value={controllersText}></textarea>
+        {:else}
+          <label class="label" for="ms-rem-ctls">Principals to remove (one per line)</label>
+          <textarea id="ms-rem-ctls" class="input text-xs font-mono min-h-[72px]" bind:value={controllersText}></textarea>
+        {/if}
       {:else if actionType === 'ManageSigners'}
         <label class="label" for="ms-add">Add signers</label>
         <textarea id="ms-add" class="input text-xs font-mono min-h-[56px]" bind:value={addSigners}></textarea>
@@ -183,7 +424,7 @@
         <p class="text-xs text-red-700">{error}</p>
       {/if}
 
-      <button type="submit" class="btn-primary btn-sm w-full" disabled={busy}>
+      <button type="submit" class="btn-primary btn-sm w-full" disabled={submitDisabled}>
         {busy ? 'Submitting…' : 'Submit'}
       </button>
     </form>
