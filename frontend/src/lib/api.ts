@@ -709,11 +709,16 @@ async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> 
   }
 }
 
-/** Ask the monitor to fetch live treasury data from the conductor, then return the report. */
+/** Ask the monitor to fetch live treasury data from the conductor, then return the report.
+ *  Falls back to the conductor when the monitor is unreachable (CSP, timeout, 5xx). */
 export async function monitorPollTreasury(): Promise<CyclesReport | null> {
   const res = await _monitorPost<{ report?: CyclesReport }>('/poll/treasury');
   if (res?.report?.treasury) return normalizeCyclesReport(res.report);
-  return null;
+  try {
+    return await refreshTreasury();
+  } catch {
+    return null;
+  }
 }
 
 /** Ask the monitor to fetch live balances for named canisters, then return the report. */
