@@ -147,7 +147,9 @@ from lifecycle import (
     _resolve_authorized_wasm,
     _destroy_canister_gen,
     _destroy_ic_canister_gen,
+    _destroy_orchestra_batch_gen,
     _destroy_stand_gen,
+    _evacuate_treasury_gen,
     _governance_multisig_id,
     _retire_canister,
     _safe_entity_delete,
@@ -1482,6 +1484,54 @@ def destroy_stand(args: text) -> Async[text]:
         return _ok(**result)
     except Exception as e:
         _log.error(f"destroy_stand error: {e}")
+        return _err(str(e))
+
+
+@update
+def destroy_orchestra(args: text) -> Async[text]:
+    """Destroy every orchestra canister except ``preserve`` entries (batched).
+
+    Authorization: Casals controller or governance multisig (same as
+    ``destroy_canister`` — not delegated destroy).
+    Args (JSON): {preserve: [<name or canister_id>, ...], limit?: int}.
+    """
+    try:
+        _require_admin_or_governance_multisig()
+        params = json.loads(args)
+        result = yield from _destroy_orchestra_batch_gen(params)
+        yield from _sync_treasury_baseline_gen()
+        removed = [
+            (d.get("canister_id") or "").strip()
+            for d in (result.get("destroyed") or [])
+            if (d.get("canister_id") or "").strip()
+        ]
+        if removed:
+            patch_cycles_snapshot_remove_canisters(removed)
+        return _ok(**result)
+    except Exception as e:
+        _log.error(f"destroy_orchestra error: {e}")
+        return _err(str(e))
+
+
+@update
+def evacuate_treasury(args: text) -> Async[text]:
+    """Convert remaining ledger ICP and deposit almost all treasury cycles elsewhere.
+
+    Controller only — empties the conductor toward ``destination``.
+    Args (JSON): {destination: <canister_id>, reserve?: int} (default reserve 100B).
+    """
+    try:
+        _require_admin()
+        params = json.loads(args) if args else {}
+        destination = (params.get("destination") or "").strip()
+        if not destination:
+            return _err("destination required")
+        reserve = int(params.get("reserve", 100_000_000_000))
+        result = yield from _evacuate_treasury_gen(destination, reserve)
+        yield from _sync_treasury_baseline_gen()
+        return _ok(**result)
+    except Exception as e:
+        _log.error(f"evacuate_treasury error: {e}")
         return _err(str(e))
 
 

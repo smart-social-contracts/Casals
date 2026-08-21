@@ -366,6 +366,7 @@ make cli ARGS="<command>"
 | `sheet set FILE` | `set_sheet` |
 | `sheet deploy [FILE]` | `set_sheet` (if FILE given) then `deploy_sheet` |
 | `arrangement list/get/set/activate/apply/delete` | arrangement endpoints |
+| `orchestra destroy --preserve …` | batched orchestra teardown (see below) |
 | `new [IDS.json]` | `make build` + `icp deploy` + optional `seed.py`; writes `.icp/*/mappings/{env}.ids.json` |
 
 Common flags on every command: `-e local|ic` (default `local`), `--identity <id>`.
@@ -374,6 +375,21 @@ Common flags on every command: `-e local|ic` (default `local`), `--identity <id>
 
 There is no CLI wrapper yet for `assign_pool_canister` — use the UI or a direct
 canister call.
+
+### `orchestra destroy`
+
+Tears down a whole Casals orchestra while keeping one or more `--preserve`
+canisters (typically `realm_registry_frontend` / the DNS host). Dry-run lists
+what would be destroyed; live mode batches `destroy_orchestra` calls, converts
+ledger ICP, evacuates treasury cycles onto the first preserved canister, then
+deletes the conductor via `icp canister delete casals_backend`. Canisters whose
+drain fails are left intact; the CLI aborts before evacuation or conductor delete.
+Use `--dry-run` first; pass `-y`/`--yes` when stdin is not a TTY.
+
+```bash
+casals orchestra destroy --preserve realm_registry_frontend --dry-run
+casals -e ic orchestra destroy --preserve realm_registry_frontend -y --batch 2
+```
 
 ## Backend API (JSON-in / JSON-out)
 

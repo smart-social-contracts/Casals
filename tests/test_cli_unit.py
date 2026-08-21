@@ -370,6 +370,88 @@ class TestParser:
         assert args.ids_file == "ids.json"
         assert args.yes is True
 
+    def test_orchestra_destroy_flags(self):
+        args = self._parse([
+            "orchestra", "destroy",
+            "--preserve", "x",
+            "--dry-run", "--yes", "--batch", "2",
+        ])
+        assert args.command == "orchestra"
+        assert args.orchestra_command == "destroy"
+        assert args.preserve == ["x"]
+        assert args.dry_run is True
+        assert args.yes is True
+        assert args.batch == 2
+
+
+class TestOrchestraDestroyDryRun:
+    def test_classifies_preserve_vs_destroy(self, monkeypatch):
+        tree = {
+            "sections": [{
+                "stands": [{
+                    "canisters": [
+                        {"name": "keep", "canister_id": "aaaaa-aa"},
+                        {"name": "drop", "canister_id": "bbbbb-bb"},
+                    ],
+                }],
+            }],
+        }
+        pool = {"canisters": [{"canister_id": "ccccc-cc", "canister_name": "orphan"}]}
+        monkeypatch.setattr(cli, "call", lambda *a, **k: tree if a[1] == "get_tree" else pool)
+        args = _make_args(
+            preserve=["keep"],
+            dry_run=True,
+            yes=False,
+            batch=1,
+            orchestra_command="destroy",
+        )
+        with patch("builtins.print") as mock_print:
+            cli.cmd_orchestra_destroy(args)
+        payload = json.loads(mock_print.call_args[0][0])
+        assert payload["ok"] is True
+        assert payload["dry_run"] is True
+        assert payload["preserve"] == [{"name": "keep", "canister_id": "aaaaa-aa"}]
+        assert {d["canister_id"] for d in payload["destroy"]} == {"bbbbb-bb", "ccccc-cc"}
+        assert payload["conductor_deleted_last"] is True
+
+    def test_unknown_preserve_exits(self, monkeypatch):
+        tree = {"sections": []}
+        pool = {"canisters": []}
+        monkeypatch.setattr(cli, "call", lambda *a, **k: tree if a[1] == "get_tree" else pool)
+        args = _make_args(
+            preserve=["missing"],
+            dry_run=True,
+            yes=False,
+            batch=1,
+            orchestra_command="destroy",
+        )
+        with patch("builtins.print"), pytest.raises(SystemExit) as exc:
+            cli.cmd_orchestra_destroy(args)
+        assert exc.value.code == 1
+
+
+class TestOrchestraDestroyLive:
+    def test_refuses_without_yes_on_non_tty(self, monkeypatch):
+        tree = {
+            "sections": [{
+                "stands": [{
+                    "canisters": [{"name": "keep", "canister_id": "aaaaa-aa"}],
+                }],
+            }],
+        }
+        pool = {"canisters": []}
+        monkeypatch.setattr(cli, "call", lambda *a, **k: tree if a[1] == "get_tree" else pool)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        args = _make_args(
+            preserve=["keep"],
+            dry_run=False,
+            yes=False,
+            batch=1,
+            orchestra_command="destroy",
+        )
+        with pytest.raises(RuntimeError, match="without --yes"):
+            cli.cmd_orchestra_destroy(args)
+
 
 # ── _load_sheet_file ─────────────────────────────────────────────────────────
 

@@ -30,7 +30,7 @@ from helpers import (
     _settings,
     unwrap_call_result,
 )
-from cycles import _status_cycles, _sync_treasury_baseline
+from cycles import _status_cycles, _sync_treasury_baseline, _treasury_watch_begin_gen
 from pool import _pool_evict, _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
 
@@ -1078,23 +1078,33 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
 
 
 def _maybe_provision_assets(canister_id: str, w, stand=None):
-    """Generator: provision a WASM's asset(s) if it has any, swallowing errors
-    so a failed upload never aborts canister creation (it is logged + audited
-    instead). A ``bundle_namespace`` takes precedence over a single
-    ``asset_path``."""
+    """Generator: provision a WASM's asset(s) if it has any.
+
+    A ``bundle_namespace`` takes precedence over a single ``asset_path``.
+    Bundle failures are fatal (logged + ``assets_failed`` event, then re-raised).
+    Single-asset failures are swallowed so canister creation still completes."""
     bundle_ns = (getattr(w, "bundle_namespace", "") or "").strip()
     if not bundle_ns and not (w.asset_path or "").strip():
         return
-    try:
-        if bundle_ns:
+    if bundle_ns:
+        try:
             template_str = (getattr(w, "canister_ids_template", "") or "")
-            yield from _upload_bundle(canister_id, bundle_ns, stand=stand,
-                                      template_str=template_str)
-        else:
+            _uploaded, total = yield from _upload_bundle(
+                canister_id, bundle_ns, stand=stand, template_str=template_str)
+            if total == 0:
+                raise Exception(f"empty bundle namespace '{bundle_ns}'")
+        except Exception as ae:
+            _log.error(f"asset provisioning failed for {canister_id}: {ae}")
+            _append_event("assets_failed", canister_id,
+                          {"wasm_key": w.key, "error": str(ae)[:300]})
+            raise
+    else:
+        try:
             yield from _provision_assets(canister_id, w, stand)
-    except Exception as ae:
-        _log.error(f"asset provisioning failed for {canister_id}: {ae}")
-        _append_event("assets_failed", canister_id, {"wasm_key": w.key, "error": str(ae)[:300]})
+        except Exception as ae:
+            _log.error(f"asset provisioning failed for {canister_id}: {ae}")
+            _append_event("assets_failed", canister_id,
+                          {"wasm_key": w.key, "error": str(ae)[:300]})
 
 
 def _retire_canister(st):
@@ -1510,4 +1520,215 @@ def repair_section_stands_gen(sec, *, drop_all: bool = False, verify_onchain: bo
         "pruned_stands": pruned_stands,
         "kept": kept,
         "errors": errors,
+    }
+
+
+def _resolve_preserve_ids(preserve: list[str]) -> tuple[set[str], list[str]]:
+    """Resolve ``--preserve`` entries (registered name or raw canister id)."""
+    list(Canister.instances())
+    by_name: dict[str, str] = {}
+    by_id: set[str] = set()
+    for st in Canister.instances():
+        name = (st.name or "").strip()
+        cid = (st.canister_id or "").strip()
+        if name and cid:
+            by_name[name] = cid
+        if cid:
+            by_id.add(cid)
+    list(PooledCanister.instances())
+    for p in PooledCanister.instances():
+        cid = (p.canister_id or "").strip()
+        if cid:
+            by_id.add(cid)
+    resolved: set[str] = set()
+    missing: list[str] = []
+    for entry in preserve:
+        e = (entry or "").strip()
+        if not e:
+            missing.append(entry or "")
+            continue
+        if e in by_name:
+            resolved.add(by_name[e])
+        elif e in by_id:
+            resolved.add(e)
+        else:
+            missing.append(e)
+    return resolved, missing
+
+
+def _purge_orchestra_records(cid: str) -> int:
+    """Delete every Canister + PooledCanister row for ``cid`` (duplicates included)."""
+    cid = (cid or "").strip()
+    if not cid:
+        return 0
+    removed = 0
+    list(Canister.instances())
+    for st in list(Canister.instances()):
+        if (st.canister_id or "").strip() == cid:
+            if _safe_entity_delete(st):
+                removed += 1
+    list(PooledCanister.instances())
+    for p in list(PooledCanister.instances()):
+        if (p.canister_id or "").strip() == cid:
+            if _safe_entity_delete(p):
+                removed += 1
+    return removed
+
+
+def _collect_orchestra_destroy_targets(preserve_ids: set[str], self_id: str) -> list[dict]:
+    """List every orchestra canister eligible for destroy (registered + pool)."""
+    self_id = (self_id or "").strip()
+    seen: dict[str, dict] = {}
+    list(Canister.instances())
+    for st in Canister.instances():
+        cid = (st.canister_id or "").strip()
+        if not cid or cid == self_id or cid in preserve_ids:
+            continue
+        seen[cid] = {"name": st.name or cid, "canister_id": cid, "kind": "registered"}
+    list(PooledCanister.instances())
+    for p in PooledCanister.instances():
+        cid = (p.canister_id or "").strip()
+        if not cid or cid == self_id or cid in preserve_ids or cid in seen:
+            continue
+        seen[cid] = {
+            "name": (p.canister_name or "").strip() or cid,
+            "canister_id": cid,
+            "kind": "pool",
+        }
+    out = list(seen.values())
+    out.sort(key=lambda x: ((x["name"] or "").lower(), x["canister_id"]))
+    return out
+
+
+def _destroy_orchestra_batch_gen(params: dict):
+    """Generator: destroy up to ``limit`` orchestra canisters; finalize when done."""
+    preserve = params.get("preserve") or []
+    if not preserve:
+        raise Exception("preserve is required and must be non-empty")
+    limit = int(params.get("limit") or 1)
+    preserve_ids, missing = _resolve_preserve_ids(preserve)
+    if missing:
+        raise Exception(f"unknown preserve entries: {', '.join(missing)}")
+
+    self_id = ic.id().to_str()
+    targets = _collect_orchestra_destroy_targets(preserve_ids, self_id)
+    batch = targets[:limit]
+    destroyed = []
+    errors = []
+    total_cycles = 0
+
+    for target in batch:
+        cid = target["canister_id"]
+        name = target["name"]
+        try:
+            if target["kind"] == "registered":
+                st = Canister[name] or _find_canister_by_id(cid)
+                if st is None:
+                    raise Exception(f"registered canister '{name}' not found")
+                res = yield from _destroy_canister_gen(st)
+            else:
+                res = yield from _destroy_ic_canister_gen(cid, name)
+            reclaimed = int(res.get("cycles_reclaimed") or 0)
+            total_cycles += reclaimed
+            destroyed.append({
+                "name": name,
+                "canister_id": cid,
+                "cycles_reclaimed": reclaimed,
+            })
+        except Exception as e:
+            if _is_canister_not_found_error(str(e)):
+                _purge_orchestra_records(cid)
+                destroyed.append({
+                    "name": name,
+                    "canister_id": cid,
+                    "cycles_reclaimed": 0,
+                    "already_gone": True,
+                })
+            else:
+                errors.append({"name": name, "canister_id": cid, "error": str(e)})
+
+    remaining = len(targets) - len(batch)
+    preserved = []
+    if remaining == 0 and not errors:
+        preserve_names: dict[str, str] = {}
+        list(Canister.instances())
+        for st in Canister.instances():
+            cid = (st.canister_id or "").strip()
+            if cid in preserve_ids:
+                preserve_names[cid] = st.name or cid
+        for cid in sorted(preserve_ids):
+            name = preserve_names.get(cid, cid)
+            st = _find_canister_by_id(cid)
+            if st is not None:
+                _safe_entity_delete(st)
+            p = _pool_register(cid)
+            p.status = "reserved"
+            p.canister_name = name
+            preserved.append({"name": name, "canister_id": cid})
+
+        list(Section.instances())
+        for sec in list(Section.instances()):
+            repair_section_stands(sec, drop_all=True)
+            from ic_python_db.db_engine import Database
+
+            db = Database.get_instance()
+            if not list(db.reverse_index_get(sec._type, sec._id, "stands")):
+                _safe_entity_delete(sec)
+
+        # Sheet wipe skipped: reset_sheet re-seeds the bundled default; an empty
+        # sheet would still invite redeploy. Preserved canisters remain on-chain.
+
+        _append_event("orchestra_destroyed", "", {
+            "preserved": preserved,
+            "destroyed": len(destroyed),
+            "cycles_reclaimed": total_cycles,
+        })
+
+    treasury_after = int(ic.canister_balance128())
+    done = remaining == 0 and not errors
+    return {
+        "destroyed": destroyed,
+        "errors": errors,
+        "preserved": preserved,
+        "remaining": remaining,
+        "done": done,
+        "cycles_reclaimed": total_cycles,
+        "treasury_after": treasury_after,
+    }
+
+
+def _evacuate_treasury_gen(destination_id: str, reserve: int):
+    """Generator: convert ledger ICP, then deposit almost all treasury cycles."""
+    destination_id = (destination_id or "").strip()
+    if not destination_id:
+        raise Exception("destination required")
+    reserve = int(reserve)
+
+    convert = yield from _treasury_watch_begin_gen(force_convert=True)
+    if convert.get("error"):
+        raise Exception(f"ICP convert failed: {convert['error']}")
+
+    balance = int(ic.canister_balance128())
+    amount = balance - reserve
+    if amount <= 0:
+        return {
+            "deposited": 0,
+            "destination": destination_id,
+            "treasury_after": balance,
+            "reserve": reserve,
+            "icp_converted": convert,
+            "reason": "below_reserve",
+        }
+
+    yield management_canister.deposit_cycles(
+        {"canister_id": Principal.from_str(destination_id)}
+    ).with_cycles(amount)
+    treasury_after = int(ic.canister_balance128())
+    _sync_treasury_baseline(cycles=treasury_after)
+    return {
+        "deposited": amount,
+        "destination": destination_id,
+        "treasury_after": treasury_after,
+        "reserve": reserve,
+        "icp_converted": convert,
     }

@@ -34,7 +34,7 @@ class FileRegistryService(Service):
     @service_query
     def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text: ...
 
-    @service_query
+    @service_update
     def list_files_icc(self, namespace: text) -> text: ...
 
 

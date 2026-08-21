@@ -192,7 +192,8 @@ class PooledCanister(Entity, TimestampedMixin):
 
     __alias__ = "canister_id"
     canister_id = String(min_length=1, max_length=64)
-    # "free"  => parked, available for reuse; "in_use" => backing a live canister.
+    # "free"  => parked, available for reuse; "in_use" => backing a live canister;
+    # "reserved" => DNS-parked after orchestra destroy, not reusable.
     status = String(max_length=16, default="free")
     canister_name = String(max_length=128, default="")  # current occupant (if in_use)
     # Subnet placement this canister was created on, when known. Used to match a

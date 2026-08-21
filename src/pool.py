@@ -31,7 +31,7 @@ def _pool_take_free(subnet: str = "", subnet_type: str = "") -> str:
     list(Canister.instances())
     live_cids = {st.canister_id for st in Canister.instances() if st.canister_id}
     for p in PooledCanister.instances():
-        if p.status != "free" or not p.canister_id:
+        if p.status == "reserved" or p.status != "free" or not p.canister_id:
             continue
         if p.canister_id in live_cids:
             p.status = "in_use"

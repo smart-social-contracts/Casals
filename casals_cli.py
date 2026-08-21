@@ -27,6 +27,7 @@ Commands:
     arrangement activate NAME  mark an arrangement active
     arrangement apply [NAME]   run an arrangement's post-deploy steps
     arrangement delete NAME    delete an arrangement
+    orchestra destroy --preserve NAME_OR_ID  tear down orchestra (keep preserved)
     new [IDS.json]             build, deploy, and seed a Casals instance
 
 Examples::
@@ -80,6 +81,14 @@ def _base_flags(args) -> list:
     if args.identity:
         flags += ["--identity", args.identity]
     return flags
+
+
+def _casals_canister(args) -> str:
+    """Target conductor: ``--canister`` principal override, else ``casals_backend``."""
+    override = getattr(args, "canister", None)
+    if override:
+        return str(override).strip()
+    return CASALS
 
 
 def _icp(argv, args, timeout=300, check=True):
@@ -304,6 +313,8 @@ def call(canister: str, method: str, args, payload: str | None):
     ``payload=None`` for zero-arg endpoints (Candid ``()``). Otherwise ``payload``
     is JSON encoded as the single ``text`` argument.
     """
+    if canister == CASALS:
+        canister = _casals_canister(args)
     cmd = ["canister", "call", canister, method]
     cmd += _base_flags(args)
     if payload is None:
@@ -441,6 +452,288 @@ def cmd_arrangement_delete(args):
     _out(call(CASALS, "delete_arrangement", args, json.dumps({"name": args.name})))
 
 
+def _resolve_preserve_from_tree(preserve: list[str], tree: dict, pool: dict):
+    """Classify preserve entries against tree + pool (CLI dry-run / live)."""
+    by_name: dict[str, str] = {}
+    by_id: set[str] = set()
+    if isinstance(tree, dict):
+        for sec in tree.get("sections") or []:
+            for stand in sec.get("stands") or []:
+                for c in stand.get("canisters") or []:
+                    name = (c.get("name") or "").strip()
+                    cid = (c.get("canister_id") or "").strip()
+                    if name and cid:
+                        by_name[name] = cid
+                    if cid:
+                        by_id.add(cid)
+    if isinstance(pool, dict):
+        for p in pool.get("canisters") or []:
+            cid = (p.get("canister_id") or "").strip()
+            if cid:
+                by_id.add(cid)
+    resolved = []
+    missing = []
+    resolved_ids: set[str] = set()
+    for entry in preserve:
+        e = (entry or "").strip()
+        if not e:
+            missing.append(entry or "")
+            continue
+        if e in by_name:
+            cid = by_name[e]
+            resolved.append({"name": e, "canister_id": cid})
+            resolved_ids.add(cid)
+        elif e in by_id:
+            resolved.append({"name": e, "canister_id": e})
+            resolved_ids.add(e)
+        else:
+            missing.append(e)
+    return resolved, missing, resolved_ids
+
+
+def _collect_destroy_plan(tree: dict, pool: dict, preserve_ids: set[str]) -> list[dict]:
+    """List canisters that would be destroyed (tree + pool minus preserve)."""
+    seen: dict[str, dict] = {}
+    if isinstance(tree, dict):
+        for sec in tree.get("sections") or []:
+            for stand in sec.get("stands") or []:
+                for c in stand.get("canisters") or []:
+                    name = (c.get("name") or "").strip()
+                    cid = (c.get("canister_id") or "").strip()
+                    if not cid or cid in preserve_ids:
+                        continue
+                    seen[cid] = {"name": name or cid, "canister_id": cid, "kind": "registered"}
+    if isinstance(pool, dict):
+        for p in pool.get("canisters") or []:
+            cid = (p.get("canister_id") or "").strip()
+            if not cid or cid in preserve_ids or cid in seen:
+                continue
+            seen[cid] = {
+                "name": (p.get("canister_name") or "").strip() or cid,
+                "canister_id": cid,
+                "kind": "pool",
+            }
+    out = list(seen.values())
+    out.sort(key=lambda x: ((x["name"] or "").lower(), x["canister_id"]))
+    return out
+
+
+_TREASURY_EVAC_RESERVE = 2_000_000_000_000  # 2 TC — attaching (balance-100B) OOGs a fat treasury
+_TREASURY_EVAC_CHUNK = 10_000_000_000_000  # 10 TC per deposit_cycles
+_CONDUCTOR_DELETE_MAX_CYCLES = 500_000_000_000
+
+
+def cmd_orchestra_destroy(args):
+    preserve = list(args.preserve or [])
+    tree = call(CASALS, "get_tree", args, None)
+    pool = call(CASALS, "list_pool", args, None)
+    resolved, missing, resolved_ids = _resolve_preserve_from_tree(preserve, tree, pool)
+
+    if missing:
+        print(json.dumps({
+            "ok": False,
+            "error": f"unknown preserve entries: {', '.join(missing)}",
+            "missing": missing,
+        }, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    destroy = _collect_destroy_plan(tree, pool, resolved_ids)
+    extra_destroy = []
+    for raw in (getattr(args, "also_destroy", None) or []):
+        cid = (raw or "").strip()
+        if not cid:
+            continue
+        if cid in resolved_ids or cid in {d["canister_id"] for d in destroy}:
+            continue
+        extra = {"name": cid, "canister_id": cid, "kind": "extra"}
+        extra_destroy.append(extra)
+        destroy.append(extra)
+    evacuate_to = resolved[0]["canister_id"] if resolved else ""
+
+    if args.dry_run:
+        _out({
+            "ok": True,
+            "dry_run": True,
+            "preserve": resolved,
+            "destroy": destroy,
+            "evacuate_to": evacuate_to,
+            "conductor_deleted_last": True,
+        })
+        return
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise RuntimeError("refusing orchestra destroy without --yes")
+        prompt = (
+            f"Destroy {len(destroy)} canisters and the conductor? "
+            f"Preserve: {', '.join(preserve)} [y/N] "
+        )
+        answer = input(prompt).strip().lower()
+        if answer not in ("y", "yes"):
+            raise RuntimeError("aborted")
+
+    destroyed = []
+    errors = []
+    cycles_reclaimed = 0
+    preserved = []
+    last_remaining = None
+    stalled = 0
+    while True:
+        payload = {"preserve": preserve, "limit": int(args.batch or 1)}
+        res = call(CASALS, "destroy_orchestra", args, json.dumps(payload))
+        if not isinstance(res, dict) or not res.get("ok"):
+            print(json.dumps(res, indent=2), file=sys.stderr)
+            sys.exit(1)
+        destroyed.extend(res.get("destroyed") or [])
+        errors = res.get("errors") or []
+        cycles_reclaimed += int(res.get("cycles_reclaimed") or 0)
+        if errors:
+            print(json.dumps({
+                "ok": False,
+                "destroyed": destroyed,
+                "errors": errors,
+                "preserved": res.get("preserved") or preserved,
+            }, indent=2), file=sys.stderr)
+            sys.exit(1)
+        if res.get("preserved"):
+            preserved = res.get("preserved")
+        remaining_now = res.get("remaining")
+        _progress(
+            f"destroyed {len(destroyed)} this run, "
+            f"remaining {remaining_now}, "
+            f"reclaimed {cycles_reclaimed}"
+        )
+        if last_remaining is not None and remaining_now == last_remaining:
+            stalled += 1
+            if stalled >= 2:
+                print(json.dumps({
+                    "ok": False,
+                    "error": (
+                        f"destroy made no progress (remaining stuck at {remaining_now}); "
+                        "aborting to avoid an infinite loop"
+                    ),
+                    "destroyed": destroyed,
+                    "last_batch": res.get("destroyed"),
+                }, indent=2), file=sys.stderr)
+                sys.exit(1)
+        else:
+            stalled = 0
+        last_remaining = remaining_now
+        if res.get("done"):
+            break
+
+    for extra in extra_destroy:
+        res = call(
+            CASALS, "destroy_canister", args,
+            json.dumps({"canister_id": extra["canister_id"]}),
+        )
+        if not isinstance(res, dict) or not res.get("ok"):
+            print(json.dumps({
+                "ok": False,
+                "error": f"also-destroy failed for {extra['canister_id']}",
+                "result": res,
+                "destroyed": destroyed,
+            }, indent=2), file=sys.stderr)
+            sys.exit(1)
+        destroyed.append({
+            "name": extra["name"],
+            "canister_id": extra["canister_id"],
+            "cycles_reclaimed": int(res.get("cycles_reclaimed") or 0),
+        })
+        cycles_reclaimed += int(res.get("cycles_reclaimed") or 0)
+
+    convert_res = call(CASALS, "convert_treasury_icp", args, "{}")
+    if not isinstance(convert_res, dict) or not convert_res.get("ok"):
+        print(json.dumps(convert_res, indent=2), file=sys.stderr)
+        sys.exit(1)
+    if convert_res.get("error"):
+        print(json.dumps({
+            "ok": False,
+            "error": f"convert_treasury_icp failed: {convert_res.get('error')}",
+            "destroyed": destroyed,
+        }, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    def _conductor_cycles() -> int:
+        status_out = _icp(
+            ["canister", "status", _casals_canister(args)] + _base_flags(args), args,
+        ).stdout
+        m = re.search(r"(?:Balance|Cycles):\s*([\d_]+)", status_out)
+        return int(m.group(1).replace("_", "")) if m else 0
+
+    cycles_evacuated = 0
+    treasury_after = _conductor_cycles()
+    while treasury_after > _TREASURY_EVAC_RESERVE:
+        chunk = min(_TREASURY_EVAC_CHUNK, treasury_after - _TREASURY_EVAC_RESERVE)
+        reserve = treasury_after - chunk
+        evac_res = call(
+            CASALS, "evacuate_treasury", args,
+            json.dumps({"destination": evacuate_to, "reserve": reserve}),
+        )
+        if not isinstance(evac_res, dict) or not evac_res.get("ok"):
+            print(json.dumps(evac_res, indent=2), file=sys.stderr)
+            sys.exit(1)
+        deposited = int(evac_res.get("deposited") or 0)
+        cycles_evacuated += deposited
+        treasury_after = int(evac_res.get("treasury_after") or _conductor_cycles())
+        _progress(f"evacuated {deposited}, conductor now {treasury_after}")
+        if deposited <= 0:
+            break
+
+    conductor_destroyed = False
+    leftover_cycles = 0
+    try:
+        status_out = _icp(
+            ["canister", "status", _casals_canister(args)] + _base_flags(args), args,
+        ).stdout
+        m = re.search(r"Balance:\s*([\d_]+)\s*Cycles", status_out)
+        if m:
+            leftover_cycles = int(m.group(1).replace("_", ""))
+    except Exception:
+        pass
+
+    if leftover_cycles > _CONDUCTOR_DELETE_MAX_CYCLES:
+        print(json.dumps({
+            "ok": False,
+            "error": (
+                f"conductor still holds {leftover_cycles} cycles "
+                f"(refusing delete above {_CONDUCTOR_DELETE_MAX_CYCLES})"
+            ),
+            "destroyed": destroyed,
+            "preserved": preserved,
+            "cycles_reclaimed": cycles_reclaimed,
+            "cycles_evacuated": cycles_evacuated,
+            "conductor_destroyed": False,
+        }, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        _icp(["canister", "delete", _casals_canister(args), "-y"] + _base_flags(args), args)
+        conductor_destroyed = True
+    except Exception as e:
+        print(json.dumps({
+            "ok": False,
+            "error": f"conductor delete failed: {e}",
+            "destroyed": destroyed,
+            "preserved": preserved,
+            "cycles_reclaimed": cycles_reclaimed,
+            "cycles_evacuated": cycles_evacuated,
+            "conductor_destroyed": False,
+            "note": "cycles were evacuated to preserve canister; conductor still up",
+        }, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    _out({
+        "ok": True,
+        "destroyed": destroyed,
+        "preserved": preserved,
+        "errors": errors,
+        "cycles_reclaimed": cycles_reclaimed,
+        "cycles_evacuated": cycles_evacuated,
+        "conductor_destroyed": conductor_destroyed,
+    })
+
+
 def cmd_new(args):
     """Build, deploy, and optionally seed a Casals instance."""
     _require_icp_yaml()
@@ -527,6 +820,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="icp environment: local or ic (default: local)")
     ap.add_argument("--identity", default=None, metavar="ID",
                     help="icp identity to use")
+    ap.add_argument(
+        "--canister", default=None, metavar="ID",
+        help="conductor principal override (default: casals_backend from env mappings)",
+    )
 
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("status",  help="canister version + object counts")
@@ -572,6 +869,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     arr_del_p = arr_sub.add_parser("delete", help="delete an arrangement")
     arr_del_p.add_argument("name", metavar="NAME", help="arrangement name")
+
+    orch_p = sub.add_parser("orchestra", help="orchestra teardown")
+    orch_sub = orch_p.add_subparsers(dest="orchestra_command", required=True)
+    destroy_p = orch_sub.add_parser(
+        "destroy",
+        help="tear down orchestra; preserve listed canisters",
+    )
+    destroy_p.add_argument(
+        "--preserve", action="append", required=True,
+        help="registered canister name or raw id to keep (repeatable)",
+    )
+    destroy_p.add_argument("--dry-run", action="store_true",
+                           help="print destroy plan without update calls")
+    destroy_p.add_argument("-y", "--yes", action="store_true",
+                           help="skip confirmation (required when not a TTY)")
+    destroy_p.add_argument("--batch", type=int, default=1, metavar="N",
+                           help="destroy at most N canisters per backend call")
+    destroy_p.add_argument(
+        "--also-destroy", action="append", default=[],
+        help="extra raw canister id to destroy (not in the tree; repeatable)",
+    )
 
     new_p = sub.add_parser(
         "new",
@@ -630,6 +948,9 @@ def main():
                 cmd_arrangement_apply(args)
             elif args.arrangement_command == "delete":
                 cmd_arrangement_delete(args)
+        elif args.command == "orchestra":
+            if args.orchestra_command == "destroy":
+                cmd_orchestra_destroy(args)
         elif args.command == "new":
             cmd_new(args)
     except Exception as e:
