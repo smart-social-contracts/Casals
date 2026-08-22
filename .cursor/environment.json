@@ -1,5 +1,5 @@
 {
   "name": "Casals",
-  "install": "bash .cursor/install.sh",
-  "start": "bash .cursor/start.sh"
+  "install": "cd /agent/repos/Casals && bash .cursor/install.sh",
+  "start": "cd /agent/repos/Casals && bash .cursor/start.sh"
 }
