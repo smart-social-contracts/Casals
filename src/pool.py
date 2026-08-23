@@ -70,6 +70,9 @@ def _pool_mark_in_use(canister_id: str, canister_name: str) -> None:
 
 
 def _pool_free(canister_id: str) -> None:
+    # A registered-but-unprovisioned Canister has no IC canister to return.
+    if not (canister_id or "").strip():
+        return
     # Preserve the recorded subnet placement; only clear the occupancy.
     p = _pool_register(canister_id)
     p.status = "free"

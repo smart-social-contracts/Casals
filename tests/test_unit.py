@@ -1779,3 +1779,28 @@ def test_destroy_stand_auth_rejects_unauthorized(monkeypatch):
     monkeypatch.setattr(main, "_parse_delegated_destroy_principals", lambda: [])
     with pytest.raises(Exception, match="governance multisig"):
         main._require_admin_or_delegated_destroy()
+
+
+# ── canister pool ────────────────────────────────────────────────────────────
+
+import pool  # noqa: E402
+
+
+def test_pool_free_ignores_canister_without_an_id(monkeypatch):
+    """A registered-but-unprovisioned Canister has no IC canister to return."""
+    def fail(*_args, **_kwargs):
+        raise AssertionError("_pool_register must not be called for a blank id")
+
+    monkeypatch.setattr(pool, "_pool_register", fail)
+    pool._pool_free("")
+    pool._pool_free("   ")
+
+
+def test_pool_free_marks_a_real_canister_free(monkeypatch):
+    entry = types.SimpleNamespace(status="in_use", canister_name="file_registry")
+    monkeypatch.setattr(pool, "_pool_register", lambda cid: entry)
+
+    pool._pool_free("aaaaa-aa")
+
+    assert entry.status == "free"
+    assert entry.canister_name == ""
