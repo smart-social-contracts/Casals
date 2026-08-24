@@ -10,6 +10,12 @@ Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/r
 deploy their own conductor instances and supply sheets, arrangements, and fleet
 config from their own repos.
 
+## Do not deploy without confirmation
+
+**Do not deploy automatically.** The human triggers all deployments.
+
+If a change needs a deployment to take effect or to be verified, state that clearly in your reply (what, where, and why) and wait for explicit confirmation before running any deploy, install, upgrade, reinstall, rollout, seed, or publish-to-canister command.
+
 ## Toolchain: icp-cli only
 
 This repo is **`icp-cli` only** — never invoke `dfx` for Casals work. Deploy,
