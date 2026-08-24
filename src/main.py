@@ -3239,12 +3239,20 @@ def get_cycles() -> Async[text]:
     not a query) and reports the conductor's own treasury. Returns:
     {treasury:{...}, totals:{...}, canisters:[{section,stand,name,...,status}]}.
     """
+    stage = "init"
     try:
+        stage = "warm_instances"
         iter_instances(Section)
         iter_instances(Stand)
         iter_instances(Canister)
+        stage = "settings"
         s = _settings()
-        yield from _treasury_watch_begin_gen()
+        stage = "treasury_watch"
+        try:
+            yield from _treasury_watch_begin_gen()
+        except Exception as watch_err:
+            _log.error(f"get_cycles: treasury watch failed: {watch_err}")
+        stage = "treasury_balance"
         treasury = int(ic.canister_balance128())
         canisters_out = []
         counts = {"ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0}
@@ -3254,6 +3262,7 @@ def get_cycles() -> Async[text]:
         batch_ts = _now_secs()
         do_sample = _cycles_mod.should_record_cycle_sample(batch_ts)
         sampled = False
+        stage = "canisters"
         for st in iter_instances(Canister):
             if not st.canister_id:
                 continue
@@ -3291,12 +3300,17 @@ def get_cycles() -> Async[text]:
                 row.update({"status": "error", "error": str(e)})
                 counts["error"] += 1
             canisters_out.append(row)
+        stage = "finalize_samples"
         if sampled:
-            _cycles_mod.finalize_cycle_sample_batch(batch_ts)
+            try:
+                _cycles_mod.finalize_cycle_sample_batch(batch_ts)
+            except Exception as sample_err:
+                _log.error(f"get_cycles: sample finalize failed: {sample_err}")
 
         # Pool view: every canister Casals ever created, its status, and current
         # balance. Reuses balances already read above; only fetches for pooled
         # canisters not backing a live canister (e.g. orphans / freed canisters).
+        stage = "pool"
         deposited_by_cid = {
             st.canister_id: int(st.cycles_deposited or 0)
             for st in iter_instances(Canister) if st.canister_id
@@ -3317,27 +3331,26 @@ def get_cycles() -> Async[text]:
                 pool_free += 1
             bal = bal_by_cid.get(p.canister_id)
             if bal is None:
-                owner = _find_canister_by_id(p.canister_id)
-                status = yield from _fetch_canister_status_gen(owner) if owner else None
-                if status is None and owner is None:
-                    try:
+                try:
+                    owner = _find_canister_by_id(p.canister_id)
+                    status = yield from _fetch_canister_status_gen(owner) if owner else None
+                    if status is None and owner is None:
                         status_res = yield management_canister.canister_status(
                             {"canister_id": Principal.from_str(p.canister_id)}
                         )
                         status = unwrap_call_result(status_res)
-                    except Exception as e:
-                        prow["error"] = str(e)
-                        status = None
-                if status is not None:
-                    bal = _status_cycles(status)
-                elif owner is not None:
-                    pass  # baton/direct both failed — leave pool row uncached
+                    if status is not None:
+                        bal = _status_cycles(status)
+                except Exception as e:
+                    prow["error"] = str(e)
             if bal is not None:
                 prow["cycles"] = bal
                 prow["refreshed_at"] = batch_ts
             pool_out.append(prow)
+        stage = "pool_sort"
         pool_out.sort(key=lambda x: (x["status"] != "free", x["canister_id"]))
 
+        stage = "treasury_icp"
         icp_e8s = yield from _treasury_icp_e8s_gen()
         treasury_obj = {
             "balance": treasury,
@@ -3354,8 +3367,10 @@ def get_cycles() -> Async[text]:
         except Exception as rate_err:
             _log.error(f"get_cycles: CMC rate unavailable: {rate_err}")
         treasury_obj["refreshed_at"] = batch_ts
+        stage = "deposit_fields"
         treasury_obj.update(treasury_deposit_fields())
 
+        stage = "encode"
         result = json.dumps({
             "treasury": treasury_obj,
             "totals": {"canisters": len(canisters_out), **counts},
@@ -3385,8 +3400,8 @@ def get_cycles() -> Async[text]:
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        _log.error(f"get_cycles error: {e}\n{tb}")
-        return _err(f"{e} :: {tb}")
+        _log.error(f"get_cycles error at {stage}: {e}\n{tb}")
+        return _err(f"{stage}: {e} :: {tb}")
 
 
 @query
