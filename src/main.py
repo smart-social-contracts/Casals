@@ -3433,12 +3433,9 @@ def _build_cycles_stub_report():
     Used when no get_cycles snapshot exists yet so the Cycles page can list
     canisters immediately while the ~minute-long live refresh runs.
     """
-    list(Section.instances())
-    list(Stand.instances())
-    list(Canister.instances())
     s = _settings()
     canisters_out = []
-    for st in Canister.instances():
+    for st in iter_instances(Canister):
         if not st.canister_id:
             continue
         dk = st.stand
@@ -3459,8 +3456,7 @@ def _build_cycles_stub_report():
 
     pool_out = []
     pool_free = 0
-    list(PooledCanister.instances())
-    for p in PooledCanister.instances():
+    for p in iter_instances(PooledCanister):
         if not p.canister_id:
             continue
         prow = {
