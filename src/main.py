@@ -128,6 +128,7 @@ from helpers import (
     _find_canister_by_id,
     _orchestra_identity,
     _settings,
+    iter_instances,
     unwrap_call_result,
 )
 from lifecycle import (
@@ -3239,9 +3240,9 @@ def get_cycles() -> Async[text]:
     {treasury:{...}, totals:{...}, canisters:[{section,stand,name,...,status}]}.
     """
     try:
-        list(Section.instances())
-        list(Stand.instances())
-        list(Canister.instances())
+        iter_instances(Section)
+        iter_instances(Stand)
+        iter_instances(Canister)
         s = _settings()
         yield from _treasury_watch_begin_gen()
         treasury = int(ic.canister_balance128())
@@ -3253,7 +3254,7 @@ def get_cycles() -> Async[text]:
         batch_ts = _now_secs()
         do_sample = _cycles_mod.should_record_cycle_sample(batch_ts)
         sampled = False
-        for st in Canister.instances():
+        for st in iter_instances(Canister):
             if not st.canister_id:
                 continue
             dk = st.stand
@@ -3296,12 +3297,12 @@ def get_cycles() -> Async[text]:
         # canisters not backing a live canister (e.g. orphans / freed canisters).
         deposited_by_cid = {
             st.canister_id: int(st.cycles_deposited or 0)
-            for st in Canister.instances() if st.canister_id
+            for st in iter_instances(Canister) if st.canister_id
         }
         pool_out = []
         pool_free = 0
-        list(PooledCanister.instances())
-        for p in PooledCanister.instances():
+        iter_instances(PooledCanister)
+        for p in iter_instances(PooledCanister):
             if not p.canister_id:
                 continue
             prow = {

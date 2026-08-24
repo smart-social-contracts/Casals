@@ -164,6 +164,14 @@ def _find_canister_by_id(canister_id: str):
     return Canister["canister_id", cid] if cid else None
 
 
+def iter_instances(cls):
+    """Return entity instances as a list; tolerate ``instances()`` returning None."""
+    items = cls.instances() if cls is not None else None
+    if items is None:
+        return []
+    return list(items)
+
+
 # ── Response helpers ─────────────────────────────────────────────────────────
 
 def _ok(**kw) -> str:

@@ -77,6 +77,49 @@ def test_ic_run_status_parses_variant():
     assert cycles_mod._ic_run_status({}) == "unknown"
 
 
+def test_iter_instances_tolerates_none():
+    from helpers import iter_instances
+
+    class _Cls:
+        @staticmethod
+        def instances():
+            return None
+
+    assert iter_instances(_Cls) == []
+
+
+def test_status_helpers_reject_none_and_non_dict():
+    import cycles as cycles_mod
+
+    assert cycles_mod._status_cycles(None) == 0
+    assert cycles_mod._ic_run_status(None) == "unknown"
+    row = {"name": "bad"}
+    label, bal = cycles_mod.apply_canister_balance_to_row(
+        row, "not-a-status", "bad payload", 1_000, 500, 123
+    )
+    assert label == "error"
+    assert bal is None
+    assert row["status"] == "error"
+
+
+def test_overlay_treasury_baselines_uses_snapshot_when_baseline_zero():
+    import cycles as cycles_mod
+
+    class S:
+        treasury_reserve = 10_000_000_000
+        treasury_last_cycles = 0
+        treasury_last_icp_e8s = 0
+        treasury_watch_initialized = 1
+        cycles_autopilot = 0
+        cycles_check_interval_secs = 3600
+        cycles_icp_autoconvert = 0
+
+    treasury = {"balance": 200_000_000_000, "spendable": 0}
+    cycles_mod.overlay_treasury_baselines(treasury, S())
+    assert treasury["balance"] == 200_000_000_000
+    assert treasury["spendable"] == 190_000_000_000
+
+
 def test_resolve_topup_source_requires_monitor_identity(monkeypatch):
     import cycles as cycles_mod
 

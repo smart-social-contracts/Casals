@@ -90,12 +90,25 @@ _cycles_cache: str = ""
 
 # ── Cycle balance helpers ─────────────────────────────────────────────────────
 
+def _status_is_usable(status) -> bool:
+    """True when *status* looks like a management canister_status payload."""
+    if status is None:
+        return False
+    if isinstance(status, dict):
+        return True
+    return hasattr(status, "cycles")
+
+
 def _status_cycles(status) -> int:
+    if not _status_is_usable(status):
+        return 0
     c = status.get("cycles") if isinstance(status, dict) else getattr(status, "cycles", 0)
     return int(c or 0)
 
 
 def _status_freezing(status) -> int:
+    if not _status_is_usable(status):
+        return 0
     settings = status.get("settings") if isinstance(status, dict) else getattr(status, "settings", None)
     if settings is None:
         return 0
@@ -105,6 +118,8 @@ def _status_freezing(status) -> int:
 
 def _ic_run_status(status) -> str:
     """Parse IC management canister_status.status to running/stopped/stopping."""
+    if not _status_is_usable(status):
+        return "unknown"
     st = status.get("status") if isinstance(status, dict) else getattr(status, "status", None)
     if st is None:
         return "unknown"
@@ -160,7 +175,7 @@ def apply_canister_balance_to_row(row, status, error, min_c, topup_c, batch_ts):
 
     Returns ``(status_label, balance_or_none)`` for aggregate counting.
     """
-    if status is not None:
+    if _status_is_usable(status):
         bal = _status_cycles(status)
         frz = _status_freezing(status)
         label = cycles_status(bal, frz, min_c)
@@ -643,10 +658,12 @@ def overlay_treasury_baselines(treasury: dict, s=None) -> dict:
         return treasury
     last_cycles = int(s.treasury_last_cycles or 0)
     last_icp = int(s.treasury_last_icp_e8s or 0)
-    if last_cycles > 0:
+    snapshot_balance = int(treasury.get("balance") or 0)
+    effective_balance = max(last_cycles, snapshot_balance)
+    if effective_balance > 0:
         reserve = int(s.treasury_reserve or 0)
-        treasury["balance"] = last_cycles
-        treasury["spendable"] = max(0, last_cycles - reserve)
+        treasury["balance"] = effective_balance
+        treasury["spendable"] = max(0, effective_balance - reserve)
     if "icp_e8s" not in treasury:
         treasury["icp_e8s"] = last_icp
     return treasury
