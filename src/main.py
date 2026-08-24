@@ -3257,21 +3257,23 @@ def get_cycles() -> Async[text]:
         for st in iter_instances(Canister):
             if not st.canister_id:
                 continue
-            dk = st.stand
-            sec = dk.section if dk else None
-            min_c, topup_c = _policy_for(st, s)
             row = {
-                "section": sec.name if sec else "",
-                "stand": dk.name if dk else "",
                 "name": st.name,
                 "canister_id": st.canister_id,
                 "kind": st.kind,
-                "min_cycles": min_c,
-                "min_cycles_override": int(st.min_cycles or 0),
-                "min_cycles_source": _min_cycles_source(st, s),
-                "topup_cycles": topup_c,
             }
             try:
+                dk = st.stand
+                sec = dk.section if dk else None
+                min_c, topup_c = _policy_for(st, s)
+                row.update({
+                    "section": sec.name if sec else "",
+                    "stand": dk.name if dk else "",
+                    "min_cycles": min_c,
+                    "min_cycles_override": int(st.min_cycles or 0),
+                    "min_cycles_source": _min_cycles_source(st, s),
+                    "topup_cycles": topup_c,
+                })
                 status, err = yield from _fetch_canister_status_result_gen(st)
                 label, bal = apply_canister_balance_to_row(
                     row, status, err, min_c, topup_c, batch_ts
@@ -3375,11 +3377,16 @@ def get_cycles() -> Async[text]:
             snap.save()
         except Exception as snap_err:
             _log.error(f"get_cycles: could not persist snapshot: {snap_err}")
-        yield from _sync_treasury_baseline_gen()
+        try:
+            yield from _sync_treasury_baseline_gen()
+        except Exception as baseline_err:
+            _log.error(f"get_cycles: treasury baseline sync failed: {baseline_err}")
         return result
     except Exception as e:
-        _log.error(f"get_cycles error: {e}")
-        return _err(str(e))
+        import traceback
+        tb = traceback.format_exc()
+        _log.error(f"get_cycles error: {e}\n{tb}")
+        return _err(f"{e} :: {tb}")
 
 
 @query

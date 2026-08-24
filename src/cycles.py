@@ -28,6 +28,7 @@ from helpers import (
     _nat64s_in,
     _nats_in,
     _variant_first_number,
+    iter_instances,
 )
 
 _log = get_logger("casals")
@@ -291,7 +292,7 @@ def _prune_cycle_samples(now: int) -> None:
     """Bound stable-memory growth: drop samples past the retention window,
     then, if still over the hard cap, drop the oldest until under it."""
     try:
-        samples = list(CycleSample.instances())
+        samples = iter_instances(CycleSample)
         cutoff = now - SAMPLE_RETENTION_SECS
         stale = [s for s in samples if int(s.ts or 0) < cutoff]
         for s in stale:

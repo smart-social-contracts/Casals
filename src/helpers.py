@@ -207,7 +207,7 @@ def unwrap_call_result(cr: CallResult):
 # ── Settings singleton ────────────────────────────────────────────────────────
 
 def _settings() -> Settings:
-    list(Settings.instances())
+    iter_instances(Settings)
     s = Settings["singleton"]
     if s is None:
         s = Settings(key="singleton")
