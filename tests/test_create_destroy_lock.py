@@ -1,10 +1,11 @@
 """Replica lock: Casals create → lasting controllers → DestroyCanisters.
 
-Product lock (#32 / ba20242):
+Product lock (#36 / create-path restore; #32 destroy path unchanged):
 
-- Casals must never remain a controller of managed canisters.
-- Only the governance multisig is a lasting controller. Create may list
-  Casals temporarily so install can run, then drop Casals.
+- Newly provisioned **realm** canisters keep Casals as an IC controller
+  (multisig may be a co-controller) until ``orchestration_hand_to_baton``.
+- Baton and multisig canisters do **not** keep Casals after provision
+  (multisig is self-controlled; baton is ``[multisig] + extras``).
 - Approved destroy is ONE ``DestroyCanisters`` proposal with N ids,
   executed as the multisig against ``aaaaa-aa``, not as Casals.
 - Drain remaining cycles to the Casals treasury *before* delete.
@@ -214,7 +215,20 @@ def _tree_canister(tree: dict, name: str) -> dict:
     raise AssertionError(f"canister {name!r} not in tree: {tree}")
 
 
-def _assert_lasting_controllers(
+def _assert_multisig_self_controlled(
+    cid: str, *, casals_id: str, name: str, tree_row: dict
+):
+    controllers = canister_controllers(tree_row=tree_row)
+    assert cid in controllers, (
+        f"{name} ({cid}): multisig is not self-controlled; got {controllers}"
+    )
+    assert casals_id not in controllers, (
+        f"{name} ({cid}): Casals {casals_id} remained a controller of the "
+        f"multisig after create; got {controllers}"
+    )
+
+
+def _assert_realm_provision_controllers(
     cid: str, *, multisig_id: str, casals_id: str, name: str, tree_row: dict
 ):
     controllers = canister_controllers(tree_row=tree_row)
@@ -222,9 +236,9 @@ def _assert_lasting_controllers(
         f"{name} ({cid}): governance multisig {multisig_id} is not a controller; "
         f"got {controllers}"
     )
-    assert casals_id not in controllers, (
-        f"{name} ({cid}): Casals {casals_id} remained a controller after create; "
-        f"got {controllers}"
+    assert casals_id in controllers, (
+        f"{name} ({cid}): Casals {casals_id} was dropped after provision; "
+        f"it must remain until hand_to_baton. got {controllers}"
     )
 
 
@@ -379,19 +393,19 @@ class TestCreateDestroyLock:
 
     def test_01_multisig_create_drops_casals(self, lock_env):
         row = _tree_canister(call_canister("get_tree"), "multisig")
-        _assert_lasting_controllers(
+        _assert_multisig_self_controlled(
             lock_env["multisig_id"],
-            multisig_id=lock_env["multisig_id"],
             casals_id=lock_env["casals_id"],
             name="multisig",
             tree_row=row,
         )
 
-    def test_02_managed_create_drops_casals(self, lock_env):
+    def test_02_managed_create_keeps_casals(self, lock_env):
+        """Realm canisters keep Casals after provision until hand_to_baton."""
         tree = call_canister("get_tree")
         for item in lock_env["managed"]:
             row = _tree_canister(tree, item["name"])
-            _assert_lasting_controllers(
+            _assert_realm_provision_controllers(
                 item["canister_id"],
                 multisig_id=lock_env["multisig_id"],
                 casals_id=lock_env["casals_id"],
@@ -399,17 +413,25 @@ class TestCreateDestroyLock:
                 tree_row=row,
             )
 
-    def test_03_casals_cannot_destroy_managed(self, lock_env):
-        """Destroy as Casals must fail at IC control (auth may still pass)."""
+    def test_03_casals_remains_controller_until_hand_to_baton(self, lock_env):
+        """Casals can still act on realm canisters; do not destroy here.
+
+        Destroy as Casals would succeed (Casals is still a controller) and
+        would consume lock-a before test_04. The approved ops destroy is
+        DestroyCanisters as the multisig (test_04). hand_to_baton is opt-in
+        and is not run at the end of create.
+        """
         target = lock_env["managed"][0]
-        res = _json_call("destroy_canister", {"canister": target["name"]})
-        assert res.get("ok") is False, (
-            f"Casals.destroy_canister succeeded for {target}; "
-            f"Casals is still a lasting controller or destroy ran as Casals. {res}"
+        tree = call_canister("get_tree")
+        row = _tree_canister(tree, target["name"])
+        controllers = canister_controllers(tree_row=row)
+        assert lock_env["casals_id"] in controllers, (
+            f"{target['name']}: Casals must remain a controller until "
+            f"hand_to_baton; got {controllers}"
         )
         assert greet_exists(target["canister_id"]), (
-            f"{target['name']} disappeared after a Casals destroy; "
-            f"the #32 lock is not holding. destroy={res}"
+            f"{target['name']} is gone before DestroyCanisters; create left "
+            f"a dead id. controllers={controllers}"
         )
 
     def test_04_destroy_canisters_as_multisig(self, lock_env):

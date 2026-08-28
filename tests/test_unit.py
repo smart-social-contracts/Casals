@@ -1040,8 +1040,34 @@ def _provision_stand():
     return types.SimpleNamespace(name="demo-stand")
 
 
-def test_resolve_provision_controllers_adds_multisig_not_casals(monkeypatch):
-    """Create hands the canister to the governance multisig, never Casals."""
+def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
+    """Realm canisters keep Casals until hand_to_baton; installer is not added."""
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    extra = "extra-deployer"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [extra])
+
+    w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
+    got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
+    assert got == [mid, casals, extra]
+    assert "installer-principal" not in got
+
+    frontend = lifecycle._resolve_provision_controllers(
+        _provision_stand(),
+        types.SimpleNamespace(wasm_type="frontend", key="hello-world-frontend"),
+        canister_id="fe-cid",
+    )
+    assert frontend == [mid, casals, extra]
+
+
+def test_resolve_provision_controllers_detects_baton_from_canister_record(monkeypatch):
+    """deploy_sheet skip path may omit w; baton must still drop Casals."""
     casals = "qthgp-casals-conductor"
     mid = "multisig-aaaaa-aa"
     monkeypatch.setattr(
@@ -1051,10 +1077,10 @@ def test_resolve_provision_controllers_adds_multisig_not_casals(monkeypatch):
     )
     monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
     monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [])
-
-    w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
-    got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
-    assert mid in got
+    rec = types.SimpleNamespace(wasm_type="baton", wasm_key="orchestration-baton@1.3.0")
+    monkeypatch.setattr(lifecycle, "_find_canister_by_id", lambda cid: rec)
+    got = lifecycle._resolve_provision_controllers(_provision_stand(), canister_id="baton-cid")
+    assert got == [mid]
     assert casals not in got
 
 
@@ -1083,6 +1109,21 @@ def test_resolve_provision_controllers_baton_and_multisig_exclude_casals(monkeyp
     )
     assert msig == ["msig-new", "extra-deployer"]
     assert casals not in msig
+
+
+def test_hand_to_baton_tightens_to_baton_plus_extras():
+    """orchestration_hand_to_baton replaces the provision set with [baton] + extras."""
+    import inspect
+    import orchestration_bridge
+
+    src = inspect.getsource(orchestration_bridge._hand_to_baton_gen)
+    assert "desired = _merge_controllers([baton_id], extra)" in src
+    baton_id = "baton-aaaaa-aa"
+    extra = ["extra-deployer"]
+    desired = lifecycle._merge_controllers([baton_id], extra)
+    assert desired == [baton_id, "extra-deployer"]
+    assert "qthgp-casals-conductor" not in desired
+    assert "multisig-aaaaa-aa" not in desired
 
 
 def test_batch_destroy_is_one_proposal_executed_as_multisig():

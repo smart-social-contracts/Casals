@@ -1,8 +1,9 @@
-# Focused replica lock for the #32 controller / destroy contract.
+# Focused replica lock for the #36 provision + #32 destroy contract.
 #
 # On every PR and push to main:
 #   1. Create the governance multisig + managed canisters through Casals.
-#   2. Assert lasting controllers: multisig is a controller; Casals is not.
+#   2. Assert provision controllers: realm canisters keep Casals (and the
+#      multisig as co-controller); the multisig itself is self-controlled.
 #   3. Destroy the managed canisters as the multisig via one DestroyCanisters
 #      proposal (N ids + Casals treasury), not as Casals.
 #   4. Assert those canisters are gone on the local replica.

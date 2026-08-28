@@ -693,38 +693,54 @@ def _parse_extra_controller_principals() -> list:
     return []
 
 
-def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
-    """Final IC controller set after Casals finishes provisioning a canister.
-
-    Casals is a *temporary* controller at CMC/create time so it can install
-    WASM and provision assets. This list then replaces that set. Casals itself
-    must never remain a controller — only the governance multisig is a
-    platform controller. Operator-configured extras (test-mode deployer, etc.)
-    may be included; the monitor and commander principals are not.
-
-    The multisig canister is self-controlled (its own id, or ``canister_id``
-    while the record is still being finalized). Other canisters get
-    ``[multisig]`` (+ extras).
-    """
-    extra = _parse_extra_controller_principals()
-    self_id = ic.id().to_str()
+def _provision_wasm_identity(w=None, canister_id: str = ""):
+    """WASM type/key from the authorized WASM, else the Canister record."""
     wasm_type = ""
     wasm_key = ""
     if w is not None:
         wasm_type = (getattr(w, "wasm_type", None) or "").strip()
-        wasm_key = (getattr(w, "key", None) or "").strip()
+        wasm_key = (getattr(w, "key", None) or getattr(w, "wasm_key", None) or "").strip()
+    if (not wasm_type and not wasm_key) and (canister_id or "").strip():
+        st = _find_canister_by_id(canister_id)
+        if st is not None:
+            wasm_type = (getattr(st, "wasm_type", None) or "").strip()
+            wasm_key = (getattr(st, "wasm_key", None) or "").strip()
+    return wasm_type, wasm_key
 
+
+def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
+    """IC controller set after Casals finishes provisioning a canister.
+
+    Realm canisters (backend, frontend, other stand members) keep Casals as a
+    controller until ``orchestration_hand_to_baton`` tightens the set to
+    ``[baton] + extras``. The governance multisig is a co-controller when
+    present, plus ``extra_controller_principals``. The installer / caller is
+    not added.
+
+    Baton canisters get ``[multisig] + extras`` (Casals only as a fallback
+    when no multisig exists yet). The multisig canister is self-controlled
+    (+ extras).
+    """
+    extra = _parse_extra_controller_principals()
+    self_id = ic.id().to_str()
+    wasm_type, wasm_key = _provision_wasm_identity(w, canister_id)
+
+    is_baton = wasm_type == "baton" or wasm_key.startswith("orchestration-baton")
     is_multisig = wasm_type == "multisig" or wasm_key.startswith("orchestration-multisig")
     mid = _governance_multisig_id()
     cid = (canister_id or "").strip()
+
+    if is_baton:
+        base = ([mid] if mid else [self_id]) + extra
+        return base[:MAX_CONTROLLERS]
 
     if is_multisig:
         own = cid or mid
         base = [own] if own else []
         return [p for p in _merge_controllers(base, extra) if p != self_id][:MAX_CONTROLLERS]
 
-    base = [mid] if mid else []
-    return [p for p in _merge_controllers(base, extra) if p != self_id][:MAX_CONTROLLERS]
+    base = ([mid] if mid else []) + [self_id]
+    return _merge_controllers(base, extra)[:MAX_CONTROLLERS]
 
 
 def _is_canister_principal(p: str) -> bool:
@@ -734,9 +750,9 @@ def _is_canister_principal(p: str) -> bool:
     return len((p or "").strip()) < 40
 
 
-def _ensure_provision_controllers_gen(canister_id: str, dk):
+def _ensure_provision_controllers_gen(canister_id: str, dk, w=None):
     """Generator: apply or cache the desired IC controller set for a canister."""
-    desired = _resolve_provision_controllers(dk, canister_id=canister_id)
+    desired = _resolve_provision_controllers(dk, w, canister_id=canister_id)
     if not desired:
         return
     self_id = ic.id().to_str()
@@ -804,10 +820,11 @@ def _spec_target_subnet(sec_spec: dict, stand_spec: dict):
 # ── Canister allocation ────────────────────────────────────────────────────────
 
 def _create_time_controllers() -> list:
-    """Temporary create-time controller list.
+    """Create-time controller list.
 
     Casals must be present so install/provision can run; the governance
-    multisig is included when known. After provision, Casals is dropped.
+    multisig is included when known. After provision, realm canisters keep
+    Casals until ``orchestration_hand_to_baton``; baton/multisig drop it.
     """
     self_id = ic.id().to_str()
     mid = _governance_multisig_id()
@@ -951,8 +968,9 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     _append_event("verifying_hash", cid, {"wasm_key": w.key})
     yield from _maybe_provision_assets(cid, w, dk)
 
-    # Hand off last: Casals is only a temporary create-time controller so it
-    # can install + provision. The final set is the multisig (never Casals).
+    # Apply the provision controller set last (after install + assets).
+    # Realm canisters keep Casals until orchestration_hand_to_baton;
+    # baton/multisig drop Casals here.
     try:
         controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
         if controllers:
