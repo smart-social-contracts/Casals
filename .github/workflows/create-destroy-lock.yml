@@ -1,0 +1,67 @@
+# Focused replica lock for the #32 controller / destroy contract.
+#
+# On every PR and push to main:
+#   1. Create the governance multisig + managed canisters through Casals.
+#   2. Assert lasting controllers: multisig is a controller; Casals is not.
+#   3. Destroy the managed canisters as the multisig via one DestroyCanisters
+#      proposal (N ids), not as Casals.
+#   4. Assert those canisters are gone on the local replica.
+#
+# Does not run the full tests/ integration suite (that stays workflow_dispatch
+# in integration.yml). Does not deploy to IC.
+name: Create/destroy lock
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  create-destroy-lock:
+    name: Create → destroy (local replica)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # file_registry/ is required by tests/conftest.py (Casals create path).
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli, ic-wasm, and Motoko tooling
+        run: |
+          npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm ic-mops
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          mops --version || true
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Show toolchain versions
+        run: |
+          icp --version || true
+          python3 -m basilisk --version || true
+          pytest --version
+
+      # tests/conftest.py starts the replica, builds + deploys casals_backend
+      # and the file-registry, then test_create_destroy_lock.py builds the
+      # Motoko multisig from packages/orchestration and drives create → destroy.
+      - name: Run create/destroy lock tests
+        env:
+          CASALS_TOPUP: "50t"
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          pytest tests/test_create_destroy_lock.py -v --tb=short -p no:randomly
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop || true

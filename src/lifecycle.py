@@ -956,6 +956,10 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     try:
         controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
         if controllers:
+            # Assign the id first so _persist_ic_controllers can find this row
+            # (it matches on canister_id). Create reserved the name with an
+            # empty id; without this the tree cache stays blank after handoff.
+            st.canister_id = cid
             yield from _add_controllers(cid, controllers)
     except Exception:
         # Return the allocation instead of leaking an in_use pool entry with a

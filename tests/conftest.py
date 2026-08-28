@@ -194,14 +194,17 @@ def _create_detached() -> str:
 
 
 def registry_store(fr_id: str, namespace: str, path: str, data: bytes) -> str:
-    """Store bytes in the file-registry; return the registry-computed sha256."""
-    arg = json.dumps({
+    """Store bytes in the file-registry; return the registry-computed sha256.
+
+    Always uses ``--args-file`` so the payload never lands on the OS argv
+    (inline ``store_file`` hits E2BIG for Motoko / template WASMs).
+    """
+    res = _registry_call_with_file(fr_id, "store_file", json.dumps({
         "namespace": namespace,
         "path": path,
         "content_b64": base64.b64encode(data).decode("ascii"),
         "content_type": "application/wasm",
-    })
-    res = _parse(_icp(["canister", "call", fr_id, "store_file", _candid_text_arg(arg), "-n", "local"]).stdout)
+    }))
     assert isinstance(res, dict) and res.get("ok") is True, res
     return res["sha256"]
 
