@@ -9,6 +9,7 @@
   import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
+  import { formatCommitDatetime, shortSha } from '$lib/buildIdentity';
 
   let copied = $state(false);
   async function copyPrincipal() {
@@ -338,15 +339,15 @@
         </div>
         <div class="flex justify-between gap-3 sm:col-span-2 pt-2 border-t border-[var(--color-border-primary)]">
           <dt class="text-primary-500">Frontend version</dt>
-          <dd class="font-mono text-primary-900">{__APP_VERSION__}</dd>
+          <dd class="font-mono text-primary-900">{__BUILD_VERSION__}</dd>
         </div>
         <div class="flex justify-between gap-3">
           <dt class="text-primary-500">Build commit</dt>
-          <dd class="font-mono text-primary-900">{__BUILD_COMMIT__}</dd>
+          <dd class="font-mono text-primary-900">{shortSha(__BUILD_COMMIT__)}</dd>
         </div>
         <div class="flex justify-between gap-3">
-          <dt class="text-primary-500">Built at</dt>
-          <dd class="font-mono text-primary-900 text-xs">{new Date(__BUILD_DATE__).toLocaleString()}</dd>
+          <dt class="text-primary-500">Commit datetime</dt>
+          <dd class="font-mono text-primary-900 text-xs">{formatCommitDatetime(__BUILD_TIME__)}</dd>
         </div>
         {#if $principal}
           <div class="flex justify-between gap-3 sm:col-span-2 pt-2 border-t border-[var(--color-border-primary)]">
