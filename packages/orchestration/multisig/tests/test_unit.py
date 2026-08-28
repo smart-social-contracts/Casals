@@ -192,8 +192,11 @@ class TestBatchDestroy:
             "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
             in types
         )
+        assert "#SendCycles : { to : Principal; amount : Nat }" in types
         assert "destroyCanistersOnIc" in main
         assert "forwardReclaimedCycles" in main
+        assert "sendCyclesTo" in main
+        assert "send_cycles" in main
         assert "drainToTreasury" in main
         assert "stop_canister" in main
         assert "delete_canister" in main
@@ -201,6 +204,9 @@ class TestBatchDestroy:
         assert "install_code" in main
         assert 'import SweepWasm "SweepWasm"' in main
         assert 'import Cycles "mo:core/Cycles"' in main
+        did = (root / "multisig.did").read_text()
+        assert "send_cycles : (principal, nat) -> (Result)" in did
+        assert "SendCycles : record { to : principal; amount : nat }" in did
         # Batch execute must not relay through Casals.destroy_canister.
         destroy_fn = main.split("private func destroyCanistersOnIc")[1].split(
             "private func casalsErrorDetail"
@@ -218,8 +224,13 @@ class TestBatchDestroy:
         forward = main.split("private func forwardReclaimedCycles")[1].split(
             "private func destroyCanistersOnIc"
         )[0]
-        assert "deposit_cycles" in forward
+        assert "sendCyclesTo" in forward
         assert "destroy_canister" not in forward
+        send = main.split("private func sendCyclesTo")[1].split(
+            "private func forwardReclaimedCycles"
+        )[0]
+        assert "deposit_cycles" in send
+        assert "destroy_canister" not in send
 
 
 class TestExecuteStatusMapping:

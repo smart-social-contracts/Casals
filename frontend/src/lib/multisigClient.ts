@@ -51,6 +51,10 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
       canister_ids: I.Vec(I.Principal),
       casals_backend: I.Principal,
     }),
+    SendCycles: I.Record({
+      to: I.Principal,
+      amount: I.Nat,
+    }),
   });
   const ProposalStatus = I.Variant({
     pending: I.Null,
@@ -84,6 +88,8 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     propose: I.Func([BatonAction, I.Opt(I.Nat)], [I.Nat], []),
     approve: I.Func([I.Nat], [Result], []),
     reject: I.Func([I.Nat], [Result], []),
+    cycles_balance: I.Func([], [I.Nat], ['query']),
+    send_cycles: I.Func([I.Principal, I.Nat], [Result], []),
   });
 };
 
@@ -145,6 +151,8 @@ function actionSummary(action: Record<string, unknown>): string {
         ? `Destroy canister ${fmtPrincipal(ids?.[0])}`
         : `Destroy ${n} canisters`;
     }
+    case 'SendCycles':
+      return `Send cycles to ${fmtPrincipal(payload?.to)}`;
     default:
       return key;
   }
@@ -246,7 +254,8 @@ export type MultisigActionType =
   | 'UpdateBatonSettings'
   | 'DestroyStand'
   | 'DestroyCanister'
-  | 'DestroyCanisters';
+  | 'DestroyCanisters'
+  | 'SendCycles';
 
 /** Merge add/remove into a full IC controller list (update_settings replaces). */
 export function mergeControllerList(
@@ -410,6 +419,20 @@ export function buildMultisigAction(
         DestroyCanister: {
           casals_backend: Principal.fromText(casals),
           canister_id: Principal.fromText(canisterId),
+        },
+      };
+    }
+    case 'SendCycles': {
+      const to = fieldStr(fields.send_to) || fieldStr(fields.casals_backend);
+      const amountRaw = fieldStr(fields.send_amount);
+      if (!to) throw new Error('Destination principal is required');
+      if (!amountRaw) throw new Error('Cycle amount is required');
+      const amount = BigInt(amountRaw.replace(/_/g, ''));
+      if (amount <= 0n) throw new Error('Cycle amount must be positive');
+      return {
+        SendCycles: {
+          to: Principal.fromText(to),
+          amount,
         },
       };
     }

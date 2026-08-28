@@ -31,7 +31,7 @@ The Baton never upgrades itself. The multisig upgrades Batons with a plain `inst
 | Path | Who | Mechanism |
 |------|-----|-----------|
 | **Portal / realm teardown** | `realm_installer` via `delegated_destroy_principals` | Direct Casals `destroy_stand` (no multisig vote) |
-| **Casals Cycles ops** | Multisig signers | Propose `DestroyCanisters` (N ids + Casals treasury, one proposal) → threshold auto-executes → multisig sweeps cycles to the conductor, then IC `stop_canister` / `delete_canister` |
+| **Casals Cycles ops** | Multisig signers | Propose `DestroyCanisters` (N ids + Casals treasury, one proposal) → threshold auto-executes → multisig sweeps + deletes as `aaaaa-aa`, then `send_cycles` / IC `deposit_cycles` any refund to the conductor |
 | **Emergency** | Casals IC controllers | Direct `destroy_stand` / `destroy_canister` from Cycles UI |
 
 Execute failures land as proposal status `#failed` (audit `execute_failed`); human `reject` stays `#rejected`.

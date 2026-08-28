@@ -1132,8 +1132,12 @@ def test_batch_destroy_is_one_proposal_executed_as_multisig():
     assert "destroy_canister" not in fn
     assert "forwardReclaimedCycles" in fn
     assert "drainToTreasury" in fn
+    assert "sendCyclesTo" in main
     assert "deposit_cycles" in main
     assert "install_code" in main
+    assert "send_cycles" in (
+        root / "packages/orchestration/multisig/multisig.did"
+    ).read_text()
 
 
 def test_create_time_controllers_include_casals_temporarily(monkeypatch):

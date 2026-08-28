@@ -312,6 +312,16 @@ def test_parse_nat_motoko_underscores():
     assert _parse_nat("100") == 100
 
 
+def test_multisig_candid_has_send_cycles():
+    """Live Motoko was configure/propose/approve/reject only — no send path."""
+    did = os.path.join(
+        REPO_ROOT, "packages", "orchestration", "multisig", "multisig.did"
+    )
+    text = open(did, encoding="utf-8").read()
+    assert "send_cycles : (principal, nat) -> (Result)" in text
+    assert "SendCycles : record { to : principal; amount : nat }" in text
+
+
 class TestCreateDestroyLock:
     """Full create → controller lock → one DestroyCanisters proposal."""
 

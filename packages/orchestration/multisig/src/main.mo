@@ -206,24 +206,33 @@ persistent actor Self {
     #err(lastErr # ": " # Principal.toText(cid));
   };
 
-  /// If ``delete_canister`` refunds leftovers to this caller, deposit that
-  /// increase to the Casals treasury. No-op when the replica burns instead.
-  private func forwardReclaimedCycles(treasury : Principal, before : Nat) : async () {
-    if (Principal.isAnonymous(treasury) or treasury == Principal.fromActor(Self)) {
-      return;
+  /// Push cycles from this multisig to ``to`` via IC ``deposit_cycles``.
+  /// Anyone may deposit; Casals does not need to be a controller.
+  private func sendCyclesTo(to : Principal, amount : Nat) : async Result {
+    if (Principal.isAnonymous(to) or to == Principal.fromActor(Self)) {
+      return #err("invalid destination");
     };
-    let after = Cycles.balance();
-    if (after <= before) { return };
-    let send = after - before;
+    if (amount == 0) { return #err("amount must be positive") };
+    if (amount > Cycles.balance()) { return #err("insufficient cycles") };
     let ic00 = actor ("aaaaa-aa") : actor {
       deposit_cycles : shared { canister_id : Principal } -> async ();
     };
     try {
-      await (with cycles = send) ic00.deposit_cycles({ canister_id = treasury });
-      log("cycles_forwarded", Nat.toText(send));
+      await (with cycles = amount) ic00.deposit_cycles({ canister_id = to });
+      log("cycles_sent", Principal.toText(to) # " " # Nat.toText(amount));
+      #ok;
     } catch (_) {
-      log("cycles_forward_failed", Nat.toText(send));
+      log("cycles_send_failed", Principal.toText(to) # " " # Nat.toText(amount));
+      #err("deposit_cycles failed");
     };
+  };
+
+  /// If ``delete_canister`` refunds leftovers to this caller, deposit that
+  /// increase to the Casals treasury. No-op when the replica burns instead.
+  private func forwardReclaimedCycles(treasury : Principal, before : Nat) : async () {
+    let after = Cycles.balance();
+    if (after <= before) { return };
+    ignore await sendCyclesTo(treasury, after - before);
   };
 
   /// Stop + drain + delete each canister as this actor (the governance
@@ -414,6 +423,9 @@ persistent actor Self {
       case (#DestroyCanisters(a)) {
         await destroyCanistersOnIc(a.canister_ids, a.casals_backend);
       };
+      case (#SendCycles(a)) {
+        await sendCyclesTo(a.to, a.amount);
+      };
     };
   };
 
@@ -506,5 +518,12 @@ persistent actor Self {
   /// reclaimed cycles left this canister after DestroyCanisters.
   public query func cycles_balance() : async Nat {
     Cycles.balance();
+  };
+
+  /// Signer-only: deposit ``amount`` cycles from this multisig to ``to``.
+  /// Same path DestroyCanisters uses after IC refunds leftovers here.
+  public shared ({ caller }) func send_cycles(to : Principal, amount : Nat) : async Result {
+    assert (isSigner(caller));
+    await sendCyclesTo(to, amount);
   };
 };
