@@ -1378,6 +1378,7 @@
       try {
         const action = buildMultisigAction('DestroyCanisters', {
           canister_ids: canisterIds,
+          casals_backend: backendCanisterId(),
         });
         const pid = await multisigPropose(msId, action, id);
         proposed = 1;

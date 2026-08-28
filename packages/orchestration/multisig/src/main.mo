@@ -1,4 +1,5 @@
 import Array "mo:core/Array";
+import Cycles "mo:core/Cycles";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
@@ -6,7 +7,7 @@ import Time "mo:core/Time";
 
 import Types "types";
 
-persistent actor {
+persistent actor Self {
   type Capability = Types.Capability;
   type BatonAction = Types.BatonAction;
   type ProposalStatus = Types.ProposalStatus;
@@ -102,9 +103,32 @@ persistent actor {
     Text.contains(resp, #text "\"ok\": true") or Text.contains(resp, #text "\"ok\":true");
   };
 
+  /// IC ``delete_canister`` refunds the target's remaining cycles to this
+  /// caller (the multisig). Deposit that increase to the Casals treasury.
+  /// Does not add Casals as a controller — ``deposit_cycles`` is open.
+  private func forwardReclaimedCycles(treasury : Principal, before : Nat) : async () {
+    if (Principal.isAnonymous(treasury) or treasury == Principal.fromActor(Self)) {
+      return;
+    };
+    let after = Cycles.balance();
+    if (after <= before) { return };
+    let send = after - before;
+    let ic00 = actor ("aaaaa-aa") : actor {
+      deposit_cycles : shared { canister_id : Principal } -> async ();
+    };
+    try {
+      await (with cycles = send) ic00.deposit_cycles({ canister_id = treasury });
+      log("cycles_forwarded", Nat.toText(send));
+    } catch (_) {
+      log("cycles_forward_failed", Nat.toText(send));
+    };
+  };
+
   /// Stop + delete each canister as this actor (the governance multisig).
   /// Casals is never a controller; only the multisig may call management.
-  private func destroyCanistersOnIc(ids : [Principal]) : async Result {
+  /// After successful deletes, reclaimed cycles are deposited to ``treasury``.
+  private func destroyCanistersOnIc(ids : [Principal], treasury : Principal) : async Result {
+    let before = Cycles.balance();
     let ic00 = actor ("aaaaa-aa") : actor {
       stop_canister : shared { canister_id : Principal } -> async ();
       delete_canister : shared { canister_id : Principal } -> async ();
@@ -118,9 +142,11 @@ persistent actor {
       try {
         await ic00.delete_canister({ canister_id = cid });
       } catch (_) {
+        await forwardReclaimedCycles(treasury, before);
         return #err("delete_canister failed: " # Principal.toText(cid));
       };
     };
+    await forwardReclaimedCycles(treasury, before);
     #ok;
   };
 
@@ -271,10 +297,10 @@ persistent actor {
         } catch (_) { #err("destroy_stand failed") };
       };
       case (#DestroyCanister(a)) {
-        await destroyCanistersOnIc([a.canister_id]);
+        await destroyCanistersOnIc([a.canister_id], a.casals_backend);
       };
       case (#DestroyCanisters(a)) {
-        await destroyCanistersOnIc(a.canister_ids);
+        await destroyCanistersOnIc(a.canister_ids, a.casals_backend);
       };
     };
   };
@@ -362,5 +388,11 @@ persistent actor {
 
   public query func list_events() : async [AuditEvent] {
     event_log;
+  };
+
+  /// Public cycle balance — used by the create/destroy lock to prove
+  /// reclaimed cycles left this canister after DestroyCanisters.
+  public query func cycles_balance() : async Nat {
+    Cycles.balance();
   };
 };

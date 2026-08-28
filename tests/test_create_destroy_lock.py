@@ -7,6 +7,7 @@ Product lock (#32 / ba20242):
   Casals temporarily so install can run, then drop Casals.
 - Approved destroy is ONE ``DestroyCanisters`` proposal with N ids,
   executed as the multisig against ``aaaaa-aa``, not as Casals.
+- Reclaimed cycles land on the Casals treasury, not the multisig.
 
 This file is the automatic CI coverage for that path. It uses the Casals
 replica fixtures in ``tests/conftest.py`` and builds the Motoko multisig
@@ -181,6 +182,25 @@ def _parse_nat(output: str) -> int:
     raise AssertionError(f"expected nat, got {output!r}")
 
 
+# Reclaimed cycles from two ~2T creates should far exceed this.
+_MIN_TREASURY_GAIN = 100_000_000_000  # 100B
+# Multisig may keep a tiny operational remainder, not the reclaimed pile.
+_MAX_MULTISIG_KEEP = 10_000_000_000  # 10B
+
+
+def _treasury_cycles() -> int:
+    """Casals conductor balance via refresh_treasury (own cycles, no status)."""
+    res = call_canister("refresh_treasury")
+    assert isinstance(res, dict), res
+    treasury = res.get("treasury") or {}
+    return int(treasury.get("balance") or 0)
+
+
+def _multisig_cycles(cid: str) -> int:
+    """Public query — no controller needed (anonymous status is IC0542)."""
+    return _parse_nat(_call_raw(cid, "cycles_balance", "()"))
+
+
 def _tree_canister(tree: dict, name: str) -> dict:
     for sec in tree.get("sections") or []:
         for stand in sec.get("stands") or []:
@@ -325,11 +345,15 @@ class TestCreateDestroyLock:
     def test_04_destroy_canisters_as_multisig(self, lock_env):
         ids = [item["canister_id"] for item in lock_env["managed"]]
         assert len(ids) >= 2
+        treasury = lock_env["casals_id"]
         vec = "; ".join(f'principal "{cid}"' for cid in ids)
         candid = (
             f"(variant {{ DestroyCanisters = record {{ "
-            f"canister_ids = vec {{ {vec} }} }} }}, null)"
+            f"canister_ids = vec {{ {vec} }}; "
+            f'casals_backend = principal "{treasury}" }} }}, null)'
         )
+        treasury_before = _treasury_cycles()
+        msig_before = _multisig_cycles(lock_env["multisig_id"])
         before = _call_raw(lock_env["multisig_id"], "list_proposals", "()")
         raw = _call_raw(lock_env["multisig_id"], "propose", candid)
         proposal_id = _parse_nat(raw)
@@ -339,14 +363,15 @@ class TestCreateDestroyLock:
             f"({proposal_id} : nat)",
         )
         after = _call_raw(lock_env["multisig_id"], "list_proposals", "()")
+        events = _call_raw(lock_env["multisig_id"], "list_events", "()")
 
         assert "DestroyCanisters" in prop, prop
         for cid in ids:
             assert cid in prop, (cid, prop)
+        assert treasury in prop, (treasury, prop)
         assert re.search(r"\bexecuted\b", prop), (
             f"DestroyCanisters proposal {proposal_id} did not execute as the "
-            f"multisig:\n{prop}\nevents:\n"
-            f"{_call_raw(lock_env['multisig_id'], 'list_events', '()')}"
+            f"multisig:\n{prop}\nevents:\n{events}"
         )
         assert "failed" not in prop.split("status")[-1][:80].lower()
         # One new proposal, not one per id.
@@ -360,3 +385,25 @@ class TestCreateDestroyLock:
                 f"{item['name']} ({item['canister_id']}) still exists on the "
                 f"replica after DestroyCanisters"
             )
+
+        treasury_after = _treasury_cycles()
+        msig_after = _multisig_cycles(lock_env["multisig_id"])
+        treasury_gain = treasury_after - treasury_before
+        msig_gain = msig_after - msig_before
+        assert treasury_gain >= _MIN_TREASURY_GAIN, (
+            f"Casals treasury did not receive reclaimed cycles after "
+            f"DestroyCanisters: before={treasury_before} after={treasury_after} "
+            f"gain={treasury_gain} (min {_MIN_TREASURY_GAIN}). "
+            f"multisig before={msig_before} after={msig_after} gain={msig_gain}. "
+            f"events:\n{events}"
+        )
+        assert msig_gain < treasury_gain, (
+            f"multisig kept the reclaimed cycles instead of depositing them to "
+            f"Casals: treasury_gain={treasury_gain} msig_gain={msig_gain}. "
+            f"events:\n{events}"
+        )
+        assert msig_gain < _MAX_MULTISIG_KEEP, (
+            f"multisig retained {msig_gain} reclaimed cycles "
+            f"(max {_MAX_MULTISIG_KEEP}); they must land on Casals {treasury}. "
+            f"treasury_gain={treasury_gain}. events:\n{events}"
+        )

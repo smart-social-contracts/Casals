@@ -1090,33 +1090,52 @@ def test_batch_destroy_is_one_proposal_executed_as_multisig():
     from pathlib import Path
 
     ids = ["cid-1", "cid-2", "cid-3"]
-    action = {"DestroyCanisters": {"canister_ids": ids}}
+    treasury = "casals-treasury"
+    action = {"DestroyCanisters": {"canister_ids": ids, "casals_backend": treasury}}
     assert list(action.keys()) == ["DestroyCanisters"]
     assert len(action["DestroyCanisters"]["canister_ids"]) == 3
+    assert action["DestroyCanisters"]["casals_backend"] == treasury
 
-    stopped, deleted, casals_calls = [], [], []
+    stopped, deleted, casals_calls, deposits = [], [], [], []
+    balances = {"multisig": 100, "treasury": 5}
 
-    def execute_as_multisig(canister_ids):
+    def execute_as_multisig(canister_ids, dest):
+        before = balances["multisig"]
         for cid in canister_ids:
             stopped.append(cid)
             deleted.append(cid)
-        return {"executor": "multisig", "via": "aaaaa-aa", "proposals": 1}
+            balances["multisig"] += 1_000
+        reclaimed = balances["multisig"] - before
+        deposits.append((dest, reclaimed))
+        balances["multisig"] -= reclaimed
+        balances["treasury"] += reclaimed
+        return {"executor": "multisig", "via": "aaaaa-aa", "proposals": 1, "treasury": dest}
 
-    result = execute_as_multisig(action["DestroyCanisters"]["canister_ids"])
-    assert result == {"executor": "multisig", "via": "aaaaa-aa", "proposals": 1}
+    result = execute_as_multisig(action["DestroyCanisters"]["canister_ids"], treasury)
+    assert result == {
+        "executor": "multisig", "via": "aaaaa-aa", "proposals": 1, "treasury": treasury,
+    }
     assert stopped == ids and deleted == ids
     assert casals_calls == []
+    assert deposits == [(treasury, 3_000)]
+    assert balances["treasury"] == 3_005
+    assert balances["multisig"] == 100
 
     root = Path(__file__).resolve().parents[1]
     types = (root / "packages/orchestration/multisig/src/types.mo").read_text()
     main = (root / "packages/orchestration/multisig/src/main.mo").read_text()
-    assert "#DestroyCanisters : { canister_ids : [Principal] }" in types
+    assert (
+        "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
+        in types
+    )
     fn = main.split("private func destroyCanistersOnIc")[1].split(
         "private func casalsErrorDetail"
     )[0]
     assert 'actor ("aaaaa-aa")' in fn
     assert "stop_canister" in fn and "delete_canister" in fn
     assert "destroy_canister" not in fn
+    assert "forwardReclaimedCycles" in fn
+    assert "deposit_cycles" in main
 
 
 def test_create_time_controllers_include_casals_temporarily(monkeypatch):

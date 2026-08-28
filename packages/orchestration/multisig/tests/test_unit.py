@@ -82,35 +82,65 @@ def casals_response_ok(resp: str) -> bool:
     return '"ok": true' in resp or '"ok":true' in resp
 
 
-def destroy_canisters_proposal(canister_ids: list[str]) -> dict:
+def destroy_canisters_proposal(canister_ids: list[str], treasury: str = "casals-treasury") -> dict:
     """One BatonAction.DestroyCanisters payload — not one proposal per id."""
-    return {"DestroyCanisters": {"canister_ids": list(canister_ids)}}
+    return {
+        "DestroyCanisters": {
+            "canister_ids": list(canister_ids),
+            "casals_backend": treasury,
+        }
+    }
 
 
-def execute_destroy_canisters_as_multisig(canister_ids: list[str], management) -> dict:
-    """Mirror Motoko destroyCanistersOnIc: the multisig calls IC management."""
+def execute_destroy_canisters_as_multisig(
+    canister_ids: list[str],
+    management,
+    treasury: str,
+    balances: dict,
+) -> dict:
+    """Mirror Motoko destroyCanistersOnIc + forwardReclaimedCycles.
+
+    IC delete_canister refunds remaining cycles to the multisig (the caller).
+    The same execute deposits that increase to the Casals treasury. Casals is
+    never added as a controller.
+    """
+    before = int(balances.get("multisig") or 0)
     for cid in canister_ids:
         management.stop_canister(cid)
-        management.delete_canister(cid)
+        refunded = management.delete_canister(cid)
+        balances["multisig"] = int(balances.get("multisig") or 0) + int(refunded or 0)
+    reclaimed = int(balances.get("multisig") or 0) - before
+    if reclaimed > 0 and treasury:
+        management.deposit_cycles(treasury, reclaimed)
+        balances["multisig"] = int(balances.get("multisig") or 0) - reclaimed
+        balances["treasury"] = int(balances.get("treasury") or 0) + reclaimed
     return {
         "proposals": 1,
         "canister_ids": list(canister_ids),
         "executor": "multisig",
         "via": "aaaaa-aa",
+        "treasury": treasury,
+        "reclaimed": reclaimed,
     }
 
 
 class FakeManagement:
-    def __init__(self):
+    def __init__(self, refunds: dict[str, int] | None = None):
         self.stopped: list[str] = []
         self.deleted: list[str] = []
         self.casals_calls: list[str] = []
+        self.deposits: list[tuple[str, int]] = []
+        self.refunds = refunds or {}
 
     def stop_canister(self, cid: str) -> None:
         self.stopped.append(cid)
 
-    def delete_canister(self, cid: str) -> None:
+    def delete_canister(self, cid: str) -> int:
         self.deleted.append(cid)
+        return int(self.refunds.get(cid) or 0)
+
+    def deposit_cycles(self, dest: str, amount: int) -> None:
+        self.deposits.append((dest, int(amount)))
 
     def destroy_canister(self, cid: str) -> None:
         self.casals_calls.append(cid)
@@ -119,19 +149,26 @@ class FakeManagement:
 class TestBatchDestroy:
     def test_one_proposal_n_ids_executed_as_multisig(self):
         ids = ["aaaaa-aa", "bbbbb-bb", "ccccc-cc"]
-        action = destroy_canisters_proposal(ids)
+        treasury = "casals-treasury"
+        action = destroy_canisters_proposal(ids, treasury)
         assert list(action.keys()) == ["DestroyCanisters"]
         assert action["DestroyCanisters"]["canister_ids"] == ids
+        assert action["DestroyCanisters"]["casals_backend"] == treasury
 
-        mgmt = FakeManagement()
-        result = execute_destroy_canisters_as_multisig(ids, mgmt)
+        mgmt = FakeManagement(refunds={cid: 1_000 for cid in ids})
+        balances = {"multisig": 50, "treasury": 10}
+        result = execute_destroy_canisters_as_multisig(ids, mgmt, treasury, balances)
         assert result["proposals"] == 1
         assert result["canister_ids"] == ids
         assert result["executor"] == "multisig"
         assert result["via"] == "aaaaa-aa"
+        assert result["treasury"] == treasury
         assert mgmt.stopped == ids
         assert mgmt.deleted == ids
         assert mgmt.casals_calls == []
+        assert mgmt.deposits == [(treasury, 3_000)]
+        assert balances["treasury"] == 3_010
+        assert balances["multisig"] == 50
 
     def test_motoko_destroy_canisters_calls_management_not_casals(self):
         from pathlib import Path
@@ -139,16 +176,28 @@ class TestBatchDestroy:
         root = Path(__file__).resolve().parents[1]
         types = (root / "src" / "types.mo").read_text()
         main = (root / "src" / "main.mo").read_text()
-        assert "#DestroyCanisters : { canister_ids : [Principal] }" in types
+        assert (
+            "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
+            in types
+        )
         assert "destroyCanistersOnIc" in main
+        assert "forwardReclaimedCycles" in main
         assert "stop_canister" in main
         assert "delete_canister" in main
+        assert "deposit_cycles" in main
+        assert 'import Cycles "mo:core/Cycles"' in main
         # Batch execute must not relay through Casals.destroy_canister.
         destroy_fn = main.split("private func destroyCanistersOnIc")[1].split(
             "private func casalsErrorDetail"
         )[0]
         assert "destroy_canister" not in destroy_fn
         assert 'actor ("aaaaa-aa")' in destroy_fn
+        assert "forwardReclaimedCycles" in destroy_fn
+        helper = main.split("private func forwardReclaimedCycles")[1].split(
+            "private func destroyCanistersOnIc"
+        )[0]
+        assert "deposit_cycles" in helper
+        assert "destroy_canister" not in helper
 
 
 class TestExecuteStatusMapping:
