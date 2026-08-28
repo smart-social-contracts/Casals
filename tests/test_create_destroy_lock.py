@@ -65,24 +65,30 @@ def _identity_principal() -> str:
 
 
 def _casals_id() -> str:
-    """Casals id via ``icp canister id``. Never status a managed canister.
+    """Casals id from the deploy mapping. Never status a managed canister.
 
-    Status of ``casals_backend`` is only a last resort — we deployed it, so
-    the test identity is its controller. Status of create/handoff canisters
-    as anonymous ``2vxsx-fae`` is IC0542 after #32.
+    icp-cli 1.3 has no ``canister id`` subcommand. Named canisters take
+    ``-e local``, not ``-n``. Status of create/handoff canisters as
+    anonymous ``2vxsx-fae`` is IC0542 after #32.
     """
-    r = _icp(["canister", "id", CANISTER_NAME, "-n", "local"], check=False)
-    text = (r.stdout or "").strip()
-    token = text.split()[-1] if text else ""
+    mapping = os.path.join(REPO_ROOT, ".icp", "cache", "mappings", "local.ids.json")
+    if os.path.isfile(mapping):
+        with open(mapping, encoding="utf-8") as f:
+            data = json.load(f)
+        cid = str(data.get(CANISTER_NAME) or "").strip()
+        if cid:
+            return cid
+    r = _icp(
+        ["canister", "status", "--id-only", CANISTER_NAME, "-e", "local"],
+        check=False,
+    )
+    token = (r.stdout or "").strip().split()[-1] if (r.stdout or "").strip() else ""
     if re.fullmatch(r"[a-z0-9-]+-cai|[a-z0-9-]{10,}", token):
         return token
-    out = _icp(["canister", "status", CANISTER_NAME, "-n", "local"]).stdout
-    m = re.search(r"Canister Id:\s*([a-z0-9-]+)", out)
-    if not m:
-        raise AssertionError(
-            f"could not parse casals_backend id from:\n{out}\nid:\n{text}"
-        )
-    return m.group(1)
+    raise AssertionError(
+        f"could not resolve {CANISTER_NAME} id from {mapping} or --id-only:\n"
+        f"{(r.stdout or '')}\n{(r.stderr or '')}"
+    )
 
 
 def _build_multisig_wasm() -> str:
