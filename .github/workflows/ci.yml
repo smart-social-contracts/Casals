@@ -69,6 +69,10 @@ jobs:
       - name: Build frontend
         run: npm --prefix frontend run build
 
+      # Orchestra paints from the last cached tree without waiting on live get_tree.
+      - name: Orchestra tree-cache unit test
+        run: node --experimental-strip-types --test frontend/src/lib/treeCache.test.ts
+
   orchestration-unit:
     name: Orchestration unit tests
     runs-on: ubuntu-latest
