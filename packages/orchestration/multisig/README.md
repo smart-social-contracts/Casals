@@ -8,7 +8,7 @@ Minimal n-of-m multisig canister. Sole IC controller and top commander of all Ba
 - **Single threshold** — per-action-type thresholds deferred.
 - **Default proposal expiry** — constructor argument `proposal_expiry_secs` (suggest 7 days = 604800).
 - **Execute failure ≠ reject** — failed actions land as `#failed` (audit `execute_failed`); signer `reject` stays `#rejected`.
-- **Destroy ops (v1.2)** — `DestroyStand` / `DestroyCanister` call Casals `destroy_stand` / `destroy_canister` (Casals must trust the multisig principal). Payload includes `casals_backend`.
+- **Destroy ops (v1.3)** — `DestroyCanisters` accepts many canister IDs in one proposal. Approval executes `stop_canister` + `delete_canister` on the IC management canister **as the multisig** (the sole platform controller). `DestroyCanister` uses the same IC path for a single id. `DestroyStand` still calls Casals `destroy_stand` (portal / delegated teardown).
 
 ## Build
 

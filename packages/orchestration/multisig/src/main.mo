@@ -102,6 +102,28 @@ persistent actor {
     Text.contains(resp, #text "\"ok\": true") or Text.contains(resp, #text "\"ok\":true");
   };
 
+  /// Stop + delete each canister as this actor (the governance multisig).
+  /// Casals is never a controller; only the multisig may call management.
+  private func destroyCanistersOnIc(ids : [Principal]) : async Result {
+    let ic00 = actor ("aaaaa-aa") : actor {
+      stop_canister : shared { canister_id : Principal } -> async ();
+      delete_canister : shared { canister_id : Principal } -> async ();
+    };
+    for (cid in ids.vals()) {
+      try {
+        await ic00.stop_canister({ canister_id = cid });
+      } catch (_) {
+        // already stopped or not running
+      };
+      try {
+        await ic00.delete_canister({ canister_id = cid });
+      } catch (_) {
+        return #err("delete_canister failed: " # Principal.toText(cid));
+      };
+    };
+    #ok;
+  };
+
   private func casalsErrorDetail(resp : Text) : Text {
     // Prefer the JSON body when present; fall back to a short label.
     if (Text.size(resp) == 0) { "casals returned empty response" } else { resp };
@@ -249,14 +271,10 @@ persistent actor {
         } catch (_) { #err("destroy_stand failed") };
       };
       case (#DestroyCanister(a)) {
-        let casals = actor (Principal.toText(a.casals_backend)) : actor {
-          destroy_canister : shared Text -> async Text;
-        };
-        let payload = "{\"canister_id\":\"" # Principal.toText(a.canister_id) # "\"}";
-        try {
-          let resp = await casals.destroy_canister(payload);
-          if (casalsResponseOk(resp)) { #ok } else { #err(casalsErrorDetail(resp)) };
-        } catch (_) { #err("destroy_canister failed") };
+        await destroyCanistersOnIc([a.canister_id]);
+      };
+      case (#DestroyCanisters(a)) {
+        await destroyCanistersOnIc(a.canister_ids);
       };
     };
   };

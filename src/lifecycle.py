@@ -693,74 +693,38 @@ def _parse_extra_controller_principals() -> list:
     return []
 
 
-def _resolve_provision_controllers(dk, w=None):
-    """Generator: controller set for a canister Casals is provisioning.
+def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
+    """Final IC controller set after Casals finishes provisioning a canister.
 
-    Casals, optional monitor, stand commanders, and controllers inherited from
-    the commander principals. When a multisig governance canister is in the
-    orchestra it is included as the first co-controller — but never the sole
-    one: Casals must keep direct control so provisioning can proceed
-    (asset grants, baton hand-offs), and the commander-inherited set is what
-    authorizes the installer to drive post-install bootstrap on new stands
-    (consumer backends trust their IC controllers for follow-on install calls).
-    Tightening to sole-multisig control is an explicit post-deploy governance
-    action, not part of provisioning.
+    Casals is a *temporary* controller at CMC/create time so it can install
+    WASM and provision assets. This list then replaces that set. Casals itself
+    must never remain a controller — only the governance multisig is a
+    platform controller. Operator-configured extras (test-mode deployer, etc.)
+    may be included; the monitor and commander principals are not.
 
-    Baton canisters get [multisig] (+ extra_controller_principals). Other
-    canisters keep Casals in the set during provisioning; application canisters are
-    tightened to [baton] (+ extras) by orchestration_hand_to_baton.
+    The multisig canister is self-controlled (its own id, or ``canister_id``
+    while the record is still being finalized). Other canisters get
+    ``[multisig]`` (+ extras).
     """
-    s = _settings()
-    self_id = ic.id().to_str()
     extra = _parse_extra_controller_principals()
+    self_id = ic.id().to_str()
     wasm_type = ""
     wasm_key = ""
     if w is not None:
         wasm_type = (getattr(w, "wasm_type", None) or "").strip()
         wasm_key = (getattr(w, "key", None) or "").strip()
 
-    is_baton = wasm_type == "baton" or wasm_key.startswith("orchestration-baton")
     is_multisig = wasm_type == "multisig" or wasm_key.startswith("orchestration-multisig")
-
-    if is_baton:
-        mid = _governance_multisig_id()
-        base = ([mid] if mid else [self_id]) + extra
-        return base[:MAX_CONTROLLERS]
+    mid = _governance_multisig_id()
+    cid = (canister_id or "").strip()
 
     if is_multisig:
-        return _merge_controllers([self_id], extra)[:MAX_CONTROLLERS]
+        own = cid or mid
+        base = [own] if own else []
+        return [p for p in _merge_controllers(base, extra) if p != self_id][:MAX_CONTROLLERS]
 
-    base = []
-    mid = _governance_multisig_id()
-    if mid:
-        base.append(mid)
-    base.append(self_id)
-    if s.monitor_enabled and s.monitor_principal:
-        base.append(s.monitor_principal.strip())
-
-    inherited = []
-    for commander in _commanders_for_stand(dk):
-        inherited.append(commander)
-        inherited.extend((yield from _fetch_canister_controllers(commander)))
-
-    merged = _merge_controllers(base, inherited, extra)
-    # The IC caps a canister at 10 controllers and rejects longer lists at the
-    # candid layer, so an oversized union must be truncated. Keep canister
-    # principals (multisig/baton, Casals, monitor, commanders — the governance
-    # topology) ahead of commander-inherited self-authenticating (human/dev)
-    # identities: humans co-controlling the commander can still act on the new
-    # canister through Casals or the baton, so they are the safe ones to drop.
-    if len(merged) > MAX_CONTROLLERS:
-        canisters = [p for p in merged if _is_canister_principal(p)]
-        humans = [p for p in merged if not _is_canister_principal(p)]
-        kept = (canisters + humans)[:MAX_CONTROLLERS]
-        dropped = [p for p in merged if p not in kept]
-        _log.warning(
-            f"controller set for stand '{dk.name}' has {len(merged)} principals; "
-            f"IC allows {MAX_CONTROLLERS} — dropping {dropped}"
-        )
-        merged = kept
-    return merged
+    base = [mid] if mid else []
+    return [p for p in _merge_controllers(base, extra) if p != self_id][:MAX_CONTROLLERS]
 
 
 def _is_canister_principal(p: str) -> bool:
@@ -772,7 +736,7 @@ def _is_canister_principal(p: str) -> bool:
 
 def _ensure_provision_controllers_gen(canister_id: str, dk):
     """Generator: apply or cache the desired IC controller set for a canister."""
-    desired = yield from _resolve_provision_controllers(dk)
+    desired = _resolve_provision_controllers(dk, canister_id=canister_id)
     if not desired:
         return
     self_id = ic.id().to_str()
@@ -839,7 +803,18 @@ def _spec_target_subnet(sec_spec: dict, stand_spec: dict):
 
 # ── Canister allocation ────────────────────────────────────────────────────────
 
-def _create_canister_via_cmc(self_id: str, endow: int, subnet: str, subnet_type: str):
+def _create_time_controllers() -> list:
+    """Temporary create-time controller list.
+
+    Casals must be present so install/provision can run; the governance
+    multisig is included when known. After provision, Casals is dropped.
+    """
+    self_id = ic.id().to_str()
+    mid = _governance_multisig_id()
+    return _merge_controllers([self_id], [mid] if mid else [])
+
+
+def _create_canister_via_cmc(controllers: list, endow: int, subnet: str, subnet_type: str):
     """Generator: create a canister on a chosen subnet through the CMC,
     attaching ``endow`` cycles, and return its id (str). ``subnet`` pins an
     explicit subnet principal; otherwise ``subnet_type`` asks the CMC for one
@@ -850,8 +825,9 @@ def _create_canister_via_cmc(self_id: str, endow: int, subnet: str, subnet_type:
         selection = 'opt variant { Filter = record { subnet_type = opt "' + subnet_type + '" } }'
     else:
         selection = "null"
+    ctl_vec = "; ".join(f'principal "{c}"' for c in controllers if c)
     arg = ('(record { subnet_selection = ' + selection +
-           '; settings = opt record { controllers = opt vec { principal "' + self_id + '" } } })')
+           '; settings = opt record { controllers = opt vec { ' + ctl_vec + ' } } })')
     res = yield ic.call_raw(
         Principal.from_str(CMC_CANISTER_ID), "create_canister", ic.candid_encode(arg), endow)
     reply = unwrap_call_result(res)
@@ -889,13 +865,13 @@ def _allocate_canister(subnet: str = "", subnet_type: str = ""):
         )
         _append_event("pool_ghost_evicted", cid, {"subnet": subnet or subnet_type or "default"})
         _pool_evict(cid)
-    self_id = ic.id().to_str()
     endow = int(_settings().create_cycles or 0) or CREATE_CYCLES
+    create_ctls = _create_time_controllers()
     if subnet or subnet_type:
-        new_id_str = yield from _create_canister_via_cmc(self_id, endow, subnet, subnet_type)
+        new_id_str = yield from _create_canister_via_cmc(create_ctls, endow, subnet, subnet_type)
     else:
         create_res = yield management_canister.create_canister(
-            {"settings": {"controllers": [Principal.from_str(self_id)]}}
+            {"settings": {"controllers": [Principal.from_str(c) for c in create_ctls]}}
         ).with_cycles(endow)
         created = unwrap_call_result(create_res)
         new_id = created.get("canister_id") if isinstance(created, dict) else getattr(created, "canister_id", None)
@@ -968,7 +944,17 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
 
     try:
-        controllers = yield from _resolve_provision_controllers(dk, w)
+        yield from _set_log_visibility(cid, True)
+    except Exception as lv:
+        _log.error(f"could not set log_visibility for {cid}: {lv}")
+
+    _append_event("verifying_hash", cid, {"wasm_key": w.key})
+    yield from _maybe_provision_assets(cid, w, dk)
+
+    # Hand off last: Casals is only a temporary create-time controller so it
+    # can install + provision. The final set is the multisig (never Casals).
+    try:
+        controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
         if controllers:
             yield from _add_controllers(cid, controllers)
     except Exception:
@@ -977,14 +963,6 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         _pool_free(cid)
         st.delete()
         raise
-
-    try:
-        yield from _set_log_visibility(cid, True)
-    except Exception as lv:
-        _log.error(f"could not set log_visibility for {cid}: {lv}")
-
-    _append_event("verifying_hash", cid, {"wasm_key": w.key})
-    yield from _maybe_provision_assets(cid, w, dk)
 
     # Finalize the reserved entity with the actual installed values.
     st.canister_id = cid
@@ -1040,14 +1018,14 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
             raise Exception(f"hash mismatch after install: expected {w.wasm_hash}, got {actual}")
         wasm_hash = actual
         status = CanisterStatus.INSTALLED
-        controllers = yield from _resolve_provision_controllers(dk, w)
-        if controllers:
-            yield from _add_controllers(cid, controllers)
         try:
             yield from _set_log_visibility(cid, True)
         except Exception as lv:
             _log.error(f"could not set log_visibility for {cid}: {lv}")
         yield from _maybe_provision_assets(cid, w, dk)
+        controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
+        if controllers:
+            yield from _add_controllers(cid, controllers)
     else:
         try:
             yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})

@@ -2679,12 +2679,12 @@ def set_canister_controllers(args: text) -> Async[text]:
     """Replace the IC controller list of a managed canister.
 
     Controller-only (NOT delegatable to stand commanders): changing controllers
-    is what keeps the orchestra sovereign, so a stand commander must never be
-    able to remove Casals from its own canister and escape.
+    is what keeps the orchestra sovereign. Casals itself must not be added —
+    the governance multisig is the platform controller.
 
     Args (JSON): one of {canister: <registered name>} or {canister_id: <raw id>},
-    plus {controllers: [principal, ...]} (the full new list). As a safety net the
-    new list must include Casals itself unless {force: true} is given.
+    plus {controllers: [principal, ...]} (the full new list). Refuses to add
+    Casals unless {force: true} is given.
     """
     try:
         _require_admin()
@@ -2706,10 +2706,11 @@ def set_canister_controllers(args: text) -> Async[text]:
         if not controllers:
             return _err("'controllers' must be a non-empty list of principals")
         self_id = ic.id().to_str()
-        if self_id not in controllers and not params.get("force"):
+        if self_id in controllers and not params.get("force"):
             return _err(
-                "refusing to drop Casals from the controller list "
-                "(add Casals' own principal, or pass force=true to override)")
+                "refusing to add Casals as a controller "
+                "(the governance multisig is the platform controller; "
+                "pass force=true to override)")
         yield from _add_controllers(cid, controllers)
         _append_event("set_controllers", cid, {"controllers": controllers})
         return _ok(canister_id=cid, controllers=controllers)
@@ -4011,9 +4012,9 @@ def set_cycle_policy(args: text) -> text:
 @update
 def sync_controllers(args: text) -> Async[text]:
     """Controller-only. Sweep all managed canisters and, for each where Casals
-    is already a controller, ensure the desired controller set is applied:
-    Casals itself is always preserved; the off-chain monitor principal is added
-    when monitor_enabled is on, if not yet in the list.
+    is already a controller, apply extras (e.g. the off-chain monitor) when
+    monitor_enabled is on. Casals itself is never added — the governance
+    multisig is the platform controller.
 
     Useful when monitor_enabled is turned on after canisters were already
     created, or as a health-check after any controller changes.
@@ -4051,14 +4052,21 @@ def sync_controllers(args: text) -> Async[text]:
                                 else getattr(raw_settings, "controllers", []))
                 current = [c.to_str() if hasattr(c, "to_str") else str(c) for c in raw_ctls]
 
-                desired = list(current)
+                desired = [p for p in current if p != self_id]
                 added = []
-                for p in [self_id] + want_extra:
+                removed = []
+                if self_id in current:
+                    removed.append(self_id)
+                for p in want_extra:
                     if p and p not in desired:
                         desired.append(p)
                         added.append(p)
+                if not desired:
+                    skipped.append({"canister": st.name, "canister_id": st.canister_id,
+                                    "reason": "refusing empty controller list"})
+                    continue
 
-                if not added:
+                if not added and not removed:
                     skipped.append({"canister": st.name, "canister_id": st.canister_id,
                                     "reason": "already up to date"})
                     continue
@@ -4066,9 +4074,9 @@ def sync_controllers(args: text) -> Async[text]:
                 if not dry_run:
                     yield from _add_controllers(st.canister_id, desired)
                     _append_event("set_controllers", st.canister_id,
-                                  {"controllers": desired, "added": added})
+                                  {"controllers": desired, "added": added, "removed": removed})
                 updated.append({"canister": st.name, "canister_id": st.canister_id,
-                                "added": added})
+                                "added": added, "removed": removed})
             except Exception as e:
                 failed.append({"canister": st.name, "canister_id": st.canister_id,
                                "error": str(e)})
