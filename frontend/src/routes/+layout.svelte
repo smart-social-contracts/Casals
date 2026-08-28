@@ -12,6 +12,7 @@
   } from '$lib/stores/governancePending';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
+  import BuildFooter from '$lib/components/BuildFooter.svelte';
 
   let { children } = $props();
 
@@ -246,13 +247,7 @@
         {@render children?.()}
       </main>
 
-      <footer class="border-t border-[var(--color-border-primary)]">
-        <div class="w-full px-4 sm:px-6 py-4">
-          <p class="text-xs text-primary-400 text-center">
-            Casals &middot; Canister lifecycle orchestrator on the Internet Computer
-          </p>
-        </div>
-      </footer>
+      <BuildFooter />
     </div>
   </div>
 </div>
