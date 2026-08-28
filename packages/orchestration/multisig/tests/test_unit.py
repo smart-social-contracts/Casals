@@ -101,30 +101,26 @@ def execute_destroy_canisters_as_multisig(
     """Mirror Motoko drainToTreasury + destroyCanistersOnIc.
 
     The multisig (controller) reinstalls a sweeper and deposit_cycles to the
-    Casals treasury before delete. Leftover delete refunds, if any, are also
-    forwarded. Casals is never added as a controller.
+    Casals treasury before delete. IC delete_canister burns leftovers — it
+    does not credit the caller. Do not send after delete. Casals is never
+    added as a controller.
     """
-    before = int(balances.get("multisig") or 0)
     swept_total = 0
     for cid in canister_ids:
         management.stop_canister(cid)
         swept = management.sweep_to_treasury(cid, treasury)
         swept_total += int(swept or 0)
         balances["treasury"] = int(balances.get("treasury") or 0) + int(swept or 0)
-        leftover = management.delete_canister(cid)
-        balances["multisig"] = int(balances.get("multisig") or 0) + int(leftover or 0)
-    leftover_refund = int(balances.get("multisig") or 0) - before
-    if leftover_refund > 0 and treasury:
-        management.deposit_cycles(treasury, leftover_refund)
-        balances["multisig"] = int(balances.get("multisig") or 0) - leftover_refund
-        balances["treasury"] = int(balances.get("treasury") or 0) + leftover_refund
+        management.stop_canister(cid)
+        # Leftover is burned. Do not credit the multisig or deposit after delete.
+        management.delete_canister(cid)
     return {
         "proposals": 1,
         "canister_ids": list(canister_ids),
         "executor": "multisig",
         "via": "aaaaa-aa",
         "treasury": treasury,
-        "reclaimed": swept_total + leftover_refund,
+        "reclaimed": swept_total,
     }
 
 
@@ -136,6 +132,7 @@ class FakeManagement:
         self.deposits: list[tuple[str, int]] = []
         self.sweeps: list[tuple[str, str, int]] = []
         self.refunds = dict(refunds or {})
+        self.leftover_on_delete = 0
 
     def stop_canister(self, cid: str) -> None:
         self.stopped.append(cid)
@@ -148,7 +145,9 @@ class FakeManagement:
 
     def delete_canister(self, cid: str) -> int:
         self.deleted.append(cid)
-        return int(self.refunds.get(cid) or 0)
+        leftover = int(self.refunds.get(cid) or 0) + int(self.leftover_on_delete or 0)
+        self.refunds[cid] = 0
+        return leftover
 
     def deposit_cycles(self, dest: str, amount: int) -> None:
         self.deposits.append((dest, int(amount)))
@@ -182,6 +181,18 @@ class TestBatchDestroy:
         assert balances["treasury"] == 3_010
         assert balances["multisig"] == 50
 
+    def test_leftover_on_delete_is_burned_not_forwarded(self):
+        ids = ["aaaaa-aa", "bbbbb-bb"]
+        treasury = "casals-treasury"
+        mgmt = FakeManagement(refunds={cid: 1_000 for cid in ids})
+        mgmt.leftover_on_delete = 500
+        balances = {"multisig": 50, "treasury": 10}
+        result = execute_destroy_canisters_as_multisig(ids, mgmt, treasury, balances)
+        assert result["reclaimed"] == 2_000
+        assert mgmt.deposits == []
+        assert balances["treasury"] == 2_010
+        assert balances["multisig"] == 50
+
     def test_motoko_destroy_canisters_calls_management_not_casals(self):
         from pathlib import Path
 
@@ -192,11 +203,11 @@ class TestBatchDestroy:
             "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
             in types
         )
-        assert "#SendCycles : { to : Principal; amount : Nat }" in types
+        assert "#SendCycles" not in types
         assert "destroyCanistersOnIc" in main
-        assert "forwardReclaimedCycles" in main
-        assert "sendCyclesTo" in main
-        assert "send_cycles" in main
+        assert "forwardReclaimedCycles" not in main
+        assert "sendCyclesTo" not in main
+        assert "send_cycles" not in main
         assert "drainToTreasury" in main
         assert "stop_canister" in main
         assert "delete_canister" in main
@@ -205,32 +216,23 @@ class TestBatchDestroy:
         assert 'import SweepWasm "SweepWasm"' in main
         assert 'import Cycles "mo:core/Cycles"' in main
         did = (root / "multisig.did").read_text()
-        assert "send_cycles : (principal, nat) -> (Result)" in did
-        assert "SendCycles : record { to : principal; amount : nat }" in did
+        assert "send_cycles" not in did
+        assert "SendCycles" not in did
         # Batch execute must not relay through Casals.destroy_canister.
         destroy_fn = main.split("private func destroyCanistersOnIc")[1].split(
             "private func casalsErrorDetail"
         )[0]
         assert "destroy_canister" not in destroy_fn
         assert 'actor ("aaaaa-aa")' in destroy_fn
-        assert "forwardReclaimedCycles" in destroy_fn
         assert "drainToTreasury" in destroy_fn
+        assert "forwardReclaimedCycles" not in destroy_fn
         helper = main.split("private func drainToTreasury")[1].split(
-            "private func forwardReclaimedCycles"
+            "private func destroyCanistersOnIc"
         )[0]
         assert "install_code" in helper
         assert "sweeper.sweep" in helper
         assert "destroy_canister" not in helper
-        forward = main.split("private func forwardReclaimedCycles")[1].split(
-            "private func destroyCanistersOnIc"
-        )[0]
-        assert "sendCyclesTo" in forward
-        assert "destroy_canister" not in forward
-        send = main.split("private func sendCyclesTo")[1].split(
-            "private func forwardReclaimedCycles"
-        )[0]
-        assert "deposit_cycles" in send
-        assert "destroy_canister" not in send
+        assert "sendCyclesTo" not in helper
 
 
 class TestExecuteStatusMapping:

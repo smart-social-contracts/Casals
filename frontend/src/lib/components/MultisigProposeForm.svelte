@@ -43,8 +43,6 @@
   let commander = $state('');
   let standName = $state('');
   let destroyIdsText = $state('');
-  let sendTo = $state('');
-  let sendAmount = $state('');
 
   let liveControllers = $state<string[]>([]);
   let controllersLoading = $state(false);
@@ -295,8 +293,6 @@
         stand: standName,
         canister_id: targetCanister,
         canister_ids: destroyIdsText || targetCanister,
-        send_to: sendTo || backendCanisterId(),
-        send_amount: sendAmount,
       });
       await multisigPropose(canisterId, action, id);
       open = false;
@@ -335,7 +331,6 @@
         <option value="DestroyStand">Destroy stand</option>
         <option value="DestroyCanister">Destroy canister</option>
         <option value="DestroyCanisters">Destroy canisters (batch)</option>
-        <option value="SendCycles">Send cycles to treasury</option>
       </select>
 
       {#if isControllerAction}
@@ -430,21 +425,6 @@
           bind:value={destroyIdsText}
           placeholder="aaaaa-aa&#10;bbbbb-bb"
         ></textarea>
-      {:else if actionType === 'SendCycles'}
-        <label class="label" for="ms-send-to">Destination</label>
-        <input
-          id="ms-send-to"
-          class="input text-xs font-mono"
-          bind:value={sendTo}
-          placeholder={backendCanisterId() || 'casals backend'}
-        />
-        <label class="label" for="ms-send-amount">Amount (cycles)</label>
-        <input
-          id="ms-send-amount"
-          class="input text-sm"
-          bind:value={sendAmount}
-          placeholder="1000000000000"
-        />
       {:else}
         <label class="label" for="ms-baton">Baton id</label>
         <input id="ms-baton" class="input text-xs font-mono" bind:value={batonId} placeholder="aaaaa-aa" />

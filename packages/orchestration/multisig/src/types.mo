@@ -22,7 +22,6 @@ module {
     #DestroyStand : { casals_backend : Principal; stand : Text };
     #DestroyCanister : { casals_backend : Principal; canister_id : Principal };
     #DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal };
-    #SendCycles : { to : Principal; amount : Nat };
   };
 
   public type ProposalStatus = { #pending; #executed; #rejected; #failed; #expired };

@@ -7,7 +7,9 @@ Product lock (#32 / ba20242):
   Casals temporarily so install can run, then drop Casals.
 - Approved destroy is ONE ``DestroyCanisters`` proposal with N ids,
   executed as the multisig against ``aaaaa-aa``, not as Casals.
-- Reclaimed cycles land on the Casals treasury, not the multisig.
+- Drain remaining cycles to the Casals treasury *before* delete.
+  IC ``delete_canister`` does not credit the caller — leftovers are
+  burned if they are not drained first. Do not send after delete.
 
 This file is the automatic CI coverage for that path. It uses the Casals
 replica fixtures in ``tests/conftest.py`` and builds the Motoko multisig
@@ -312,16 +314,6 @@ def test_parse_nat_motoko_underscores():
     assert _parse_nat("100") == 100
 
 
-def test_multisig_candid_has_send_cycles():
-    """Live Motoko was configure/propose/approve/reject only — no send path."""
-    did = os.path.join(
-        REPO_ROOT, "packages", "orchestration", "multisig", "multisig.did"
-    )
-    text = open(did, encoding="utf-8").read()
-    assert "send_cycles : (principal, nat) -> (Result)" in text
-    assert "SendCycles : record { to : principal; amount : nat }" in text
-
-
 class TestCreateDestroyLock:
     """Full create → controller lock → one DestroyCanisters proposal."""
 
@@ -409,16 +401,17 @@ class TestCreateDestroyLock:
         treasury_gain = treasury_after - treasury_before
         msig_gain = msig_after - msig_before
         assert treasury_gain >= _MIN_TREASURY_GAIN, (
-            f"Casals treasury did not receive reclaimed cycles after "
-            f"DestroyCanisters: before={treasury_before} after={treasury_after} "
+            f"Casals treasury did not increase after DestroyCanisters drained "
+            f"cycles before delete: before={treasury_before} after={treasury_after} "
             f"gain={treasury_gain} (min {_MIN_TREASURY_GAIN}). "
             f"multisig before={msig_before} after={msig_after} gain={msig_gain}. "
-            f"events:\n{events}"
+            f"If treasury is flat, leftovers were burned (stop+delete with no "
+            f"drain). events:\n{events}"
         )
         assert msig_gain < treasury_gain, (
-            f"multisig kept the reclaimed cycles instead of depositing them to "
-            f"Casals: treasury_gain={treasury_gain} msig_gain={msig_gain}. "
-            f"events:\n{events}"
+            f"multisig kept the reclaimed cycles instead of draining them to "
+            f"Casals before delete: treasury_gain={treasury_gain} "
+            f"msig_gain={msig_gain}. events:\n{events}"
         )
         assert msig_gain < _MAX_MULTISIG_KEEP, (
             f"multisig retained {msig_gain} reclaimed cycles "

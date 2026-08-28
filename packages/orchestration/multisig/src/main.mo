@@ -116,9 +116,8 @@ persistent actor Self {
   ];
 
   /// Reinstall the tiny sweeper on ``cid`` (multisig is the controller) and
-  /// deposit almost all of its cycles to the Casals treasury. Local replicas
-  /// burn leftovers on ``delete_canister``; some IC versions refund the
-  /// caller. Sweeping first makes the treasury the destination either way.
+  /// deposit almost all of its cycles to the Casals treasury *before* delete.
+  /// IC ``delete_canister`` burns leftovers — it does not credit the caller.
   /// Casals is never added as a controller.
   private func drainToTreasury(cid : Principal, treasury : Principal) : async Result {
     if (Principal.isAnonymous(treasury) or treasury == Principal.fromActor(Self)) {
@@ -206,40 +205,10 @@ persistent actor Self {
     #err(lastErr # ": " # Principal.toText(cid));
   };
 
-  /// Push cycles from this multisig to ``to`` via IC ``deposit_cycles``.
-  /// Anyone may deposit; Casals does not need to be a controller.
-  private func sendCyclesTo(to : Principal, amount : Nat) : async Result {
-    if (Principal.isAnonymous(to) or to == Principal.fromActor(Self)) {
-      return #err("invalid destination");
-    };
-    if (amount == 0) { return #err("amount must be positive") };
-    if (amount > Cycles.balance()) { return #err("insufficient cycles") };
-    let ic00 = actor ("aaaaa-aa") : actor {
-      deposit_cycles : shared { canister_id : Principal } -> async ();
-    };
-    try {
-      await (with cycles = amount) ic00.deposit_cycles({ canister_id = to });
-      log("cycles_sent", Principal.toText(to) # " " # Nat.toText(amount));
-      #ok;
-    } catch (_) {
-      log("cycles_send_failed", Principal.toText(to) # " " # Nat.toText(amount));
-      #err("deposit_cycles failed");
-    };
-  };
-
-  /// If ``delete_canister`` refunds leftovers to this caller, deposit that
-  /// increase to the Casals treasury. No-op when the replica burns instead.
-  private func forwardReclaimedCycles(treasury : Principal, before : Nat) : async () {
-    let after = Cycles.balance();
-    if (after <= before) { return };
-    ignore await sendCyclesTo(treasury, after - before);
-  };
-
-  /// Stop + drain + delete each canister as this actor (the governance
-  /// multisig). Casals is never a controller; only the multisig may call
-  /// management. Reclaimed cycles are deposited to ``treasury``.
+  /// Drain to ``treasury`` first, then stop + delete as this actor.
+  /// Do not send after delete — leftovers are already burned.
+  /// Casals is never a controller; only the multisig may call management.
   private func destroyCanistersOnIc(ids : [Principal], treasury : Principal) : async Result {
-    let before = Cycles.balance();
     let ic00 = actor ("aaaaa-aa") : actor {
       stop_canister : shared { canister_id : Principal } -> async ();
       delete_canister : shared { canister_id : Principal } -> async ();
@@ -251,10 +220,7 @@ persistent actor Self {
         // already stopped or not running
       };
       switch (await drainToTreasury(cid, treasury)) {
-        case (#err(e)) {
-          await forwardReclaimedCycles(treasury, before);
-          return #err(e);
-        };
+        case (#err(e)) { return #err(e) };
         case (#ok) {};
       };
       try {
@@ -263,11 +229,9 @@ persistent actor Self {
       try {
         await ic00.delete_canister({ canister_id = cid });
       } catch (_) {
-        await forwardReclaimedCycles(treasury, before);
         return #err("delete_canister failed: " # Principal.toText(cid));
       };
     };
-    await forwardReclaimedCycles(treasury, before);
     #ok;
   };
 
@@ -423,9 +387,6 @@ persistent actor Self {
       case (#DestroyCanisters(a)) {
         await destroyCanistersOnIc(a.canister_ids, a.casals_backend);
       };
-      case (#SendCycles(a)) {
-        await sendCyclesTo(a.to, a.amount);
-      };
     };
   };
 
@@ -515,15 +476,8 @@ persistent actor Self {
   };
 
   /// Public cycle balance — used by the create/destroy lock to prove
-  /// reclaimed cycles left this canister after DestroyCanisters.
+  /// reclaimed cycles did not stay on this canister after DestroyCanisters.
   public query func cycles_balance() : async Nat {
     Cycles.balance();
-  };
-
-  /// Signer-only: deposit ``amount`` cycles from this multisig to ``to``.
-  /// Same path DestroyCanisters uses after IC refunds leftovers here.
-  public shared ({ caller }) func send_cycles(to : Principal, amount : Nat) : async Result {
-    assert (isSigner(caller));
-    await sendCyclesTo(to, amount);
   };
 };

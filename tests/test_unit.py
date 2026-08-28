@@ -1130,12 +1130,12 @@ def test_batch_destroy_is_one_proposal_executed_as_multisig():
     assert 'actor ("aaaaa-aa")' in fn
     assert "stop_canister" in fn and "delete_canister" in fn
     assert "destroy_canister" not in fn
-    assert "forwardReclaimedCycles" in fn
     assert "drainToTreasury" in fn
-    assert "sendCyclesTo" in main
+    assert "forwardReclaimedCycles" not in fn
+    assert "sendCyclesTo" not in main
     assert "deposit_cycles" in main
     assert "install_code" in main
-    assert "send_cycles" in (
+    assert "send_cycles" not in (
         root / "packages/orchestration/multisig/multisig.did"
     ).read_text()
 

@@ -8,7 +8,8 @@
 #   4. Assert those canisters are gone on the local replica.
 #   5. Assert Casals treasury increased and the multisig did not keep the
 #      reclaimed cycles (multisig reinstalls a sweeper and deposit_cycles
-#      to the conductor before delete; leftover refunds are also forwarded).
+#      to the conductor before delete. IC delete_canister does not credit the
+#      caller — leftover cycles are burned if they are not drained first).
 #
 # Does not run the full tests/ integration suite (that stays workflow_dispatch
 # in integration.yml). Does not deploy to IC.
