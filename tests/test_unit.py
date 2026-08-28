@@ -1133,8 +1133,11 @@ def test_batch_destroy_is_one_proposal_executed_as_multisig():
     assert "drainToTreasury" in fn
     assert "forwardReclaimedCycles" not in fn
     assert "sendCyclesTo" not in main
-    assert "deposit_cycles" in main
     assert "install_code" in main
+    assert "sweeper.sweep" in main
+    assert "deposit_cycles" in (
+        root / "packages/orchestration/multisig/src/sweeper.mo"
+    ).read_text()
     assert "send_cycles" not in (
         root / "packages/orchestration/multisig/multisig.did"
     ).read_text()

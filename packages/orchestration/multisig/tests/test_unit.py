@@ -173,7 +173,8 @@ class TestBatchDestroy:
         assert result["executor"] == "multisig"
         assert result["via"] == "aaaaa-aa"
         assert result["treasury"] == treasury
-        assert mgmt.stopped == ids
+        # stop before drain, then again after sweep (delete requires stopped)
+        assert mgmt.stopped == [cid for cid in ids for _ in range(2)]
         assert mgmt.deleted == ids
         assert mgmt.casals_calls == []
         assert mgmt.sweeps == [(cid, treasury, 1_000) for cid in ids]
@@ -211,8 +212,9 @@ class TestBatchDestroy:
         assert "drainToTreasury" in main
         assert "stop_canister" in main
         assert "delete_canister" in main
-        assert "deposit_cycles" in main
         assert "install_code" in main
+        assert "sweeper.sweep" in main
+        assert "deposit_cycles" in (root / "src" / "sweeper.mo").read_text()
         assert 'import SweepWasm "SweepWasm"' in main
         assert 'import Cycles "mo:core/Cycles"' in main
         did = (root / "multisig.did").read_text()
