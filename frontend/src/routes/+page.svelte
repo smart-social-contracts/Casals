@@ -44,6 +44,12 @@
     frontendCanisterId,
     listBackendControllers,
   } from '$lib/api';
+  import {
+    browserTreeStorage,
+    orchestraOpenPlan,
+    readCachedTree,
+    writeCachedTree,
+  } from '$lib/treeCache';
   import type {
     Tree, Status, Section, Stand, Canister, UpdateResult,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
@@ -230,10 +236,13 @@
     return [...ids];
   }
 
-  async function load() {
-    loading = true;
-    error = '';
-    canisterCycles = {};
+  async function load(opts: { background?: boolean } = {}) {
+    const background = Boolean(opts.background);
+    if (!background) {
+      loading = true;
+      error = '';
+      canisterCycles = {};
+    }
     try {
       const missingControllers =
         !tree ||
@@ -242,7 +251,9 @@
             stand.canisters.some((c) => c.canister_id && !(c.controllers?.length)),
           ),
         );
-      if (missingControllers) {
+      // Explicit Refresh (and first visit with no cache) still walk controllers.
+      // Opening from cache skips that live walk so the last tree can stay on screen.
+      if (!background && missingControllers) {
         await refreshControllersCache().catch(() => undefined);
       }
       [tree, status, catalog, orchStatus] = await Promise.all([
@@ -251,6 +262,7 @@
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
         orchestrationStatus().catch(() => null),
       ]);
+      writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
       orchestraName = (status?.orchestra_name ?? '').trim();
       if (!orchestraName) {
         const meta = await casalsMetadata().catch(() => null);
@@ -266,7 +278,9 @@
       }
       void warmSubnetGeoCache(collectSubnetIds(tree));
     } catch (e: any) {
-      error = e?.message ?? String(e);
+      if (!background || !tree) {
+        error = e?.message ?? String(e);
+      }
     } finally {
       loading = false;
     }
@@ -300,7 +314,15 @@
   }
 
   onMount(() => {
-    load();
+    const cached = readCachedTree(backendCanisterId(), browserTreeStorage());
+    const plan = orchestraOpenPlan(cached);
+    if (plan.tree) {
+      tree = plan.tree as Tree;
+      loading = false;
+      void load({ background: true });
+    } else {
+      void load();
+    }
     ensureCyclesCache();
   });
 
@@ -872,7 +894,7 @@
           New section
         </button>
       {/if}
-      <button class="btn-secondary btn-sm" onclick={load}>
+      <button class="btn-secondary btn-sm" onclick={() => void load()}>
         <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
         </svg>
