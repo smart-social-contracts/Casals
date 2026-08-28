@@ -249,6 +249,9 @@ persistent actor Self {
         case (#ok) {};
       };
       try {
+        await ic00.stop_canister({ canister_id = cid });
+      } catch (_) {};
+      try {
         await ic00.delete_canister({ canister_id = cid });
       } catch (_) {
         await forwardReclaimedCycles(treasury, before);
