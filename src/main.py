@@ -2089,7 +2089,7 @@ def deploy_sheet(args: text) -> Async[text]:
                             existing.stand = dk
                         if not (existing.wasm_type or "").strip():
                             existing.wasm_type = wasm_type_of_wasm(w)
-                        yield from _ensure_provision_controllers_gen(existing.canister_id, dk)
+                        yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
                         result["skipped_canisters"].append(stname)
                         continue
                     # Present but wrong WASM/status: reinstall fresh code in place.
@@ -2107,7 +2107,7 @@ def deploy_sheet(args: text) -> Async[text]:
                     existing.wasm_type = wasm_type_of_wasm(w)
                     existing.wasm_hash = actual
                     existing.status = CanisterStatus.INSTALLED
-                    yield from _ensure_provision_controllers_gen(existing.canister_id, dk)
+                    yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
                     _append_event("canister_reinstalled", existing.canister_id,
                                   {"name": stname, "wasm_key": w.key})
                     result["reinstalled_canisters"].append(stname)
