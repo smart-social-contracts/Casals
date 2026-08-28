@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, canisterUrl } from '$lib/api';
+  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, canisterUrl, getTree } from '$lib/api';
   import type { Metadata, SettingsPatch } from '$lib/api';
   import { isAuthenticated, principal, isController } from '$lib/auth';
   import { get } from 'svelte/store';

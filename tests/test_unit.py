@@ -1847,3 +1847,34 @@ def test_pool_free_marks_a_real_canister_free(monkeypatch):
 
     assert entry.status == "free"
     assert entry.canister_name == ""
+
+
+# ── frontend source locks ────────────────────────────────────────────────────
+
+def test_settings_and_svelte_get_tree_callers_import_it():
+    """Settings called getTree() without importing it (Can't find variable: getTree)."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "frontend" / "src"
+    missing = []
+    for page in sorted(root.rglob("*.svelte")):
+        text = page.read_text(encoding="utf-8")
+        if not re.search(r"\bgetTree\s*\(", text):
+            continue
+        value_src = re.sub(
+            r"import\s+type\s*\{.*?\}\s*from\s*['\"][^'\"]+['\"];?",
+            "",
+            text,
+            flags=re.S,
+        )
+        imported = re.search(
+            r"import\s*\{[^}]*\bgetTree\b[^}]*\}\s*from\s*['\"](\$lib/api|\./api)['\"]",
+            value_src,
+            re.S,
+        )
+        if not imported:
+            missing.append(str(page.relative_to(root)))
+    assert missing == [], (
+        "getTree() used without importing getTree from $lib/api: " + ", ".join(missing)
+    )
