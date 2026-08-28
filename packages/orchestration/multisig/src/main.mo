@@ -1,12 +1,14 @@
 import Array "mo:core/Array";
+import Cycles "mo:core/Cycles";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 
+import SweepWasm "SweepWasm";
 import Types "types";
 
-persistent actor {
+persistent actor Self {
   type Capability = Types.Capability;
   type BatonAction = Types.BatonAction;
   type ProposalStatus = Types.ProposalStatus;
@@ -102,9 +104,111 @@ persistent actor {
     Text.contains(resp, #text "\"ok\": true") or Text.contains(resp, #text "\"ok\":true");
   };
 
-  /// Stop + delete each canister as this actor (the governance multisig).
+  /// Escalating headroom left on a doomed canister while it deposits to
+  /// the treasury. Same ladder as Casals ``DESTROY_SWEEP_RESERVES``.
+  private let SWEEP_RESERVES : [Nat] = [
+    8_000_000_000,
+    16_000_000_000,
+    32_000_000_000,
+    64_000_000_000,
+    128_000_000_000,
+    256_000_000_000,
+  ];
+
+  /// Reinstall the tiny sweeper on ``cid`` (multisig is the controller) and
+  /// deposit almost all of its cycles to the Casals treasury *before* delete.
+  /// IC ``delete_canister`` burns leftovers — it does not credit the caller.
+  /// Casals is never added as a controller.
+  private func drainToTreasury(cid : Principal, treasury : Principal) : async Result {
+    if (Principal.isAnonymous(treasury) or treasury == Principal.fromActor(Self)) {
+      return #err("invalid treasury");
+    };
+    let ic00 = actor ("aaaaa-aa") : actor {
+      update_settings : shared {
+        canister_id : Principal;
+        settings : {
+          controllers : ?[Principal];
+          compute_allocation : ?Nat;
+          memory_allocation : ?Nat;
+          freezing_threshold : ?Nat;
+        };
+      } -> async ();
+      install_code : shared {
+        mode : { #install; #reinstall; #upgrade };
+        canister_id : Principal;
+        wasm_module : Blob;
+        arg : Blob;
+      } -> async ();
+      start_canister : shared { canister_id : Principal } -> async ();
+      canister_status : shared { canister_id : Principal } -> async {
+        cycles : Nat;
+        status : { #running; #stopping; #stopped };
+        memory_size : Nat;
+        settings : {
+          controllers : [Principal];
+          compute_allocation : Nat;
+          memory_allocation : Nat;
+          freezing_threshold : Nat;
+        };
+        idle_cycles_burned_per_day : Nat;
+        module_hash : ?Blob;
+        reserved_cycles : Nat;
+      };
+    };
+    try {
+      await ic00.update_settings({
+        canister_id = cid;
+        settings = {
+          controllers = null;
+          compute_allocation = null;
+          memory_allocation = null;
+          freezing_threshold = ?0;
+        };
+      });
+    } catch (_) {
+      return #err("update_settings failed: " # Principal.toText(cid));
+    };
+    try {
+      await ic00.install_code({
+        mode = #reinstall;
+        canister_id = cid;
+        wasm_module = SweepWasm.wasm;
+        arg = "";
+      });
+    } catch (_) {
+      return #err("install sweeper failed: " # Principal.toText(cid));
+    };
+    try { await ic00.start_canister({ canister_id = cid }) } catch (_) {};
+
+    let sweeper = actor (Principal.toText(cid)) : actor {
+      sweep : shared (Principal, Nat) -> async ();
+    };
+    var lastErr : Text = "sweep failed";
+    for (reserve in SWEEP_RESERVES.vals()) {
+      let st = try {
+        await ic00.canister_status({ canister_id = cid });
+      } catch (_) {
+        return #err("canister_status failed: " # Principal.toText(cid));
+      };
+      if (st.cycles <= reserve) {
+        return #ok;
+      };
+      let amount = st.cycles - reserve;
+      try {
+        await sweeper.sweep(treasury, amount);
+        log("cycles_swept", Principal.toText(cid) # " " # Nat.toText(amount));
+        return #ok;
+      } catch (_) {
+        lastErr := "sweep failed at reserve " # Nat.toText(reserve);
+      };
+    };
+    #err(lastErr # ": " # Principal.toText(cid));
+  };
+
+  /// Drain to ``treasury`` first, then stop + delete as this actor.
+  /// Do not send after delete — leftovers are already burned.
   /// Casals is never a controller; only the multisig may call management.
-  private func destroyCanistersOnIc(ids : [Principal]) : async Result {
+  private func destroyCanistersOnIc(ids : [Principal], treasury : Principal) : async Result {
     let ic00 = actor ("aaaaa-aa") : actor {
       stop_canister : shared { canister_id : Principal } -> async ();
       delete_canister : shared { canister_id : Principal } -> async ();
@@ -115,6 +219,13 @@ persistent actor {
       } catch (_) {
         // already stopped or not running
       };
+      switch (await drainToTreasury(cid, treasury)) {
+        case (#err(e)) { return #err(e) };
+        case (#ok) {};
+      };
+      try {
+        await ic00.stop_canister({ canister_id = cid });
+      } catch (_) {};
       try {
         await ic00.delete_canister({ canister_id = cid });
       } catch (_) {
@@ -261,6 +372,8 @@ persistent actor {
         };
       };
       case (#DestroyStand(a)) {
+        // Casals.destroy_stand drains to the treasury before any IC delete.
+        // This action does not call delete_canister itself.
         let casals = actor (Principal.toText(a.casals_backend)) : actor {
           destroy_stand : shared Text -> async Text;
         };
@@ -271,10 +384,10 @@ persistent actor {
         } catch (_) { #err("destroy_stand failed") };
       };
       case (#DestroyCanister(a)) {
-        await destroyCanistersOnIc([a.canister_id]);
+        await destroyCanistersOnIc([a.canister_id], a.casals_backend);
       };
       case (#DestroyCanisters(a)) {
-        await destroyCanistersOnIc(a.canister_ids);
+        await destroyCanistersOnIc(a.canister_ids, a.casals_backend);
       };
     };
   };
@@ -362,5 +475,11 @@ persistent actor {
 
   public query func list_events() : async [AuditEvent] {
     event_log;
+  };
+
+  /// Public cycle balance — used by the create/destroy lock to prove
+  /// reclaimed cycles did not stay on this canister after DestroyCanisters.
+  public query func cycles_balance() : async Nat {
+    Cycles.balance();
   };
 };

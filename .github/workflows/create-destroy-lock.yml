@@ -4,8 +4,13 @@
 #   1. Create the governance multisig + managed canisters through Casals.
 #   2. Assert lasting controllers: multisig is a controller; Casals is not.
 #   3. Destroy the managed canisters as the multisig via one DestroyCanisters
-#      proposal (N ids), not as Casals.
+#      proposal (N ids + Casals treasury), not as Casals.
 #   4. Assert those canisters are gone on the local replica.
+#   5. Assert Casals treasury increased and the multisig did not keep the
+#      reclaimed cycles (multisig reinstalls a sweeper and deposit_cycles
+#      to the conductor before delete. If drain fails, do not delete.
+#      IC delete_canister does not credit the caller — leftover cycles are
+#      burned if they are not drained first. No raw stop+delete path.)
 #
 # Does not run the full tests/ integration suite (that stays workflow_dispatch
 # in integration.yml). Does not deploy to IC.

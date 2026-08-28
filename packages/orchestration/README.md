@@ -30,15 +30,14 @@ The Baton never upgrades itself. The multisig upgrades Batons with a plain `inst
 
 | Path | Who | Mechanism |
 |------|-----|-----------|
-| **Portal / realm teardown** | `realm_installer` via `delegated_destroy_principals` | Direct Casals `destroy_stand` (no multisig vote) |
-| **Casals Cycles ops** | Multisig signers | Propose `DestroyCanisters` (N ids, one proposal) → threshold auto-executes → multisig calls IC `stop_canister` / `delete_canister` |
-| **Emergency** | Casals IC controllers | Direct `destroy_stand` / `destroy_canister` from Cycles UI |
+| **Portal / realm teardown** | `realm_installer` via `delegated_destroy_principals` | Casals `destroy_stand` (drains to treasury first; fail closed). Not a raw stop+delete. |
+| **Casals Cycles ops** | Multisig signers | Propose `DestroyCanisters` (N ids + Casals treasury, one proposal) → threshold auto-executes → drain to the conductor **before** delete as `aaaaa-aa`. If drain fails, do not delete. |
 
 Execute failures land as proposal status `#failed` (audit `execute_failed`); human `reject` stays `#rejected`.
 
 ### Multisig `BatonAction` variants (v1.2)
 
-Includes baton/controller actions plus **`DestroyCanisters`** (one proposal, many ids; IC stop/delete as the multisig), **`DestroyCanister`** (single id, same IC path), and **`DestroyStand`** (Casals `destroy_stand`). `SetCanisterControllers` only succeeds when the multisig is already an IC controller of the target.
+Includes baton/controller actions plus **`DestroyCanisters`** (one proposal, many ids + Casals treasury; drain remaining cycles to the conductor, then IC stop/delete as the multisig — if drain fails, do not delete), **`DestroyCanister`** (single id, same IC path), and **`DestroyStand`** (Casals `destroy_stand`, which also drains first). `SetCanisterControllers` only succeeds when the multisig is already an IC controller of the target. Casals is never a lasting controller.
 
 ## Casals demo (opt-in)
 

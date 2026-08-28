@@ -7,6 +7,10 @@ Product lock (#32 / ba20242):
   Casals temporarily so install can run, then drop Casals.
 - Approved destroy is ONE ``DestroyCanisters`` proposal with N ids,
   executed as the multisig against ``aaaaa-aa``, not as Casals.
+- Drain remaining cycles to the Casals treasury *before* delete.
+  IC ``delete_canister`` does not credit the caller — leftovers are
+  burned if they are not drained first. If drain fails, do not delete.
+- There is no raw stop+delete path (UI, Casals API helper, or Motoko).
 
 This file is the automatic CI coverage for that path. It uses the Casals
 replica fixtures in ``tests/conftest.py`` and builds the Motoko multisig
@@ -173,12 +177,32 @@ def greet_exists(cid: str) -> bool:
 
 def _parse_nat(output: str) -> int:
     text = (output or "").strip()
-    m = re.search(r"\((\d+)\s*:?\s*nat\)", text)
+    m = re.search(r"\(([\d_]+)\s*:?\s*nat\)", text)
     if m:
-        return int(m.group(1))
-    if text.isdigit():
-        return int(text)
+        return int(m.group(1).replace("_", ""))
+    compact = text.replace("_", "")
+    if compact.isdigit():
+        return int(compact)
     raise AssertionError(f"expected nat, got {output!r}")
+
+
+# Reclaimed cycles from two ~2T creates should far exceed this.
+_MIN_TREASURY_GAIN = 100_000_000_000  # 100B
+# Multisig may keep a tiny operational remainder, not the reclaimed pile.
+_MAX_MULTISIG_KEEP = 10_000_000_000  # 10B
+
+
+def _treasury_cycles() -> int:
+    """Casals conductor balance via refresh_treasury (own cycles, no status)."""
+    res = call_canister("refresh_treasury")
+    assert isinstance(res, dict), res
+    treasury = res.get("treasury") or {}
+    return int(treasury.get("balance") or 0)
+
+
+def _multisig_cycles(cid: str) -> int:
+    """Public query — no controller needed (anonymous status is IC0542)."""
+    return _parse_nat(_call_raw(cid, "cycles_balance", "()"))
 
 
 def _tree_canister(tree: dict, name: str) -> dict:
@@ -284,6 +308,72 @@ def lock_env(registry):
     }
 
 
+def test_parse_nat_motoko_underscores():
+    """icp pretty-prints large nats as 1_488_164_917_819."""
+    assert _parse_nat("(1_488_164_917_819 : nat)\n") == 1_488_164_917_819
+    assert _parse_nat("(42 : nat)") == 42
+    assert _parse_nat("100") == 100
+
+
+def test_no_raw_delete_path():
+    """Every IC delete_canister is preceded by a treasury drain. Fail closed.
+
+    A raw stop+delete burns leftover cycles. The only Motoko destroy is
+    drainToTreasury then delete as the multisig. Casals lifecycle drains
+    before its own IC delete. UI must not call Casals.destroy_canister.
+    """
+    from pathlib import Path
+
+    root = Path(REPO_ROOT)
+    main = (root / "packages/orchestration/multisig/src/main.mo").read_text()
+    types = (root / "packages/orchestration/multisig/src/types.mo").read_text()
+    did = (root / "packages/orchestration/multisig/multisig.did").read_text()
+    life = (root / "src/lifecycle.py").read_text()
+    orchestra = (root / "frontend/src/routes/+page.svelte").read_text()
+    cycles = (root / "frontend/src/routes/cycles/+page.svelte").read_text()
+
+    assert (
+        "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
+        in types
+    )
+    assert "#DestroyCanisters : { canister_ids : [Principal] }" not in types
+    assert (
+        "DestroyCanisters : record { canister_ids : vec principal; casals_backend : principal }"
+        in did
+    )
+
+    fn = main.split("private func destroyCanistersOnIc")[1].split(
+        "private func casalsErrorDetail"
+    )[0]
+    call = "delete_canister({ canister_id = cid })"
+    assert fn.index("drainToTreasury") < fn.index(call)
+    assert "case (#err(e)) { return #err(e) }" in fn
+    assert fn.index("case (#err(e)) { return #err(e) }") < fn.index(call)
+    # One Motoko IC-delete site — no hidden/old raw DestroyCanisters.
+    assert main.count("delete_canister({ canister_id") == 1
+    assert "send_cycles" not in main
+    assert "forwardReclaimedCycles" not in main
+
+    ic_deletes = [
+        line
+        for line in life.splitlines()
+        if "management_canister.delete_canister" in line
+        and "delete_canister_snapshot" not in line
+    ]
+    assert len(ic_deletes) == 1, ic_deletes
+    destroy_fn = life.split("def _destroy_ic_canister_gen")[1].split(
+        "def _destroy_canister_gen"
+    )[0]
+    assert destroy_fn.index("_drain_cycles_before_destroy_gen") < destroy_fn.index(
+        "management_canister.delete_canister"
+    )
+    assert "abort" in destroy_fn.lower() or "must succeed" in destroy_fn.lower()
+
+    assert "destroyCanister" not in orchestra
+    assert "destroyCanister" not in cycles
+    assert "buildMultisigAction('DestroyCanisters'" in cycles
+
+
 class TestCreateDestroyLock:
     """Full create → controller lock → one DestroyCanisters proposal."""
 
@@ -325,11 +415,15 @@ class TestCreateDestroyLock:
     def test_04_destroy_canisters_as_multisig(self, lock_env):
         ids = [item["canister_id"] for item in lock_env["managed"]]
         assert len(ids) >= 2
+        treasury = lock_env["casals_id"]
         vec = "; ".join(f'principal "{cid}"' for cid in ids)
         candid = (
             f"(variant {{ DestroyCanisters = record {{ "
-            f"canister_ids = vec {{ {vec} }} }} }}, null)"
+            f"canister_ids = vec {{ {vec} }}; "
+            f'casals_backend = principal "{treasury}" }} }}, null)'
         )
+        treasury_before = _treasury_cycles()
+        msig_before = _multisig_cycles(lock_env["multisig_id"])
         before = _call_raw(lock_env["multisig_id"], "list_proposals", "()")
         raw = _call_raw(lock_env["multisig_id"], "propose", candid)
         proposal_id = _parse_nat(raw)
@@ -339,14 +433,15 @@ class TestCreateDestroyLock:
             f"({proposal_id} : nat)",
         )
         after = _call_raw(lock_env["multisig_id"], "list_proposals", "()")
+        events = _call_raw(lock_env["multisig_id"], "list_events", "()")
 
         assert "DestroyCanisters" in prop, prop
         for cid in ids:
             assert cid in prop, (cid, prop)
+        assert treasury in prop, (treasury, prop)
         assert re.search(r"\bexecuted\b", prop), (
             f"DestroyCanisters proposal {proposal_id} did not execute as the "
-            f"multisig:\n{prop}\nevents:\n"
-            f"{_call_raw(lock_env['multisig_id'], 'list_events', '()')}"
+            f"multisig:\n{prop}\nevents:\n{events}"
         )
         assert "failed" not in prop.split("status")[-1][:80].lower()
         # One new proposal, not one per id.
@@ -360,3 +455,26 @@ class TestCreateDestroyLock:
                 f"{item['name']} ({item['canister_id']}) still exists on the "
                 f"replica after DestroyCanisters"
             )
+
+        treasury_after = _treasury_cycles()
+        msig_after = _multisig_cycles(lock_env["multisig_id"])
+        treasury_gain = treasury_after - treasury_before
+        msig_gain = msig_after - msig_before
+        assert treasury_gain >= _MIN_TREASURY_GAIN, (
+            f"Casals treasury did not increase after DestroyCanisters drained "
+            f"cycles before delete: before={treasury_before} after={treasury_after} "
+            f"gain={treasury_gain} (min {_MIN_TREASURY_GAIN}). "
+            f"multisig before={msig_before} after={msig_after} gain={msig_gain}. "
+            f"If treasury is flat, leftovers were burned (stop+delete with no "
+            f"drain). events:\n{events}"
+        )
+        assert msig_gain < treasury_gain, (
+            f"multisig kept the reclaimed cycles instead of draining them to "
+            f"Casals before delete: treasury_gain={treasury_gain} "
+            f"msig_gain={msig_gain}. events:\n{events}"
+        )
+        assert msig_gain < _MAX_MULTISIG_KEEP, (
+            f"multisig retained {msig_gain} reclaimed cycles "
+            f"(max {_MAX_MULTISIG_KEEP}); they must land on Casals {treasury}. "
+            f"treasury_gain={treasury_gain}. events:\n{events}"
+        )

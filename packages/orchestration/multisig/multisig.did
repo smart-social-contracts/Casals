@@ -18,7 +18,7 @@ type BatonAction = variant {
   };
   DestroyStand : record { casals_backend : principal; stand : text };
   DestroyCanister : record { casals_backend : principal; canister_id : principal };
-  DestroyCanisters : record { canister_ids : vec principal };
+  DestroyCanisters : record { canister_ids : vec principal; casals_backend : principal };
 };
 
 type ProposalStatus = variant { pending; executed; rejected; failed; expired };
@@ -51,4 +51,5 @@ service : {
   list_signers : () -> (record { signers : vec principal; threshold : nat }) query;
   list_events : () -> (vec AuditEvent) query;
   default_proposal_expiry_secs : () -> (nat) query;
+  cycles_balance : () -> (nat) query;
 };

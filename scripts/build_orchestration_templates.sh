@@ -43,9 +43,12 @@ embed_candid "$BATON_WASM" "$BATON_DIR/baton.did"
 emit "orchestration-baton@1.3.0" "$BATON_WASM"
 
 echo "==> Multisig"
-( cd "$MULTISIG_DIR" && mops install >/dev/null 2>&1 && icp build multisig >/dev/null )
+( cd "$MULTISIG_DIR" && mops install >/dev/null 2>&1 && \
+    icp build sweeper >/dev/null && \
+    python3 scripts/embed_sweeper_wasm.py && \
+    icp build multisig >/dev/null )
 MULTISIG_WASM="$MULTISIG_DIR/.icp/cache/artifacts/multisig"
 embed_candid "$MULTISIG_WASM" "$MULTISIG_DIR/multisig.did"
-emit "orchestration-multisig@1.3.0" "$MULTISIG_WASM"
+emit "orchestration-multisig@1.4.0" "$MULTISIG_WASM"
 
 echo "Done. Orchestration artifacts in seed/templates/"

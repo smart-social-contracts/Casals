@@ -49,6 +49,7 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     }),
     DestroyCanisters: I.Record({
       canister_ids: I.Vec(I.Principal),
+      casals_backend: I.Principal,
     }),
   });
   const ProposalStatus = I.Variant({
@@ -83,6 +84,7 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     propose: I.Func([BatonAction, I.Opt(I.Nat)], [I.Nat], []),
     approve: I.Func([I.Nat], [Result], []),
     reject: I.Func([I.Nat], [Result], []),
+    cycles_balance: I.Func([], [I.Nat], ['query']),
   });
 };
 
@@ -413,6 +415,7 @@ export function buildMultisigAction(
       };
     }
     case 'DestroyCanisters': {
+      const casals = fieldStr(fields.casals_backend);
       const raw = fields.canister_ids;
       const texts = Array.isArray(raw)
         ? raw.map((x) => String(x).trim()).filter(Boolean)
@@ -420,10 +423,12 @@ export function buildMultisigAction(
             .split(/[\n,]+/)
             .map((s) => s.trim())
             .filter(Boolean);
+      if (!casals) throw new Error('Casals backend id is required');
       if (!texts.length) throw new Error('At least one canister id is required');
       return {
         DestroyCanisters: {
           canister_ids: texts.map((p) => Principal.fromText(p)),
+          casals_backend: Principal.fromText(casals),
         },
       };
     }
