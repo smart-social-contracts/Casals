@@ -9,7 +9,8 @@ Product lock (#32 / ba20242):
   executed as the multisig against ``aaaaa-aa``, not as Casals.
 - Drain remaining cycles to the Casals treasury *before* delete.
   IC ``delete_canister`` does not credit the caller — leftovers are
-  burned if they are not drained first. Do not send after delete.
+  burned if they are not drained first. If drain fails, do not delete.
+- There is no raw stop+delete path (UI, Casals API helper, or Motoko).
 
 This file is the automatic CI coverage for that path. It uses the Casals
 replica fixtures in ``tests/conftest.py`` and builds the Motoko multisig
@@ -312,6 +313,65 @@ def test_parse_nat_motoko_underscores():
     assert _parse_nat("(1_488_164_917_819 : nat)\n") == 1_488_164_917_819
     assert _parse_nat("(42 : nat)") == 42
     assert _parse_nat("100") == 100
+
+
+def test_no_raw_delete_path():
+    """Every IC delete_canister is preceded by a treasury drain. Fail closed.
+
+    A raw stop+delete burns leftover cycles. The only Motoko destroy is
+    drainToTreasury then delete as the multisig. Casals lifecycle drains
+    before its own IC delete. UI must not call Casals.destroy_canister.
+    """
+    from pathlib import Path
+
+    root = Path(REPO_ROOT)
+    main = (root / "packages/orchestration/multisig/src/main.mo").read_text()
+    types = (root / "packages/orchestration/multisig/src/types.mo").read_text()
+    did = (root / "packages/orchestration/multisig/multisig.did").read_text()
+    life = (root / "src/lifecycle.py").read_text()
+    orchestra = (root / "frontend/src/routes/+page.svelte").read_text()
+    cycles = (root / "frontend/src/routes/cycles/+page.svelte").read_text()
+
+    assert (
+        "#DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal }"
+        in types
+    )
+    assert "#DestroyCanisters : { canister_ids : [Principal] }" not in types
+    assert (
+        "DestroyCanisters : record { canister_ids : vec principal; casals_backend : principal }"
+        in did
+    )
+
+    fn = main.split("private func destroyCanistersOnIc")[1].split(
+        "private func casalsErrorDetail"
+    )[0]
+    call = "delete_canister({ canister_id = cid })"
+    assert fn.index("drainToTreasury") < fn.index(call)
+    assert "case (#err(e)) { return #err(e) }" in fn
+    assert fn.index("case (#err(e)) { return #err(e) }") < fn.index(call)
+    # One Motoko IC-delete site — no hidden/old raw DestroyCanisters.
+    assert main.count("delete_canister({ canister_id") == 1
+    assert "send_cycles" not in main
+    assert "forwardReclaimedCycles" not in main
+
+    ic_deletes = [
+        line
+        for line in life.splitlines()
+        if "management_canister.delete_canister" in line
+        and "delete_canister_snapshot" not in line
+    ]
+    assert len(ic_deletes) == 1, ic_deletes
+    destroy_fn = life.split("def _destroy_ic_canister_gen")[1].split(
+        "def _destroy_canister_gen"
+    )[0]
+    assert destroy_fn.index("_drain_cycles_before_destroy_gen") < destroy_fn.index(
+        "management_canister.delete_canister"
+    )
+    assert "abort" in destroy_fn.lower() or "must succeed" in destroy_fn.lower()
+
+    assert "destroyCanister" not in orchestra
+    assert "destroyCanister" not in cycles
+    assert "buildMultisigAction('DestroyCanisters'" in cycles
 
 
 class TestCreateDestroyLock:

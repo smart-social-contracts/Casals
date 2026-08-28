@@ -109,6 +109,17 @@ def execute_destroy_canisters_as_multisig(
     for cid in canister_ids:
         management.stop_canister(cid)
         swept = management.sweep_to_treasury(cid, treasury)
+        if swept is False:
+            # Drain failed — do not delete. Leftovers would be burned.
+            return {
+                "proposals": 1,
+                "canister_ids": list(canister_ids),
+                "executor": "multisig",
+                "via": "aaaaa-aa",
+                "treasury": treasury,
+                "reclaimed": swept_total,
+                "error": f"drain failed: {cid}",
+            }
         swept_total += int(swept or 0)
         balances["treasury"] = int(balances.get("treasury") or 0) + int(swept or 0)
         management.stop_canister(cid)
@@ -133,11 +144,14 @@ class FakeManagement:
         self.sweeps: list[tuple[str, str, int]] = []
         self.refunds = dict(refunds or {})
         self.leftover_on_delete = 0
+        self.sweep_fail_for: set[str] = set()
 
     def stop_canister(self, cid: str) -> None:
         self.stopped.append(cid)
 
-    def sweep_to_treasury(self, cid: str, treasury: str) -> int:
+    def sweep_to_treasury(self, cid: str, treasury: str):
+        if cid in self.sweep_fail_for:
+            return False
         amount = int(self.refunds.get(cid) or 0)
         self.sweeps.append((cid, treasury, amount))
         self.refunds[cid] = 0
@@ -193,6 +207,18 @@ class TestBatchDestroy:
         assert mgmt.deposits == []
         assert balances["treasury"] == 2_010
         assert balances["multisig"] == 50
+
+    def test_drain_failure_does_not_delete(self):
+        ids = ["keep-me", "never-reached"]
+        treasury = "casals-treasury"
+        mgmt = FakeManagement(refunds={cid: 1_000 for cid in ids})
+        mgmt.sweep_fail_for.add("keep-me")
+        balances = {"multisig": 50, "treasury": 10}
+        result = execute_destroy_canisters_as_multisig(ids, mgmt, treasury, balances)
+        assert result.get("error")
+        assert mgmt.deleted == []
+        assert balances["treasury"] == 10
+        assert "keep-me" in mgmt.stopped
 
     def test_motoko_destroy_canisters_calls_management_not_casals(self):
         from pathlib import Path

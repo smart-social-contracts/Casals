@@ -372,6 +372,8 @@ persistent actor Self {
         };
       };
       case (#DestroyStand(a)) {
+        // Casals.destroy_stand drains to the treasury before any IC delete.
+        // This action does not call delete_canister itself.
         let casals = actor (Principal.toText(a.casals_backend)) : actor {
           destroy_stand : shared Text -> async Text;
         };

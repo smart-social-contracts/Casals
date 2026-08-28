@@ -1131,6 +1131,10 @@ def test_batch_destroy_is_one_proposal_executed_as_multisig():
     assert "stop_canister" in fn and "delete_canister" in fn
     assert "destroy_canister" not in fn
     assert "drainToTreasury" in fn
+    call = "delete_canister({ canister_id = cid })"
+    assert fn.index("drainToTreasury") < fn.index(call)
+    assert fn.index("case (#err(e)) { return #err(e) }") < fn.index(call)
+    assert main.count("delete_canister({ canister_id") == 1
     assert "forwardReclaimedCycles" not in fn
     assert "sendCyclesTo" not in main
     assert "install_code" in main

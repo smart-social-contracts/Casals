@@ -15,7 +15,6 @@
     monitorPollCanisters,
     monitorPollFlow,
     setCyclePolicy,
-    destroyCanister,
     destroyStand,
     reconcile,
     convertTreasuryIcp,
@@ -1085,11 +1084,10 @@
   const isMultisigSigner = $derived(
     Boolean($principal && multisigSigners.includes($principal)),
   );
-  const isProposeDestroy = $derived($isController !== true && isMultisigSigner);
+  const isProposeDestroy = $derived(Boolean(multisigCanisterId) && isMultisigSigner);
   const canDestroySelection = $derived(
-    $isController === true
-    || (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0)
-    || (isMultisigSigner && (destroyPlan.stands.length > 0 || destroyPlan.canisters.length > 0)),
+    (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0)
+    || (isProposeDestroy && (destroyPlan.stands.length > 0 || destroyPlan.canisters.length > 0)),
   );
   const destroyBlockedReason = $derived.by(() => {
     if (!selectedCanisterIds.size) return '';
@@ -1103,9 +1101,9 @@
         return 'Delegated destroy can only remove a complete stand — select every canister in the stand';
       }
       if ($isController === false && !isMultisigSigner && !isDelegatedDestroy) {
-        return 'Your principal is not a Casals controller or multisig signer';
+        return 'Your principal is not a multisig signer';
       }
-      return 'Casals controller access required';
+      return 'Propose DestroyCanisters as the governance multisig';
     }
     return '';
   });
@@ -1449,6 +1447,10 @@
     let lastErr = '';
 
     try {
+      if (plan.canisters.length) {
+        toasts.error('Individual canisters must be destroyed via a multisig DestroyCanisters proposal');
+        return;
+      }
       for (const st of plan.stands) {
         try {
           const res = await destroyStand({ stand: st.stand });
@@ -1461,17 +1463,6 @@
           }
         } catch (e: any) {
           lastErr = e?.message ?? 'Stand destroy failed';
-        }
-      }
-      for (const c of plan.canisters) {
-        try {
-          const res = await destroyCanister({ canister: c.name, canister_id: c.canister_id });
-          if (!res.ok) throw new Error(res.error || 'Destroy failed');
-          destroyedIds.add(c.canister_id);
-          reclaimedTotal += Number((res as { cycles_reclaimed?: number }).cycles_reclaimed ?? c.cycles ?? 0);
-          okCount += 1;
-        } catch (e: any) {
-          lastErr = e?.message ?? 'Destroy failed';
         }
       }
 
@@ -2892,10 +2883,11 @@
         <p class="text-sm text-primary-600 mb-4">
           {#if isProposeDestroy}
             Submits one multisig proposal for {selectedCanisters.length} canister id{selectedCanisters.length === 1 ? '' : 's'}.
-            Approval stops and deletes them on the IC as the governance multisig. This cannot be undone.
+            Approval drains remaining cycles to the Casals treasury, then deletes as the governance multisig.
+            If the drain fails the canister is left intact. This cannot be undone.
           {:else}
-            Permanently deletes the selected canister{selectedCanisters.length === 1 ? '' : 's'} on the Internet Computer.
-            Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+            Delegated stand teardown drains remaining cycles into the Casals treasury before deletion.
+            Individual canisters must be destroyed via a multisig DestroyCanisters proposal. This cannot be undone.
           {/if}
         </p>
 
