@@ -5,3 +5,9 @@ canisters:
       configuration:
         main: src/main.mo
         candid: multisig.did
+  - name: sweeper
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/sweeper.mo
+        candid: sweeper.did

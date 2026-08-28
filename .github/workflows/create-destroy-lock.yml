@@ -7,8 +7,8 @@
 #      proposal (N ids + Casals treasury), not as Casals.
 #   4. Assert those canisters are gone on the local replica.
 #   5. Assert Casals treasury increased and the multisig did not keep the
-#      reclaimed cycles (IC refunds delete_canister to the caller; the
-#      multisig deposits that increase to the conductor).
+#      reclaimed cycles (multisig reinstalls a sweeper and deposit_cycles
+#      to the conductor before delete; leftover refunds are also forwarded).
 #
 # Does not run the full tests/ integration suite (that stays workflow_dispatch
 # in integration.yml). Does not deploy to IC.

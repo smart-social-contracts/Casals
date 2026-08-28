@@ -1,0 +1,4 @@
+service : {
+  sweep : (principal, nat) -> ();
+  cycles_balance : () -> (nat) query;
+};

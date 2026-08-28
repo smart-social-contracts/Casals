@@ -98,29 +98,33 @@ def execute_destroy_canisters_as_multisig(
     treasury: str,
     balances: dict,
 ) -> dict:
-    """Mirror Motoko destroyCanistersOnIc + forwardReclaimedCycles.
+    """Mirror Motoko drainToTreasury + destroyCanistersOnIc.
 
-    IC delete_canister refunds remaining cycles to the multisig (the caller).
-    The same execute deposits that increase to the Casals treasury. Casals is
-    never added as a controller.
+    The multisig (controller) reinstalls a sweeper and deposit_cycles to the
+    Casals treasury before delete. Leftover delete refunds, if any, are also
+    forwarded. Casals is never added as a controller.
     """
     before = int(balances.get("multisig") or 0)
+    swept_total = 0
     for cid in canister_ids:
         management.stop_canister(cid)
-        refunded = management.delete_canister(cid)
-        balances["multisig"] = int(balances.get("multisig") or 0) + int(refunded or 0)
-    reclaimed = int(balances.get("multisig") or 0) - before
-    if reclaimed > 0 and treasury:
-        management.deposit_cycles(treasury, reclaimed)
-        balances["multisig"] = int(balances.get("multisig") or 0) - reclaimed
-        balances["treasury"] = int(balances.get("treasury") or 0) + reclaimed
+        swept = management.sweep_to_treasury(cid, treasury)
+        swept_total += int(swept or 0)
+        balances["treasury"] = int(balances.get("treasury") or 0) + int(swept or 0)
+        leftover = management.delete_canister(cid)
+        balances["multisig"] = int(balances.get("multisig") or 0) + int(leftover or 0)
+    leftover_refund = int(balances.get("multisig") or 0) - before
+    if leftover_refund > 0 and treasury:
+        management.deposit_cycles(treasury, leftover_refund)
+        balances["multisig"] = int(balances.get("multisig") or 0) - leftover_refund
+        balances["treasury"] = int(balances.get("treasury") or 0) + leftover_refund
     return {
         "proposals": 1,
         "canister_ids": list(canister_ids),
         "executor": "multisig",
         "via": "aaaaa-aa",
         "treasury": treasury,
-        "reclaimed": reclaimed,
+        "reclaimed": swept_total + leftover_refund,
     }
 
 
@@ -130,10 +134,17 @@ class FakeManagement:
         self.deleted: list[str] = []
         self.casals_calls: list[str] = []
         self.deposits: list[tuple[str, int]] = []
-        self.refunds = refunds or {}
+        self.sweeps: list[tuple[str, str, int]] = []
+        self.refunds = dict(refunds or {})
 
     def stop_canister(self, cid: str) -> None:
         self.stopped.append(cid)
+
+    def sweep_to_treasury(self, cid: str, treasury: str) -> int:
+        amount = int(self.refunds.get(cid) or 0)
+        self.sweeps.append((cid, treasury, amount))
+        self.refunds[cid] = 0
+        return amount
 
     def delete_canister(self, cid: str) -> int:
         self.deleted.append(cid)
@@ -166,7 +177,8 @@ class TestBatchDestroy:
         assert mgmt.stopped == ids
         assert mgmt.deleted == ids
         assert mgmt.casals_calls == []
-        assert mgmt.deposits == [(treasury, 3_000)]
+        assert mgmt.sweeps == [(cid, treasury, 1_000) for cid in ids]
+        assert mgmt.deposits == []
         assert balances["treasury"] == 3_010
         assert balances["multisig"] == 50
 
@@ -182,9 +194,12 @@ class TestBatchDestroy:
         )
         assert "destroyCanistersOnIc" in main
         assert "forwardReclaimedCycles" in main
+        assert "drainToTreasury" in main
         assert "stop_canister" in main
         assert "delete_canister" in main
         assert "deposit_cycles" in main
+        assert "install_code" in main
+        assert 'import SweepWasm "SweepWasm"' in main
         assert 'import Cycles "mo:core/Cycles"' in main
         # Batch execute must not relay through Casals.destroy_canister.
         destroy_fn = main.split("private func destroyCanistersOnIc")[1].split(
@@ -193,11 +208,18 @@ class TestBatchDestroy:
         assert "destroy_canister" not in destroy_fn
         assert 'actor ("aaaaa-aa")' in destroy_fn
         assert "forwardReclaimedCycles" in destroy_fn
-        helper = main.split("private func forwardReclaimedCycles")[1].split(
+        assert "drainToTreasury" in destroy_fn
+        helper = main.split("private func drainToTreasury")[1].split(
+            "private func forwardReclaimedCycles"
+        )[0]
+        assert "install_code" in helper
+        assert "sweeper.sweep" in helper
+        assert "destroy_canister" not in helper
+        forward = main.split("private func forwardReclaimedCycles")[1].split(
             "private func destroyCanistersOnIc"
         )[0]
-        assert "deposit_cycles" in helper
-        assert "destroy_canister" not in helper
+        assert "deposit_cycles" in forward
+        assert "destroy_canister" not in forward
 
 
 class TestExecuteStatusMapping:

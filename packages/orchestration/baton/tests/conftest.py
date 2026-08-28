@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -194,6 +195,9 @@ def build_multisig():
     env = os.environ.copy()
     env["PATH"] = f"{subprocess.check_output(['npm', 'config', 'get', 'prefix'], text=True).strip()}/bin:" + env.get("PATH", "")
     subprocess.run(["mops", "install"], cwd=MULTISIG_ROOT, check=True, capture_output=True, timeout=120)
+    icp(["build", "sweeper"], cwd=MULTISIG_ROOT)
+    embed = os.path.join(MULTISIG_ROOT, "scripts", "embed_sweeper_wasm.py")
+    subprocess.run([sys.executable, embed], cwd=MULTISIG_ROOT, check=True, timeout=30)
     icp(["build", "multisig"], cwd=MULTISIG_ROOT)
     path = os.path.join(MULTISIG_ROOT, ".icp", "cache", "artifacts", "multisig")
     if not os.path.exists(path):

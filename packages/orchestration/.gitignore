@@ -2,3 +2,4 @@
 .icp/
 **/.mops/
 **/mops.lock
+multisig/src/SweepWasm.mo
