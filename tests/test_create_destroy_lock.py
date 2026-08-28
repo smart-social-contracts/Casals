@@ -174,11 +174,12 @@ def greet_exists(cid: str) -> bool:
 
 def _parse_nat(output: str) -> int:
     text = (output or "").strip()
-    m = re.search(r"\((\d+)\s*:?\s*nat\)", text)
+    m = re.search(r"\(([\d_]+)\s*:?\s*nat\)", text)
     if m:
-        return int(m.group(1))
-    if text.isdigit():
-        return int(text)
+        return int(m.group(1).replace("_", ""))
+    compact = text.replace("_", "")
+    if compact.isdigit():
+        return int(compact)
     raise AssertionError(f"expected nat, got {output!r}")
 
 
@@ -302,6 +303,13 @@ def lock_env(registry):
         "msig_hash": msig_hash,
         "hello_hash": hello_hash,
     }
+
+
+def test_parse_nat_motoko_underscores():
+    """icp pretty-prints large nats as 1_488_164_917_819."""
+    assert _parse_nat("(1_488_164_917_819 : nat)\n") == 1_488_164_917_819
+    assert _parse_nat("(42 : nat)") == 42
+    assert _parse_nat("100") == 100
 
 
 class TestCreateDestroyLock:
