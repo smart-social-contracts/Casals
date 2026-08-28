@@ -47,6 +47,9 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
       casals_backend: I.Principal,
       canister_id: I.Principal,
     }),
+    DestroyCanisters: I.Record({
+      canister_ids: I.Vec(I.Principal),
+    }),
   });
   const ProposalStatus = I.Variant({
     pending: I.Null,
@@ -134,6 +137,13 @@ function actionSummary(action: Record<string, unknown>): string {
       return `Destroy stand ${String(payload?.stand ?? '—')}`;
     case 'DestroyCanister':
       return `Destroy canister ${fmtPrincipal(payload?.canister_id)}`;
+    case 'DestroyCanisters': {
+      const ids = payload?.canister_ids;
+      const n = Array.isArray(ids) ? ids.length : 0;
+      return n === 1
+        ? `Destroy canister ${fmtPrincipal(ids?.[0])}`
+        : `Destroy ${n} canisters`;
+    }
     default:
       return key;
   }
@@ -234,7 +244,8 @@ export type MultisigActionType =
   | 'SetPolicy'
   | 'UpdateBatonSettings'
   | 'DestroyStand'
-  | 'DestroyCanister';
+  | 'DestroyCanister'
+  | 'DestroyCanisters';
 
 /** Merge add/remove into a full IC controller list (update_settings replaces). */
 export function mergeControllerList(
@@ -398,6 +409,21 @@ export function buildMultisigAction(
         DestroyCanister: {
           casals_backend: Principal.fromText(casals),
           canister_id: Principal.fromText(canisterId),
+        },
+      };
+    }
+    case 'DestroyCanisters': {
+      const raw = fields.canister_ids;
+      const texts = Array.isArray(raw)
+        ? raw.map((x) => String(x).trim()).filter(Boolean)
+        : String(raw ?? '')
+            .split(/[\n,]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+      if (!texts.length) throw new Error('At least one canister id is required');
+      return {
+        DestroyCanisters: {
+          canister_ids: texts.map((p) => Principal.fromText(p)),
         },
       };
     }

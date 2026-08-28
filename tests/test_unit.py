@@ -1036,6 +1036,102 @@ def test_parse_principal_subnet_auth_map():
 import lifecycle  # noqa: E402
 
 
+def _provision_stand():
+    return types.SimpleNamespace(name="demo-stand")
+
+
+def test_resolve_provision_controllers_adds_multisig_not_casals(monkeypatch):
+    """Create hands the canister to the governance multisig, never Casals."""
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [])
+
+    w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
+    got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
+    assert mid in got
+    assert casals not in got
+
+
+def test_resolve_provision_controllers_baton_and_multisig_exclude_casals(monkeypatch):
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: ["extra-deployer"])
+
+    baton = lifecycle._resolve_provision_controllers(
+        _provision_stand(),
+        types.SimpleNamespace(wasm_type="baton", key="orchestration-baton@1.3.0"),
+    )
+    assert baton == [mid, "extra-deployer"]
+    assert casals not in baton
+
+    msig = lifecycle._resolve_provision_controllers(
+        _provision_stand(),
+        types.SimpleNamespace(wasm_type="multisig", key="orchestration-multisig@1.3.0"),
+        canister_id="msig-new",
+    )
+    assert msig == ["msig-new", "extra-deployer"]
+    assert casals not in msig
+
+
+def test_batch_destroy_is_one_proposal_executed_as_multisig():
+    """Approved destroy is one proposal with N ids; IC calls run as the multisig."""
+    from pathlib import Path
+
+    ids = ["cid-1", "cid-2", "cid-3"]
+    action = {"DestroyCanisters": {"canister_ids": ids}}
+    assert list(action.keys()) == ["DestroyCanisters"]
+    assert len(action["DestroyCanisters"]["canister_ids"]) == 3
+
+    stopped, deleted, casals_calls = [], [], []
+
+    def execute_as_multisig(canister_ids):
+        for cid in canister_ids:
+            stopped.append(cid)
+            deleted.append(cid)
+        return {"executor": "multisig", "via": "aaaaa-aa", "proposals": 1}
+
+    result = execute_as_multisig(action["DestroyCanisters"]["canister_ids"])
+    assert result == {"executor": "multisig", "via": "aaaaa-aa", "proposals": 1}
+    assert stopped == ids and deleted == ids
+    assert casals_calls == []
+
+    root = Path(__file__).resolve().parents[1]
+    types = (root / "packages/orchestration/multisig/src/types.mo").read_text()
+    main = (root / "packages/orchestration/multisig/src/main.mo").read_text()
+    assert "#DestroyCanisters : { canister_ids : [Principal] }" in types
+    fn = main.split("private func destroyCanistersOnIc")[1].split(
+        "private func casalsErrorDetail"
+    )[0]
+    assert 'actor ("aaaaa-aa")' in fn
+    assert "stop_canister" in fn and "delete_canister" in fn
+    assert "destroy_canister" not in fn
+
+
+def test_create_time_controllers_include_casals_temporarily(monkeypatch):
+    """CMC create still lists Casals so install can run; multisig is co-controller."""
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    assert lifecycle._create_time_controllers() == [casals, mid]
+
+
 def test_merge_controllers_dedupes_and_preserves_order():
     assert lifecycle._merge_controllers(
         ["casals", "monitor"],

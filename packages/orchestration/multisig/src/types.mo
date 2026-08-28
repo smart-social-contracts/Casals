@@ -21,6 +21,7 @@ module {
     #ManageSigners : { add : [Principal]; remove : [Principal]; new_threshold : ?Nat };
     #DestroyStand : { casals_backend : Principal; stand : Text };
     #DestroyCanister : { casals_backend : Principal; canister_id : Principal };
+    #DestroyCanisters : { canister_ids : [Principal] };
   };
 
   public type ProposalStatus = { #pending; #executed; #rejected; #failed; #expired };

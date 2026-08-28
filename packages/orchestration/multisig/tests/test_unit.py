@@ -82,6 +82,75 @@ def casals_response_ok(resp: str) -> bool:
     return '"ok": true' in resp or '"ok":true' in resp
 
 
+def destroy_canisters_proposal(canister_ids: list[str]) -> dict:
+    """One BatonAction.DestroyCanisters payload — not one proposal per id."""
+    return {"DestroyCanisters": {"canister_ids": list(canister_ids)}}
+
+
+def execute_destroy_canisters_as_multisig(canister_ids: list[str], management) -> dict:
+    """Mirror Motoko destroyCanistersOnIc: the multisig calls IC management."""
+    for cid in canister_ids:
+        management.stop_canister(cid)
+        management.delete_canister(cid)
+    return {
+        "proposals": 1,
+        "canister_ids": list(canister_ids),
+        "executor": "multisig",
+        "via": "aaaaa-aa",
+    }
+
+
+class FakeManagement:
+    def __init__(self):
+        self.stopped: list[str] = []
+        self.deleted: list[str] = []
+        self.casals_calls: list[str] = []
+
+    def stop_canister(self, cid: str) -> None:
+        self.stopped.append(cid)
+
+    def delete_canister(self, cid: str) -> None:
+        self.deleted.append(cid)
+
+    def destroy_canister(self, cid: str) -> None:
+        self.casals_calls.append(cid)
+
+
+class TestBatchDestroy:
+    def test_one_proposal_n_ids_executed_as_multisig(self):
+        ids = ["aaaaa-aa", "bbbbb-bb", "ccccc-cc"]
+        action = destroy_canisters_proposal(ids)
+        assert list(action.keys()) == ["DestroyCanisters"]
+        assert action["DestroyCanisters"]["canister_ids"] == ids
+
+        mgmt = FakeManagement()
+        result = execute_destroy_canisters_as_multisig(ids, mgmt)
+        assert result["proposals"] == 1
+        assert result["canister_ids"] == ids
+        assert result["executor"] == "multisig"
+        assert result["via"] == "aaaaa-aa"
+        assert mgmt.stopped == ids
+        assert mgmt.deleted == ids
+        assert mgmt.casals_calls == []
+
+    def test_motoko_destroy_canisters_calls_management_not_casals(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        types = (root / "src" / "types.mo").read_text()
+        main = (root / "src" / "main.mo").read_text()
+        assert "#DestroyCanisters : { canister_ids : [Principal] }" in types
+        assert "destroyCanistersOnIc" in main
+        assert "stop_canister" in main
+        assert "delete_canister" in main
+        # Batch execute must not relay through Casals.destroy_canister.
+        destroy_fn = main.split("private func destroyCanistersOnIc")[1].split(
+            "private func casalsErrorDetail"
+        )[0]
+        assert "destroy_canister" not in destroy_fn
+        assert 'actor ("aaaaa-aa")' in destroy_fn
+
+
 class TestExecuteStatusMapping:
     def test_execute_ok_is_executed(self):
         assert map_execute_status(True) == "executed"

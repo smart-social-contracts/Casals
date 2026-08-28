@@ -42,6 +42,7 @@
   let batonId = $state('');
   let commander = $state('');
   let standName = $state('');
+  let destroyIdsText = $state('');
 
   let liveControllers = $state<string[]>([]);
   let controllersLoading = $state(false);
@@ -240,6 +241,7 @@
     batonId = '';
     commander = '';
     standName = '';
+    destroyIdsText = '';
     clearControllerFetchState();
     syncControllersTextForAction();
   }
@@ -290,6 +292,7 @@
         casals_backend: backendCanisterId(),
         stand: standName,
         canister_id: targetCanister,
+        canister_ids: destroyIdsText || targetCanister,
       });
       await multisigPropose(canisterId, action, id);
       open = false;
@@ -327,6 +330,7 @@
         <option value="RemoveCommander">Remove baton commander</option>
         <option value="DestroyStand">Destroy stand</option>
         <option value="DestroyCanister">Destroy canister</option>
+        <option value="DestroyCanisters">Destroy canisters (batch)</option>
       </select>
 
       {#if isControllerAction}
@@ -413,6 +417,14 @@
         {:else}
           <input id="ms-destroy-target" class="input text-xs font-mono" bind:value={targetCanister} placeholder="aaaaa-aa" />
         {/if}
+      {:else if actionType === 'DestroyCanisters'}
+        <label class="label" for="ms-destroy-ids">Canister ids (one per line)</label>
+        <textarea
+          id="ms-destroy-ids"
+          class="input text-xs font-mono min-h-[72px]"
+          bind:value={destroyIdsText}
+          placeholder="aaaaa-aa&#10;bbbbb-bb"
+        ></textarea>
       {:else}
         <label class="label" for="ms-baton">Baton id</label>
         <input id="ms-baton" class="input text-xs font-mono" bind:value={batonId} placeholder="aaaaa-aa" />

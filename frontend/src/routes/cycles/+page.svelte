@@ -1347,84 +1347,70 @@
       toasts.error('No multisig canister found in this orchestra');
       return;
     }
-    const casals = backendCanisterId();
-    if (!casals) {
-      toasts.error('Backend canister id unavailable');
-      return;
-    }
-
     busy = 'bulk:destroy';
     const plan = destroyPlan;
-    const proposalIds: bigint[] = [];
+    const canisterIds: string[] = [];
+    const seen = new Set<string>();
+    for (const st of plan.stands) {
+      for (const c of st.canisters) {
+        if (c.canister_id && !seen.has(c.canister_id)) {
+          seen.add(c.canister_id);
+          canisterIds.push(c.canister_id);
+        }
+      }
+    }
+    for (const c of plan.canisters) {
+      if (c.canister_id && !seen.has(c.canister_id)) {
+        seen.add(c.canister_id);
+        canisterIds.push(c.canister_id);
+      }
+    }
     let proposed = 0;
     let executed = 0;
     let pending = 0;
     let lastErr = '';
 
     try {
-      for (const st of plan.stands) {
-        try {
-          const action = buildMultisigAction('DestroyStand', {
-            casals_backend: casals,
-            stand: st.stand,
-          });
-          const pid = await multisigPropose(msId, action, id);
-          proposalIds.push(pid);
-          proposed += 1;
-        } catch (e: unknown) {
-          lastErr = e instanceof Error ? e.message : String(e);
-        }
+      if (!canisterIds.length) {
+        toasts.error('No canister ids to destroy');
+        return;
       }
-      for (const c of plan.canisters) {
-        try {
-          const action = buildMultisigAction('DestroyCanister', {
-            casals_backend: casals,
-            canister_id: c.canister_id,
-          });
-          const pid = await multisigPropose(msId, action, id);
-          proposalIds.push(pid);
-          proposed += 1;
-        } catch (e: unknown) {
-          lastErr = e instanceof Error ? e.message : String(e);
+      try {
+        const action = buildMultisigAction('DestroyCanisters', {
+          canister_ids: canisterIds,
+        });
+        const pid = await multisigPropose(msId, action, id);
+        proposed = 1;
+        const allProposals = await multisigListProposals(msId);
+        const snapEvents = await multisigListEvents(msId).catch(() => []);
+        const p = allProposals.find((pr) => pr.id === pid);
+        if (p?.status === 'executed') executed = 1;
+        else if (p?.status === 'pending') pending = 1;
+        else if (p?.status === 'failed' || p?.status === 'rejected' || p?.status === 'expired') {
+          let detail = '';
+          if (p.status === 'failed') {
+            let bestAt: bigint | null = null;
+            for (const e of snapEvents) {
+              if (e.kind !== 'execute_failed' || e.at < p.created_at) continue;
+              if (bestAt === null || e.at - p.created_at < bestAt) {
+                bestAt = e.at - p.created_at;
+                detail = e.detail;
+              }
+            }
+          }
+          lastErr = detail || `Proposal #${pid} ${p.status}`;
         }
+      } catch (e: unknown) {
+        lastErr = e instanceof Error ? e.message : String(e);
       }
 
       if (proposed > 0) {
-        const allProposals = await multisigListProposals(msId);
-        const snapEvents = await multisigListEvents(msId).catch(() => []);
-        for (const pid of proposalIds) {
-          const p = allProposals.find((pr) => pr.id === pid);
-          if (p?.status === 'executed') executed += 1;
-          else if (p?.status === 'pending') pending += 1;
-          else if (p?.status === 'failed' || p?.status === 'rejected' || p?.status === 'expired') {
-            let detail = '';
-            if (p.status === 'failed') {
-              let bestAt: bigint | null = null;
-              for (const e of snapEvents) {
-                if (e.kind !== 'execute_failed' || e.at < p.created_at) continue;
-                if (bestAt === null || e.at - p.created_at < bestAt) {
-                  bestAt = e.at - p.created_at;
-                  detail = e.detail;
-                }
-              }
-            }
-            lastErr = lastErr || detail || `Proposal #${pid} ${p.status}`;
-          }
-        }
-
         if (executed > 0) {
-          const destroyedIds = new Set<string>();
-          for (const st of plan.stands) {
-            for (const c of st.canisters) destroyedIds.add(c.canister_id);
-          }
-          for (const c of plan.canisters) destroyedIds.add(c.canister_id);
           selectedCanisterIds = new Set(
-            [...selectedCanisterIds].filter((id) => !destroyedIds.has(id)),
+            [...selectedCanisterIds].filter((id) => !seen.has(id)),
           );
           toasts.success(
-            executed === proposed
-              ? `Destroy executed for ${executed} proposal${executed === 1 ? '' : 's'}`
-              : `Destroy executed for ${executed} of ${proposed} proposals`,
+            `Destroy executed for ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'}`,
           );
           closeDestroy();
           await Promise.all([
@@ -1434,7 +1420,7 @@
           ]);
         } else if (pending > 0) {
           toasts.success(
-            `Proposed ${pending} destroy action${pending === 1 ? '' : 's'} — approve on the Multisig page`,
+            `Proposed destroy of ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'} — approve on the Multisig page`,
           );
           closeDestroy();
         }
@@ -2904,8 +2890,8 @@
         </h3>
         <p class="text-sm text-primary-600 mb-4">
           {#if isProposeDestroy}
-            Submits a multisig proposal to permanently delete the selected canister{selectedCanisters.length === 1 ? '' : 's'}.
-            Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
+            Submits one multisig proposal for {selectedCanisters.length} canister id{selectedCanisters.length === 1 ? '' : 's'}.
+            Approval stops and deletes them on the IC as the governance multisig. This cannot be undone.
           {:else}
             Permanently deletes the selected canister{selectedCanisters.length === 1 ? '' : 's'} on the Internet Computer.
             Remaining cycles are drained into the Casals treasury before deletion. This cannot be undone.
@@ -2941,7 +2927,7 @@
           </p>
         {:else if busy === 'bulk:destroy' && isProposeDestroy}
           <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Submitting destroy proposal{destroyPlan.stands.length + destroyPlan.canisters.length === 1 ? '' : 's'}…
+            Submitting one destroy proposal for {selectedCanisters.length} canister{selectedCanisters.length === 1 ? '' : 's'}…
           </p>
         {/if}
 
