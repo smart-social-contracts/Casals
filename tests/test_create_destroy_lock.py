@@ -20,10 +20,16 @@ On SHA 5d8f2de the create IDs were real local-replica principals (``…77775…`
 ``canister_not_found`` HTTP 400 was ingress to ``aaaaa-aa``, not those ids.
 ``Casals.destroy_canister`` returned ``ok: false`` — the “gone” assert was
 that bad existence check, not a successful Casals delete.
+
+On SHA 9ad701d fixture setup ERRORed all four tests: anonymous
+``2vxsx-fae`` ``canister status`` of the new multisig is IC0542. Do not use
+anonymous status as a liveness probe. Prove liveness with ``list_signers`` /
+``greet`` (calls the test identity is allowed to make).
 """
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
 import os
@@ -33,10 +39,13 @@ import pytest
 
 from conftest import (
     CANISTER_NAME,
-    EMPTY_WASM,
     REPO_ROOT,
     _icp,
     call_canister,
+)
+
+HELLO_MOTOKO_GZ = os.path.join(
+    REPO_ROOT, "seed", "templates", "hello-world-motoko.wasm.gz"
 )
 
 
@@ -56,10 +65,23 @@ def _identity_principal() -> str:
 
 
 def _casals_id() -> str:
-    out = _icp(["canister", "status", CANISTER_NAME]).stdout
+    """Casals id via ``icp canister id``. Never status a managed canister.
+
+    Status of ``casals_backend`` is only a last resort — we deployed it, so
+    the test identity is its controller. Status of create/handoff canisters
+    as anonymous ``2vxsx-fae`` is IC0542 after #32.
+    """
+    r = _icp(["canister", "id", CANISTER_NAME, "-n", "local"], check=False)
+    text = (r.stdout or "").strip()
+    token = text.split()[-1] if text else ""
+    if re.fullmatch(r"[a-z0-9-]+-cai|[a-z0-9-]{10,}", token):
+        return token
+    out = _icp(["canister", "status", CANISTER_NAME, "-n", "local"]).stdout
     m = re.search(r"Canister Id:\s*([a-z0-9-]+)", out)
     if not m:
-        raise AssertionError(f"could not parse casals_backend id from:\n{out}")
+        raise AssertionError(
+            f"could not parse casals_backend id from:\n{out}\nid:\n{text}"
+        )
     return m.group(1)
 
 
@@ -75,89 +97,72 @@ def _build_multisig_wasm() -> str:
     return mod.build_multisig()
 
 
-def _status_text(cid: str) -> str:
-    """icp canister status stdout+stderr. Non-controllers get an error on stderr."""
-    r = _icp(["canister", "status", cid, "-n", "local"], check=False)
+def canister_controllers(*, tree_row: dict) -> list[str]:
+    """Controllers recorded at handoff (after IC update_settings succeeds).
+
+    Do not use anonymous ``canister status`` (IC0542 as ``2vxsx-fae``).
+    """
+    cached = [c for c in (tree_row.get("controllers") or []) if c]
+    if not cached:
+        raise AssertionError(
+            f"tree has no controllers after create; handoff persist missing "
+            f"or Casals never wrote the lasting set. row={tree_row!r}"
+        )
+    return cached
+
+
+def _call_raw(canister: str, method: str, candid_arg: str, check: bool = True):
+    r = _icp(
+        ["canister", "call", canister, method, candid_arg, "-n", "local"],
+        check=check,
+    )
+    if check:
+        return r.stdout
+    return r
+
+
+def _call_text(canister: str, method: str, candid_arg: str) -> str:
+    r = _call_raw(canister, method, candid_arg, check=False)
     return ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
 
 
-def _controllers_from_status(text: str) -> list[str]:
-    m = re.search(r"Controllers?:\s*([^\n]+)", text or "")
-    if not m:
-        return []
-    return [
-        p.strip().rstrip(",")
-        for p in m.group(1).replace(",", " ").split()
-        if "-" in p and len(p.strip()) > 8
-    ]
-
-
-def canister_controllers(cid: str, *, tree_row: dict | None = None) -> list[str]:
-    """Lasting controllers after Casals create.
-
-    ``icp canister status`` only prints Controllers when the caller is one.
-    After the product handoff the deployer is not, so we also accept the
-    Casals tree cache — written inside ``_add_controllers`` only after the
-    IC ``update_settings`` succeeds.
-    """
-    status_text = _status_text(cid)
-    found = _controllers_from_status(status_text)
-    if found:
-        return found
-    cached = list((tree_row or {}).get("controllers") or [])
-    if cached:
-        return cached
-    raise AssertionError(
-        f"could not read controllers for {cid}\n"
-        f"status:\n{status_text[-800:]}\ntree_row={tree_row!r}"
+def assert_multisig_live(cid: str, deployer: str) -> None:
+    """Public query on the raw id — allowed without being a controller."""
+    text = _call_text(cid, "list_signers", "()")
+    assert deployer in text, (
+        f"multisig {cid} list_signers did not return signer {deployer}:\n{text[-800:]}"
     )
 
 
-_EXISTS_RE = re.compile(
-    r"Module hash|Controllers?|Canister Id|"
-    r"not a controller|only (the )?controllers|not authorized|"
-    r"does not have permission",
+def assert_greet_live(cid: str, *, label: str) -> None:
+    """Public update on hello-world-motoko — anyone may call greet."""
+    text = _call_text(cid, "greet", '("lock")')
+    assert "Hello" in text, (
+        f"{label} ({cid}) greet is not live on this replica:\n{text[-800:]}"
+    )
+
+
+_GONE_RE = re.compile(
+    r"not found|does not exist|IC0301|no such canister|unknown canister|"
+    r"destination canister",
     re.I,
 )
 
 
-def _assert_live_on_replica(cid: str, *, label: str) -> str:
-    """Prove ``cid`` is a real canister on this local replica, not a catalog id.
+def greet_exists(cid: str) -> bool:
+    """True if hello-world ``greet`` still answers on this replica.
 
-    After the #32 handoff the deployer is not a controller, so ``status``
-    often errors. An authorization / 'only controllers' reject means the
-    canister exists. A missing canister is a specific 'Canister <id> not found'.
-    Never treat ingress to ``aaaaa-aa`` as evidence — that is a different
-    canister and locally returns HTTP 400 canister_not_found.
+    Gone is a call to *this* id failing with not-found — never ingress
+    ``canister_not_found`` on ``aaaaa-aa``, and never anonymous ``status``.
     """
-    text = _status_text(cid)
-    if _EXISTS_RE.search(text):
-        return text
-    raise AssertionError(
-        f"{label} create returned {cid} but it is not live on this replica "
-        f"(wrong network, catalog-only, or create returned an id before the "
-        f"canister exists):\n{text[-800:]}"
-    )
-
-
-def canister_exists_on_replica(cid: str) -> bool:
-    """True if the replica still has this canister."""
-    text = _status_text(cid)
-    if _EXISTS_RE.search(text):
+    text = _call_text(cid, "greet", '("lock")')
+    if "Hello" in text:
         return True
-    if re.search(rf"Canister\s+{re.escape(cid)}\s+not found", text, re.I):
-        return False
-    if re.search(r"no such canister|unknown canister", text, re.I) and cid in text:
+    if _GONE_RE.search(text):
         return False
     raise AssertionError(
-        f"cannot tell whether {cid} exists on the replica\n{text[-800:]}"
+        f"cannot tell whether {cid} exists via greet:\n{text[-800:]}"
     )
-
-
-def _call_raw(canister: str, method: str, candid_arg: str):
-    return _icp(
-        ["canister", "call", canister, method, candid_arg, "-n", "local"]
-    ).stdout
 
 
 def _parse_nat(output: str) -> int:
@@ -180,9 +185,9 @@ def _tree_canister(tree: dict, name: str) -> dict:
 
 
 def _assert_lasting_controllers(
-    cid: str, *, multisig_id: str, casals_id: str, name: str, tree_row: dict | None = None
+    cid: str, *, multisig_id: str, casals_id: str, name: str, tree_row: dict
 ):
-    controllers = canister_controllers(cid, tree_row=tree_row)
+    controllers = canister_controllers(tree_row=tree_row)
     assert multisig_id in controllers, (
         f"{name} ({cid}): governance multisig {multisig_id} is not a controller; "
         f"got {controllers}"
@@ -201,12 +206,14 @@ def lock_env(registry):
     wasm_path = _build_multisig_wasm()
     with open(wasm_path, "rb") as f:
         wasm_bytes = f.read()
-    # Motoko WASM is too large for an inline `icp canister call` argv
-    # (OSError E2BIG). Use the chunked --args-file path.
+    with gzip.open(HELLO_MOTOKO_GZ, "rb") as f:
+        hello_bytes = f.read()
     msig_hash = registry.store_chunked(
         "wasm", "lock/orchestration-multisig.wasm", wasm_bytes
     )
-    empty_hash = registry.store("wasm", "lock/empty.wasm", EMPTY_WASM)
+    hello_hash = registry.store_chunked(
+        "wasm", "lock/hello-world-motoko.wasm", hello_bytes
+    )
 
     _ok("create_section", {"name": "lock-sec"})
     _ok("create_stand", {"section": "lock-sec", "name": "lock-stand"})
@@ -219,12 +226,12 @@ def lock_env(registry):
         "wasm_type": "multisig",
     })
     _ok("add_authorized_wasm", {
-        "key": "lock-empty",
+        "key": "lock-hello",
         "registry_namespace": "wasm",
-        "registry_path": "lock/empty.wasm",
-        "wasm_hash": empty_hash,
+        "registry_path": "lock/hello-world-motoko.wasm",
+        "wasm_hash": hello_hash,
         "kind": "backend",
-        "wasm_type": "basilisk",
+        "wasm_type": "motoko",
     })
 
     msig = _ok("create_canister", {
@@ -241,12 +248,8 @@ def lock_env(registry):
         },
     })
     multisig_id = msig["canister_id"]
-    # Casals verified the module hash on-chain before dropping itself.
     assert msig["wasm_hash"] == msig_hash
-    _assert_live_on_replica(multisig_id, label="multisig")
-    # Method call on the raw id — proves this replica, not a catalog entry.
-    signers = _call_raw(multisig_id, "list_signers", "()")
-    assert deployer in signers, (deployer, signers)
+    assert_multisig_live(multisig_id, deployer)
 
     created = []
     for name in ("lock-a", "lock-b"):
@@ -254,11 +257,11 @@ def lock_env(registry):
             "stand": "lock-stand",
             "name": name,
             "kind": "backend",
-            "wasm_key": "lock-empty",
+            "wasm_key": "lock-hello",
         })
         created.append({"name": name, "canister_id": res["canister_id"]})
-        assert res["wasm_hash"] == empty_hash
-        _assert_live_on_replica(res["canister_id"], label=name)
+        assert res["wasm_hash"] == hello_hash
+        assert_greet_live(res["canister_id"], label=name)
 
     tree = call_canister("get_tree")
     for item in [{"name": "multisig", "canister_id": multisig_id}, *created]:
@@ -271,7 +274,7 @@ def lock_env(registry):
         "multisig_id": multisig_id,
         "managed": created,
         "msig_hash": msig_hash,
-        "empty_hash": empty_hash,
+        "hello_hash": hello_hash,
     }
 
 
@@ -303,18 +306,14 @@ class TestCreateDestroyLock:
     def test_03_casals_cannot_destroy_managed(self, lock_env):
         """Destroy as Casals must fail at IC control (auth may still pass)."""
         target = lock_env["managed"][0]
-        before = _status_text(target["canister_id"])
         res = _json_call("destroy_canister", {"canister": target["name"]})
-        after = _status_text(target["canister_id"])
         assert res.get("ok") is False, (
             f"Casals.destroy_canister succeeded for {target}; "
-            f"Casals is still a lasting controller or destroy ran as Casals. "
-            f"{res}\nbefore:\n{before[-400:]}\nafter:\n{after[-400:]}"
+            f"Casals is still a lasting controller or destroy ran as Casals. {res}"
         )
-        assert canister_exists_on_replica(target["canister_id"]), (
+        assert greet_exists(target["canister_id"]), (
             f"{target['name']} disappeared after a Casals destroy; "
-            f"the #32 lock is not holding. destroy={res}\n"
-            f"before:\n{before[-800:]}\nafter:\n{after[-800:]}"
+            f"the #32 lock is not holding. destroy={res}"
         )
 
     def test_04_destroy_canisters_as_multisig(self, lock_env):
@@ -351,7 +350,7 @@ class TestCreateDestroyLock:
         )
 
         for item in lock_env["managed"]:
-            assert not canister_exists_on_replica(item["canister_id"]), (
+            assert not greet_exists(item["canister_id"]), (
                 f"{item['name']} ({item['canister_id']}) still exists on the "
                 f"replica after DestroyCanisters"
             )
