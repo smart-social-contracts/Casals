@@ -188,7 +188,11 @@ def lock_env(registry):
     wasm_path = _build_multisig_wasm()
     with open(wasm_path, "rb") as f:
         wasm_bytes = f.read()
-    msig_hash = registry.store("wasm", "lock/orchestration-multisig.wasm", wasm_bytes)
+    # Motoko WASM is too large for an inline `icp canister call` argv
+    # (OSError E2BIG). Use the chunked --args-file path.
+    msig_hash = registry.store_chunked(
+        "wasm", "lock/orchestration-multisig.wasm", wasm_bytes
+    )
     empty_hash = registry.store("wasm", "lock/empty.wasm", EMPTY_WASM)
 
     _ok("create_section", {"name": "lock-sec"})
