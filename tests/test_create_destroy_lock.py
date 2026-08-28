@@ -14,6 +14,12 @@ from ``packages/orchestration`` (same package the product ships).
 
 Not collected by ``ci.yml`` (replica-free units) or ``cli-e2e.yml``.
 Run via ``.github/workflows/create-destroy-lock.yml``.
+
+On SHA 5d8f2de the create IDs were real local-replica principals (``…77775…``;
+``test_04`` called the multisig and ``DestroyCanisters`` executed). The
+``canister_not_found`` HTTP 400 was ingress to ``aaaaa-aa``, not those ids.
+``Casals.destroy_canister`` returned ``ok: false`` — the “gone” assert was
+that bad existence check, not a successful Casals delete.
 """
 
 from __future__ import annotations
@@ -107,31 +113,41 @@ def canister_controllers(cid: str, *, tree_row: dict | None = None) -> list[str]
     )
 
 
-_NOT_FOUND_RE = re.compile(
-    r"canister_not_found|"
-    r"Canister [a-z0-9-]+ not found|"
-    r"no such canister|"
-    r"unknown canister",
-    re.I,
-)
 _EXISTS_RE = re.compile(
     r"Module hash|Controllers?|Canister Id|"
-    r"not a controller|only (the )?controllers|not authorized",
+    r"not a controller|only (the )?controllers|not authorized|"
+    r"does not have permission",
     re.I,
 )
 
 
-def canister_exists_on_replica(cid: str) -> bool:
-    """True if the replica still has this canister.
+def _assert_live_on_replica(cid: str, *, label: str) -> str:
+    """Prove ``cid`` is a real canister on this local replica, not a catalog id.
 
-    Do not call aaaaa-aa canister_info over ingress — local icp treats that
-    as an update and reports canister_not_found for the management canister
-    itself. Status as a non-controller still proves the target exists.
+    After the #32 handoff the deployer is not a controller, so ``status``
+    often errors. An authorization / 'only controllers' reject means the
+    canister exists. A missing canister is a specific 'Canister <id> not found'.
+    Never treat ingress to ``aaaaa-aa`` as evidence — that is a different
+    canister and locally returns HTTP 400 canister_not_found.
     """
     text = _status_text(cid)
     if _EXISTS_RE.search(text):
+        return text
+    raise AssertionError(
+        f"{label} create returned {cid} but it is not live on this replica "
+        f"(wrong network, catalog-only, or create returned an id before the "
+        f"canister exists):\n{text[-800:]}"
+    )
+
+
+def canister_exists_on_replica(cid: str) -> bool:
+    """True if the replica still has this canister."""
+    text = _status_text(cid)
+    if _EXISTS_RE.search(text):
         return True
-    if _NOT_FOUND_RE.search(text):
+    if re.search(rf"Canister\s+{re.escape(cid)}\s+not found", text, re.I):
+        return False
+    if re.search(r"no such canister|unknown canister", text, re.I) and cid in text:
         return False
     raise AssertionError(
         f"cannot tell whether {cid} exists on the replica\n{text[-800:]}"
@@ -227,6 +243,10 @@ def lock_env(registry):
     multisig_id = msig["canister_id"]
     # Casals verified the module hash on-chain before dropping itself.
     assert msig["wasm_hash"] == msig_hash
+    _assert_live_on_replica(multisig_id, label="multisig")
+    # Method call on the raw id — proves this replica, not a catalog entry.
+    signers = _call_raw(multisig_id, "list_signers", "()")
+    assert deployer in signers, (deployer, signers)
 
     created = []
     for name in ("lock-a", "lock-b"):
@@ -238,6 +258,12 @@ def lock_env(registry):
         })
         created.append({"name": name, "canister_id": res["canister_id"]})
         assert res["wasm_hash"] == empty_hash
+        _assert_live_on_replica(res["canister_id"], label=name)
+
+    tree = call_canister("get_tree")
+    for item in [{"name": "multisig", "canister_id": multisig_id}, *created]:
+        row = _tree_canister(tree, item["name"])
+        assert row.get("canister_id") == item["canister_id"], row
 
     return {
         "deployer": deployer,
@@ -275,16 +301,20 @@ class TestCreateDestroyLock:
             )
 
     def test_03_casals_cannot_destroy_managed(self, lock_env):
-        """Destroy as Casals must fail: it is not a lasting controller."""
+        """Destroy as Casals must fail at IC control (auth may still pass)."""
         target = lock_env["managed"][0]
+        before = _status_text(target["canister_id"])
         res = _json_call("destroy_canister", {"canister": target["name"]})
+        after = _status_text(target["canister_id"])
         assert res.get("ok") is False, (
             f"Casals.destroy_canister succeeded for {target}; "
-            f"Casals must not be able to delete managed canisters. {res}"
+            f"Casals is still a lasting controller or destroy ran as Casals. "
+            f"{res}\nbefore:\n{before[-400:]}\nafter:\n{after[-400:]}"
         )
         assert canister_exists_on_replica(target["canister_id"]), (
             f"{target['name']} disappeared after a Casals destroy; "
-            f"destroy must run as the multisig, not Casals"
+            f"the #32 lock is not holding. destroy={res}\n"
+            f"before:\n{before[-800:]}\nafter:\n{after[-800:]}"
         )
 
     def test_04_destroy_canisters_as_multisig(self, lock_env):
