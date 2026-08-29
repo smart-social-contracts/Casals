@@ -90,6 +90,9 @@ type Archives = record { archives : vec Archive };
 type SymbolResult = record { symbol : text };
 type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
+type Header = record { 0 : text; 1 : text };
+type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
+type HttpResponseIncoming = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
 type AssetPermission = variant { Commit : ; Prepare : ; ManagePermissions :  };
 type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
 type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
@@ -98,6 +101,8 @@ type AssetCanisterService = service { grant_permission : (GrantPermissionArg) ->
 type BasiliskIntrospectionService = service { __browse__ : (text) -> (text) query; __shell__ : (text) -> (text) };
 
 service : {
+  "http_request" : (HttpRequest) -> (HttpResponseIncoming) query;
+  "http_request_update" : (HttpRequest) -> (HttpResponseIncoming);
   "get_status" : () -> (text) query;
   "casals_metadata" : () -> (text) query;
   "icrc10_supported_standards" : () -> (text) query;

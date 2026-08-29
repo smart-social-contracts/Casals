@@ -1,5 +1,18 @@
 [
   {
+    // GET /version — build provenance for "estado de los entornos"
+    // (gos-as-a-service#39). The extension-less `version` asset is written
+    // into dist/ by the postbuild script; without this rule the asset
+    // canister would serve it as application/octet-stream.
+    "match": "version",
+    "ignore": false,
+    "headers": {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache, must-revalidate",
+      "Access-Control-Allow-Origin": "*"
+    }
+  },
+  {
     "match": "**/*",
     "security_policy": "standard",
     "headers": {
