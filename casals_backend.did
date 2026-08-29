@@ -96,8 +96,13 @@ type StoreArg = record { key : text; content_type : text; content_encoding : tex
 type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text) };
 type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
 type BasiliskIntrospectionService = service { __browse__ : (text) -> (text) query; __shell__ : (text) -> (text) };
+type Header = record { text; text };
+type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
+type HttpResponseIncoming = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
 
 service : {
+  "http_request" : (HttpRequest) -> (HttpResponseIncoming) query;
+  "http_request_update" : (HttpRequest) -> (HttpResponseIncoming);
   "get_status" : () -> (text) query;
   "casals_metadata" : () -> (text) query;
   "icrc10_supported_standards" : () -> (text) query;

@@ -28,6 +28,19 @@ jobs:
             ic-basilisk==0.14.2 ic-basilisk-toolkit==0.5.3 \
             ic-python-db==0.11.0 ic-python-logging==0.3.4
 
+      - name: Stamp /version placeholders
+        run: |
+          # GET /version (gos-as-a-service#39). Unstamped checkouts omit
+          # sha / built_at / version honestly; this step bakes them in
+          # before the WASM is compiled so query time never invents them.
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILT_AT_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          TAG="${GITHUB_REF_NAME}"
+          sed -i \
+            "s/VERSION_PLACEHOLDER/${TAG}/g; s/COMMIT_HASH_PLACEHOLDER/${COMMIT}/g; s/BUILT_AT_ISO_PLACEHOLDER/${BUILT_AT_ISO}/g" \
+            src/version_http.py
+          echo "Stamped /version: canister=casals_backend sha=${COMMIT} built_at=${BUILT_AT_ISO} version=${TAG}"
+
       - name: Build conductor WASM
         run: |
           export PATH="$PWD/.venv-basilisk/bin:$PATH"

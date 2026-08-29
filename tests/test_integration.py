@@ -9,7 +9,7 @@ environment.
 
 import json
 
-from conftest import call_canister
+from conftest import call_canister, _icp, CANISTER_NAME
 
 
 def _ok(method, args):
@@ -36,6 +36,25 @@ class TestStatusAndMetadata:
         std = call_canister("icrc10_supported_standards")
         names = [s["name"] for s in std]
         assert "ICRC-120" in names and "ICRC-121" in names
+
+    def test_http_request_upgrade_and_version(self, canister):
+        # gos-as-a-service#39 — GET /version over the IC HTTP interface.
+        http_arg = (
+            '(record { method = "GET"; url = "/version"; '
+            "headers = vec {}; body = blob \"\" })"
+        )
+        query = _icp(["canister", "call", CANISTER_NAME, "http_request", http_arg])
+        assert "upgrade" in query.stdout
+        assert "true" in query.stdout
+
+        update = _icp(
+            ["canister", "call", CANISTER_NAME, "http_request_update", http_arg]
+        )
+        assert "status_code" in update.stdout
+        assert "200" in update.stdout
+        assert "casals_backend" in update.stdout
+        assert "application/json" in update.stdout
+        assert "Access-Control-Allow-Origin" in update.stdout
 
 
 class TestStructure:

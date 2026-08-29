@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "postbuild": "node scripts/write-version-file.js",
     "preview": "vite preview"
   },
   "devDependencies": {

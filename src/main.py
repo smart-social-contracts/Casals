@@ -16,15 +16,20 @@ target-reported status.
 import json
 import traceback
 
+from typing import Tuple
+
 from basilisk import (
     Async,
     Duration,
     Opt,
     Principal,
+    Record,
     StableBTreeMap,
+    Vec,
     blob,
     ic,
     init,
+    nat16,
     nat64,
     post_upgrade,
     query,
@@ -222,8 +227,28 @@ from util import (
     to_hex as _to_hex,
 )
 from views import _canister_view, _section_view, _stand_view
+from version_http import version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from wasm_types import infer_wasm_type, wasm_type_of_wasm
+
+# IC HTTP gateway types (GET /version — gos-as-a-service#39).
+# Incoming Header is a Candid tuple, not the outgoing HttpHeader record.
+Header = Tuple[str, str]
+
+
+class HttpRequest(Record):
+    method: text
+    url: text
+    headers: Vec["Header"]
+    body: blob
+
+
+class HttpResponseIncoming(Record):
+    status_code: nat16
+    headers: Vec["Header"]
+    body: blob
+    streaming_strategy: Opt[text]
+    upgrade: Opt[bool]
 
 _log = get_logger("casals")
 
@@ -570,6 +595,24 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 # _last_event, _append_event imported from audit.py above.
 
 # ── Query endpoints ──────────────────────────────────────────────────────────
+
+@query
+def http_request(req: HttpRequest) -> HttpResponseIncoming:
+    """Upgrade to an update call so the /version response is certified."""
+    return {
+        "status_code": 200,
+        "headers": [],
+        "body": b"",
+        "streaming_strategy": None,
+        "upgrade": True,
+    }
+
+
+@update
+def http_request_update(req: HttpRequest) -> HttpResponseIncoming:
+    """Serve GET /version (build provenance) over the IC HTTP interface."""
+    return version_http_response(req)
+
 
 @query
 def get_status() -> text:

@@ -27,7 +27,7 @@ jobs:
       # lifecycle controller merge). lifecycle imports basilisk types but tests
       # do not need a replica.
       - name: Run unit tests
-        run: pytest tests/test_unit.py -v
+        run: pytest tests/test_unit.py tests/test_version_http.py -v
 
   cli-unit:
     name: CLI unit tests
@@ -72,6 +72,9 @@ jobs:
       # Orchestra tree cache + footer/build-identity helpers (node:test).
       - name: Frontend lib unit tests
         run: node --experimental-strip-types --test frontend/src/lib/*.test.ts
+
+      - name: Frontend /version build-info tests
+        run: node --test frontend/scripts/build-info.test.js
 
   orchestration-unit:
     name: Orchestration unit tests
