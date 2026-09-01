@@ -4,6 +4,7 @@ import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { displayVersion } from './scripts/build-info.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -27,6 +28,8 @@ function getBuildTimeValues() {
       // keep default
     }
   }
+
+  version = displayVersion(repoRoot, version);
 
   try {
     commitHash = execSync('git rev-parse --short HEAD', {

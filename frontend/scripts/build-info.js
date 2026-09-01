@@ -29,7 +29,7 @@ function gitShortSha(repoRoot) {
   }
 }
 
-function gitReleaseTag(repoRoot) {
+export function gitReleaseTag(repoRoot) {
   try {
     return execSync('git describe --exact-match --tags HEAD', {
       encoding: 'utf-8',
@@ -62,6 +62,14 @@ export function buildVersionPayload(canisterName, repoRoot) {
   if (tag) payload.version = tag;
 
   return payload;
+}
+
+/**
+ * Footer / Vite ``__BUILD_VERSION__``: exact git tag when HEAD is tagged,
+ * otherwise the package semver fallback (version.txt / package.json).
+ */
+export function displayVersion(repoRoot, fallback) {
+  return gitReleaseTag(repoRoot) || fallback;
 }
 
 /**

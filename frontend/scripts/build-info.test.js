@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { buildVersionPayload, writeVersionFile, ISO_Z } from './build-info.js';
+import { buildVersionPayload, writeVersionFile, ISO_Z, gitReleaseTag, displayVersion } from './build-info.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -48,5 +48,27 @@ test('version is a release tag only — committed version.txt is not invented', 
   // /version.version is only present when HEAD is an exact tag.
   if (payload.version !== undefined) {
     assert.match(payload.version, /^v?\d/);
+  }
+});
+
+test('gitReleaseTag is empty outside git', () => {
+  const fakeRoot = mkdtempSync(join(tmpdir(), 'build-info-not-git-'));
+  try {
+    assert.equal(gitReleaseTag(fakeRoot), '');
+    assert.equal(displayVersion(fakeRoot, '0.2.0'), '0.2.0');
+  } finally {
+    rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test('displayVersion prefers the exact git tag used by /version', () => {
+  const payload = buildVersionPayload('casals_frontend', repoRoot);
+  const shown = displayVersion(repoRoot, '0.2.0');
+  if (payload.version) {
+    assert.equal(shown, payload.version);
+    assert.equal(gitReleaseTag(repoRoot), payload.version);
+  } else {
+    assert.equal(shown, '0.2.0');
+    assert.equal(gitReleaseTag(repoRoot), '');
   }
 });
