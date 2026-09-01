@@ -401,13 +401,47 @@ def _grant_backend_commit(asset, frontend_cid: str, stand=None):
     creation. Returns the backend canister id (or "" when none is found).
     """
     backend_cid = _backend_cid_for_stand(frontend_cid, stand)
-    if backend_cid and backend_cid != ic.id().to_str():
+    if not backend_cid:
+        _append_event("assets_backend_unresolved", frontend_cid, {
+            "stand": stand.name if stand is not None else "",
+        })
+        return ""
+    if backend_cid != ic.id().to_str():
         grant_res = yield asset.grant_permission({
             "to_principal": Principal.from_str(backend_cid),
             "permission": {"Commit": None},
         })
         unwrap_call_result(grant_res)
     return backend_cid
+
+
+def _maybe_grant_commit_after_backend(backend_cid: str, stand):
+    """Generator: if this stand already has a frontend, grant it Commit to
+    ``backend_cid``. Used when the backend is created or registered *after*
+    the frontend (the grant at frontend-provision time was a no-op).
+    """
+    if not (backend_cid or "").strip() or stand is None:
+        return
+    list(Canister.instances())
+    for peer in Canister.instances():
+        if (
+            peer.kind == CanisterKind.FRONTEND
+            and peer.canister_id
+            and peer.canister_id != backend_cid
+            and peer.stand is not None
+            and peer.stand.name == stand.name
+        ):
+            asset = AssetCanisterService(Principal.from_str(peer.canister_id))
+            granted = yield from _grant_backend_commit(
+                asset, peer.canister_id, stand
+            )
+            if granted:
+                _append_event("backend_commit_granted", peer.canister_id, {
+                    "backend": granted,
+                    "stand": stand.name,
+                    "reason": "backend_added",
+                })
+            return
 
 
 def _provision_assets(canister_id: str, w, stand=None):
@@ -995,6 +1029,8 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     _pool_mark_in_use(cid, name)
     _append_event("canister_created", cid,
                   {"stand": dk.name, "name": name, "wasm_key": w.key, "hash": actual, "reused": reused})
+    if kind == CanisterKind.BACKEND:
+        yield from _maybe_grant_commit_after_backend(cid, dk)
     return st
 
 
@@ -1074,6 +1110,8 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
     _pool_mark_in_use(cid, name)
     _append_event("pool_assigned", cid,
                   {"stand": dk.name, "name": name, "wasm_key": wasm_key or None})
+    if kind == CanisterKind.BACKEND:
+        yield from _maybe_grant_commit_after_backend(cid, dk)
     return st
 
 

@@ -442,6 +442,7 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `set_canister_controllers` / `set_log_visibility` | IC settings |
 | `canister_browse` / `canister_exec` | inspect / call target canisters |
 | `provision_assets` | (re)upload frontend bundle from registry (batched) |
+| `grant_stand_backend_commit` | repair: grant `Commit` on a frontend to the paired stand backend (idempotent; commander + `canister.deploy`) |
 | `set_sheet` / `reset_sheet` | edit persisted desired orchestra |
 | `deploy_sheet` | idempotently reconcile orchestra to live sheet |
 | `apply_arrangement` | run arrangement steps (batched) |
@@ -583,11 +584,16 @@ sheet is reconciled.
 When Casals provisions a frontend (certified-assets) canister — on install or via
 `provision_assets` — it grants **itself** `Commit` and uploads the bundle, then
 also grants **the paired backend** (the backend canister in the same stand)
-`Commit` on that asset canister (`_grant_backend_commit` in `lifecycle.py`). This
-lets the backend write assets to its own frontend after a reinstall (which wipes
-the asset canister and its permissions) — e.g. a consumer backend pulling
-deployment-specific assets from the file-registry and `store`-ing them. On the final
-batch Casals also
+`Commit` on that asset canister (`_grant_backend_commit` in `lifecycle.py`). If
+the frontend is provisioned before a backend exists in that stand, the grant is
+skipped and Casals emits `assets_backend_unresolved`. Creating or registering
+the backend later re-runs the grant (`_maybe_grant_commit_after_backend`).
+Operators / the GaaS installer can also call `grant_stand_backend_commit`
+`{"canister": "<frontend name or id>"}` to repair a missing grant without
+re-uploading the bundle. This lets the backend write assets to its own frontend
+after a reinstall (which wipes the asset canister and its permissions) — e.g. a
+consumer backend pulling deployment-specific assets from the file-registry and
+`store`-ing them. On the final batch Casals also
 writes a deployment-specific `/canister_ids.js` wiring the SPA to its backend.
 
 ## Cycle history & charts

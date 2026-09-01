@@ -93,7 +93,7 @@ type DecimalsResult = record { decimals : nat32 };
 type Header = record { 0 : text; 1 : text };
 type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
 type HttpResponseIncoming = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
-type AssetPermission = variant { Commit : ; Prepare : ; ManagePermissions :  };
+type AssetPermission = variant { Commit; Prepare; ManagePermissions };
 type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
 type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
 type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text) };
@@ -157,6 +157,7 @@ service : {
   "refresh_fx" : () -> (text);
   "estimate_deploy" : (text) -> (text) query;
   "provision_assets" : (text) -> (text);
+  "grant_stand_backend_commit" : (text) -> (text);
   "upgrade_to" : (text) -> (text);
   "create_snapshot" : (text) -> (text);
   "revert_snapshot" : (text) -> (text);

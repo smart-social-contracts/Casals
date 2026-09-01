@@ -166,6 +166,9 @@ from lifecycle import (
     _target_subnet,
     _teardown_priority_from_spec,
     _upload_bundle,
+    _grant_backend_commit,
+    _maybe_grant_commit_after_backend,
+    _provision_assets,
     _verify_module_hash,
     _versions_in_family,
 )
@@ -215,6 +218,7 @@ from subnets import (
     subnet_whitelist,
 )
 from services import (
+    AssetCanisterService,
     AssetPermission,
     GrantPermissionArg,
     StoreArg,
@@ -1792,7 +1796,7 @@ def list_backend_controllers(_args: text) -> Async[text]:
 
 
 @update
-def register_canister(args: text) -> text:
+def register_canister(args: text) -> Async[text]:
     """Register an existing canister as a canister (Casals must be a controller of
     it to manage it later). Args (JSON):
     {stand, name, canister_id, kind}.
@@ -1824,6 +1828,8 @@ def register_canister(args: text) -> text:
         if PooledCanister[st.canister_id] is not None:
             _pool_mark_in_use(st.canister_id, name)
         _append_event("canister_registered", st.canister_id, {"stand": dk.name, "name": name})
+        if st.kind == CanisterKind.BACKEND and st.canister_id:
+            yield from _maybe_grant_commit_after_backend(st.canister_id, dk)
         return _ok(name=name)
     except Exception as e:
         return _err(str(e))
@@ -2502,6 +2508,61 @@ def provision_assets(args: text) -> Async[text]:
     except Exception as e:
         _log.error(f"provision_assets error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
+
+
+@update
+def grant_stand_backend_commit(args: text) -> Async[text]:
+    """Grant ``Commit`` on a frontend asset canister to the paired stand backend.
+
+    Repair path for when `_grant_backend_commit` was skipped (frontend
+    provisioned before the backend existed) or the permission was lost.
+    Idempotent: re-granting an existing ``Commit`` is a no-op success.
+
+    Args (JSON): ``{"canister": "<frontend name or canister id>"}``.
+    Does not take a principal or permission — only the paired backend gets
+    ``Commit``. Authorized as stand commander with ``canister.deploy``.
+    """
+    try:
+        params = json.loads(args) if args else {}
+        key = (params.get("canister") or "").strip()
+        if not key:
+            return _err("expected 'canister'")
+        list(Canister.instances())
+        st = Canister[key] or _find_canister_by_id(key)
+        if st is None:
+            return _err(f"unknown canister '{key}'")
+        if not (st.canister_id or "").strip():
+            return _err(f"canister '{st.name}' has no canister_id")
+        if st.kind != CanisterKind.FRONTEND:
+            return _err(
+                f"canister '{st.name}' is {st.kind}, not frontend — "
+                "pass the stand's asset canister"
+            )
+        _require_commander(st.stand, "canister.deploy")
+        asset = AssetCanisterService(Principal.from_str(st.canister_id))
+        backend_cid = yield from _grant_backend_commit(
+            asset, st.canister_id, st.stand
+        )
+        if not backend_cid:
+            return _ok(
+                granted=False,
+                backend="",
+                canister=st.name,
+                canister_id=st.canister_id,
+            )
+        _append_event("backend_commit_granted", st.canister_id, {
+            "backend": backend_cid,
+            "stand": st.stand.name if st.stand else "",
+        })
+        return _ok(
+            granted=True,
+            backend=backend_cid,
+            canister=st.name,
+            canister_id=st.canister_id,
+        )
+    except Exception as e:
+        _log.error(f"grant_stand_backend_commit error: {e}")
+        return _err(str(e))
 
 
 def _upgrade_to_impl_gen(params: dict) -> Async[str]:
