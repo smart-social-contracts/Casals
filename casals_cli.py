@@ -204,13 +204,21 @@ def _run_make_build() -> None:
         )
 
 
-def _run_icp_deploy(args) -> None:
-    _progress(f"deploying with icp (-e {args.env})…")
-    _icp(
-        ["deploy"] + _base_flags(args) + ["--mode", "upgrade", "-y"],
-        args,
-        timeout=900,
-    )
+def _run_icp_deploy(args, mode: str = "upgrade") -> None:
+    _progress(f"deploying with icp (-e {args.env}, --mode {mode})…")
+    argv = ["deploy"] + _base_flags(args) + ["--mode", mode, "-y"]
+    try:
+        _icp(argv, args, timeout=900)
+    except RuntimeError as exc:
+        if mode == "upgrade" and "IC0537" in str(exc):
+            _progress("canisters have no Wasm; retrying icp deploy --mode install")
+            _icp(
+                ["deploy"] + _base_flags(args) + ["--mode", "install", "-y"],
+                args,
+                timeout=900,
+            )
+            return
+        raise
 
 
 def _add_local_conductor(args) -> None:
@@ -810,7 +818,8 @@ def cmd_new(args):
         _progress(f"fresh create for environment '{args.env}'")
 
     _run_make_build()
-    _run_icp_deploy(args)
+    # Fresh principals have no Wasm — `upgrade` fails with IC0537.
+    _run_icp_deploy(args, mode="install" if mode == "create" else "upgrade")
 
     if args.env == "local":
         _add_local_conductor(args)
