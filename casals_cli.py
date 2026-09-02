@@ -21,6 +21,9 @@ Commands:
     sheet get           print the live sheet
     sheet set FILE      replace the live sheet from a JSON file
     sheet deploy [FILE] deploy the live sheet (optionally set from FILE first)
+    register STAND NAME CANISTER_ID register an existing IC canister on a stand
+    section create NAME            create an orchestra section
+    stand create SECTION NAME      create a stand in a section
     arrangement list    list arrangements (post-deploy config overlays)
     arrangement get [NAME]   print an arrangement (active if no NAME)
     arrangement set FILE     create/update an arrangement from a JSON file
@@ -35,6 +38,7 @@ Examples::
     casals status
     casals -e ic --identity casals tree
     casals sheet deploy my-sheet.json
+    casals register --stand marketplace --name marketplace-backend --canister-id aaaaa-aa --kind backend
     casals cycles -e ic
 
 ``-e / --env`` defaults to ``local``; pass ``-e ic`` for mainnet.
@@ -67,6 +71,7 @@ _ID_ALIASES = {
     "casal_frontend": "casals_frontend",
     "file_registry": "ic_file_registry",
     "file_registry_frontend": "ic_file_registry_frontend",
+    "casals_file_registry": "ic_file_registry",
 }
 
 _DEFAULT_LOCAL_CONDUCTOR = (
@@ -384,6 +389,41 @@ def cmd_sheet_deploy(args):
             print(json.dumps(res, indent=2), file=sys.stderr)
             sys.exit(1)
     _out(call(CASALS, "deploy_sheet", args, "{}"))
+
+
+def cmd_section_create(args):
+    payload = {"name": args.name}
+    if args.description:
+        payload["description"] = args.description
+    res = call(CASALS, "create_section", args, json.dumps(payload))
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"create_section '{args.name}' failed: {res}")
+    _out(res)
+
+
+def cmd_stand_create(args):
+    payload = {"section": args.section, "name": args.name}
+    if args.description:
+        payload["description"] = args.description
+    res = call(CASALS, "create_stand", args, json.dumps(payload))
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"create_stand '{args.name}' failed: {res}")
+    _out(res)
+
+
+def cmd_register(args):
+    payload = {
+        "stand": args.stand,
+        "name": args.name,
+        "canister_id": args.canister_id,
+        "kind": args.kind,
+    }
+    if args.wasm_type:
+        payload["wasm_type"] = args.wasm_type
+    res = call(CASALS, "register_canister", args, json.dumps(payload))
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"register_canister '{args.name}' failed: {res}")
+    _out(res)
 
 
 def cmd_arrangement_list(args):
@@ -811,6 +851,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  casals status\n"
             "  casals -e ic --identity casals tree\n"
             "  casals sheet deploy my-sheet.json\n"
+            "  casals register marketplace marketplace-backend aaaaa-aa backend\n"
             "  casals cycles -e ic\n"
             "  casals new -e local -y\n"
             "  casals new ids.json -e ic --identity casals"
@@ -847,6 +888,40 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy_p.add_argument(
         "file", nargs="?", metavar="FILE",
         help="optional path to sheet JSON; if given, set_sheet is called first",
+    )
+
+    sec_p = sub.add_parser("section", help="section subcommands")
+    sec_sub = sec_p.add_subparsers(dest="section_command", required=True)
+    sec_create_p = sec_sub.add_parser("create", help="create an orchestra section")
+    sec_create_p.add_argument("name", metavar="NAME", help="section name")
+    sec_create_p.add_argument(
+        "--description", default="", help="optional section description",
+    )
+
+    stand_p = sub.add_parser("stand", help="stand subcommands")
+    stand_sub = stand_p.add_subparsers(dest="stand_command", required=True)
+    stand_create_p = stand_sub.add_parser("create", help="create a stand in a section")
+    stand_create_p.add_argument("section", metavar="SECTION", help="section name")
+    stand_create_p.add_argument("name", metavar="NAME", help="stand name")
+    stand_create_p.add_argument(
+        "--description", default="", help="optional stand description",
+    )
+
+    reg_p = sub.add_parser(
+        "register",
+        help="register an existing IC canister on a stand",
+    )
+    reg_p.add_argument("stand", metavar="STAND", help="stand name")
+    reg_p.add_argument("name", metavar="NAME", help="registered canister name")
+    reg_p.add_argument(
+        "canister_id", metavar="CANISTER_ID", help="existing IC canister principal",
+    )
+    reg_p.add_argument(
+        "kind", metavar="KIND", choices=("backend", "frontend"), help="canister kind",
+    )
+    reg_p.add_argument(
+        "--wasm-type", default=None, dest="wasm_type", metavar="TYPE",
+        help="optional wasm_type hint (e.g. assets, basilisk)",
     )
 
     arr_p = sub.add_parser("arrangement", help="arrangement (post-deploy config) subcommands")
@@ -935,6 +1010,14 @@ def main():
                 cmd_sheet_set(args)
             elif args.sheet_command == "deploy":
                 cmd_sheet_deploy(args)
+        elif args.command == "section":
+            if args.section_command == "create":
+                cmd_section_create(args)
+        elif args.command == "stand":
+            if args.stand_command == "create":
+                cmd_stand_create(args)
+        elif args.command == "register":
+            cmd_register(args)
         elif args.command == "arrangement":
             if args.arrangement_command == "list":
                 cmd_arrangement_list(args)

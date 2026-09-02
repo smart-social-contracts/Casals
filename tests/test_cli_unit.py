@@ -172,11 +172,12 @@ class TestNormalizeInstanceIds:
             "casal_frontend": "cccc-c",
             "file_registry": "ddddd-dd",
             "file_registry_frontend": "eeeee-ee",
+            "casals_file_registry": "ggggg-gg",
             "multisig": "fffff-ff",
         }
         assert cli._normalize_instance_ids(raw) == {
             "casals_frontend": "cccc-c",
-            "ic_file_registry": "ddddd-dd",
+            "ic_file_registry": "ggggg-gg",
             "ic_file_registry_frontend": "eeeee-ee",
             "multisig": "fffff-ff",
         }
@@ -291,6 +292,32 @@ class TestParser:
     def test_sheet_deploy_with_file(self):
         args = self._parse(["sheet", "deploy", "/tmp/my.json"])
         assert args.sheet_command == "deploy" and args.file == "/tmp/my.json"
+
+    def test_section_create(self):
+        args = self._parse(["section", "create", "Product", "--description", "x"])
+        assert args.command == "section"
+        assert args.section_command == "create"
+        assert args.name == "Product"
+        assert args.description == "x"
+
+    def test_stand_create(self):
+        args = self._parse(["stand", "create", "Product", "marketplace"])
+        assert args.command == "stand"
+        assert args.stand_command == "create"
+        assert args.section == "Product"
+        assert args.name == "marketplace"
+
+    def test_register_command(self):
+        args = self._parse([
+            "register", "marketplace", "marketplace-backend",
+            "aaaaa-aa", "backend", "--wasm-type", "basilisk",
+        ])
+        assert args.command == "register"
+        assert args.stand == "marketplace"
+        assert args.name == "marketplace-backend"
+        assert args.canister_id == "aaaaa-aa"
+        assert args.kind == "backend"
+        assert args.wasm_type == "basilisk"
 
     # arrangement subcommands
     def test_arrangement_list(self):
@@ -602,6 +629,65 @@ class TestCall:
         assert result == {"ok": True}
 
 
+# ── cmd_register ─────────────────────────────────────────────────────────────
+
+class TestRegisterCommand:
+    @patch("casals_cli.call")
+    def test_register_calls_register_canister(self, mock_call, capsys):
+        mock_call.return_value = {"ok": True, "name": "marketplace-backend"}
+        args = _make_args(
+            stand="marketplace",
+            name="marketplace-backend",
+            canister_id="aaaaa-aa",
+            kind="backend",
+            wasm_type="basilisk",
+        )
+        cli.cmd_register(args)
+        mock_call.assert_called_once()
+        assert mock_call.call_args[0][1] == "register_canister"
+        payload = json.loads(mock_call.call_args[0][3])
+        assert payload == {
+            "stand": "marketplace",
+            "name": "marketplace-backend",
+            "canister_id": "aaaaa-aa",
+            "kind": "backend",
+            "wasm_type": "basilisk",
+        }
+
+
+class TestSectionStandCreateCommands:
+    @patch("casals_cli.call")
+    def test_section_create_calls_create_section(self, mock_call, capsys):
+        mock_call.return_value = {"ok": True, "name": "Product"}
+        args = _make_args(name="Product", description="Marketplace and file-registry.")
+        cli.cmd_section_create(args)
+        mock_call.assert_called_once()
+        assert mock_call.call_args[0][1] == "create_section"
+        payload = json.loads(mock_call.call_args[0][3])
+        assert payload == {
+            "name": "Product",
+            "description": "Marketplace and file-registry.",
+        }
+
+    @patch("casals_cli.call")
+    def test_stand_create_calls_create_stand(self, mock_call, capsys):
+        mock_call.return_value = {"ok": True, "name": "marketplace"}
+        args = _make_args(
+            section="Product",
+            name="marketplace",
+            description="Marketplace stand.",
+        )
+        cli.cmd_stand_create(args)
+        mock_call.assert_called_once()
+        assert mock_call.call_args[0][1] == "create_stand"
+        payload = json.loads(mock_call.call_args[0][3])
+        assert payload == {
+            "section": "Product",
+            "name": "marketplace",
+            "description": "Marketplace stand.",
+        }
+
+
 # ── cmd_sheet_deploy — set_sheet failure aborts ──────────────────────────────
 
 class TestSheetDeployAbortOnSetFailure:
@@ -734,6 +820,8 @@ class TestSubprocessRouting:
         ["arrangement", "list"],
         ["arrangement", "get"],
         ["arrangement", "apply"],
+        ["section", "create", "Product"],
+        ["stand", "create", "Product", "marketplace"],
     ])
     def test_read_command_exits_0_and_stdout_is_json(self, fake_icp_dir, cmd):
         result = _run_cli(cmd, fake_icp_dir)
