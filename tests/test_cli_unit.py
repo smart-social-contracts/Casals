@@ -637,19 +637,15 @@ class TestRunIcpDeploy:
         argv = mock_icp.call_args[0][0]
         assert argv[argv.index("--mode") + 1] == "install"
 
-    def test_upgrade_retries_install_on_ic0537(self):
+    def test_upgrade_does_not_retry_install(self):
         args = _make_args(env="ic", identity="deployer")
-        calls: list[list[str]] = []
-
-        def fake_icp(argv, *_a, **_k):
-            calls.append(argv)
-            if argv[argv.index("--mode") + 1] == "upgrade":
-                raise RuntimeError("icp deploy failed: IC0537 wasm-module-not-found")
-            return _fake_proc()
-
-        with patch("casals_cli._icp", side_effect=fake_icp):
-            cli._run_icp_deploy(args, mode="upgrade")
-        assert [c[c.index("--mode") + 1] for c in calls] == ["upgrade", "install"]
+        with patch("casals_cli._icp") as mock_icp:
+            mock_icp.side_effect = RuntimeError("IC0537 wasm-module-not-found")
+            with pytest.raises(RuntimeError, match="IC0537"):
+                cli._run_icp_deploy(args, mode="upgrade")
+            assert mock_icp.call_count == 1
+            argv = mock_icp.call_args[0][0]
+            assert argv[argv.index("--mode") + 1] == "upgrade"
 
 
 # ── cmd_register ─────────────────────────────────────────────────────────────

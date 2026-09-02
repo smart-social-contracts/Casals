@@ -206,19 +206,11 @@ def _run_make_build() -> None:
 
 def _run_icp_deploy(args, mode: str = "upgrade") -> None:
     _progress(f"deploying with icp (-e {args.env}, --mode {mode})…")
-    argv = ["deploy"] + _base_flags(args) + ["--mode", mode, "-y"]
-    try:
-        _icp(argv, args, timeout=900)
-    except RuntimeError as exc:
-        if mode == "upgrade" and "IC0537" in str(exc):
-            _progress("canisters have no Wasm; retrying icp deploy --mode install")
-            _icp(
-                ["deploy"] + _base_flags(args) + ["--mode", "install", "-y"],
-                args,
-                timeout=900,
-            )
-            return
-        raise
+    _icp(
+        ["deploy"] + _base_flags(args) + ["--mode", mode, "-y"],
+        args,
+        timeout=900,
+    )
 
 
 def _add_local_conductor(args) -> None:
