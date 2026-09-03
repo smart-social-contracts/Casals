@@ -1041,10 +1041,11 @@ def _provision_stand():
 
 
 def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
-    """Realm canisters keep Casals until hand_to_baton; installer is not added."""
+    """Realm canisters keep Casals until hand_to_baton; installer caller is added."""
     casals = "qthgp-casals-conductor"
     mid = "multisig-aaaaa-aa"
     extra = "extra-deployer"
+    installer = "jmgc7-installer-cai"
     monkeypatch.setattr(
         lifecycle,
         "ic",
@@ -1052,18 +1053,38 @@ def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
     )
     monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
     monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [extra])
+    monkeypatch.setattr(lifecycle, "_caller", lambda: installer)
 
     w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
     got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
-    assert got == [mid, casals, extra]
-    assert "installer-principal" not in got
+    assert got == [mid, casals, installer, extra]
 
     frontend = lifecycle._resolve_provision_controllers(
         _provision_stand(),
         types.SimpleNamespace(wasm_type="frontend", key="hello-world-frontend"),
         canister_id="fe-cid",
     )
-    assert frontend == [mid, casals, extra]
+    assert frontend == [mid, casals, installer, extra]
+
+
+def test_resolve_provision_controllers_skips_user_caller(monkeypatch):
+    """Self-authenticating callers (deployer) are not auto-added to realm controllers."""
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    deployer = "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6-2ae"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [])
+    monkeypatch.setattr(lifecycle, "_caller", lambda: deployer)
+
+    w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
+    got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
+    assert got == [mid, casals]
+    assert deployer not in got
 
 
 def test_resolve_provision_controllers_detects_baton_from_canister_record(monkeypatch):

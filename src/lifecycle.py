@@ -748,12 +748,14 @@ def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
     Realm canisters (backend, frontend, other stand members) keep Casals as a
     controller until ``orchestration_hand_to_baton`` tightens the set to
     ``[baton] + extras``. The governance multisig is a co-controller when
-    present, plus ``extra_controller_principals``. The installer / caller is
-    not added.
+    present, plus ``extra_controller_principals``. When the caller is a
+    canister (e.g. the realm installer invoking ``create_stand``), that caller
+    is also added so bootstrap steps such as ``enter_setup`` can run before
+    handoff.
 
     Baton canisters get ``[multisig] + extras`` (Casals only as a fallback
     when no multisig exists yet). The multisig canister is self-controlled
-    (+ extras).
+    (+ extras). Self-authenticating user keys are never added automatically.
     """
     extra = _parse_extra_controller_principals()
     self_id = ic.id().to_str()
@@ -774,6 +776,9 @@ def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
         return [p for p in _merge_controllers(base, extra) if p != self_id][:MAX_CONTROLLERS]
 
     base = ([mid] if mid else []) + [self_id]
+    caller = _caller()
+    if _is_canister_principal(caller):
+        base.append(caller)
     return _merge_controllers(base, extra)[:MAX_CONTROLLERS]
 
 
