@@ -204,8 +204,38 @@ def _run_make_build() -> None:
         )
 
 
+<<<<<<< Updated upstream
 def _run_icp_deploy(args, mode: str = "upgrade") -> None:
     _progress(f"deploying with icp (-e {args.env}, --mode {mode})…")
+=======
+# Browse UI (`make build-registry-frontend`) injects VITE_CANISTER_ID from a
+# live `ic_file_registry` mapping. A one-shot `icp deploy` of all four canisters
+# therefore fails on a fresh create: the frontend build runs before that id
+# exists. Create deploys the two backends first (default `--mode auto`, which
+# can install onto empty canisters), then the rest.
+_CREATE_FIRST = ("casals_backend", "ic_file_registry")
+
+
+def _run_icp_deploy(args, *, create: bool = False) -> None:
+    if create:
+        _progress(
+            "deploying casals_backend + ic_file_registry first "
+            "(file-registry UI build needs that id)…"
+        )
+        _icp(
+            ["deploy"] + _base_flags(args) + ["-y", *_CREATE_FIRST],
+            args,
+            timeout=900,
+        )
+        _progress(f"deploying remaining Casals canisters (-e {args.env})…")
+        _icp(
+            ["deploy"] + _base_flags(args) + ["-y"],
+            args,
+            timeout=900,
+        )
+        return
+    _progress(f"deploying with icp (-e {args.env})…")
+>>>>>>> Stashed changes
     _icp(
         ["deploy"] + _base_flags(args) + ["--mode", mode, "-y"],
         args,
@@ -810,8 +840,12 @@ def cmd_new(args):
         _progress(f"fresh create for environment '{args.env}'")
 
     _run_make_build()
+<<<<<<< Updated upstream
     # Fresh principals have no Wasm — `upgrade` fails with IC0537.
     _run_icp_deploy(args, mode="install" if mode == "create" else "upgrade")
+=======
+    _run_icp_deploy(args, create=(mode == "create"))
+>>>>>>> Stashed changes
 
     if args.env == "local":
         _add_local_conductor(args)

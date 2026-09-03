@@ -489,12 +489,22 @@ def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> st
         }))
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"chunk {i}/{total} upload failed: {res}")
-    res = call(REGISTRY, "finalize_chunked_file", args, json.dumps({
-        "namespace": namespace, "path": path, "sha256": sha256,
-    }))
-    if not (isinstance(res, dict) and res.get("ok")):
-        raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
-    return res["sha256"]
+    # One-shot finalize_chunked_file hits IC0522 (40B instructions) on
+    # multi-MB WASMs. Step finalize concatenates in batches and records
+    # the locally computed sha256 (same trust model as the one-shot).
+    while True:
+        res = call(REGISTRY, "finalize_chunked_file_step", args, json.dumps({
+            "namespace": namespace,
+            "path": path,
+            "expected_sha256": sha256,
+            "batch_size": 8,
+        }))
+        if not (isinstance(res, dict) and res.get("ok")):
+            raise RuntimeError(
+                f"finalize_chunked_file_step failed for {namespace}/{path}: {res}"
+            )
+        if res.get("done") is True:
+            return res.get("sha256") or sha256
 
 
 def seed_arrangement(args, name: str) -> None:
