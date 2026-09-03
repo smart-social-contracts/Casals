@@ -244,21 +244,21 @@ class TestRunIcpDeploy:
     def test_create_deploys_backends_before_frontends(self):
         args = _make_args(env="ic", identity="deployer")
         with patch.object(cli, "_icp") as mock_icp:
-            cli._run_icp_deploy(args, create=True)
+            cli._run_icp_deploy(args, mode="install")
         assert mock_icp.call_count == 2
         first = mock_icp.call_args_list[0][0][0]
         second = mock_icp.call_args_list[1][0][0]
         assert first[:3] == ["deploy", "-e", "ic"]
-        assert "--mode" not in first
+        assert first[first.index("--mode") + 1] == "install"
         assert first[-2:] == ["casals_backend", "ic_file_registry"]
         assert second[:3] == ["deploy", "-e", "ic"]
-        assert "--mode" not in second
-        assert "casals_backend" not in second[3:]
+        assert second[second.index("--mode") + 1] == "install"
+        assert "casals_backend" not in second[second.index("-y") + 1 :]
 
     def test_upgrade_keeps_single_upgrade_deploy(self):
         args = _make_args(env="ic", identity="deployer")
         with patch.object(cli, "_icp") as mock_icp:
-            cli._run_icp_deploy(args, create=False)
+            cli._run_icp_deploy(args, mode="upgrade")
         assert mock_icp.call_count == 1
         argv = mock_icp.call_args[0][0]
         assert argv[:3] == ["deploy", "-e", "ic"]
