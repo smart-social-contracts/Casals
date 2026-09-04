@@ -240,20 +240,18 @@ class TestEnvMappings:
 
 # ── _run_icp_deploy ──────────────────────────────────────────────────────────
 
-class TestRunIcpDeploy:
-    def test_create_deploys_backends_before_frontends(self):
+class TestRunIcpDeployModes:
+    def test_create_is_one_idempotent_deploy(self):
+        """No two-stage install: the second stage re-installed stage one's
+        canisters and died with IC0514, which also blocked any resume."""
         args = _make_args(env="ic", identity="deployer")
         with patch.object(cli, "_icp") as mock_icp:
             cli._run_icp_deploy(args, mode="install")
-        assert mock_icp.call_count == 2
-        first = mock_icp.call_args_list[0][0][0]
-        second = mock_icp.call_args_list[1][0][0]
-        assert first[:3] == ["deploy", "-e", "ic"]
-        assert first[first.index("--mode") + 1] == "install"
-        assert first[-2:] == ["casals_backend", "ic_file_registry"]
-        assert second[:3] == ["deploy", "-e", "ic"]
-        assert second[second.index("--mode") + 1] == "install"
-        assert "casals_backend" not in second[second.index("-y") + 1 :]
+        assert mock_icp.call_count == 1
+        argv = mock_icp.call_args[0][0]
+        assert argv[:3] == ["deploy", "-e", "ic"]
+        assert argv[argv.index("--mode") + 1] == "auto"
+        assert "casals_backend" not in argv
 
     def test_upgrade_keeps_single_upgrade_deploy(self):
         args = _make_args(env="ic", identity="deployer")
@@ -657,12 +655,14 @@ class TestCall:
 
 
 class TestRunIcpDeploy:
-    def test_create_uses_install_mode(self):
+    def test_create_uses_auto_mode(self):
+        """auto installs an empty canister and upgrades one that holds code, so
+        re-running a create after a mid-way failure works."""
         args = _make_args(env="ic", identity="deployer")
         with patch("casals_cli._icp") as mock_icp:
             cli._run_icp_deploy(args, mode="install")
         argv = mock_icp.call_args[0][0]
-        assert argv[argv.index("--mode") + 1] == "install"
+        assert argv[argv.index("--mode") + 1] == "auto"
 
     def test_upgrade_does_not_retry_install(self):
         args = _make_args(env="ic", identity="deployer")
