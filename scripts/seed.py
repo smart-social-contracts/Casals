@@ -62,6 +62,8 @@ DEFAULT_LOCAL_CONDUCTOR = (
 # of candid — under the 2 MiB ingress budget. Args are passed via --args-file, so
 # the OS argv length limit doesn't apply.
 CHUNK_BYTES = 1024 * 1024
+# Chunks assembled per finalize_chunked_file_step call.
+FINALIZE_BATCH_CHUNKS = 8
 
 
 def _base_flags(args) -> list:
@@ -468,6 +470,49 @@ def template_needs_upload(authorized_hash: str, registry_hash: str, digest: str)
     return (authorized_hash or "") != digest or (registry_hash or "") != digest
 
 
+def _finalize_upload(args, namespace: str, path: str, sha256: str) -> str:
+    """Assemble an uploaded file, preferring the incremental finalize.
+
+    ``finalize_chunked_file`` assembles every chunk in one message, which exceeds
+    the 40B instruction limit (IC0522) on multi-MB WASMs. The step method walks
+    the chunks a batch at a time and skips on-chain hashing, since we pass the
+    locally computed digest. Registries built before that method existed still
+    get the one-shot call.
+    """
+    payload = json.dumps({
+        "namespace": namespace,
+        "path": path,
+        "expected_sha256": sha256,
+        "batch_size": FINALIZE_BATCH_CHUNKS,
+    })
+    processed = -1
+    while True:
+        try:
+            res = call(REGISTRY, "finalize_chunked_file_step", args, payload)
+        except RuntimeError as exc:
+            text = str(exc).lower()
+            if "ic0536" not in text and "no update method" not in text:
+                raise
+            res = call(REGISTRY, "finalize_chunked_file", args, json.dumps({
+                "namespace": namespace, "path": path, "sha256": sha256,
+            }))
+            break
+        if not (isinstance(res, dict) and res.get("ok")):
+            raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
+        if res.get("done"):
+            break
+        done_now = res.get("processed", 0)
+        if done_now <= processed:
+            raise RuntimeError(
+                f"finalize stalled for {namespace}/{path} at "
+                f"{done_now}/{res.get('total')} chunks"
+            )
+        processed = done_now
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
+    return res.get("sha256") or sha256
+
+
 def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> str:
     """Chunk-upload bytes into the file-registry; return the recorded sha256.
 
@@ -489,22 +534,7 @@ def upload_wasm(args, namespace: str, path: str, data: bytes, sha256: str) -> st
         }))
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"chunk {i}/{total} upload failed: {res}")
-    # One-shot finalize_chunked_file hits IC0522 (40B instructions) on
-    # multi-MB WASMs. Step finalize concatenates in batches and records
-    # the locally computed sha256 (same trust model as the one-shot).
-    while True:
-        res = call(REGISTRY, "finalize_chunked_file_step", args, json.dumps({
-            "namespace": namespace,
-            "path": path,
-            "expected_sha256": sha256,
-            "batch_size": 8,
-        }))
-        if not (isinstance(res, dict) and res.get("ok")):
-            raise RuntimeError(
-                f"finalize_chunked_file_step failed for {namespace}/{path}: {res}"
-            )
-        if res.get("done") is True:
-            return res.get("sha256") or sha256
+    return _finalize_upload(args, namespace, path, sha256)
 
 
 def seed_arrangement(args, name: str) -> None:

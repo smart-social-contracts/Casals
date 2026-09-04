@@ -336,11 +336,12 @@ def _candid_text_arg(json_str: str) -> str:
     return f'("{escaped}")'
 
 
-def call(canister: str, method: str, args, payload: str | None):
+def call(canister: str, method: str, args, payload: str | None, timeout: int = 300):
     """Invoke a canister method.
 
     ``payload=None`` for zero-arg endpoints (Candid ``()``). Otherwise ``payload``
-    is JSON encoded as the single ``text`` argument.
+    is JSON encoded as the single ``text`` argument. Raise ``timeout`` for
+    endpoints that provision or install canisters, which take minutes.
     """
     if canister == CASALS:
         canister = _casals_canister(args)
@@ -348,7 +349,7 @@ def call(canister: str, method: str, args, payload: str | None):
     cmd += _base_flags(args)
     if payload is None:
         cmd.append("()")
-        return _parse(_icp(cmd, args).stdout)
+        return _parse(_icp(cmd, args, timeout=timeout).stdout)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".candid", delete=False, encoding="utf-8"
     )
@@ -356,7 +357,7 @@ def call(canister: str, method: str, args, payload: str | None):
     tmp.close()
     cmd += ["--args-file", tmp.name, "--args-format", "candid"]
     try:
-        return _parse(_icp(cmd, args).stdout)
+        return _parse(_icp(cmd, args, timeout=timeout).stdout)
     finally:
         os.unlink(tmp.name)
 
@@ -412,7 +413,9 @@ def cmd_sheet_deploy(args):
         if not (isinstance(res, dict) and res.get("ok")):
             print(json.dumps(res, indent=2), file=sys.stderr)
             sys.exit(1)
-    _out(call(CASALS, "deploy_sheet", args, "{}"))
+    # A sheet deploy creates, installs and verifies every canister in the sheet,
+    # so it routinely runs past the default call timeout.
+    _out(call(CASALS, "deploy_sheet", args, "{}", timeout=1800))
 
 
 def cmd_section_create(args):

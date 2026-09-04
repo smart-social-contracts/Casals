@@ -33,6 +33,7 @@ from helpers import (
 from cycles import _status_cycles, _sync_treasury_baseline, _treasury_watch_begin_gen
 from pool import _pool_evict, _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
+from wasm_types import wasm_type_of_wasm
 
 _log = get_logger("casals")
 
@@ -562,6 +563,31 @@ def _verify_module_hash(canister_id: str, expected_hash_hex: str):
     mh = status.get("module_hash") if isinstance(status, dict) else getattr(status, "module_hash", None)
     actual = _to_hex(mh).lower() if mh is not None else ""
     return (actual == (expected_hash_hex or "").lower(), actual)
+
+
+def _adopt_registered_canister_gen(existing, dk, w):
+    """When an adopted canister already runs the authorized WASM, record INSTALLED
+    without reinstalling.
+
+    Returns ``(adopted: bool, actual_hash: str)``. When ``adopted`` is false:
+    ``actual_hash`` empty => bare canister (no module installed); non-empty =>
+    live code differs from the authorized WASM (caller must not reinstall unless
+    explicitly opted in).
+    """
+    if existing.status != CanisterStatus.REGISTERED:
+        return (False, "")
+    ok, actual = yield from _verify_module_hash(existing.canister_id, w.wasm_hash)
+    if not ok:
+        return (False, actual)
+    if existing.stand is None or existing.stand.name != dk.name:
+        existing.stand = dk
+    if not (existing.wasm_type or "").strip():
+        existing.wasm_type = wasm_type_of_wasm(w)
+    existing.wasm_key = w.key
+    existing.wasm_hash = actual
+    existing.status = CanisterStatus.INSTALLED
+    yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
+    return (True, actual)
 
 
 def _add_controllers(canister_id: str, controllers: list):

@@ -39,6 +39,42 @@ FILE_REGISTRY_FRONTEND_NAME = "file_registry_frontend"
 MULTISIG_FAMILY = "orchestration-multisig"
 
 
+def _is_retire_protected(st) -> bool:
+    """True when deploy_sheet must not retire this canister (Casals core infra).
+
+    Protects the conductor backend/frontend, the file-registry canisters wired in
+    settings, and any canister registered on the bootstrap Casals/System stand
+    (including bootstrap names such as file_registry / file_registry_frontend).
+    """
+    cid = (getattr(st, "canister_id", None) or "").strip()
+    if cid:
+        settings = _settings()
+        protected_ids = {ic.id().to_str()}
+        for attr in (
+            "file_registry_canister_id",
+            "file_registry_frontend_canister_id",
+            "casals_frontend_canister_id",
+        ):
+            value = (getattr(settings, attr, None) or "").strip()
+            if value:
+                protected_ids.add(value)
+        if cid in protected_ids:
+            return True
+
+    name = (getattr(st, "name", None) or "").strip()
+    if name in (FILE_REGISTRY_NAME, FILE_REGISTRY_FRONTEND_NAME):
+        return True
+
+    stand = getattr(st, "stand", None)
+    if stand is not None:
+        sec = getattr(stand, "section", None)
+        if (getattr(stand, "name", None) or "").strip() == CORE_STAND:
+            if sec is not None and (getattr(sec, "name", None) or "").strip() == CORE_SECTION:
+                return True
+
+    return False
+
+
 def _ensure_core_section() -> Section:
     """Return the Casals section, creating it when absent."""
     list(Section.instances())

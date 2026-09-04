@@ -23,19 +23,14 @@ build-registry:
 	CANISTER_CANDID_PATH=./file_registry/ic_file_registry.did \
 		python3 -m basilisk ic_file_registry file_registry/src/main.py
 
-# Build the file-registry browse UI. Injects VITE_CANISTER_ID from the deployed
-# ic_file_registry canister so the UI targets the right backend. Resolution
-# tries icp status (ic, then local) and committed mapping files — see
-# scripts/resolve_registry_id.py.
+# Build the file-registry browse UI. The UI resolves its backend from the asset
+# canister's ic_env cookie (PUBLIC_CANISTER_ID:ic_file_registry), so one dist is
+# correct in every environment and no canister id is baked in. Export
+# VITE_CANISTER_ID yourself only for a standalone dev server, which is served
+# outside the asset canister and gets no cookie.
 build-registry-frontend:
-	@REGISTRY_ID=$$(python3 scripts/resolve_registry_id.py); \
-	if [ -z "$$REGISTRY_ID" ]; then \
-		echo "ERROR: ic_file_registry id unknown — cannot build browse UI"; \
-		exit 1; \
-	fi; \
-	echo "Building file-registry frontend (VITE_CANISTER_ID=$$REGISTRY_ID)"; \
-	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend ci; \
-	VITE_CANISTER_ID="$$REGISTRY_ID" npm --prefix file_registry/frontend run build; \
+	npm --prefix file_registry/frontend ci
+	npm --prefix file_registry/frontend run build
 	rm -rf file_registry_dist && cp -a file_registry/frontend/dist file_registry_dist
 
 # Rebuild the committed catalog template WASMs (seed/templates/*.wasm.gz).

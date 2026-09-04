@@ -62,7 +62,7 @@ from commanders import (
 )
 from cycle_sweep import return_cycles_gen
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
-from bootstrap import _ensure_core_bootstrap
+from bootstrap import _ensure_core_bootstrap, _is_retire_protected
 from orchestration_bridge import (
     _baton_in_stand,
     _configure_baton_gen,
@@ -157,6 +157,7 @@ from lifecycle import (
     _destroy_stand_gen,
     _evacuate_treasury_gen,
     _governance_multisig_id,
+    _adopt_registered_canister_gen,
     _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
@@ -2013,7 +2014,13 @@ def deploy_sheet(args: text) -> Async[text]:
         to the pool (never deleted), so a later deploy can reuse it.
 
     Safe to re-run (idempotent). Controller or open-access caller. Args (JSON,
-    optional): {"sheet": {...}} to set the live sheet before deploying.
+    optional):
+      - ``sheet``: set the live sheet before deploying.
+      - ``apply_arrangement``: run the active arrangement after deploy.
+      - ``allow_adopted_reinstall``: when true, reinstall adopted canisters
+        (``REGISTERED`` status) whose live module hash differs from the
+        authorized WASM. **Discards stable memory** on those canisters. Default
+        false — mismatches are skipped and reported in ``hash_mismatch_canisters``.
     """
     try:
         _require_can_add()
@@ -2024,10 +2031,14 @@ def deploy_sheet(args: text) -> Async[text]:
         if not sheet:
             return _err("no sheet loaded")
 
+        allow_adopted_reinstall = bool(params.get("allow_adopted_reinstall"))
+
         result = {
             "created_sections": [], "created_stands": [], "created_canisters": [],
             "reused_canisters": [], "reinstalled_canisters": [], "retired_canisters": [],
-            "skipped_canisters": [], "errors": [],
+            "skipped_canisters": [], "adopted_canisters": [], "protected_canisters": [],
+            "installed_bare_canisters": [], "hash_mismatch_canisters": [],
+            "errors": [],
         }
 
         list(Section.instances())
@@ -2113,6 +2124,9 @@ def deploy_sheet(args: text) -> Async[text]:
         # Pass 2: retire canisters no longer in the sheet (canisters -> pool).
         for st in list(Canister.instances()):
             if st.name not in desired:
+                if _is_retire_protected(st):
+                    result["protected_canisters"].append(st.name)
+                    continue
                 yield from _retire_canister(st)
                 result["retired_canisters"].append(st.name)
 
@@ -2141,6 +2155,59 @@ def deploy_sheet(args: text) -> Async[text]:
                         yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
                         result["skipped_canisters"].append(stname)
                         continue
+                    if existing.status == CanisterStatus.REGISTERED:
+                        adopted, actual = yield from _adopt_registered_canister_gen(
+                            existing, dk, w)
+                        if adopted:
+                            existing.kind = spec["kind"]
+                            _append_event(
+                                "canister_adopted",
+                                existing.canister_id,
+                                {"name": stname, "wasm_key": w.key},
+                            )
+                            result["adopted_canisters"].append(stname)
+                            continue
+                        if not actual:
+                            yield from _pull_and_install(
+                                existing.canister_id, w.registry_namespace,
+                                w.registry_path, w.wasm_hash, {"install": None},
+                                init_arg, wasm_type_of_wasm(w))
+                            ok, actual = yield from _verify_module_hash(
+                                existing.canister_id, w.wasm_hash)
+                            if not ok:
+                                result["errors"].append(
+                                    f"{stname}: hash mismatch after install")
+                                continue
+                            yield from _maybe_provision_assets(
+                                existing.canister_id, w, dk)
+                            existing.stand = dk
+                            existing.kind = spec["kind"]
+                            existing.wasm_key = w.key
+                            existing.wasm_type = wasm_type_of_wasm(w)
+                            existing.wasm_hash = actual
+                            existing.status = CanisterStatus.INSTALLED
+                            yield from _ensure_provision_controllers_gen(
+                                existing.canister_id, dk, w)
+                            _append_event(
+                                "canister_installed_bare",
+                                existing.canister_id,
+                                {"name": stname, "wasm_key": w.key},
+                            )
+                            result["installed_bare_canisters"].append(stname)
+                            continue
+                        if not allow_adopted_reinstall:
+                            mismatch = {
+                                "name": stname,
+                                "actual_hash": actual,
+                                "expected_hash": w.wasm_hash,
+                            }
+                            result["hash_mismatch_canisters"].append(mismatch)
+                            _append_event(
+                                "canister_hash_mismatch_skipped",
+                                existing.canister_id,
+                                mismatch,
+                            )
+                            continue
                     # Present but wrong WASM/status: reinstall fresh code in place.
                     yield from _pull_and_install(existing.canister_id, w.registry_namespace,
                                                  w.registry_path, w.wasm_hash, {"reinstall": None},
@@ -2174,7 +2241,9 @@ def deploy_sheet(args: text) -> Async[text]:
 
         _append_event("sheet_deployed", "", {k: result[k] for k in (
             "created_sections", "created_stands", "created_canisters",
-            "reused_canisters", "reinstalled_canisters", "retired_canisters")})
+            "reused_canisters", "reinstalled_canisters", "retired_canisters",
+            "adopted_canisters", "protected_canisters",
+            "installed_bare_canisters", "hash_mismatch_canisters")})
 
         # Optionally apply the active arrangement (post-deploy config) in the same
         # call, so a single deploy can bring an environment fully up and ready.
