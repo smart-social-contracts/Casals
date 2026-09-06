@@ -15,6 +15,7 @@ build: build-backend build-registry
 build-backend:
 	CANISTER_CANDID_PATH=./casals_backend.did python3 -m basilisk casals_backend src/main.py
 	python3 scripts/fix_asset_permission_did.py casals_backend.did
+	python3 scripts/embed_candid_metadata.py .basilisk/casals_backend/casals_backend.wasm casals_backend.did
 
 # file_registry/ is a git submodule (the file-registry repo). Build its
 # backend the same way as casals_backend. Run `git submodule update --init`

@@ -6,7 +6,7 @@ import json
 import re
 
 # Mainnet Candid UI canister — used to build a human URL for backend canisters.
-CANDID_UI = "rxs6w-5qaaa-aaaah-avp2a-cai"
+CANDID_UI = "a4gq6-oaaaa-aaaab-qaa4q-cai"
 
 
 def to_hex(v) -> str:

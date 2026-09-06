@@ -1951,7 +1951,7 @@ export function formatIsoTs(secs: number | undefined | null): string {
   return new Date(secs * 1000).toISOString();
 }
 
-const MAINNET_CANDID_UI = 'rxs6w-5qaaa-aaaah-avp2a-cai';
+const MAINNET_CANDID_UI = 'a4gq6-oaaaa-aaaab-qaa4q-cai';
 
 /** Populated from ic_env or frontend/static/local-network.json on local replica. */
 let _localCandidUiHint = '';
