@@ -268,13 +268,17 @@ def read_wasm_hex(path: str) -> str:
 
 
 def setup_managed_canister(baton_id: str, wasm_path: str) -> tuple[str, str]:
-    """Create a canister, install wasm, hand sole control to baton, register it."""
+    """Create a canister, install wasm, give the baton control, register it.
+
+    The deployer is intentionally KEPT as a co-controller. The pipeline only
+    requires the baton to *be* a controller, not the sole one, and the IC
+    rejects `canister status` from non-controllers (IC0542) — so dropping the
+    deployer here would make ``module_hash`` return '' and every
+    upgrade-verification assertion compare against an empty string.
+    """
     cid = create_detached()
     icp(["canister", "install", cid, "--wasm", wasm_path, "--mode", "install", "-n", "local", "-y"])
-    caller = identity_principal()
     icp(["canister", "settings", "update", cid, "--add-controller", baton_id, "-n", "local", "-f"])
-    if caller != baton_id:
-        icp(["canister", "settings", "update", cid, "--remove-controller", caller, "-n", "local", "-f"])
     icp(["canister", "start", cid, "-n", "local", "-y"], check=False)
     mh = module_hash(cid)
     ok(call(baton_id, "add_managed_canister", cid))

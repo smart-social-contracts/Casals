@@ -1,6 +1,7 @@
 """Integration tests for the Multisig canister on a local replica."""
 
 import json
+import re
 
 import pytest
 
@@ -15,6 +16,13 @@ from conftest import (
     parse_nat_output,
     replica,
 )
+
+
+def _candid_int(record_text, field: str) -> int:
+    """Read an int field out of raw candid record text (opt records stay unparsed)."""
+    m = re.search(rf"\b{field}\s*=\s*([\d_]+)\s*:\s*int", str(record_text))
+    assert m, f"no int field {field!r} in {record_text!r}"
+    return int(m.group(1).replace("_", ""))
 
 
 @pytest.fixture(scope="session")
@@ -46,11 +54,11 @@ class TestMultisigThreshold:
         proposal_id = parse_nat_output(call(
             multisig_env["multisig_id"],
             "propose",
-            f'(variant {{ AddCommander = record {{ baton_id = principal "{multisig_env["baton_id"]}"; commander = principal "{orch}"; capabilities = vec {{ "propose:managed_upgrade" }} }} }}, 3600 : nat)',
+            f'(variant {{ AddCommander = record {{ baton_id = principal "{multisig_env["baton_id"]}"; commander = principal "{orch}"; capabilities = vec {{ "propose:managed_upgrade" }} }} }}, opt (3600 : nat))',
         ))
         prop = call(multisig_env["multisig_id"], "get_proposal", f"({proposal_id} : nat)")
-        delta = int(prop["expires_at"]) - int(prop["created_at"])
-        assert delta == 3600 * 1_000_000_000
+        delta = _candid_int(prop, "expires_at") - _candid_int(prop, "created_at")
+        assert delta == 3600 * 1_000_000_000, f"proposal={prop!r}"
 
     def test_non_signer_cannot_propose(self, multisig_env):
         ensure_identity("orch-unprivileged-msig")

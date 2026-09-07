@@ -20,7 +20,14 @@ test: test-unit
 # Run each package from its own directory (avoids pytest module-name clashes:
 # both baton/ and multisig/ ship a tests/test_unit.py).
 test-unit:
-	cd $(BATON_DIR) && python3 -m pytest tests/test_unit.py tests/test_policy_unit.py $(PYTEST_FLAGS)
+	cd $(BATON_DIR) && python3 -m pytest \
+		tests/test_unit.py \
+		tests/test_policy_unit.py \
+		tests/test_approval_policy_unit.py \
+		tests/test_smoke_unit.py \
+		tests/test_assets_unit.py \
+		tests/test_registry_unit.py \
+		$(PYTEST_FLAGS)
 	cd $(MULTISIG_DIR) && python3 -m pytest tests/test_unit.py $(PYTEST_FLAGS)
 
 test-integration:

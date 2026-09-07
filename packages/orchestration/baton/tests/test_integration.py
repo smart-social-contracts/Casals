@@ -1,5 +1,6 @@
 """Integration tests for Baton + Multisig on a local replica."""
 
+import collections
 import json
 import time
 
@@ -208,24 +209,31 @@ class TestConcurrency:
         action_a = propose_upgrade(baton_env["baton_id"], [
             (cid, pre, post),
         ], baton_env)
-        run_execute(baton_env["baton_id"], action_a)
-        action = call(baton_env["baton_id"], "get_action", action_a)
-        if isinstance(action, str):
-            action = json.loads(action)
-        assert action["status"] not in ("COMPLETE", "REJECTED")
-        res = call(baton_env["baton_id"], "propose_managed_upgrade", json.dumps({
-            "action_id": "second-action",
-            "affected_canisters": [cid],
-            "payload": {"targets": [{
-                "canister_id": cid,
-                "expected_module_hash": pre,
-                "wasm_hash": post,
-                "registry_namespace": baton_env["namespace"],
-                "registry_path": baton_env["v2_path"],
-            }]},
-        }))
-        assert res.get("ok") is False
-        assert "in progress" in res.get("error", "")
+        try:
+            run_execute(baton_env["baton_id"], action_a)
+            action = call(baton_env["baton_id"], "get_action", action_a)
+            if isinstance(action, str):
+                action = json.loads(action)
+            assert action["status"] not in ("COMPLETE", "REJECTED")
+            res = call(baton_env["baton_id"], "propose_managed_upgrade", json.dumps({
+                "action_id": "second-action",
+                "affected_canisters": [cid],
+                "payload": {"targets": [{
+                    "canister_id": cid,
+                    "expected_module_hash": pre,
+                    "wasm_hash": post,
+                    "registry_namespace": baton_env["namespace"],
+                    "registry_path": baton_env["v2_path"],
+                }]},
+            }))
+            assert res.get("ok") is False
+            assert "in progress" in res.get("error", "")
+        finally:
+            # This test exists to leave an action non-terminal, but `baton_env`
+            # is session-scoped and the baton allows only one in-flight action,
+            # so without draining it every later test fails to propose with
+            # "another action is in progress".
+            finish_action(baton_env["baton_id"], action_a)
 
 
 class TestCommanderPolicyIntegration:
@@ -264,24 +272,87 @@ class TestCommanderPolicyIntegration:
         assert res.get("ok") is False
 
 
+def _default_upgrade_approval_policy():
+    return {"threshold": 1, "eligible": [], "required": []}
+
+
+def _restore_upgrade_approval_policy(baton_id: str) -> None:
+    ok(call(baton_id, "set_config", json.dumps({
+        "upgrade_approval_policy": _default_upgrade_approval_policy(),
+    })))
+
+
+def _finish_orphaned_actions(baton_id: str) -> None:
+    """Drain non-terminal actions left on the shared session baton by earlier tests."""
+    actions = call(baton_id, "list_actions")
+    if isinstance(actions, str):
+        actions = json.loads(actions)
+    for action in actions:
+        status = action.get("status", "")
+        if status in ("COMPLETE", "REJECTED"):
+            continue
+        aid = action.get("action_id")
+        if not aid:
+            continue
+        if status == "APPROVED" or status not in ("PENDING",):
+            finish_action(baton_id, aid)
+
+
+def _reject_pending_action(baton_id: str, action_id: str, identity: str) -> None:
+    res = call(baton_id, "reject_action", action_id, identity=identity)
+    assert res.get("status") == "REJECTED", res
+
+
+def _propose_managed_upgrade_manual(baton_id, action_id, cid, pre, post, baton_env):
+    ok(call(baton_id, "propose_managed_upgrade", json.dumps({
+        "action_id": action_id,
+        "affected_canisters": [cid],
+        "payload": {"targets": [{
+            "canister_id": cid,
+            "expected_module_hash": pre,
+            "wasm_hash": post,
+            "registry_namespace": baton_env["namespace"],
+            "registry_path": baton_env["v2_path"],
+        }]},
+    })))
+
+
+def _get_action_record(baton_id, action_id):
+    action = call(baton_id, "get_action", action_id)
+    if isinstance(action, str):
+        action = json.loads(action)
+    return action
+
+
+# `call(identity=...)` takes an identity NAME while policies take a PRINCIPAL.
+# Carrying both in one object stops the two being swapped (passing a principal
+# makes icp-cli fail with "no identity found with name <principal>").
+Approver = collections.namedtuple("Approver", "name principal")
+
+
+def _register_approval_commanders(baton_id, *approver_names):
+    approvers = []
+    for name in approver_names:
+        principal = ensure_identity(name)
+        ok(call(baton_id, "add_commander", json.dumps({
+            "principal": principal,
+            "capabilities": ["submit_approval:managed_upgrade"],
+        })))
+        approvers.append(Approver(name, principal))
+    return approvers
+
+
 class TestUpgradeApprovalPolicy:
     def test_two_of_two_with_required_signer(self, baton_env):
         baton_id = baton_env["baton_id"]
-        approver_a = ensure_identity("baton-approver-a")
-        approver_b = ensure_identity("baton-approver-b")
-        ok(call(baton_id, "add_commander", json.dumps({
-            "principal": approver_a,
-            "capabilities": ["submit_approval:managed_upgrade"],
-        })))
-        ok(call(baton_id, "add_commander", json.dumps({
-            "principal": approver_b,
-            "capabilities": ["submit_approval:managed_upgrade"],
-        })))
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-approver-a", "baton-approver-b",
+        )
         ok(call(baton_id, "set_config", json.dumps({
             "upgrade_approval_policy": {
                 "threshold": 2,
-                "eligible": [approver_a, approver_b],
-                "required": [approver_a],
+                "eligible": [approver_a.principal, approver_b.principal],
+                "required": [approver_a.principal],
             },
         })))
 
@@ -300,12 +371,12 @@ class TestUpgradeApprovalPolicy:
             }]},
         })))
 
-        res_b = call(baton_id, "submit_approval", action_id, identity=approver_b)
+        res_b = call(baton_id, "submit_approval", action_id, identity=approver_b.name)
         assert res_b.get("status") == "PENDING"
         assert res_b.get("approval_count") == 1
         assert res_b.get("quorum_met") is False
 
-        res_a = call(baton_id, "submit_approval", action_id, identity=approver_a)
+        res_a = call(baton_id, "submit_approval", action_id, identity=approver_a.name)
         assert res_a.get("status") == "APPROVED"
         assert res_a.get("quorum_met") is True
 
@@ -314,3 +385,171 @@ class TestUpgradeApprovalPolicy:
             action = json.loads(action)
         assert action["status"] == "APPROVED"
         assert len(action.get("approvals") or []) == 2
+
+    def test_two_of_two_quorum_executes_and_upgrades(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-quorum-exec-a", "baton-quorum-exec-b",
+        )
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {
+                "threshold": 2,
+                "eligible": [approver_a.principal, approver_b.principal],
+                "required": [],
+            },
+        })))
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            action_id = "upgrade-quorum-exec"
+            _propose_managed_upgrade_manual(
+                baton_id, action_id, cid, pre, post, baton_env,
+            )
+
+            res_a = call(baton_id, "submit_approval", action_id, identity=approver_a.name)
+            assert res_a.get("status") == "PENDING", res_a
+            assert res_a.get("approval_count") == 1, res_a
+            assert res_a.get("quorum_met") is False, res_a
+
+            exec_res = run_execute(baton_id, action_id)
+            assert exec_res.get("ok") is False, exec_res
+            assert "not approved" in exec_res.get("error", ""), exec_res
+            assert module_hash(cid) == pre, (
+                f"expected v1 hash {pre}, got {module_hash(cid)!r}; exec_res={exec_res!r}"
+            )
+
+            res_b = call(baton_id, "submit_approval", action_id, identity=approver_b.name)
+            assert res_b.get("status") == "APPROVED", res_b
+            assert res_b.get("quorum_met") is True, res_b
+
+            finish_action(baton_id, action_id)
+            assert module_hash(cid) == post, (
+                f"expected v2 hash {post}, got {module_hash(cid)!r}"
+            )
+            action = _get_action_record(baton_id, action_id)
+            assert action["status"] == "COMPLETE", action
+        finally:
+            _restore_upgrade_approval_policy(baton_id)
+
+    def test_execute_before_quorum_is_refused(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-exec-refuse-a", "baton-exec-refuse-b",
+        )
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {
+                "threshold": 2,
+                "eligible": [approver_a.principal, approver_b.principal],
+                "required": [],
+            },
+        })))
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            action_id = "upgrade-exec-refuse"
+            _propose_managed_upgrade_manual(
+                baton_id, action_id, cid, pre, post, baton_env,
+            )
+
+            res_a = call(baton_id, "submit_approval", action_id, identity=approver_a.name)
+            assert res_a.get("approval_count") == 1, res_a
+            assert res_a.get("quorum_met") is False, res_a
+
+            exec_res = run_execute(baton_id, action_id)
+            assert exec_res.get("ok") is False, exec_res
+            assert "not approved" in exec_res.get("error", ""), exec_res
+            assert module_hash(cid) == pre, (
+                f"expected v1 hash {pre}, got {module_hash(cid)!r}; exec_res={exec_res!r}"
+            )
+
+            action = _get_action_record(baton_id, action_id)
+            assert action["status"] == "PENDING", action
+            assert len(action.get("approvals") or []) == 1, action
+        finally:
+            _reject_pending_action(baton_id, action_id, approver_a.name)
+            _restore_upgrade_approval_policy(baton_id)
+
+    def test_ineligible_principal_cannot_approve(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-ineligible-a", "baton-ineligible-b",
+        )
+        outsider_name = "baton-ineligible-outsider"
+        outsider = ensure_identity(outsider_name)
+        ok(call(baton_id, "add_commander", json.dumps({
+            "principal": outsider,
+            "capabilities": ["submit_approval:managed_upgrade"],
+        })))
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {
+                "threshold": 1,
+                "eligible": [approver_a.principal, approver_b.principal],
+                "required": [],
+            },
+        })))
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            action_id = "upgrade-ineligible"
+            _propose_managed_upgrade_manual(
+                baton_id, action_id, cid, pre, post, baton_env,
+            )
+
+            res = call(baton_id, "submit_approval", action_id, identity=outsider_name)
+            assert res.get("ok") is False, res
+            assert "not eligible" in res.get("error", ""), res
+
+            action = _get_action_record(baton_id, action_id)
+            assert action["status"] == "PENDING", action
+            assert len(action.get("approvals") or []) == 0, action
+        finally:
+            _reject_pending_action(baton_id, action_id, approver_a.name)
+            _restore_upgrade_approval_policy(baton_id)
+
+    def test_required_signer_must_approve(self, baton_env):
+        # Positive path (required signer completes quorum) is covered by
+        # test_two_of_two_with_required_signer above; this test covers only the
+        # negative: numeric threshold met without the required signer.
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b, approver_c = _register_approval_commanders(
+            baton_id,
+            "baton-required-neg-a",
+            "baton-required-neg-b",
+            "baton-required-neg-c",
+        )
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {
+                "threshold": 2,
+                "eligible": [approver_a.principal, approver_b.principal, approver_c.principal],
+                "required": [approver_a.principal],
+            },
+        })))
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            action_id = "upgrade-required-neg"
+            _propose_managed_upgrade_manual(
+                baton_id, action_id, cid, pre, post, baton_env,
+            )
+
+            res_b = call(baton_id, "submit_approval", action_id, identity=approver_b.name)
+            assert res_b.get("status") == "PENDING", res_b
+            assert res_b.get("approval_count") == 1, res_b
+            assert res_b.get("quorum_met") is False, res_b
+
+            res_c = call(baton_id, "submit_approval", action_id, identity=approver_c.name)
+            assert res_c.get("status") == "PENDING", res_c
+            assert res_c.get("approval_count") == 2, res_c
+            assert res_c.get("quorum_met") is False, res_c
+            assert res_c.get("missing_required") == [approver_a.principal], res_c
+
+            action = _get_action_record(baton_id, action_id)
+            assert action["status"] == "PENDING", action
+            assert len(action.get("approvals") or []) == 2, action
+        finally:
+            _reject_pending_action(baton_id, action_id, approver_b.name)
+            _restore_upgrade_approval_policy(baton_id)

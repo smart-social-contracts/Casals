@@ -1,0 +1,88 @@
+# Governance lock: multisig emergency takeover, the Casals→multisig link, the
+# treasury authorization boundary, and Casals-governed Baton managed upgrades.
+#
+# On every PR and push to main:
+#   1. Emergency takeover — the deployer is NOT a controller of anything Casals
+#      provisions, so recovery must go through the multisig: SetCanisterControllers
+#      to grant control back, upgrade a controlled canister, and upgrade the
+#      multisig itself. Includes the signer-lockout guard.
+#   2. Governance link — governance resolves by the literal canister name
+#      "multisig". Locks in that renaming does NOT detach it (the name alias
+#      leaks and keeps resolving), that the leaked alias then blocks reuse of
+#      the name, and that deletion is what actually detaches governance.
+#   3. Treasury — only Casals controllers may evacuate/convert the treasury, and
+#      no BatonAction variant reaches it.
+#   4. Governed upgrade — hand_to_baton → prepare → execute to COMPLETE, with
+#      the governance gate (threshold 1 executes inline; threshold 2 parks a
+#      pending request) and the permission/eligibility checks around it.
+#
+# These modules run in their OWN session on purpose: each needs the canister
+# named "multisig" (Casals resolves governance by that literal name), which
+# collides with seed/sheets/demo.json in a full tests/ run. They skip rather
+# than fail when something else already owns that name.
+#
+# Does not run the full tests/ integration suite (that stays workflow_dispatch
+# in integration.yml). Does not deploy to IC.
+name: Governance lock
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  governance-lock:
+    name: Takeover → link → treasury → governed upgrade (local replica)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # file_registry/ is required by tests/conftest.py (Casals create path).
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli, ic-wasm, and Motoko tooling
+        run: |
+          npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm ic-mops
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          mops --version || true
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Show toolchain versions
+        run: |
+          icp --version || true
+          python3 -m basilisk --version || true
+          pytest --version
+
+      # tests/conftest.py starts the replica, builds + deploys casals_backend
+      # and the file-registry; each module then builds the Motoko multisig (and
+      # the Baton, for the governed-upgrade module) from packages/orchestration.
+      # The modules are ordered test_01..test_0N and share module-scoped
+      # fixtures, so ordering must stay deterministic.
+      - name: Run governance lock tests
+        env:
+          CASALS_TOPUP: "50t"
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          pytest \
+            tests/test_governance_takeover.py \
+            tests/test_governance_link.py \
+            tests/test_treasury_ops.py \
+            tests/test_governed_upgrade.py \
+            -v --tb=short -p no:randomly
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop || true

@@ -32,6 +32,12 @@ FILE_REGISTRY_ENTRY = "file_registry/src/main.py"
 FILE_REGISTRY_DID = "file_registry/ic_file_registry.did"
 # Cycles topped into casals_backend so it can fund freshly created canisters.
 CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
+# The registry is session-scoped and every module stores multi-MB wasms in it,
+# so its memory (and thus its cycle burn) grows with the number of modules in
+# the run. Left on the default create allocation it dies with IC0532
+# ("cannot grow memory ... due to insufficient cycles") partway through a
+# full-directory run, which surfaces as unrelated modules erroring en masse.
+FILE_REGISTRY_TOPUP = os.environ.get("FILE_REGISTRY_TOPUP", "100t")
 
 
 def _icp(args, cwd=REPO_ROOT, check=True, timeout=300):
@@ -245,16 +251,48 @@ def registry_store_chunked(fr_id: str, namespace: str, path: str, data: bytes,
     return digest
 
 
-def canister_module_hash(canister_id: str) -> str:
-    """Return the installed module hash (hex) per the management canister, or ''.
+def canister_status_text(canister_id: str, identity: str = None) -> str:
+    """Raw ``icp canister status`` output, or '' when the caller may not read it.
 
-    The deployer identity is not a controller of the canisters Casals creates, but
-    the management canister still reports their module hash — enough to prove a
-    real install / upgrade / rollback happened on chain.
+    The management canister rejects status reads from non-controllers with
+    IC0542, so the calling identity must be a controller of ``canister_id``.
+    Casals provisions canisters with controllers ``[multisig, casals]`` (batons
+    get ``[multisig]``, a multisig controls itself) and never adds the deployer
+    key — so plain deployer reads fail until governance grants control.
     """
-    out = _icp(["canister", "status", canister_id, "-n", "local"], check=False).stdout
-    m = re.search(r"Module hash:\s*0x([0-9a-fA-F]+)", out)
+    cmd = ["canister", "status", canister_id, "-n", "local"]
+    if identity:
+        cmd.extend(["--identity", identity])
+    return _icp(cmd, check=False).stdout or ""
+
+
+def canister_module_hash(canister_id: str, identity: str = None) -> str:
+    """Return the installed module hash (hex), or '' if it cannot be read.
+
+    Requires the calling identity to be a controller — see
+    ``canister_status_text``. An empty result means "could not read", not
+    "no module installed"; assert on a non-empty baseline before comparing.
+    """
+    m = re.search(
+        r"Module hash:\s*0x([0-9a-fA-F]+)",
+        canister_status_text(canister_id, identity),
+    )
     return m.group(1).lower() if m else ""
+
+
+def canister_controllers_live(canister_id: str, identity: str = None) -> list:
+    """Controller principals per the management canister.
+
+    Authoritative even after governance drops Casals from the controller list —
+    at which point Casals' own cached ``ic_controllers`` (what ``get_tree``
+    reports) goes stale/empty because Casals can no longer introspect it.
+    Requires the calling identity to be a controller.
+    """
+    m = re.search(r"Controllers:\s*(.+)", canister_status_text(canister_id, identity))
+    if not m:
+        return []
+    # icp prints a single controller bare and multiple ones comma-separated.
+    return [p for p in re.split(r"[,\s]+", m.group(1).strip()) if p]
 
 
 # A minimal but valid WASM module (magic + version, no exports). Installable on
@@ -293,6 +331,7 @@ def registry(canister):
 
     fr_id = _create_detached()
     _icp(["canister", "install", fr_id, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"], timeout=300)
+    _icp(["canister", "top-up", fr_id, "--amount", FILE_REGISTRY_TOPUP])
 
     # Fund Casals so create_canister can provision new canisters with cycles.
     _icp(["canister", "top-up", CANISTER_NAME, "--amount", CASALS_TOPUP])
