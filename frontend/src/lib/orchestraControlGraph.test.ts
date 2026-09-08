@@ -6,6 +6,7 @@ import {
   DEFAULT_CONTROL_GRAPH_LAYERS,
   edgeAnchors,
   edgePathBetween,
+  frozenGraphViewport,
   graphViewport,
   layoutControlGraph,
 } from './orchestraControlGraph.ts';
@@ -189,4 +190,15 @@ test('graphViewport expands when nodes are spread out', () => {
   const vp = graphViewport(positions, 720);
   assert.ok(vp.width >= 720);
   assert.ok(vp.height >= 320);
+});
+
+test('frozenGraphViewport keeps a fixed origin while dragging', () => {
+  const auto = new Map([
+    ['a', { x: 200, y: 100 }],
+    ['b', { x: 400, y: 300 }],
+  ]);
+  const frozen = frozenGraphViewport(auto, 720);
+  assert.equal(frozen.minX, 0);
+  assert.equal(frozen.minY, 0);
+  assert.ok(frozen.width >= 720);
 });

@@ -501,6 +501,37 @@ export function graphViewport(
   };
 }
 
+/** Fixed canvas from auto-layout only — does not shift while nodes are dragged. */
+export function frozenGraphViewport(
+  positions: Map<string, NodePosition>,
+  minCanvasWidth = 720,
+  padding = 56,
+  dragMargin = 320,
+  nodeWidth = CONTROL_NODE_WIDTH,
+  nodeHeight = CONTROL_NODE_HEIGHT,
+): { minX: number; minY: number; width: number; height: number } {
+  const hw = nodeWidth / 2;
+  const hh = nodeHeight / 2;
+  let maxX = padding + dragMargin;
+  let maxY = padding + dragMargin;
+
+  for (const pos of positions.values()) {
+    maxX = Math.max(maxX, pos.x + hw + dragMargin);
+    maxY = Math.max(maxY, pos.y + hh + dragMargin);
+  }
+
+  if (positions.size === 0) {
+    return { minX: 0, minY: 0, width: minCanvasWidth, height: 360 };
+  }
+
+  return {
+    minX: 0,
+    minY: 0,
+    width: Math.max(maxX + padding, minCanvasWidth),
+    height: Math.max(maxY + padding, 320),
+  };
+}
+
 export function graphLayoutSignature(graph: ControlGraph, layoutWidth: number): string {
   return `${layoutWidth}|${graph.nodes.map((n) => n.id).sort().join(',')}`;
 }

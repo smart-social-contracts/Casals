@@ -15,7 +15,7 @@
     layoutControlGraph,
     edgeAnchors,
     edgePathBetween,
-    graphViewport,
+    frozenGraphViewport,
     graphLayoutSignature,
     CONTROL_NODE_WIDTH,
     CONTROL_NODE_HEIGHT,
@@ -47,6 +47,7 @@
   let containerWidth = $state(960);
   let customPositions = $state<Record<string, NodePosition>>({});
   let layoutSignature = $state('');
+  let frozenViewport = $state({ minX: 0, minY: 0, width: 720, height: 400 });
   let svgEl = $state<SVGSVGElement | null>(null);
   let draggingId = $state<string | null>(null);
   let dragMoved = $state(false);
@@ -71,6 +72,7 @@
     if (sig !== layoutSignature) {
       layoutSignature = sig;
       customPositions = {};
+      frozenViewport = frozenGraphViewport(autoPositions, layoutWidth);
     }
   });
 
@@ -82,7 +84,10 @@
     return out;
   });
 
-  const viewport = $derived(graphViewport(displayPositions, layoutWidth));
+  function resetLayout(): void {
+    customPositions = {};
+    frozenViewport = frozenGraphViewport(autoPositions, layoutWidth);
+  }
 
   function nodeStyle(node: ControlNode): { fill: string; stroke: string } {
     const c = node.canister;
@@ -166,10 +171,6 @@
     }
   }
 
-  function resetLayout(): void {
-    customPositions = {};
-  }
-
   function toggleLayer(key: keyof ControlGraphLayers): void {
     layers = { ...layers, [key]: !layers[key] };
   }
@@ -249,13 +250,14 @@
       </div>
     {/if}
 
-    <div class="overflow-auto rounded-lg border border-[var(--color-border-primary)] bg-white max-h-[70vh]">
+    <div class="overflow-hidden rounded-lg border border-[var(--color-border-primary)] bg-white">
       <svg
         bind:this={svgEl}
-        width="100%"
-        height={viewport.height}
-        viewBox="{viewport.minX} {viewport.minY} {viewport.width} {viewport.height}"
-        class="min-w-full touch-none select-none"
+        width={frozenViewport.width}
+        height={frozenViewport.height}
+        viewBox="0 0 {frozenViewport.width} {frozenViewport.height}"
+        class="block max-w-full touch-none select-none"
+        style="touch-action: none;"
         role="img"
         aria-label="Orchestra control graph"
       >
