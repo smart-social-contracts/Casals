@@ -950,6 +950,35 @@ def test_validate_steps_rejects_bad_json():
         arrangement_helpers.validate_and_normalize_steps("{not json")
 
 
+# ── arrangement_helpers: execute_principals ────────────────────────────────
+
+def test_normalize_execute_principals_list():
+    out = arrangement_helpers.normalize_execute_principals([
+        " abc ", "def", "abc", "",
+    ])
+    assert out == ["abc", "def"]
+
+
+def test_normalize_execute_principals_json_string():
+    out = arrangement_helpers.normalize_execute_principals('["p1", "p2"]')
+    assert out == ["p1", "p2"]
+
+
+def test_normalize_execute_principals_none_and_empty():
+    assert arrangement_helpers.normalize_execute_principals(None) == []
+    assert arrangement_helpers.normalize_execute_principals([]) == []
+    assert arrangement_helpers.normalize_execute_principals("") == []
+
+
+def test_normalize_execute_principals_rejects_non_array():
+    with pytest.raises(ValueError):
+        arrangement_helpers.normalize_execute_principals({"p": "x"})
+
+
+def test_parse_execute_principals_json_malformed_returns_empty():
+    assert arrangement_helpers.parse_execute_principals_json("{bad") == []
+
+
 # ── arrangement_helpers: normalize_parameters ────────────────────────────────
 
 def test_normalize_parameters_dict_passthrough():

@@ -75,7 +75,12 @@ from orchestration_bridge import (
     _prepare_asset_provision_gen,
     _prepare_managed_upgrade_gen,
 )
-from arrangement_helpers import normalize_parameters, validate_and_normalize_steps
+from arrangement_helpers import (
+    normalize_execute_principals,
+    normalize_parameters,
+    parse_execute_principals_json,
+    validate_and_normalize_steps,
+)
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
 from cycles import (
@@ -493,6 +498,47 @@ def _require_can_add() -> None:
     if _settings().open_access and _caller() != ANONYMOUS:
         return
     raise Exception("unauthorized: open access is disabled; caller is not a controller")
+
+
+def _instance_commander_has_permission(permission: str) -> bool:
+    """True if caller holds ``permission`` on any section or stand commander grant."""
+    caller = _caller()
+    list(Section.instances())
+    for sec in Section.instances():
+        if entity_has_permission(sec, caller, permission):
+            return True
+    list(Stand.instances())
+    for stand in Stand.instances():
+        if entity_has_permission(stand, caller, permission):
+            return True
+    return False
+
+
+def _require_arrangement_permission(permission: str) -> None:
+    """Authorize arrangement management (create/activate/delete)."""
+    if _is_controller():
+        return
+    if _instance_commander_has_permission(permission):
+        return
+    raise Exception(f"unauthorized: caller lacks '{permission}'")
+
+
+def _require_arrangement_apply(arr) -> None:
+    """Authorize apply_arrangement for one arrangement."""
+    if _is_controller():
+        return
+    principals = parse_execute_principals_json(
+        getattr(arr, "execute_principals_json", "") or "[]"
+    )
+    if principals and _caller() in principals:
+        return
+    raise Exception(
+        "unauthorized: caller is not a Casals controller or listed in execute_principals"
+    )
+
+
+def _arrangement_execute_principals_view(arr) -> list:
+    return parse_execute_principals_json(getattr(arr, "execute_principals_json", "") or "[]")
 
 
 def _section_commander_can(sec, permission: str) -> bool:
@@ -977,6 +1023,7 @@ def list_arrangements() -> text:
             "active": bool(int(getattr(a, "active", 0) or 0)),
             "parameter_count": nparams,
             "step_count": nsteps,
+            "execute_principal_count": len(_arrangement_execute_principals_view(a)),
         })
     out.sort(key=lambda x: (not x["active"], x["name"]))
     return json.dumps(out)
@@ -1010,26 +1057,32 @@ def get_arrangement(args: text) -> text:
         "active": bool(int(getattr(a, "active", 0) or 0)),
         "parameters": parameters,
         "steps": steps,
+        "execute_principals": _arrangement_execute_principals_view(a),
     })
 
 
 @update
 def set_arrangement(args: text) -> text:
-    """Create or update an arrangement (upsert by name). Controller or open-access.
+    """Create or update an arrangement (upsert by name).
 
-    Args (JSON): {name, description?, parameters?, steps?, active?}.
+    Args (JSON): {name, description?, parameters?, steps?, execute_principals?, active?}.
       - parameters: a flat JSON object of config values (opaque to Casals).
       - steps: an ordered list of {target, method, args} declarative calls.
+      - execute_principals: principals allowed to apply this arrangement.
       - active: if true, mark this arrangement active (clearing any other).
 
-    parameters/steps are validated here so a malformed arrangement is rejected at
-    write time, not silently at apply time. Idempotent."""
+    Requires ``arrangement.create`` (or Casals controller). Setting ``active: true``
+    also requires ``arrangement.activate``. parameters/steps are validated here so a
+    malformed arrangement is rejected at write time, not silently at apply time.
+    Idempotent."""
     try:
-        _require_can_add()
+        _require_arrangement_permission("arrangement.create")
         params = json.loads(args)
         name = (params.get("name") or "").strip()
         if not name:
             return _err("name required")
+        if params.get("active"):
+            _require_arrangement_permission("arrangement.activate")
         list(Arrangement.instances())
         a = Arrangement[name]
         created = a is None
@@ -1042,6 +1095,9 @@ def set_arrangement(args: text) -> text:
             a.parameters_json = json.dumps(normalize_parameters(params.get("parameters")))
         if "steps" in params:
             a.steps_json = json.dumps(validate_and_normalize_steps(params.get("steps")))
+        if "execute_principals" in params:
+            principals = normalize_execute_principals(params.get("execute_principals"))
+            a.execute_principals_json = json.dumps(principals, separators=(",", ":"))
         if params.get("active"):
             for other in Arrangement.instances():
                 if other.name != name and int(getattr(other, "active", 0) or 0) == 1:
@@ -1049,17 +1105,20 @@ def set_arrangement(args: text) -> text:
             a.active = 1
         _append_event("arrangement_set", "",
                       {"name": name, "created": created, "active": bool(int(a.active or 0))})
-        return _ok(name=name, created=created, active=bool(int(a.active or 0)))
+        return _ok(name=name, created=created, active=bool(int(a.active or 0)),
+                   execute_principals=_arrangement_execute_principals_view(a))
     except Exception as e:
         return _err(str(e))
 
 
 @update
 def set_active_arrangement(args: text) -> text:
-    """Mark one arrangement active (clearing any other). Controller or open-access.
+    """Mark one arrangement active (clearing any other).
+
+    Requires ``arrangement.activate`` (or Casals controller).
     Args (JSON): {"name": str}."""
     try:
-        _require_can_add()
+        _require_arrangement_permission("arrangement.activate")
         params = json.loads(args)
         name = (params.get("name") or "").strip()
         if not name:
@@ -1080,9 +1139,12 @@ def set_active_arrangement(args: text) -> text:
 
 @update
 def delete_arrangement(args: text) -> text:
-    """Delete an arrangement. Controller only. Args (JSON): {"name": str}."""
+    """Delete an arrangement.
+
+    Requires ``arrangement.delete`` (or Casals controller).
+    Args (JSON): {"name": str}."""
     try:
-        _require_admin()
+        _require_arrangement_permission("arrangement.delete")
         params = json.loads(args)
         name = (params.get("name") or "").strip()
         list(Arrangement.instances())
@@ -2268,7 +2330,8 @@ def apply_arrangement(args: text) -> Async[text]:
 
     Run this after deploy_sheet to bring an environment to its configured,
     ready-to-use state (set parameters, trigger canister self-reconciliation,
-    etc.). Controller or open-access caller. Steps are best-effort and idempotent
+    etc.). Caller must be a Casals controller or listed in the arrangement's
+    ``execute_principals``. Steps are best-effort and idempotent
     (see arrangement._apply_arrangement_gen): re-applying converges.
 
     Args (JSON, optional):
@@ -2282,7 +2345,6 @@ def apply_arrangement(args: text) -> Async[text]:
     The returned applied/failed counts are for THIS batch.
     """
     try:
-        _require_can_add()
         params = json.loads(args) if args else {}
         name = (params.get("name") or "").strip()
         offset = int(params.get("offset", 0) or 0)
@@ -2291,6 +2353,7 @@ def apply_arrangement(args: text) -> Async[text]:
         arr = Arrangement[name] if name else _get_active_arrangement()
         if arr is None:
             return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
+        _require_arrangement_apply(arr)
         summary = yield from _apply_arrangement_gen(arr, offset, limit)
         _append_event("arrangement_applied", "",
                       {"name": arr.name, "offset": summary.get("offset", 0),

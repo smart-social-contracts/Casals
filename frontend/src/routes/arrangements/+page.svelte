@@ -32,6 +32,7 @@
     active: boolean;
     parameters: Record<string, unknown>;
     steps: Arrangement['steps'];
+    execute_principals: string[];
   };
 
   let parsed = $derived.by<{ doc: ParsedDoc | null; err: string }>(() => {
@@ -48,6 +49,14 @@
       if (parameters !== undefined && (typeof parameters !== 'object' || parameters === null || Array.isArray(parameters))) {
         return { doc: null, err: '"parameters" must be a JSON object' };
       }
+      const execute_principals = obj.execute_principals;
+      if (
+        execute_principals !== undefined &&
+        (!Array.isArray(execute_principals) ||
+          execute_principals.some((p) => typeof p !== 'string' || !String(p).trim()))
+      ) {
+        return { doc: null, err: '"execute_principals" must be an array of principal strings' };
+      }
       for (const step of obj.steps) {
         if (!step || typeof step !== 'object' || Array.isArray(step)) {
           return { doc: null, err: 'Each step must be an object' };
@@ -63,6 +72,7 @@
           active: !!obj.active,
           parameters: (parameters ?? {}) as Record<string, unknown>,
           steps: obj.steps,
+          execute_principals: (execute_principals ?? []).map((p) => String(p).trim()).filter(Boolean),
         },
         err: '',
       };
@@ -80,6 +90,7 @@
         description: doc.description,
         active: doc.active,
         parameters: doc.parameters,
+        execute_principals: doc.execute_principals ?? [],
         steps: doc.steps,
       },
       null,
@@ -232,8 +243,9 @@
         <strong>active</strong> per instance.
       </p>
       <p class="text-xs text-primary-400 mt-1 max-w-2xl">
-        A sheet stands up code; an arrangement configures state (runtime flags, registry
-        installs, branding, etc.). Casals stores and forwards the data without interpreting it.
+        Save/activate/delete need commander permissions (<code class="font-mono">arrangement.create</code>,
+        <code class="font-mono">arrangement.activate</code>, <code class="font-mono">arrangement.delete</code>).
+        Apply requires your principal in <code class="font-mono">execute_principals</code> (or Casals controller).
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0 flex-wrap">
@@ -284,7 +296,7 @@
       {#if $isAuthenticated}
         <textarea
           bind:value={text}
-          placeholder={'{\n  "name": "my-env",\n  "description": "…",\n  "active": true,\n  "parameters": {},\n  "steps": []\n}'}
+          placeholder={'{\n  "name": "my-env",\n  "description": "…",\n  "active": true,\n  "parameters": {},\n  "execute_principals": ["<your-principal>"],\n  "steps": []\n}'}
           spellcheck="false"
           class="mt-4 w-full max-w-xl mx-auto h-48 font-mono text-xs p-3 rounded-lg border border-[var(--color-border-primary)]"
         ></textarea>
@@ -310,7 +322,7 @@
           {#if s.active}
             <span class="ml-1.5 text-[10px] uppercase tracking-wide font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">active</span>
           {/if}
-          <span class="block text-[11px] text-primary-400 mt-0.5">{s.step_count} steps · {s.parameter_count} params</span>
+          <span class="block text-[11px] text-primary-400 mt-0.5">{s.step_count} steps · {s.parameter_count} params · {s.execute_principal_count ?? 0} executors</span>
         </button>
       {/each}
     </div>
@@ -338,7 +350,7 @@
           <p class="text-xs text-emerald-600">✓ valid arrangement</p>
         {/if}
         {#if !$isAuthenticated}
-          <p class="text-xs text-primary-400">Log in as a controller to edit, save, activate, or apply.</p>
+          <p class="text-xs text-primary-400">Log in to edit arrangements. Apply needs your principal in execute_principals.</p>
         {/if}
       </div>
 

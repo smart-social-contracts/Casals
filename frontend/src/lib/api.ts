@@ -869,6 +869,7 @@ export interface ArrangementSummary {
   active: boolean;
   parameter_count: number;
   step_count: number;
+  execute_principal_count?: number;
 }
 
 export interface ArrangementStep {
@@ -883,6 +884,7 @@ export interface Arrangement {
   active: boolean;
   parameters: Record<string, unknown>;
   steps: ArrangementStep[];
+  execute_principals?: string[];
 }
 
 export interface ArrangementApplyResult extends UpdateResult {
@@ -935,6 +937,7 @@ export async function setArrangement(arr: {
   description?: string;
   parameters?: Record<string, unknown>;
   steps?: ArrangementStep[];
+  execute_principals?: string[];
   active?: boolean;
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_arrangement(JSON.stringify(arr)));

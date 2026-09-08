@@ -37,6 +37,9 @@ PERMISSIONS = [
     ("orchestration.baton.upgrade",        "Upgrade baton canister",          "Orchestration"),
     ("orchestration.baton.hand_off",       "Hand canister to Baton",          "Orchestration"),
     ("orchestration.managed_upgrade.run",  "Run managed upgrade pipeline",    "Orchestration"),
+    ("arrangement.create",                 "Create / update arrangements",    "Arrangements"),
+    ("arrangement.activate",               "Activate arrangements",           "Arrangements"),
+    ("arrangement.delete",                 "Delete arrangements",             "Arrangements"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 

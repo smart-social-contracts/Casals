@@ -379,6 +379,8 @@ class Arrangement(Entity, TimestampedMixin):
     # Ordered JSON list of declarative post-deploy steps: [{target, method, args}].
     # Sized for a full-fidelity environment with many post-deploy steps.
     steps_json = String(max_length=131072, default="[]")
+    # JSON array of principals allowed to apply this arrangement (controller always can).
+    execute_principals_json = String(max_length=8192, default="[]")
     created_by = String(max_length=64, default="")
 
 

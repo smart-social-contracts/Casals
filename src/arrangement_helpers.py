@@ -61,6 +61,46 @@ def validate_and_normalize_steps(steps):
     return out
 
 
+def normalize_execute_principals(value):
+    """Validate and normalize execute_principals to a unique list of principals.
+
+    Accepts a list or a JSON string encoding one. Raises ValueError on malformed
+    input.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return []
+        try:
+            value = json.loads(s)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"execute_principals is not valid JSON: {e}")
+    if not isinstance(value, list):
+        raise ValueError("execute_principals must be a JSON array")
+    out = []
+    seen = set()
+    for item in value:
+        principal = str(item or "").strip()
+        if not principal or principal in seen:
+            continue
+        seen.add(principal)
+        out.append(principal)
+    return out
+
+
+def parse_execute_principals_json(stored: str) -> list:
+    """Parse stored execute_principals_json; return [] on empty or malformed."""
+    raw = (stored or "").strip()
+    if not raw:
+        return []
+    try:
+        return normalize_execute_principals(json.loads(raw))
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
 def normalize_parameters(parameters):
     """Validate that `parameters` is a JSON object; return it as a dict.
 
