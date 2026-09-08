@@ -938,6 +938,8 @@ export async function getArrangement(name?: string): Promise<Arrangement> {
     active: !!raw.active,
     parameters: raw.parameters ?? {},
     steps: raw.steps ?? [],
+    execute_principals: raw.execute_principals ?? [],
+    parameter_schema: raw.parameter_schema ?? {},
   };
 }
 
