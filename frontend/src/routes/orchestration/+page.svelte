@@ -20,6 +20,9 @@
   } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
+  import GovernanceMapCard from '$lib/components/GovernanceMapCard.svelte';
+  import GovernanceReferenceList from '$lib/components/GovernanceReferenceList.svelte';
+  import { BATON_CAPABILITY_REFERENCE } from '$lib/governanceUx';
 
   function batonForStand(standName: string): string {
     for (const sec of tree?.sections ?? []) {
@@ -194,16 +197,16 @@
 </script>
 
 <svelte:head>
-  <title>Orchestration · Casals</title>
+  <title>Managed upgrades · Casals</title>
 </svelte:head>
 
 <div class="space-y-6">
   <div>
-    <h1 class="text-2xl font-semibold text-primary-900">Orchestration</h1>
+    <h1 class="text-2xl font-semibold text-primary-900">Managed upgrades</h1>
     <p class="mt-1 text-sm text-primary-500 max-w-2xl">
-      Each demo stand has its own Baton; Multisig is the shared top commander. Casals hands backends
-      to the stand&apos;s Baton, proposes a registry-backed upgrade from the catalog, and drives the managed-upgrade pipeline.
-      Motoko/Rust backends work best (Basilisk modules exceed Baton&apos;s staging limit).
+      Baton upgrade pipelines for canisters handed off from Casals. Each stand may have its own Baton;
+      the <a href="/multisig" class="underline">platform committee</a> multisig is the shared top IC controller.
+      For who may call Casals APIs, see <a href="/commanders" class="underline">operator access</a>.
     </p>
   </div>
 
@@ -223,7 +226,7 @@
       {#if status}
         <dl class="grid sm:grid-cols-2 gap-3 text-sm">
           <div>
-            <dt class="text-primary-400">Multisig (top commander)</dt>
+            <dt class="text-primary-400">Platform committee (top commander)</dt>
             <dd class="font-mono text-xs break-all">
               {#if status.multisig?.canister_id}
                 <a
@@ -374,6 +377,13 @@
         {/if}
       </div>
     </section>
+
+    <GovernanceReferenceList
+      title="Baton capabilities"
+      intro="Capability strings granted to Baton commanders (usually via platform committee or Baton admin)."
+      entries={BATON_CAPABILITY_REFERENCE}
+    />
+    <GovernanceMapCard compact />
   {/if}
 </div>
 

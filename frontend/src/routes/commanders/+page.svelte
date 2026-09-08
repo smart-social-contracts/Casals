@@ -8,10 +8,18 @@
   } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { entityCommanders } from '$lib/commanderAccess';
-  import { identity, isAuthenticated } from '$lib/auth';
+  import { identity, isAuthenticated, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { refreshGovernancePending, pendingGovernanceRequests } from '$lib/stores/governancePending';
   import { copyText } from '$lib/clipboard';
+  import {
+    OPERATOR_ACCESS_TABS,
+    describeOperatorAccess,
+    groupPermissions,
+    type OperatorAccessTab,
+  } from '$lib/governanceUx';
+  import GovernanceMapCard from '$lib/components/GovernanceMapCard.svelte';
+  import PermissionReferenceTable from '$lib/components/PermissionReferenceTable.svelte';
 
   interface CommanderRow {
     scope: 'section' | 'stand' | 'controller';
@@ -29,6 +37,7 @@
   let loading = $state(true);
   let error = $state('');
   let filterQuery = $state('');
+  let activeTab = $state<OperatorAccessTab>('roles');
 
   async function load() {
     loading = true;
@@ -55,15 +64,11 @@
   });
 
   // Catalog grouped by group, in declaration order.
-  const groupedCatalog = $derived.by(() => {
-    const groups: { name: string; perms: Permission[] }[] = [];
-    for (const p of catalog) {
-      let g = groups.find((x) => x.name === p.group);
-      if (!g) { g = { name: p.group, perms: [] }; groups.push(g); }
-      g.perms.push(p);
-    }
-    return groups;
-  });
+  const groupedCatalog = $derived.by(() => groupPermissions(catalog));
+
+  const operatorStatus = $derived.by(() =>
+    describeOperatorAccess($principal, controllerPrincipals, rows),
+  );
 
   const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
 
@@ -295,7 +300,7 @@
     busy = true;
     try {
       await setOrchestrationPolicies({ section: policiesSection, policies: policiesDraft });
-      toasts.success('Orchestration policies saved');
+      toasts.success('Casals action approval rules saved');
       policiesOpen = false;
       await load();
     } catch (e: any) {
@@ -334,14 +339,23 @@
   }
 </script>
 
-<svelte:head><title>Casals · Commanders</title></svelte:head>
+<svelte:head><title>Casals · Operator access</title></svelte:head>
 
 <div class="space-y-6 animate-fade-in">
   <!-- Header -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-bold text-primary-900">Commanders</h1>
-      <p class="text-sm text-primary-500 mt-1">Section and stand commanders and permissions</p>
+  <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+    <div class="space-y-2">
+      <h1 class="text-2xl font-bold text-primary-900">Operator access</h1>
+      <p class="text-sm text-primary-500 max-w-2xl">
+        Casals commander roles — who may call Casals APIs on each section or stand.
+        This is separate from the <a href="/multisig" class="text-primary-700 underline">platform committee</a>
+        (on-chain multisig) and from <a href="/arrangements" class="text-primary-700 underline">arrangement runners</a>.
+      </p>
+      {#if $isAuthenticated}
+        <p class="text-xs text-primary-600 border border-primary-100 bg-primary-50 rounded-lg px-3 py-2 max-w-2xl">
+          <span class="font-medium">Your access:</span> {operatorStatus}
+        </p>
+      {/if}
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -361,7 +375,28 @@
     </div>
   </div>
 
-  <!-- Filter -->
+  <div class="flex flex-wrap gap-2 border-b border-primary-100 pb-1">
+    {#each OPERATOR_ACCESS_TABS as tab (tab.id)}
+      <button
+        type="button"
+        class="px-3 py-2 text-sm rounded-t-lg border-b-2 transition-colors
+          {activeTab === tab.id
+            ? 'border-primary-600 text-primary-900 font-medium'
+            : 'border-transparent text-primary-500 hover:text-primary-800'}"
+        onclick={() => (activeTab = tab.id)}
+      >
+        {tab.label}
+        {#if tab.id === 'pending' && $pendingGovernanceRequests.length > 0}
+          <span class="ml-1.5 text-[10px] font-bold text-red-600">({$pendingGovernanceRequests.length})</span>
+        {/if}
+      </button>
+    {/each}
+  </div>
+  <p class="text-xs text-primary-400 -mt-3">
+    {OPERATOR_ACCESS_TABS.find((t) => t.id === activeTab)?.hint ?? ''}
+  </p>
+
+  {#if activeTab === 'roles'}
   {#if !loading && rows.length > 0}
     <div class="relative">
       <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -489,10 +524,18 @@
       {#if filterQuery}(filtered){/if}
     </p>
   {/if}
+  {/if}
 
-  {#if $pendingGovernanceRequests.length > 0}
-    <div class="card p-4 space-y-3">
-      <h2 class="text-sm font-semibold text-primary-900">Pending orchestration approvals</h2>
+  {#if activeTab === 'pending'}
+  <div class="card p-4 space-y-3">
+    <h2 class="text-sm font-semibold text-primary-900">Pending Casals action approvals</h2>
+    <p class="text-xs text-primary-500">
+      Extra signatures Casals requires before running sensitive orchestration APIs — not the same as
+      <a href="/multisig" class="underline">platform committee</a> proposals.
+    </p>
+    {#if $pendingGovernanceRequests.length === 0}
+      <p class="text-sm text-primary-400">No pending requests.</p>
+    {:else}
       <div class="space-y-2">
         {#each $pendingGovernanceRequests as req (req.request_id)}
           <div class="border border-primary-100 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center gap-3">
@@ -504,6 +547,10 @@
                   · required: {req.missing_required.length} missing
                 {/if}
               </div>
+              <details class="mt-1 text-[10px] text-primary-400">
+                <summary class="cursor-pointer">Technical action id</summary>
+                <code class="font-mono">{req.action}</code>
+              </details>
             </div>
             {#if $isAuthenticated}
               <div class="flex gap-2 shrink-0">
@@ -514,22 +561,39 @@
           </div>
         {/each}
       </div>
-    </div>
+    {/if}
+  </div>
   {/if}
 
+  {#if activeTab === 'rules'}
   {#if tree?.sections?.length}
     <div class="card p-4 space-y-3">
-      <h2 class="text-sm font-semibold text-primary-900">Orchestration approval policies</h2>
-      <p class="text-xs text-primary-500">N-of-M rules per sensitive action (create/upgrade baton, multisig, hand-off, pipeline).</p>
+      <h2 class="text-sm font-semibold text-primary-900">Casals action approval rules</h2>
+      <p class="text-xs text-primary-500">
+        N-of-M rules per sensitive Casals orchestration API (create/upgrade Baton, multisig, hand-off, pipeline).
+        Not the platform committee multisig — configure those signers on
+        <a href="/multisig" class="underline">Platform committee</a>.
+      </p>
       <div class="flex flex-wrap gap-2">
         {#each tree.sections as sec (sec.name)}
           {#if $isAuthenticated}
             <button class="btn-secondary btn-sm" disabled={busy} onclick={() => openPolicies(sec.name)}>
-              {sec.name} policies
+              {sec.name} rules
             </button>
           {/if}
         {/each}
       </div>
+    </div>
+  {:else}
+    <p class="text-sm text-primary-400">Load the orchestra tree to configure approval rules per section.</p>
+  {/if}
+  {/if}
+
+  {#if activeTab === 'reference'}
+    <GovernanceMapCard />
+    <div class="card p-4">
+      <h2 class="text-sm font-semibold text-primary-900 mb-3">Casals commander permissions</h2>
+      <PermissionReferenceTable catalog={catalog} />
     </div>
   {/if}
 </div>
@@ -539,8 +603,11 @@
   <div class="fixed inset-0 z-40 flex items-center justify-center">
     <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (assignOpen = false)}></button>
     <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-      <h3 class="text-lg font-semibold text-primary-900">Assign commander</h3>
-      <p class="text-sm text-primary-500">Adds a commander without removing existing ones. Each section or stand may have multiple commanders.</p>
+      <h3 class="text-lg font-semibold text-primary-900">Grant operator access</h3>
+      <p class="text-sm text-primary-500">
+        Adds a commander without removing existing ones. Casals orchestration API permissions do not make someone a multisig signer.
+        <button type="button" class="underline text-primary-600" onclick={() => { assignOpen = false; activeTab = 'reference'; }}>View all permissions</button>
+      </p>
       <div>
         <span class="label">Scope</span>
         <div class="flex gap-2 mt-1">
@@ -651,13 +718,19 @@
     <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (policiesOpen = false)}></button>
     <div class="relative bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
       <div>
-        <h3 class="text-lg font-semibold text-primary-900">Orchestration policies</h3>
-        <p class="text-sm text-primary-500 mt-0.5">Section <strong>{policiesSection}</strong> · threshold / eligible / required approvers per action</p>
+        <h3 class="text-lg font-semibold text-primary-900">Casals action approval rules</h3>
+        <p class="text-sm text-primary-500 mt-0.5">
+          Section <strong>{policiesSection}</strong> · how many operator approvals Casals requires before running each orchestration API
+        </p>
       </div>
       {#each orchestrationActions as action (action.key)}
         {@const pol = policiesDraft[action.key] ?? { threshold: 1, eligible: [], required: [] }}
         <div class="border border-primary-100 rounded-lg p-3 space-y-2">
           <div class="text-sm font-medium text-primary-900">{action.label}</div>
+          <details class="text-[10px] text-primary-400">
+            <summary class="cursor-pointer">Technical action id</summary>
+            <code class="font-mono">{action.key}</code>
+          </details>
           <label class="block text-xs text-primary-500">
             Threshold (M of N)
             <input

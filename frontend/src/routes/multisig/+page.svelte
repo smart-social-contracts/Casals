@@ -15,6 +15,9 @@
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import MultisigProposeForm from '$lib/components/MultisigProposeForm.svelte';
+  import GovernanceMapCard from '$lib/components/GovernanceMapCard.svelte';
+  import GovernanceReferenceList from '$lib/components/GovernanceReferenceList.svelte';
+  import { describeMultisigSignerStatus, MULTISIG_PROPOSAL_REFERENCE } from '$lib/governanceUx';
 
   let canisterId = $state('');
   let loading = $state(true);
@@ -28,6 +31,7 @@
   const pending = $derived(proposals.filter((p) => p.status === 'pending'));
   const history = $derived(proposals.filter((p) => p.status !== 'pending'));
   const isSigner = $derived($isAuthenticated && signers.includes($principal));
+  const signerStatus = $derived(describeMultisigSignerStatus($principal, signers, threshold));
 
   function fmtNs(ns: bigint): string {
     const ms = Number(ns / 1_000_000n);
@@ -131,15 +135,28 @@
 </script>
 
 <svelte:head>
-  <title>Multisig · Casals</title>
+  <title>Platform committee · Casals</title>
 </svelte:head>
 
 <div class="mx-auto max-w-2xl space-y-6">
   <header class="flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <h1 class="text-xl font-semibold text-primary-900">Multisig</h1>
+    <div class="space-y-2">
+      <h1 class="text-xl font-semibold text-primary-900">Platform committee</h1>
+      <p class="text-sm text-primary-500 max-w-xl">
+        On-chain multisig acting as IC controller for structural platform actions (controllers, destroy, Baton admin).
+        Separate from <a href="/commanders" class="underline">operator access</a> on Casals.
+      </p>
       {#if !loading && !error}
-        <p class="text-sm text-primary-500 mt-0.5">
+        <p class="text-xs text-primary-600 border border-primary-100 bg-primary-50 rounded-lg px-3 py-2">
+          {#if $isAuthenticated}
+            <span class="font-medium">Your status:</span> {signerStatus}
+          {:else}
+            Sign in to propose or approve committee actions.
+          {/if}
+        </p>
+      {/if}
+      {#if !loading && !error}
+        <p class="text-sm text-primary-500">
           {threshold}-of-{signers.length} threshold
           {#if pending.length}
             · {pending.length} pending
@@ -175,7 +192,7 @@
   {:else}
     {#if $isAuthenticated && !isSigner}
       <p class="text-xs text-amber-700 border border-amber-200 bg-amber-50 rounded-lg px-3 py-2">
-        Signed in, but your principal is not a signer.
+        Signed in, but your principal is not a committee signer. Operator access on Casals is configured separately.
       </p>
     {/if}
 
@@ -274,5 +291,11 @@
         </ul>
       </section>
     {/if}
+    <GovernanceReferenceList
+      title="Supported proposal types"
+      intro="Actions the platform committee multisig can execute on-chain when quorum is met."
+      entries={MULTISIG_PROPOSAL_REFERENCE}
+    />
+    <GovernanceMapCard compact />
   {/if}
 </div>

@@ -13,22 +13,9 @@
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
   import BuildFooter from '$lib/components/BuildFooter.svelte';
+  import { NAV_SECTIONS } from '$lib/governanceUx';
 
   let { children } = $props();
-
-  const navLinks = [
-    { href: '/', label: 'Orchestra' },
-    { href: '/wasms', label: 'WASMs' },
-    { href: '/commanders', label: 'Commanders' },
-    { href: '/aliases', label: 'Aliases' },
-    { href: '/orchestration', label: 'Orchestration' },
-    { href: '/multisig', label: 'Multisig' },
-    { href: '/cycles', label: 'Cycles' },
-    { href: '/activity', label: 'Activity' },
-    { href: '/sheet', label: 'Sheet' },
-    { href: '/arrangements', label: 'Arrangements' },
-    { href: '/settings', label: 'Settings' },
-  ];
 
   let sidebarOpen = $state(false);
   let isDesktop = $state(false);
@@ -95,30 +82,38 @@
 </svelte:head>
 
 {#snippet sidebarNav()}
-  <nav class="flex-1 overflow-y-auto px-3 py-4">
-    <ul class="space-y-1">
-      {#each navLinks as link (link.href)}
-        <li>
-          <a
-            href={link.href}
-            onclick={closeSidebar}
-            class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
-              ? 'bg-primary-100 text-primary-900'
-              : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
-          >
-            <span>{link.label}</span>
-            {#if link.href === '/commanders' && $pendingGovernanceCount > 0}
-              <span
-                class="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none inline-flex items-center justify-center"
-                aria-hidden="true"
+  <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+    {#each NAV_SECTIONS as section (section.id)}
+      <div>
+        <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-primary-400">
+          {section.title}
+        </p>
+        <ul class="space-y-1">
+          {#each section.links as link (link.href)}
+            <li>
+              <a
+                href={link.href}
+                onclick={closeSidebar}
+                title={link.description ?? ''}
+                class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
+                  ? 'bg-primary-100 text-primary-900'
+                  : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
               >
-                {pendingBadge($pendingGovernanceCount)}
-              </span>
-            {/if}
-          </a>
-        </li>
-      {/each}
-    </ul>
+                <span>{link.label}</span>
+                {#if link.href === '/commanders' && $pendingGovernanceCount > 0}
+                  <span
+                    class="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none inline-flex items-center justify-center"
+                    aria-hidden="true"
+                  >
+                    {pendingBadge($pendingGovernanceCount)}
+                  </span>
+                {/if}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/each}
   </nav>
 {/snippet}
 

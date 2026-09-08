@@ -296,6 +296,8 @@
         Save/activate/delete need commander permissions (<code class="font-mono">arrangement.create</code>,
         <code class="font-mono">arrangement.activate</code>, <code class="font-mono">arrangement.delete</code>).
         Apply opens a parameter form when <code class="font-mono">parameter_schema</code> or <code class="font-mono">$param</code> refs are set.
+        <strong>Apply access</strong> (<code class="font-mono">execute_principals</code>) is separate from
+        <a href="/commanders" class="underline">operator access</a> — only listed principals (plus IC controllers) may apply.
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0 flex-wrap">
@@ -372,7 +374,7 @@
           {#if s.active}
             <span class="ml-1.5 text-[10px] uppercase tracking-wide font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">active</span>
           {/if}
-          <span class="block text-[11px] text-primary-400 mt-0.5">{s.step_count} steps · {s.parameter_count} params · {s.execute_principal_count ?? 0} executors</span>
+          <span class="block text-[11px] text-primary-400 mt-0.5">{s.step_count} steps · {s.parameter_count} params · {s.execute_principal_count ?? 0} can apply</span>
         </button>
       {/each}
     </div>
