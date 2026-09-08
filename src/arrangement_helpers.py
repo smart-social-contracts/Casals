@@ -14,6 +14,23 @@ malformed arrangement is rejected when it is set, not silently at apply time.
 
 import json
 
+_SCHEMA_TYPES = frozenset({"text", "principal", "bool", "number", "sha256"})
+
+
+def _match_param_ref(value):
+    if not isinstance(value, str) or not value.startswith("$"):
+        return None
+    name = value[1:]
+    if not name:
+        return None
+    first = name[0]
+    if not (first.isalpha() or first == "_"):
+        return None
+    for ch in name[1:]:
+        if not (ch.isalnum() or ch == "_"):
+            return None
+    return name
+
 
 def candid_text_tuple(s: str) -> str:
     """Wrap a string as a Candid text-literal tuple `("...")`, escaping backslashes
@@ -115,3 +132,145 @@ def normalize_parameters(parameters):
     if not isinstance(parameters, dict):
         raise ValueError("parameters must be a JSON object")
     return parameters
+
+
+def normalize_parameter_schema(schema):
+    """Validate parameter_schema: { name: { type, label?, description?, required? } }."""
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema or "{}")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"parameter_schema is not valid JSON: {e}")
+    if schema is None:
+        return {}
+    if not isinstance(schema, dict):
+        raise ValueError("parameter_schema must be a JSON object")
+    out = {}
+    for key, spec in schema.items():
+        name = str(key or "").strip()
+        if not name:
+            raise ValueError("parameter_schema keys must be non-empty strings")
+        if not isinstance(spec, dict):
+            raise ValueError(f"parameter_schema['{name}'] must be an object")
+        ptype = (spec.get("type") or "text").strip().lower()
+        if ptype not in _SCHEMA_TYPES:
+            raise ValueError(f"parameter_schema['{name}'].type must be one of: {sorted(_SCHEMA_TYPES)}")
+        out[name] = {
+            "type": ptype,
+            "label": str(spec.get("label") or name)[:128],
+            "description": str(spec.get("description") or "")[:512],
+            "required": bool(spec.get("required")),
+        }
+    return out
+
+
+def parse_parameter_schema_json(stored: str) -> dict:
+    raw = (stored or "").strip()
+    if not raw:
+        return {}
+    try:
+        return normalize_parameter_schema(json.loads(raw))
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def collect_parameter_refs(value, found=None):
+    """Return sorted unique parameter names referenced via ``$name`` strings."""
+    if found is None:
+        found = set()
+    if isinstance(value, str):
+        key = _match_param_ref(value)
+        if key:
+            found.add(key)
+    elif isinstance(value, list):
+        for item in value:
+            collect_parameter_refs(item, found)
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_parameter_refs(item, found)
+    return sorted(found)
+
+
+def substitute_parameters(value, parameters: dict):
+    """Recursively replace ``$param`` strings with values from ``parameters``."""
+    if isinstance(value, str):
+        key = _match_param_ref(value)
+        if key:
+            if key not in parameters:
+                raise ValueError(f"missing parameter value for '${key}'")
+            return parameters[key]
+        return value
+    if isinstance(value, list):
+        return [substitute_parameters(item, parameters) for item in value]
+    if isinstance(value, dict):
+        return {k: substitute_parameters(v, parameters) for k, v in value.items()}
+    return value
+
+
+def merge_apply_parameters(defaults: dict, overrides: dict) -> dict:
+    """Merge arrangement defaults with apply-time overrides (overrides win)."""
+    merged = dict(defaults or {})
+    for key, val in (overrides or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        merged[name] = val
+    return merged
+
+
+def coerce_parameter_value(name: str, raw, spec: dict):
+    """Coerce a raw apply-time value to the schema type."""
+    ptype = (spec or {}).get("type") or "text"
+    if raw is None:
+        return None
+    if ptype == "bool":
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+    if ptype == "number":
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return raw
+        try:
+            return float(str(raw).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"parameter '{name}' must be a number")
+    # text, principal, sha256 (stored value is already a hash string from UI)
+    s = str(raw).strip()
+    if not s:
+        return ""
+    return s
+
+
+def prepare_apply_parameters(schema: dict, defaults: dict, overrides: dict, steps: list) -> dict:
+    """Validate and merge parameters for one apply run."""
+    schema = schema or {}
+    defaults = normalize_parameters(defaults)
+    overrides = normalize_parameters(overrides)
+    merged = merge_apply_parameters(defaults, overrides)
+
+    required = set(collect_parameter_refs(steps))
+    for key, spec in schema.items():
+        if spec.get("required"):
+            required.add(key)
+
+    coerced = {}
+    for key in required:
+        spec = schema.get(key, {"type": "text"})
+        if key not in merged or merged.get(key) in (None, ""):
+            if spec.get("required") or key in collect_parameter_refs(steps):
+                raise ValueError(f"missing required parameter '{key}'")
+            continue
+        coerced[key] = coerce_parameter_value(key, merged.get(key), spec)
+
+    # Include optional provided values too.
+    for key, val in merged.items():
+        if key in coerced:
+            continue
+        if val in (None, ""):
+            continue
+        spec = schema.get(key, {"type": "text"})
+        coerced[key] = coerce_parameter_value(key, val, spec)
+
+    return coerced

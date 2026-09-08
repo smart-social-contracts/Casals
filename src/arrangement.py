@@ -11,11 +11,16 @@ stays general-purpose: it forwards each step's `args` to the named method withou
 interpreting it, so concepts like "extensions" or "codices" never leak in here.
 """
 
+import json
+
 from basilisk import Principal, ic
 
 from arrangement_helpers import (
     candid_text_tuple,
+    prepare_apply_parameters,
+    parse_parameter_schema_json,
     step_text_arg,
+    substitute_parameters,
     validate_and_normalize_steps,
 )
 from audit import _append_event
@@ -58,7 +63,7 @@ def _call_text_method(canister_id: str, method: str, text_arg):
     return ic.candid_decode(unwrap_call_result(res))
 
 
-def _apply_arrangement_gen(arr, offset=0, limit=0):
+def _apply_arrangement_gen(arr, offset=0, limit=0, runtime_parameters=None):
     """Generator: run an arrangement's steps against their targets.
 
     Steps are independent and best-effort: a failing step is recorded and the
@@ -73,6 +78,12 @@ def _apply_arrangement_gen(arr, offset=0, limit=0):
     between them. Returns a summary dict (counts are for THIS batch).
     """
     steps = validate_and_normalize_steps(arr.steps_json)
+    try:
+        defaults = json.loads(arr.parameters_json or "{}")
+    except (json.JSONDecodeError, ValueError):
+        defaults = {}
+    schema = parse_parameter_schema_json(getattr(arr, "parameter_schema_json", "") or "{}")
+    apply_params = prepare_apply_parameters(schema, defaults, runtime_parameters or {}, steps)
     total = len(steps)
     start = max(0, int(offset or 0))
     end = total if (limit is None or int(limit) <= 0) else min(start + int(limit), total)
@@ -92,7 +103,7 @@ def _apply_arrangement_gen(arr, offset=0, limit=0):
                           {"arrangement": arr.name, "step": i, "target": target,
                            "method": method, "error": "unresolved target"})
             continue
-        text_arg = step_text_arg(step["args"])
+        text_arg = step_text_arg(substitute_parameters(step["args"], apply_params))
         try:
             reply = yield from _call_text_method(cid, method, text_arg)
             applied += 1

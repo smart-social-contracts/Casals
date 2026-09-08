@@ -979,6 +979,38 @@ def test_parse_execute_principals_json_malformed_returns_empty():
     assert arrangement_helpers.parse_execute_principals_json("{bad") == []
 
 
+# ── arrangement_helpers: parameter schema + substitution ─────────────────────
+
+def test_substitute_parameters_in_args():
+    out = arrangement_helpers.substitute_parameters(
+        ["$code_hash", {"x": "$name"}],
+        {"code_hash": "abc", "name": "Casals"},
+    )
+    assert out == ["abc", {"x": "Casals"}]
+
+
+def test_substitute_parameters_missing_raises():
+    with pytest.raises(ValueError, match="missing parameter"):
+        arrangement_helpers.substitute_parameters("$missing", {})
+
+
+def test_prepare_apply_parameters_merges_defaults():
+    schema = {"greeting": {"type": "text", "label": "Greeting", "required": True}}
+    steps = [{"target": "c", "method": "m", "args": "$greeting"}]
+    out = arrangement_helpers.prepare_apply_parameters(
+        schema, {"greeting": "default"}, {"greeting": "override"}, steps,
+    )
+    assert out["greeting"] == "override"
+
+
+def test_normalize_parameter_schema():
+    out = arrangement_helpers.normalize_parameter_schema({
+        "code_hash": {"type": "sha256", "label": "Hash", "required": True},
+    })
+    assert out["code_hash"]["type"] == "sha256"
+    assert out["code_hash"]["required"] is True
+
+
 # ── arrangement_helpers: normalize_parameters ────────────────────────────────
 
 def test_normalize_parameters_dict_passthrough():

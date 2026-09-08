@@ -61,6 +61,14 @@ from commanders import (
     section_commander_can,
 )
 from cycle_sweep import return_cycles_gen
+from arrangement_helpers import (
+    normalize_execute_principals,
+    normalize_parameter_schema,
+    normalize_parameters,
+    parse_execute_principals_json,
+    parse_parameter_schema_json,
+    validate_and_normalize_steps,
+)
 from arrangement import _apply_arrangement_gen, _get_active_arrangement
 from bootstrap import _ensure_core_bootstrap, _is_retire_protected
 from orchestration_bridge import (
@@ -74,12 +82,6 @@ from orchestration_bridge import (
     _orchestration_status_gen,
     _prepare_asset_provision_gen,
     _prepare_managed_upgrade_gen,
-)
-from arrangement_helpers import (
-    normalize_execute_principals,
-    normalize_parameters,
-    parse_execute_principals_json,
-    validate_and_normalize_steps,
 )
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
@@ -539,6 +541,10 @@ def _require_arrangement_apply(arr) -> None:
 
 def _arrangement_execute_principals_view(arr) -> list:
     return parse_execute_principals_json(getattr(arr, "execute_principals_json", "") or "[]")
+
+
+def _arrangement_parameter_schema_view(arr) -> dict:
+    return parse_parameter_schema_json(getattr(arr, "parameter_schema_json", "") or "{}")
 
 
 def _section_commander_can(sec, permission: str) -> bool:
@@ -1017,6 +1023,7 @@ def list_arrangements() -> text:
             nsteps = len(json.loads(a.steps_json or "[]"))
         except (json.JSONDecodeError, ValueError):
             nsteps = 0
+        schema = _arrangement_parameter_schema_view(a)
         out.append({
             "name": a.name,
             "description": a.description,
@@ -1024,6 +1031,7 @@ def list_arrangements() -> text:
             "parameter_count": nparams,
             "step_count": nsteps,
             "execute_principal_count": len(_arrangement_execute_principals_view(a)),
+            "parameter_schema_count": len(schema),
         })
     out.sort(key=lambda x: (not x["active"], x["name"]))
     return json.dumps(out)
@@ -1058,6 +1066,7 @@ def get_arrangement(args: text) -> text:
         "parameters": parameters,
         "steps": steps,
         "execute_principals": _arrangement_execute_principals_view(a),
+        "parameter_schema": _arrangement_parameter_schema_view(a),
     })
 
 
@@ -1065,8 +1074,9 @@ def get_arrangement(args: text) -> text:
 def set_arrangement(args: text) -> text:
     """Create or update an arrangement (upsert by name).
 
-    Args (JSON): {name, description?, parameters?, steps?, execute_principals?, active?}.
-      - parameters: a flat JSON object of config values (opaque to Casals).
+    Args (JSON): {name, description?, parameters?, parameter_schema?, steps?, execute_principals?, active?}.
+      - parameters: default values merged at apply time (overridable per run).
+      - parameter_schema: form schema for apply-time inputs (Candid-UI style).
       - steps: an ordered list of {target, method, args} declarative calls.
       - execute_principals: principals allowed to apply this arrangement.
       - active: if true, mark this arrangement active (clearing any other).
@@ -1093,6 +1103,11 @@ def set_arrangement(args: text) -> text:
             a.description = (params.get("description") or "")[:512]
         if "parameters" in params:
             a.parameters_json = json.dumps(normalize_parameters(params.get("parameters")))
+        if "parameter_schema" in params:
+            a.parameter_schema_json = json.dumps(
+                normalize_parameter_schema(params.get("parameter_schema")),
+                separators=(",", ":"),
+            )
         if "steps" in params:
             a.steps_json = json.dumps(validate_and_normalize_steps(params.get("steps")))
         if "execute_principals" in params:
@@ -1106,7 +1121,8 @@ def set_arrangement(args: text) -> text:
         _append_event("arrangement_set", "",
                       {"name": name, "created": created, "active": bool(int(a.active or 0))})
         return _ok(name=name, created=created, active=bool(int(a.active or 0)),
-                   execute_principals=_arrangement_execute_principals_view(a))
+                   execute_principals=_arrangement_execute_principals_view(a),
+                   parameter_schema=_arrangement_parameter_schema_view(a))
     except Exception as e:
         return _err(str(e))
 
@@ -2336,6 +2352,7 @@ def apply_arrangement(args: text) -> Async[text]:
 
     Args (JSON, optional):
       - "name": str — absent/empty => the active arrangement.
+      - "parameters": object — apply-time parameter overrides (merged with defaults).
       - "offset": int — first step to run (default 0).
       - "limit": int — max steps to run this call (default/<=0 => run to the end).
 
@@ -2349,12 +2366,13 @@ def apply_arrangement(args: text) -> Async[text]:
         name = (params.get("name") or "").strip()
         offset = int(params.get("offset", 0) or 0)
         limit = int(params.get("limit", 0) or 0)
+        runtime_parameters = params.get("parameters")
         list(Arrangement.instances())
         arr = Arrangement[name] if name else _get_active_arrangement()
         if arr is None:
             return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
         _require_arrangement_apply(arr)
-        summary = yield from _apply_arrangement_gen(arr, offset, limit)
+        summary = yield from _apply_arrangement_gen(arr, offset, limit, runtime_parameters)
         _append_event("arrangement_applied", "",
                       {"name": arr.name, "offset": summary.get("offset", 0),
                        "next_offset": summary.get("next_offset", 0),

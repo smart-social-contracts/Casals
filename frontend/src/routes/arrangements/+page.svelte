@@ -12,7 +12,10 @@
     Arrangement,
     ArrangementSummary,
     ArrangementApplyProgress,
+    ArrangementParameterSpec,
   } from '$lib/api';
+  import ArrangementApplyModal from '$lib/components/ArrangementApplyModal.svelte';
+  import { inferParameterSchema } from '$lib/arrangement-params';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
 
@@ -25,12 +28,14 @@
   let applying = $state(false);
   let applyProgress = $state<ArrangementApplyProgress | null>(null);
   let lastApply = $state<{ applied: number; failed: number; steps_total: number | null } | null>(null);
+  let applyModalOpen = $state(false);
 
   type ParsedDoc = {
     name: string;
     description: string;
     active: boolean;
     parameters: Record<string, unknown>;
+    parameter_schema: Record<string, ArrangementParameterSpec>;
     steps: Arrangement['steps'];
     execute_principals: string[];
   };
@@ -57,6 +62,13 @@
       ) {
         return { doc: null, err: '"execute_principals" must be an array of principal strings' };
       }
+      const parameter_schema = obj.parameter_schema;
+      if (
+        parameter_schema !== undefined &&
+        (typeof parameter_schema !== 'object' || parameter_schema === null || Array.isArray(parameter_schema))
+      ) {
+        return { doc: null, err: '"parameter_schema" must be a JSON object' };
+      }
       for (const step of obj.steps) {
         if (!step || typeof step !== 'object' || Array.isArray(step)) {
           return { doc: null, err: 'Each step must be an object' };
@@ -71,6 +83,7 @@
           description: String(obj.description ?? ''),
           active: !!obj.active,
           parameters: (parameters ?? {}) as Record<string, unknown>,
+          parameter_schema: (parameter_schema ?? {}) as Record<string, ArrangementParameterSpec>,
           steps: obj.steps,
           execute_principals: (execute_principals ?? []).map((p) => String(p).trim()).filter(Boolean),
         },
@@ -82,6 +95,11 @@
   });
 
   let stepPreview = $derived(parsed.doc?.steps.slice(0, 12) ?? []);
+  let applySchema = $derived(
+    parsed.doc
+      ? inferParameterSchema(parsed.doc.parameter_schema, parsed.doc.steps)
+      : {},
+  );
 
   function docToText(doc: Arrangement): string {
     return JSON.stringify(
@@ -90,6 +108,7 @@
         description: doc.description,
         active: doc.active,
         parameters: doc.parameters,
+        parameter_schema: doc.parameter_schema ?? {},
         execute_principals: doc.execute_principals ?? [],
         steps: doc.steps,
       },
@@ -190,32 +209,29 @@
     }
   }
 
-  async function apply() {
+  function openApplyModal() {
     if (!parsed.doc) {
       toasts.error(parsed.err);
       return;
     }
-    const steps = parsed.doc.steps.length;
-    if (
-      steps > 0 &&
-      !confirm(
-        `Apply "${parsed.doc.name}" (${steps} step${steps === 1 ? '' : 's'})? ` +
-          'This runs post-deploy calls against managed canisters.',
-      )
-    ) {
-      return;
-    }
+    applyModalOpen = true;
+  }
+
+  async function runApply(parameters: Record<string, unknown> = {}) {
+    if (!parsed.doc) return;
     applying = true;
     applyProgress = null;
     lastApply = null;
     try {
       const result = await applyArrangementAll({
         name: parsed.doc.name,
+        parameters,
         onProgress: (p) => {
           applyProgress = p;
         },
       });
       lastApply = result;
+      applyModalOpen = false;
       if (result.failed > 0) {
         toasts.error(`Applied with ${result.failed} failed step(s)`);
       } else {
@@ -228,7 +244,41 @@
       applyProgress = null;
     }
   }
+
+  async function apply() {
+    if (!parsed.doc) {
+      toasts.error(parsed.err);
+      return;
+    }
+    const schemaKeys = Object.keys(applySchema);
+    if (schemaKeys.length > 0) {
+      openApplyModal();
+      return;
+    }
+    const steps = parsed.doc.steps.length;
+    if (
+      steps > 0 &&
+      !confirm(
+        `Apply "${parsed.doc.name}" (${steps} step${steps === 1 ? '' : 's'})? ` +
+          'This runs post-deploy calls against managed canisters.',
+      )
+    ) {
+      return;
+    }
+    await runApply();
+  }
 </script>
+
+<ArrangementApplyModal
+  open={applyModalOpen}
+  arrangementName={parsed.doc?.name ?? ''}
+  schema={applySchema}
+  defaults={parsed.doc?.parameters ?? {}}
+  onClose={() => {
+    applyModalOpen = false;
+  }}
+  onSubmit={runApply}
+/>
 
 <svelte:head><title>Casals · Arrangements</title></svelte:head>
 
@@ -245,7 +295,7 @@
       <p class="text-xs text-primary-400 mt-1 max-w-2xl">
         Save/activate/delete need commander permissions (<code class="font-mono">arrangement.create</code>,
         <code class="font-mono">arrangement.activate</code>, <code class="font-mono">arrangement.delete</code>).
-        Apply requires your principal in <code class="font-mono">execute_principals</code> (or Casals controller).
+        Apply opens a parameter form when <code class="font-mono">parameter_schema</code> or <code class="font-mono">$param</code> refs are set.
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0 flex-wrap">
@@ -296,7 +346,7 @@
       {#if $isAuthenticated}
         <textarea
           bind:value={text}
-          placeholder={'{\n  "name": "my-env",\n  "description": "…",\n  "active": true,\n  "parameters": {},\n  "execute_principals": ["<your-principal>"],\n  "steps": []\n}'}
+          placeholder={'{\n  "name": "create-invitation-code",\n  "parameter_schema": {\n    "code_hash": {\n      "type": "sha256",\n      "label": "Invitation code",\n      "required": true\n    }\n  },\n  "execute_principals": ["<your-principal>"],\n  "steps": [\n    {\n      "target": "realm-registry-backend",\n      "method": "create_invitation_codes",\n      "args": ["$code_hash"]\n    }\n  ]\n}'}
           spellcheck="false"
           class="mt-4 w-full max-w-xl mx-auto h-48 font-mono text-xs p-3 rounded-lg border border-[var(--color-border-primary)]"
         ></textarea>
@@ -333,7 +383,7 @@
           <span class="text-xs font-semibold text-primary-500 uppercase tracking-wider">Arrangement (JSON)</span>
           {#if parsed.doc}
             <span class="text-xs text-primary-400">
-              {parsed.doc.steps.length} step(s) · {Object.keys(parsed.doc.parameters).length} parameter(s)
+              {parsed.doc.steps.length} step(s) · {Object.keys(parsed.doc.parameters).length} default(s) · {Object.keys(parsed.doc.parameter_schema).length} schema field(s)
               {#if parsed.doc.active}· active{/if}
             </span>
           {/if}

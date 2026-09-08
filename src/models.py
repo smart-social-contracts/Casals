@@ -381,6 +381,8 @@ class Arrangement(Entity, TimestampedMixin):
     steps_json = String(max_length=131072, default="[]")
     # JSON array of principals allowed to apply this arrangement (controller always can).
     execute_principals_json = String(max_length=8192, default="[]")
+    # Form schema for apply-time parameters: { name: { type, label?, description?, required? } }.
+    parameter_schema_json = String(max_length=8192, default="{}")
     created_by = String(max_length=64, default="")
 
 

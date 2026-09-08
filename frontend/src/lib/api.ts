@@ -863,6 +863,13 @@ export async function getCanisterDeployment(canisterId: string): Promise<Caniste
 // Arrangements (post-deploy environment config)
 // ---------------------------------------------------------------------------
 
+export interface ArrangementParameterSpec {
+  type: 'text' | 'principal' | 'bool' | 'number' | 'sha256';
+  label: string;
+  description?: string;
+  required?: boolean;
+}
+
 export interface ArrangementSummary {
   name: string;
   description: string;
@@ -870,6 +877,7 @@ export interface ArrangementSummary {
   parameter_count: number;
   step_count: number;
   execute_principal_count?: number;
+  parameter_schema_count?: number;
 }
 
 export interface ArrangementStep {
@@ -885,6 +893,7 @@ export interface Arrangement {
   parameters: Record<string, unknown>;
   steps: ArrangementStep[];
   execute_principals?: string[];
+  parameter_schema?: Record<string, ArrangementParameterSpec>;
 }
 
 export interface ArrangementApplyResult extends UpdateResult {
@@ -936,6 +945,7 @@ export async function setArrangement(arr: {
   name: string;
   description?: string;
   parameters?: Record<string, unknown>;
+  parameter_schema?: Record<string, ArrangementParameterSpec>;
   steps?: ArrangementStep[];
   execute_principals?: string[];
   active?: boolean;
@@ -953,6 +963,7 @@ export async function deleteArrangement(name: string): Promise<UpdateResult> {
 
 export async function applyArrangement(opts: {
   name?: string;
+  parameters?: Record<string, unknown>;
   offset?: number;
   limit?: number;
 } = {}): Promise<ArrangementApplyResult> {
@@ -965,6 +976,7 @@ export async function applyArrangement(opts: {
 export async function applyArrangementAll(
   opts: {
     name?: string;
+    parameters?: Record<string, unknown>;
     batch?: number;
     onProgress?: (info: ArrangementApplyProgress) => void;
   } = {},
@@ -976,7 +988,12 @@ export async function applyArrangementAll(
   let stepsTotal: number | null = null;
   let arrangement = '';
   for (let i = 0; i < 1000; i++) {
-    const res = await applyArrangement({ name: opts.name, offset, limit: batch });
+    const res = await applyArrangement({
+      name: opts.name,
+      parameters: opts.parameters,
+      offset,
+      limit: batch,
+    });
     arrangement = String(res.arrangement ?? arrangement);
     applied += Number(res.applied ?? 0);
     failed += Number(res.failed ?? 0);
