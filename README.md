@@ -4,7 +4,7 @@
 
 # Casals
 
-**General-purpose canister lifecycle orchestrator for the Internet Computer.**
+**General-purpose canister lifecycle orchestrator for the Internet Computer** — built for **managed multi-tenant IC deployments with shared upgrade governance**.
 
 Casals is **fully on-chain**: the conductor is a canister that creates, upgrades, snapshots, and rolls back other canisters by calling the IC management canister directly. Sheets, arrangements, WASM catalog, cycles policy, and audit history all live in Casals' stable state — there is no off-chain worker in the deploy path. The CLI and frontend are thin clients that submit update calls; execution and rollback logic run inside the conductor.
 
