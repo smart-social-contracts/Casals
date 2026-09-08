@@ -312,3 +312,17 @@ def test_deploy_sheet_persists_stand_template():
 def test_stand_release_action_registered():
     keys = {item["key"] for item in list_orchestration_actions_catalog()}
     assert ACTION_ORCHESTRATION_STAND_RELEASE in keys
+
+
+def test_every_orchestration_action_is_grantable():
+    """An action guards a call; a permission key is what can be handed out.
+
+    Granting drops keys it does not recognise, so an action missing from
+    PERMISSIONS produces a commander who appears to hold it and is refused at
+    the call - silently, and only on-chain.
+    """
+    from auth import PERMISSION_KEYS
+    from orchestration_governance import ORCHESTRATION_ACTIONS
+
+    missing = [a for a in ORCHESTRATION_ACTIONS if a not in PERMISSION_KEYS]
+    assert not missing, f"orchestration actions that cannot be granted: {missing}"
