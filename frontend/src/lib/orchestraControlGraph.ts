@@ -416,6 +416,95 @@ export function layoutControlGraph(
   return positions;
 }
 
+export const CONTROL_NODE_WIDTH = 148;
+export const CONTROL_NODE_HEIGHT = 56;
+
+export interface EdgeAnchors {
+  from: NodePosition;
+  to: NodePosition;
+}
+
+/** Pick border anchor points based on relative node placement. */
+export function edgeAnchors(
+  fromPos: NodePosition,
+  toPos: NodePosition,
+  width = CONTROL_NODE_WIDTH,
+  height = CONTROL_NODE_HEIGHT,
+): EdgeAnchors {
+  const dx = toPos.x - fromPos.x;
+  const dy = toPos.y - fromPos.y;
+
+  function anchor(center: NodePosition, outDx: number, outDy: number): NodePosition {
+    const hw = width / 2;
+    const hh = height / 2;
+    if (Math.abs(outDy) >= Math.abs(outDx) * 0.85) {
+      return { x: center.x, y: center.y + (outDy >= 0 ? hh : -hh) };
+    }
+    return { x: center.x + (outDx >= 0 ? hw : -hw), y: center.y };
+  }
+
+  return {
+    from: anchor(fromPos, dx, dy),
+    to: anchor(toPos, -dx, -dy),
+  };
+}
+
+/** Smooth bezier between two anchor points (updates as nodes move). */
+export function edgePathBetween(anchors: EdgeAnchors): string {
+  const { from, to } = anchors;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dist = Math.hypot(dx, dy);
+  const curve = Math.min(Math.max(dist * 0.38, 28), 140);
+
+  if (Math.abs(dy) >= Math.abs(dx) * 0.85) {
+    const c1y = from.y + (dy >= 0 ? curve : -curve);
+    const c2y = to.y + (dy >= 0 ? -curve : curve);
+    return `M ${from.x} ${from.y} C ${from.x} ${c1y}, ${to.x} ${c2y}, ${to.x} ${to.y}`;
+  }
+
+  const c1x = from.x + (dx >= 0 ? curve : -curve);
+  const c2x = to.x + (dx >= 0 ? -curve : curve);
+  return `M ${from.x} ${from.y} C ${c1x} ${from.y}, ${c2x} ${to.y}, ${to.x} ${to.y}`;
+}
+
+export function graphViewport(
+  positions: Map<string, NodePosition>,
+  minCanvasWidth = 720,
+  padding = 56,
+  nodeWidth = CONTROL_NODE_WIDTH,
+  nodeHeight = CONTROL_NODE_HEIGHT,
+): { minX: number; minY: number; width: number; height: number } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const pos of positions.values()) {
+    minX = Math.min(minX, pos.x - nodeWidth / 2);
+    minY = Math.min(minY, pos.y - nodeHeight / 2);
+    maxX = Math.max(maxX, pos.x + nodeWidth / 2);
+    maxY = Math.max(maxY, pos.y + nodeHeight / 2);
+  }
+
+  if (!Number.isFinite(minX)) {
+    return { minX: 0, minY: 0, width: minCanvasWidth, height: 360 };
+  }
+
+  const width = Math.max(maxX - minX + padding * 2, minCanvasWidth);
+  const height = Math.max(maxY - minY + padding * 2, 320);
+  return {
+    minX: minX - padding,
+    minY: minY - padding,
+    width,
+    height,
+  };
+}
+
+export function graphLayoutSignature(graph: ControlGraph, layoutWidth: number): string {
+  return `${layoutWidth}|${graph.nodes.map((n) => n.id).sort().join(',')}`;
+}
+
 export function graphDimensions(
   graph: ControlGraph,
   width: number,

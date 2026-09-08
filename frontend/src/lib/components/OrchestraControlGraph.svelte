@@ -13,11 +13,17 @@
   import {
     buildControlGraph,
     layoutControlGraph,
-    graphDimensions,
+    edgeAnchors,
+    edgePathBetween,
+    graphViewport,
+    graphLayoutSignature,
+    CONTROL_NODE_WIDTH,
+    CONTROL_NODE_HEIGHT,
     CONTROL_EDGE_META,
     type ControlGraphLayers,
     type ControlEdge,
     type ControlNode,
+    type NodePosition,
     DEFAULT_CONTROL_GRAPH_LAYERS,
   } from '$lib/orchestraControlGraph';
 
@@ -39,6 +45,11 @@
   let hoveredEdge = $state<ControlEdge | null>(null);
   let hoveredNode = $state<ControlNode | null>(null);
   let containerWidth = $state(960);
+  let customPositions = $state<Record<string, NodePosition>>({});
+  let layoutSignature = $state('');
+  let svgEl = $state<SVGSVGElement | null>(null);
+  let draggingId = $state<string | null>(null);
+  let dragMoved = $state(false);
 
   const batons = $derived(
     mergeBatonStatus(findBatonsInTree(tree), resolveBatons(orchestrationStatus, tree)),
@@ -53,8 +64,25 @@
   );
 
   const layoutWidth = $derived(Math.max(containerWidth, 720));
-  const positions = $derived(layoutControlGraph(graph, layoutWidth));
-  const dims = $derived(graphDimensions(graph, layoutWidth));
+  const autoPositions = $derived(layoutControlGraph(graph, layoutWidth));
+
+  $effect(() => {
+    const sig = graphLayoutSignature(graph, layoutWidth);
+    if (sig !== layoutSignature) {
+      layoutSignature = sig;
+      customPositions = {};
+    }
+  });
+
+  const displayPositions = $derived.by(() => {
+    const out = new Map(autoPositions);
+    for (const [id, pos] of Object.entries(customPositions)) {
+      out.set(id, pos);
+    }
+    return out;
+  });
+
+  const viewport = $derived(graphViewport(displayPositions, layoutWidth));
 
   function nodeStyle(node: ControlNode): { fill: string; stroke: string } {
     const c = node.canister;
@@ -73,12 +101,73 @@
     return null;
   }
 
-  function edgePath(from: { x: number; y: number }, to: { x: number; y: number }): string {
-    const dy = to.y - from.y;
-    const curve = Math.max(24, Math.abs(dy) * 0.35);
-    const c1y = from.y + curve;
-    const c2y = to.y - curve;
-    return `M ${from.x} ${from.y + 28} C ${from.x} ${c1y}, ${to.x} ${c2y}, ${to.x} ${to.y - 28}`;
+  function clientToSvg(clientX: number, clientY: number): NodePosition {
+    if (!svgEl) return { x: clientX, y: clientY };
+    const pt = svgEl.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const ctm = svgEl.getScreenCTM();
+    if (!ctm) return { x: clientX, y: clientY };
+    const p = pt.matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  }
+
+  function onNodePointerDown(nodeId: string, event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const pos = displayPositions.get(nodeId);
+    if (!pos) return;
+    const svgPoint = clientToSvg(event.clientX, event.clientY);
+    draggingId = nodeId;
+    dragMoved = false;
+    (event.currentTarget as Element).setPointerCapture(event.pointerId);
+    event.preventDefault();
+
+    const offsetX = svgPoint.x - pos.x;
+    const offsetY = svgPoint.y - pos.y;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (draggingId !== nodeId) return;
+      const p = clientToSvg(moveEvent.clientX, moveEvent.clientY);
+      const next = { x: p.x - offsetX, y: p.y - offsetY };
+      if (!dragMoved) {
+        const current = displayPositions.get(nodeId);
+        if (current && (Math.abs(next.x - current.x) > 2 || Math.abs(next.y - current.y) > 2)) {
+          dragMoved = true;
+        }
+      }
+      customPositions = { ...customPositions, [nodeId]: next };
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      (event.currentTarget as Element).releasePointerCapture(upEvent.pointerId);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      draggingId = null;
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
+
+  function onNodeClick(node: ControlNode, event: MouseEvent): void {
+    if (dragMoved) {
+      event.preventDefault();
+      dragMoved = false;
+      return;
+    }
+    const href = nodeHref(node);
+    if (!href) return;
+    if (href.startsWith('http')) {
+      window.open(href, '_blank', 'noopener,noreferrer');
+    } else {
+      window.location.assign(href);
+    }
+  }
+
+  function resetLayout(): void {
+    customPositions = {};
   }
 
   function toggleLayer(key: keyof ControlGraphLayers): void {
@@ -95,7 +184,17 @@
     </div>
   {:else}
     <div class="mb-4 rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5 space-y-2">
-      <div class="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Edge layers</div>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Edge layers</div>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50"
+          onclick={resetLayout}
+          disabled={Object.keys(customPositions).length === 0}
+        >
+          Reset layout
+        </button>
+      </div>
       <div class="flex flex-wrap gap-2">
         <button
           type="button"
@@ -150,12 +249,13 @@
       </div>
     {/if}
 
-    <div class="overflow-auto rounded-lg border border-[var(--color-border-primary)] bg-white">
+    <div class="overflow-auto rounded-lg border border-[var(--color-border-primary)] bg-white max-h-[70vh]">
       <svg
-        width={dims.width}
-        height={dims.height}
-        viewBox="0 0 {dims.width} {dims.height}"
-        class="min-w-full"
+        bind:this={svgEl}
+        width="100%"
+        height={viewport.height}
+        viewBox="{viewport.minX} {viewport.minY} {viewport.width} {viewport.height}"
+        class="min-w-full touch-none select-none"
         role="img"
         aria-label="Orchestra control graph"
       >
@@ -175,19 +275,20 @@
         </defs>
 
         {#each graph.edges as edge (edge.id)}
-          {@const from = positions.get(edge.from)}
-          {@const to = positions.get(edge.to)}
+          {@const fromPos = displayPositions.get(edge.from)}
+          {@const toPos = displayPositions.get(edge.to)}
           {@const meta = CONTROL_EDGE_META[edge.type]}
-          {#if from && to}
+          {#if fromPos && toPos}
+            {@const anchors = edgeAnchors(fromPos, toPos, CONTROL_NODE_WIDTH, CONTROL_NODE_HEIGHT)}
             <path
-              d={edgePath(from, to)}
+              d={edgePathBetween(anchors)}
               fill="none"
               stroke={meta.stroke}
               stroke-width={hoveredEdge?.id === edge.id ? (meta.width ?? 1.5) + 1 : (meta.width ?? 1.5)}
               stroke-dasharray={meta.dash}
               marker-end="url(#arrow-{edge.type})"
               opacity={hoveredEdge && hoveredEdge.id !== edge.id ? 0.25 : 0.85}
-              class="transition-opacity"
+              class="transition-opacity pointer-events-stroke"
               onmouseenter={() => (hoveredEdge = edge)}
               onmouseleave={() => (hoveredEdge = null)}
             >
@@ -197,39 +298,30 @@
         {/each}
 
         {#each graph.nodes as node (node.id)}
-          {@const pos = positions.get(node.id)}
+          {@const pos = displayPositions.get(node.id)}
           {#if pos}
-            {@const href = nodeHref(node)}
-            {@const w = 148}
-            {@const h = 56}
             {@const style = nodeStyle(node)}
+            {@const isDragging = draggingId === node.id}
             <g
-              transform="translate({pos.x - w / 2}, {pos.y - h / 2})"
+              transform="translate({pos.x - CONTROL_NODE_WIDTH / 2}, {pos.y - CONTROL_NODE_HEIGHT / 2})"
+              class="cursor-grab {isDragging ? 'cursor-grabbing' : ''}"
+              onpointerdown={(e) => onNodePointerDown(node.id, e)}
+              onclick={(e) => onNodeClick(node, e)}
               onmouseenter={() => (hoveredNode = node)}
               onmouseleave={() => (hoveredNode = null)}
+              role="button"
+              tabindex="0"
+              aria-label="{node.label} node"
             >
-              {#if href}
-                <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer">
-                  <rect
-                    width={w}
-                    height={h}
-                    rx="8"
-                    fill={style.fill}
-                    stroke={style.stroke}
-                    stroke-width="2"
-                    opacity={hoveredEdge && !graph.edges.some((e) => (e.from === node.id || e.to === node.id) && e.id === hoveredEdge.id) ? 0.55 : 1}
-                  />
-                </a>
-              {:else}
-                <rect
-                  width={w}
-                  height={h}
-                  rx="8"
-                  fill={style.fill}
-                  stroke={style.stroke}
-                  stroke-width="2"
-                />
-              {/if}
+              <rect
+                width={CONTROL_NODE_WIDTH}
+                height={CONTROL_NODE_HEIGHT}
+                rx="8"
+                fill={style.fill}
+                stroke={isDragging ? '#334155' : style.stroke}
+                stroke-width={isDragging ? 2.5 : 2}
+                opacity={hoveredEdge && !graph.edges.some((e) => (e.from === node.id || e.to === node.id) && e.id === hoveredEdge.id) ? 0.55 : 1}
+              />
               <text x="10" y="22" fill="#1e293b" class="text-[11px] font-semibold pointer-events-none">
                 {node.label.length > 18 ? `${node.label.slice(0, 16)}…` : node.label}
               </text>
@@ -260,7 +352,7 @@
           {/if}
         </span>
       {:else}
-        <span>Hover an edge or node for authority details. Scroll to pan wide graphs.</span>
+        <span>Drag nodes to untangle the graph. Click a node to open its console. Use Reset layout to snap back.</span>
       {/if}
     </div>
   {/if}

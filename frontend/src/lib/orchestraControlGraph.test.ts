@@ -4,6 +4,9 @@ import type { Tree } from './api.ts';
 import {
   buildControlGraph,
   DEFAULT_CONTROL_GRAPH_LAYERS,
+  edgeAnchors,
+  edgePathBetween,
+  graphViewport,
   layoutControlGraph,
 } from './orchestraControlGraph.ts';
 
@@ -161,4 +164,29 @@ test('layoutControlGraph assigns positions by rank', () => {
   const frontend = positions.get(`canister:${REALM_FE}`);
   assert.ok(multisig && frontend);
   assert.ok(multisig.y < frontend.y);
+});
+
+test('edgeAnchors connect on the facing box sides', () => {
+  const anchors = edgeAnchors({ x: 100, y: 100 }, { x: 100, y: 220 });
+  assert.ok(anchors.from.y < anchors.to.y);
+  assert.equal(anchors.from.x, anchors.to.x);
+});
+
+test('edgePathBetween returns a cubic path', () => {
+  const path = edgePathBetween({
+    from: { x: 10, y: 10 },
+    to: { x: 10, y: 100 },
+  });
+  assert.match(path, /^M /);
+  assert.match(path, / C /);
+});
+
+test('graphViewport expands when nodes are spread out', () => {
+  const positions = new Map([
+    ['a', { x: 0, y: 0 }],
+    ['b', { x: 500, y: 400 }],
+  ]);
+  const vp = graphViewport(positions, 720);
+  assert.ok(vp.width >= 720);
+  assert.ok(vp.height >= 320);
 });
