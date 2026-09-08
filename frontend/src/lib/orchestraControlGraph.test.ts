@@ -6,9 +6,11 @@ import {
   DEFAULT_CONTROL_GRAPH_LAYERS,
   edgeAnchors,
   edgePathBetween,
+  filterControlGraph,
   frozenGraphViewport,
   graphViewport,
   layoutControlGraph,
+  standVisibilityKey,
 } from './orchestraControlGraph.ts';
 
 const CASALS = 'casals-backend-principal';
@@ -201,4 +203,29 @@ test('frozenGraphViewport keeps a fixed origin while dragging', () => {
   assert.equal(frozen.minX, 0);
   assert.equal(frozen.minY, 0);
   assert.ok(frozen.width >= 720);
+});
+
+test('filterControlGraph hides canisters in a disabled section', () => {
+  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const filtered = filterControlGraph(full, {
+    hiddenSections: new Set(['Deployments']),
+    hiddenStands: new Set(),
+    hiddenCanisters: new Set(),
+  });
+  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_BE));
+  assert.ok(filtered.nodes.some((n) => n.canister?.canister_id === CASALS));
+});
+
+test('filterControlGraph hides a single canister', () => {
+  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const filtered = filterControlGraph(full, {
+    hiddenSections: new Set(),
+    hiddenStands: new Set(),
+    hiddenCanisters: new Set([REALM_FE]),
+  });
+  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_FE));
+});
+
+test('standVisibilityKey joins section and stand', () => {
+  assert.equal(standVisibilityKey('Deployments', 'testrealm7'), 'Deployments|testrealm7');
 });
