@@ -61,6 +61,7 @@
   import FormModal from '$lib/components/FormModal.svelte';
   import CreateCanisterModal from '$lib/components/CreateCanisterModal.svelte';
   import OrchestraDiagram from '$lib/components/OrchestraDiagram.svelte';
+  import OrchestraControlGraph from '$lib/components/OrchestraControlGraph.svelte';
   import CanisterGovernanceMeta from '$lib/components/CanisterGovernanceMeta.svelte';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
   import CanisterControllersBadge from '$lib/components/CanisterControllersBadge.svelte';
@@ -81,7 +82,7 @@
   import { canTagCanister } from '$lib/commanderPermissions';
   import type { Field } from '$lib/components/FormModal.svelte';
 
-  type OrchestraView = 'tree' | 'diagram';
+  type OrchestraView = 'tree' | 'diagram' | 'control';
 
   type Values = Record<string, string | boolean>;
 
@@ -930,7 +931,18 @@
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 0h12a2.25 2.25 0 012.25 2.25v12A2.25 2.25 0 0118 18H6a2.25 2.25 0 01-2.25-2.25V6zM8.25 6.75v10.5M15.75 6.75v10.5" />
             </svg>
-            Diagram
+            Topology
+          </button>
+          <button
+            type="button"
+            class="px-2.5 py-2 text-xs font-medium inline-flex items-center gap-1 {orchestraView === 'control' ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
+            aria-pressed={orchestraView === 'control'}
+            onclick={() => (orchestraView = 'control')}
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+            Control
           </button>
         </div>
         <!-- Divider + Overview toggle -->
@@ -1030,6 +1042,15 @@
         <OrchestraDiagram
           tree={filteredTree}
           orchestrationStatus={orchStatus}
+        />
+      </div>
+    {:else if orchestraView === 'control'}
+      <div class="card p-5">
+        <OrchestraControlGraph
+          tree={filteredTree}
+          orchestrationStatus={orchStatus}
+          casalsBackendId={backendCanisterId()}
+          principalLabel={(p) => principalLabels.get(p)?.display ?? shortPrincipal(p)}
         />
       </div>
     {/if}
