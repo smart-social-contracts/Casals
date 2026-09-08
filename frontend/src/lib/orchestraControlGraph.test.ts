@@ -7,8 +7,10 @@ import {
   edgeAnchors,
   edgePathBetween,
   filterControlGraph,
+  filterControlGraphByEdgeTypes,
   frozenGraphViewport,
   graphViewport,
+  isUphillOrchestraIcEdge,
   layoutControlGraph,
   standVisibilityKey,
 } from './orchestraControlGraph.ts';
@@ -129,6 +131,45 @@ test('buildControlGraph emits IC controller and commander edges', () => {
   );
 });
 
+test('buildControlGraph omits uphill IC edges between orchestra tiers', () => {
+  const tree = fixtureTree();
+  const multisig = tree.sections[0].stands[0].canisters.find((c) => c.name === 'multisig');
+  assert.ok(multisig);
+  multisig.controllers = [MULTISIG, CASALS];
+
+  const graph = buildControlGraph(tree, null, [], { casalsBackendId: CASALS });
+
+  assert.ok(
+    graph.edges.some(
+      (e) => e.type === 'ic_controller' && e.from === `canister:${MULTISIG}` && e.to === `canister:${CASALS}`,
+    ),
+  );
+  assert.ok(
+    !graph.edges.some(
+      (e) => e.type === 'ic_controller' && e.from === `canister:${CASALS}` && e.to === `canister:${MULTISIG}`,
+    ),
+  );
+});
+
+test('isUphillOrchestraIcEdge detects casals to multisig', () => {
+  const from = {
+    id: 'canister:casals',
+    kind: 'canister' as const,
+    label: 'casals-backend',
+    rank: 1,
+    canister: { name: 'casals-backend', canister_id: 'casals', kind: 'backend' },
+  };
+  const to = {
+    id: 'canister:multisig',
+    kind: 'canister' as const,
+    label: 'multisig',
+    rank: 0,
+    canister: { name: 'multisig', canister_id: 'multisig', kind: 'backend', wasm_key: 'orchestration-multisig' },
+  };
+  assert.equal(isUphillOrchestraIcEdge(from, to), true);
+  assert.equal(isUphillOrchestraIcEdge(to, from), false);
+});
+
 test('buildControlGraph adds baton edges from orchestration status', () => {
   const graph = buildControlGraph(
     fixtureTree(),
@@ -154,10 +195,47 @@ test('buildControlGraph adds baton edges from orchestration status', () => {
 });
 
 test('buildControlGraph respects layer toggles', () => {
-  const graph = buildControlGraph(fixtureTree(), null, [], {
-    layers: { icControllers: false, commanders: true, baton: false },
+  const full = buildControlGraph(fixtureTree(), null, [], {
+    layers: DEFAULT_CONTROL_GRAPH_LAYERS,
+  });
+  const graph = filterControlGraphByEdgeTypes(full, {
+    ic_controller: false,
+    casals_commander: true,
+    baton_top_commander: false,
+    baton_commander: false,
+    baton_manages: false,
+    baton_ic_control: false,
   });
   assert.equal(graph.edges.every((e) => e.type === 'casals_commander'), true);
+});
+
+test('filterControlGraphByEdgeTypes can hide a single edge type', () => {
+  const full = buildControlGraph(
+    fixtureTree(),
+    {
+      ok: true,
+      batons: [
+        {
+          name: 'testrealm7-baton',
+          canister_id: BATON,
+          config: { top_commander: CASALS },
+          managed_canisters: [REALM_BE, REALM_FE],
+        },
+      ],
+    },
+    [{ name: 'testrealm7-baton', canister_id: BATON, managed_canisters: [REALM_BE, REALM_FE] }],
+    { casalsBackendId: CASALS },
+  );
+  const graph = filterControlGraphByEdgeTypes(full, {
+    ic_controller: true,
+    casals_commander: true,
+    baton_top_commander: true,
+    baton_commander: true,
+    baton_manages: true,
+    baton_ic_control: false,
+  });
+  assert.ok(full.edges.some((e) => e.type === 'baton_ic_control'));
+  assert.ok(!graph.edges.some((e) => e.type === 'baton_ic_control'));
 });
 
 test('layoutControlGraph assigns positions by rank', () => {

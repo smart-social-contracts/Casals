@@ -17,15 +17,21 @@
     frozenGraphViewport,
     graphLayoutSignature,
     filterControlGraph,
+    filterControlGraphByEdgeTypes,
+    layerGroupEnabled,
+    setLayerGroupVisibility,
     standVisibilityKey,
     CONTROL_NODE_WIDTH,
     CONTROL_NODE_HEIGHT,
     CONTROL_EDGE_META,
+    type ControlEdgeType,
     type ControlGraphLayers,
     type ControlEdge,
     type ControlNode,
+    type ControlEdgeTypeVisibility,
     type NodePosition,
     DEFAULT_CONTROL_GRAPH_LAYERS,
+    DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY,
   } from '$lib/orchestraControlGraph';
 
   interface Props {
@@ -42,7 +48,7 @@
     principalLabel,
   }: Props = $props();
 
-  let layers = $state<ControlGraphLayers>({ ...DEFAULT_CONTROL_GRAPH_LAYERS });
+  let edgeTypes = $state<ControlEdgeTypeVisibility>({ ...DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY });
   let hoveredEdge = $state<ControlEdge | null>(null);
   let hoveredNode = $state<ControlNode | null>(null);
   let containerWidth = $state(960);
@@ -72,18 +78,21 @@
 
   const fullGraph = $derived(
     buildControlGraph(tree, orchestrationStatus, batons, {
-      layers,
+      layers: DEFAULT_CONTROL_GRAPH_LAYERS,
       casalsBackendId,
       principalLabel,
     }),
   );
 
   const graph = $derived(
-    filterControlGraph(fullGraph, {
-      hiddenSections,
-      hiddenStands,
-      hiddenCanisters,
-    }),
+    filterControlGraph(
+      filterControlGraphByEdgeTypes(fullGraph, edgeTypes),
+      {
+        hiddenSections,
+        hiddenStands,
+        hiddenCanisters,
+      },
+    ),
   );
 
   const layoutWidth = $derived(
@@ -283,7 +292,12 @@
   }
 
   function toggleLayer(key: keyof ControlGraphLayers): void {
-    layers = { ...layers, [key]: !layers[key] };
+    const enabled = layerGroupEnabled(edgeTypes, key);
+    edgeTypes = setLayerGroupVisibility(edgeTypes, key, !enabled);
+  }
+
+  function toggleEdgeType(type: ControlEdgeType): void {
+    edgeTypes = { ...edgeTypes, [type]: !edgeTypes[type] };
   }
 </script>
 
@@ -332,7 +346,7 @@
         <button
           type="button"
           class="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors
-                 {layers.icControllers ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-primary-600 border-primary-200'}"
+                 {layerGroupEnabled(edgeTypes, 'icControllers') ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-primary-600 border-primary-200'}"
           onclick={() => toggleLayer('icControllers')}
         >
           IC controllers
@@ -340,7 +354,7 @@
         <button
           type="button"
           class="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors
-                 {layers.commanders ? 'bg-slate-600 text-white border-slate-600' : 'bg-white text-primary-600 border-primary-200'}"
+                 {layerGroupEnabled(edgeTypes, 'commanders') ? 'bg-slate-600 text-white border-slate-600' : 'bg-white text-primary-600 border-primary-200'}"
           onclick={() => toggleLayer('commanders')}
         >
           Commanders
@@ -348,16 +362,26 @@
         <button
           type="button"
           class="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors
-                 {layers.baton ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-primary-600 border-primary-200'}"
+                 {layerGroupEnabled(edgeTypes, 'baton') ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-primary-600 border-primary-200'}"
           onclick={() => toggleLayer('baton')}
         >
           Baton
         </button>
       </div>
-      <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-primary-600">
+      <div class="flex flex-wrap gap-2 text-[11px]">
         {#each Object.entries(CONTROL_EDGE_META) as [type, meta] (type)}
-          <span class="inline-flex items-center gap-1.5" title={meta.tooltip}>
-            <svg width="28" height="8" aria-hidden="true">
+          {@const enabled = edgeTypes[type as ControlEdgeType]}
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors
+                   {enabled
+              ? 'bg-white border-primary-200 text-primary-700 hover:bg-primary-50'
+              : 'bg-primary-100/80 border-primary-100 text-primary-400 line-through'}"
+            title="{enabled ? 'Hide' : 'Show'} {meta.tooltip}"
+            aria-pressed={enabled}
+            onclick={() => toggleEdgeType(type as ControlEdgeType)}
+          >
+            <svg width="28" height="8" aria-hidden="true" class="{enabled ? '' : 'opacity-40'}">
               <line
                 x1="0"
                 y1="4"
@@ -369,14 +393,18 @@
               />
             </svg>
             {meta.label}
-          </span>
+          </button>
         {/each}
       </div>
     </div>
 
     {#if graph.nodes.length === 0}
       <div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-        All sections, stands, or canisters are hidden — turn something on below or use Show all.
+        {#if fullGraph.nodes.length === 0}
+          No control relationships to graph — enable an edge type or refresh orchestration status.
+        {:else}
+          Nothing visible — turn on edge types above and/or use Show all for sections, stands, and canisters.
+        {/if}
       </div>
     {/if}
 

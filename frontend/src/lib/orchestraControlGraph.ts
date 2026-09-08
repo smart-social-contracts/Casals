@@ -181,6 +181,16 @@ function computeCanisterRank(c: Canister): number {
   return 3;
 }
 
+/**
+ * IC controller lists are symmetric co-control — a lower tier (e.g. casals-backend)
+ * may appear on multisig's controllers. For the governance graph, only show downhill
+ * edges along multisig → casals → baton → realm canisters.
+ */
+export function isUphillOrchestraIcEdge(from: ControlNode, to: ControlNode): boolean {
+  if (from.kind !== 'canister' || to.kind !== 'canister') return false;
+  return from.rank > to.rank;
+}
+
 function standCommanderTarget(stand: Stand): string | null {
   const backends = stand.canisters.filter(
     (c) =>
@@ -193,11 +203,16 @@ function standCommanderTarget(stand: Stand): string | null {
   return named?.canister_id ?? backends[0]?.canister_id ?? null;
 }
 
-function findCanisterIdByPrincipal(tree: Tree, principal: string): string | null {
+function findCanisterByPrincipal(
+  tree: Tree,
+  principal: string,
+): { canister: Canister; section: string; stand: string } | null {
   for (const sec of tree.sections) {
     for (const stand of sec.stands) {
       for (const c of stand.canisters) {
-        if (c.canister_id === principal) return c.canister_id;
+        if (c.canister_id === principal) {
+          return { canister: c, section: sec.name, stand: stand.name };
+        }
       }
     }
   }
@@ -226,6 +241,16 @@ export function buildControlGraph(
 
   function addEdge(type: ControlEdgeType, from: string, to: string, label?: string): void {
     if (!from || !to || from === to) return;
+    const fromNode = nodes.get(from);
+    const toNode = nodes.get(to);
+    if (
+      (type === 'ic_controller' || type === 'baton_ic_control') &&
+      fromNode &&
+      toNode &&
+      isUphillOrchestraIcEdge(fromNode, toNode)
+    ) {
+      return;
+    }
     const key = `${type}|${from}|${to}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
@@ -250,8 +275,10 @@ export function buildControlGraph(
   }
 
   function resolveNodeId(principal: string): string {
-    const asCanister = findCanisterIdByPrincipal(tree, principal);
-    if (asCanister) return canisterNodeId(asCanister);
+    const found = findCanisterByPrincipal(tree, principal);
+    if (found) {
+      return ensureCanisterNode(found.canister, found.section, found.stand);
+    }
     const id = principalNodeId(principal);
     if (!nodes.has(id)) {
       nodes.set(id, {
@@ -534,6 +561,57 @@ export function frozenGraphViewport(
 
 export function graphLayoutSignature(graph: ControlGraph, layoutWidth: number): string {
   return `${layoutWidth}|${graph.nodes.map((n) => n.id).sort().join(',')}`;
+}
+
+export const CONTROL_EDGE_TYPE_GROUPS: Record<keyof ControlGraphLayers, ControlEdgeType[]> = {
+  icControllers: ['ic_controller', 'baton_ic_control'],
+  commanders: ['casals_commander'],
+  baton: ['baton_top_commander', 'baton_commander', 'baton_manages'],
+};
+
+export type ControlEdgeTypeVisibility = Record<ControlEdgeType, boolean>;
+
+export const DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY: ControlEdgeTypeVisibility = {
+  ic_controller: true,
+  casals_commander: true,
+  baton_top_commander: true,
+  baton_commander: true,
+  baton_manages: true,
+  baton_ic_control: true,
+};
+
+export function layerGroupEnabled(
+  types: ControlEdgeTypeVisibility,
+  group: keyof ControlGraphLayers,
+): boolean {
+  return CONTROL_EDGE_TYPE_GROUPS[group].some((t) => types[t]);
+}
+
+export function setLayerGroupVisibility(
+  types: ControlEdgeTypeVisibility,
+  group: keyof ControlGraphLayers,
+  enabled: boolean,
+): ControlEdgeTypeVisibility {
+  const next = { ...types };
+  for (const t of CONTROL_EDGE_TYPE_GROUPS[group]) {
+    next[t] = enabled;
+  }
+  return next;
+}
+
+/** Hide edges whose type is toggled off; drop orphan nodes. */
+export function filterControlGraphByEdgeTypes(
+  graph: ControlGraph,
+  types: ControlEdgeTypeVisibility,
+): ControlGraph {
+  const edges = graph.edges.filter((e) => types[e.type]);
+  const activeNodeIds = new Set<string>();
+  for (const e of edges) {
+    activeNodeIds.add(e.from);
+    activeNodeIds.add(e.to);
+  }
+  const nodes = graph.nodes.filter((n) => activeNodeIds.has(n.id));
+  return { nodes, edges, warnings: graph.warnings };
 }
 
 export function standVisibilityKey(section: string, stand: string): string {
