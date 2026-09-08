@@ -66,6 +66,8 @@ class Section(Entity, TimestampedMixin):
     # Per-action N-of-M approval policies for orchestration (JSON object keyed by
     # orchestration.* permission keys; each value is {threshold, eligible[], required[]}).
     orchestration_policies_json = String(max_length=8192, default="")
+    # Optional declarative baton topology for stands in this section (JSON object).
+    stand_template_json = String(max_length=8192, default="")
     stands = OneToMany("Stand", "section")
     wasms = OneToMany("AuthorizedWasm", "section")
 

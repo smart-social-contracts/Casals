@@ -6,6 +6,7 @@ import json
 from auth import _normalize_permissions, _parse_permissions
 from commanders import commanders_view, legacy_commander_principal, legacy_permissions
 from orchestration_governance import parse_orchestration_policies
+from stand_template import parse_stand_template
 from util import canister_url
 from wasm_types import infer_wasm_type, wasm_type_tags
 
@@ -93,6 +94,9 @@ def _section_view(sec) -> dict:
         "subnet_type": sec.subnet_type or "",
         "orchestration_policies": parse_orchestration_policies(
             getattr(sec, "orchestration_policies_json", "") or ""
+        ),
+        "stand_template": parse_stand_template(
+            getattr(sec, "stand_template_json", "") or ""
         ),
         "stands": [_stand_view(d) for d in (sec.stands or [])],
     }

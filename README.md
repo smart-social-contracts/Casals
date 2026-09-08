@@ -178,6 +178,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | query | `get_orchestration_policies` / `list_governance_requests` | N-of-M rules + pending approvals |
 | update | `create_section` / `create_stand` / `create_canister` | structure |
 | update | `deploy_sheet` | idempotently deploy the whole orchestra |
+| update | `orchestration_release_stand` | apply a section `stand_template` baton topology for one stand |
 | update | `set_commander` / `set_permissions` | commander principals + permission grants |
 | update | `set_orchestration_policies` | per-section M-of-N approval rules (controller) |
 | update | `approve_governance_request` / `reject_governance_request` | orchestration approval workflow |

@@ -82,6 +82,7 @@ from orchestration_bridge import (
     _orchestration_status_gen,
     _prepare_asset_provision_gen,
     _prepare_managed_upgrade_gen,
+    _release_stand_gen,
 )
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
@@ -206,6 +207,7 @@ from governance_requests import (
 from orchestration_governance import (
     ACTION_ORCHESTRATION_BATON_HAND_OFF,
     ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN,
+    ACTION_ORCHESTRATION_STAND_RELEASE,
     ORCHESTRATION_ACTIONS,
     ORCHESTRATION_ACTION_LABELS,
     STATUS_EXECUTED,
@@ -217,6 +219,13 @@ from orchestration_governance import (
     quorum_met,
     request_payload,
     upgrade_permission_for_targets,
+)
+from stand_template import (
+    parse_stand_template,
+    require_stand_release_template,
+    resolve_stand_template_for_stand,
+    stand_template_from_section,
+    stand_template_json_to_persist,
 )
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from subnets import (
@@ -2156,6 +2165,9 @@ def deploy_sheet(args: text) -> Async[text]:
             # (Existing canisters aren't moved; this only affects new canisters.)
             sec.subnet = (sec_spec.get("subnet") or "").strip()
             sec.subnet_type = (sec_spec.get("subnet_type") or "").strip()
+            persist_tpl = stand_template_json_to_persist(sec_spec)
+            if persist_tpl is not None:
+                sec.stand_template_json = persist_tpl
             try:
                 assert_subnet_allowed(sec.subnet, sec.subnet_type)
             except Exception as e:
@@ -3097,6 +3109,19 @@ def _hand_to_baton_impl_gen(target: str, baton_name: str) -> Async[str]:
     return _ok(**result)
 
 
+def _release_stand_impl_gen(stand_name: str) -> Async[str]:
+    list(Stand.instances())
+    dk = Stand[stand_name.strip()]
+    if dk is None:
+        return _err(f"unknown stand '{stand_name}'")
+    try:
+        resolved = require_stand_release_template(dk)
+    except ValueError as e:
+        return _err(str(e))
+    result = yield from _release_stand_gen(dk, resolved)
+    return _ok(**result)
+
+
 def _orchestration_execute_impl_gen(params: dict) -> Async[str]:
     result = yield from _execute_baton_action_gen(
         params["action_id"],
@@ -3393,6 +3418,34 @@ def orchestration_configure_baton(args: text) -> Async[text]:
             approval_policy=params.get("approval_policy"),
         )
         return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def orchestration_release_stand(args: text) -> Async[text]:
+    """Apply the section stand_template baton topology for one stand.
+
+    Args (JSON): {"stand": "<stand name>"}
+    """
+    try:
+        params = json.loads(args)
+        stand_name = (params.get("stand") or "").strip()
+        if not stand_name:
+            return _err("expected 'stand'")
+        list(Stand.instances())
+        dk = Stand[stand_name]
+        if dk is None:
+            return _err(f"unknown stand '{stand_name}'")
+        _require_commander(dk, ACTION_ORCHESTRATION_STAND_RELEASE)
+        section = dk.section
+        return (yield from orchestration_governance_gate(
+            section,
+            ACTION_ORCHESTRATION_STAND_RELEASE,
+            params,
+            lambda: _release_stand_impl_gen(stand_name),
+            permission_grant=_stand_permissions_for(dk),
+        ))
     except Exception as e:
         return _err(str(e))
 

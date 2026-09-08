@@ -23,11 +23,12 @@ from lifecycle import (
     _parse_extra_controller_principals,
     _render_canister_ids_js,
     _resolve_authorized_wasm,
+    _provision_canister,
     _governance_multisig_id,
     _persist_ic_controllers,
     _settings,
 )
-from models import Canister
+from models import Canister, CanisterKind
 from util import to_hex as _to_hex
 
 # Baton template key in the authorized WASM catalog / sheet.
@@ -575,6 +576,112 @@ def _baton_in_stand_optional(stand):
         if _is_baton_canister(c) and c.canister_id:
             return c
     return None
+
+
+def _norm_principal(p: str) -> str:
+    return (p or "").strip().lower()
+
+
+def _target_handed_off_gen(baton_id: str, target_cid: str):
+    """Generator: True when target is already under Baton control."""
+    current = yield from _fetch_canister_controllers(target_cid)
+    if baton_id not in current:
+        return False
+    managed_raw = yield from _baton_query(baton_id, "list_managed_canisters")
+    managed = _parse_baton_json_reply(managed_raw) or []
+    return target_cid in managed
+
+
+def _baton_configure_up_to_date_gen(baton_st, commanders, approval_policy):
+    """Generator: True when commanders and policy already match."""
+    baton_id = baton_st.canister_id
+    desired_commanders = [_norm_principal(p) for p in (commanders or []) if p]
+    cmd_raw = yield from _baton_query(baton_id, "list_commanders")
+    cmd_data = _parse_baton_json_reply(cmd_raw) or []
+    existing = {
+        _norm_principal(c.get("principal"))
+        for c in cmd_data
+        if isinstance(c, dict) and c.get("principal")
+    }
+    if set(desired_commanders) - existing:
+        return False
+    if approval_policy is None:
+        return True
+    cfg_raw = yield from _baton_query(baton_id, "get_config")
+    cfg = _parse_baton_json_reply(cfg_raw) or {}
+    current_policy = cfg.get("upgrade_approval_policy") if isinstance(cfg, dict) else None
+    if not isinstance(current_policy, dict):
+        return False
+    if int(current_policy.get("threshold") or 0) != int(approval_policy.get("threshold") or 0):
+        return False
+    for key in ("eligible", "required"):
+        want = [_norm_principal(p) for p in (approval_policy.get(key) or [])]
+        have = [_norm_principal(p) for p in (current_policy.get(key) or [])]
+        if want != have:
+            return False
+    return True
+
+
+def _release_stand_gen(stand, resolved: dict):
+    """Generator: apply a resolved stand template (baton create, hand-off, configure)."""
+    from stand_template import baton_install_arg_bytes, canister_name_in_stand
+
+    baton_name = resolved["baton_name"]
+    wasm_key = resolved["wasm_key"]
+    section = stand.section
+
+    list(Canister.instances())
+    baton_st = Canister[baton_name]
+    baton_created = False
+    if baton_st is None or not (baton_st.canister_id or "").strip():
+        w = _resolve_authorized_wasm(wasm_key, section)
+        init_arg = baton_install_arg_bytes(resolved.get("install_arg"), w)
+        baton_st = yield from _provision_canister(
+            stand, baton_name, CanisterKind.BACKEND, w, init_arg,
+        )
+        baton_created = True
+    elif baton_st.stand is not stand:
+        raise Exception(f"baton canister '{baton_name}' belongs to another stand")
+
+    handed_off = []
+    skipped_targets = []
+    for target_tpl in resolved.get("handoff_targets") or []:
+        target_name = canister_name_in_stand(stand, target_tpl)
+        if not target_name:
+            skipped_targets.append(target_tpl)
+            continue
+        target_st = Canister[target_name]
+        already = yield from _target_handed_off_gen(baton_st.canister_id, target_st.canister_id)
+        if already:
+            skipped_targets.append(target_name)
+            continue
+        yield from _hand_to_baton_gen(target_name, baton_name)
+        handed_off.append(target_name)
+
+    configure_ran = False
+    commanders = resolved.get("commanders") or []
+    approval_policy = resolved.get("approval_policy")
+    if commanders or approval_policy is not None:
+        up_to_date = yield from _baton_configure_up_to_date_gen(
+            baton_st, commanders, approval_policy,
+        )
+        if not up_to_date:
+            yield from _configure_baton_gen(
+                baton_st,
+                commanders=commanders,
+                approval_policy=approval_policy,
+            )
+            configure_ran = True
+
+    return {
+        "stand": stand.name,
+        "baton": baton_name,
+        "baton_id": baton_st.canister_id,
+        "baton_created": baton_created,
+        "handed_off": handed_off,
+        "skipped_targets": skipped_targets,
+        "configure_ran": configure_ran,
+    }
 
 
 def status_dict_from_baton_balance(data: object) -> dict | None:
