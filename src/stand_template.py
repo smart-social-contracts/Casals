@@ -70,7 +70,7 @@ def require_stand_release_template(stand) -> dict[str, Any]:
 
 
 def _resolve_top_commander_ref(ref: str, stand) -> str:
-    ref = (ref or "").strip()
+    ref = render_stand_placeholder((ref or "").strip(), stand.name)
     if not ref or ref == "$self":
         return ic.id().to_str()
     if ref == "$casals":
@@ -163,6 +163,15 @@ def resolve_stand_template_for_stand(stand, template: dict[str, Any]) -> dict[st
     install_arg = baton.get("install_arg")
     if install_arg is None:
         install_arg = {"top_commander": "$self"}
+    elif isinstance(install_arg, dict) and install_arg.get("top_commander"):
+        # Resolve here rather than leaving it to the installer's candid
+        # encoding, which knows $self and $canister: but not $casals or
+        # {stand}. One vocabulary across the template beats two dialects that
+        # only disagree once a real deploy encodes the argument.
+        install_arg = dict(install_arg)
+        install_arg["top_commander"] = _resolve_top_commander_ref(
+            str(install_arg["top_commander"]), stand,
+        )
     return {
         "baton_name": baton_name,
         "wasm_key": wasm_key,

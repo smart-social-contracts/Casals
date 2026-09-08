@@ -96,6 +96,37 @@ def test_parse_and_resolve_stand_template(monkeypatch):
     assert resolved["approval_policy"]["required"] == [CASALS_ID, BACKEND_ID]
 
 
+def test_install_arg_top_commander_is_resolved_to_a_principal(monkeypatch):
+    """install_arg is candid-encoded as a principal, so it cannot carry a ref.
+
+    The encoder downstream understands $self and $canister: but not $casals or
+    {stand}, and it only rejects them once a real deploy encodes the argument.
+    """
+    stand, backend, frontend, baton = _stand("gamma")
+    monkeypatch.setattr(
+        stand_template,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: CASALS_ID)),
+    )
+    monkeypatch.setattr(stand_template, "Canister", MagicMock(__getitem__=lambda _s, key: {
+        "gamma-backend": backend,
+    }.get(key)))
+
+    def resolved_for(install_arg):
+        template = {"baton": {
+            "name": "{stand}-baton",
+            "wasm_key": "orchestration-baton",
+            "install_arg": install_arg,
+        }}
+        out = stand_template.resolve_stand_template_for_stand(stand, template)
+        return out["install_arg"]["top_commander"]
+
+    assert resolved_for({"top_commander": "$casals"}) == CASALS_ID
+    assert resolved_for({"top_commander": "$self"}) == CASALS_ID
+    assert resolved_for({"top_commander": "$canister:{stand}-backend"}) == BACKEND_ID
+    assert resolved_for({"top_commander": CASALS_ID}) == CASALS_ID
+
+
 def test_resolve_template_principal_canister_and_casals(monkeypatch):
     stand, backend, frontend, baton = _stand("beta")
     monkeypatch.setattr(
