@@ -1,11 +1,10 @@
 <script lang="ts">
   import type { Tree, OrchestrationStatus } from '$lib/api';
-  import { shortPrincipal, canisterLink } from '$lib/api';
+  import { shortPrincipal } from '$lib/api';
   import {
     mergeBatonStatus,
     findBatonsInTree,
     resolveBatons,
-    governanceConsolePath,
     isBatonCanister,
     isMultisigCanister,
     isCasalsCanister,
@@ -50,7 +49,8 @@
   let frozenViewport = $state({ minX: 0, minY: 0, width: 720, height: 400 });
   let svgEl = $state<SVGSVGElement | null>(null);
   let draggingId = $state<string | null>(null);
-  let dragMoved = $state(false);
+
+  const DRAG_THRESHOLD_PX = 5;
 
   const batons = $derived(
     mergeBatonStatus(findBatonsInTree(tree), resolveBatons(orchestrationStatus, tree)),
@@ -99,13 +99,6 @@
     return { fill: '#f5f3ff', stroke: '#ddd6fe' };
   }
 
-  function nodeHref(node: ControlNode): string | null {
-    if (node.canister) {
-      return governanceConsolePath(node.canister) ?? canisterLink(node.canister);
-    }
-    return null;
-  }
-
   function clientToSvg(clientX: number, clientY: number): NodePosition {
     if (!svgEl) return { x: clientX, y: clientY };
     const pt = svgEl.createSVGPoint();
@@ -119,56 +112,50 @@
 
   function onNodePointerDown(nodeId: string, event: PointerEvent): void {
     if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
     const pos = displayPositions.get(nodeId);
     if (!pos) return;
-    const svgPoint = clientToSvg(event.clientX, event.clientY);
-    draggingId = nodeId;
-    dragMoved = false;
-    (event.currentTarget as Element).setPointerCapture(event.pointerId);
-    event.preventDefault();
 
-    const offsetX = svgPoint.x - pos.x;
-    const offsetY = svgPoint.y - pos.y;
+    const pointerId = event.pointerId;
+    const startClient = { x: event.clientX, y: event.clientY };
+    const svgStart = clientToSvg(event.clientX, event.clientY);
+    const offsetX = svgStart.x - pos.x;
+    const offsetY = svgStart.y - pos.y;
+    let dragging = false;
 
-    const onMove = (moveEvent: PointerEvent) => {
-      if (draggingId !== nodeId) return;
-      const p = clientToSvg(moveEvent.clientX, moveEvent.clientY);
-      const next = { x: p.x - offsetX, y: p.y - offsetY };
-      if (!dragMoved) {
-        const current = displayPositions.get(nodeId);
-        if (current && (Math.abs(next.x - current.x) > 2 || Math.abs(next.y - current.y) > 2)) {
-          dragMoved = true;
-        }
-      }
-      customPositions = { ...customPositions, [nodeId]: next };
-    };
-
-    const onUp = (upEvent: PointerEvent) => {
-      (event.currentTarget as Element).releasePointerCapture(upEvent.pointerId);
+    const finish = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
       draggingId = null;
     };
 
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      if (!dragging) {
+        const dx = moveEvent.clientX - startClient.x;
+        const dy = moveEvent.clientY - startClient.y;
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        dragging = true;
+        draggingId = nodeId;
+      }
+      const p = clientToSvg(moveEvent.clientX, moveEvent.clientY);
+      customPositions = {
+        ...customPositions,
+        [nodeId]: { x: p.x - offsetX, y: p.y - offsetY },
+      };
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      finish();
+    };
+
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
-  }
-
-  function onNodeClick(node: ControlNode, event: MouseEvent): void {
-    if (dragMoved) {
-      event.preventDefault();
-      dragMoved = false;
-      return;
-    }
-    const href = nodeHref(node);
-    if (!href) return;
-    if (href.startsWith('http')) {
-      window.open(href, '_blank', 'noopener,noreferrer');
-    } else {
-      window.location.assign(href);
-    }
   }
 
   function toggleLayer(key: keyof ControlGraphLayers): void {
@@ -308,11 +295,8 @@
               transform="translate({pos.x - CONTROL_NODE_WIDTH / 2}, {pos.y - CONTROL_NODE_HEIGHT / 2})"
               class="cursor-grab {isDragging ? 'cursor-grabbing' : ''}"
               onpointerdown={(e) => onNodePointerDown(node.id, e)}
-              onclick={(e) => onNodeClick(node, e)}
               onmouseenter={() => (hoveredNode = node)}
               onmouseleave={() => (hoveredNode = null)}
-              role="button"
-              tabindex="0"
               aria-label="{node.label} node"
             >
               <rect
@@ -354,7 +338,7 @@
           {/if}
         </span>
       {:else}
-        <span>Drag nodes to untangle the graph. Click a node to open its console. Use Reset layout to snap back.</span>
+        <span>Hold and drag nodes to untangle the graph. Click does nothing — use Reset layout to snap back.</span>
       {/if}
     </div>
   {/if}
