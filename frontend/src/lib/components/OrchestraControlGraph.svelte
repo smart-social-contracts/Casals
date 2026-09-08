@@ -61,6 +61,7 @@
   let hiddenSections = $state<Set<string>>(new Set());
   let hiddenStands = $state<Set<string>>(new Set());
   let hiddenCanisters = $state<Set<string>>(new Set());
+  let suppressNodeDblClickUntil = 0;
 
   const DRAG_THRESHOLD_PX = 5;
   const VISIBILITY_SIDEBAR_WIDTH = 288;
@@ -187,6 +188,20 @@
     hiddenCanisters = next;
   }
 
+  function toggleCanisterVisibility(node: ControlNode): void {
+    const cid = node.canister?.canister_id;
+    if (!cid) return;
+    setCanisterVisible(cid, hiddenCanisters.has(cid));
+  }
+
+  function onNodeDoubleClick(node: ControlNode, event: MouseEvent): void {
+    if (Date.now() < suppressNodeDblClickUntil) return;
+    if (!node.canister?.canister_id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleCanisterVisibility(node);
+  }
+
   function showAllScopes(): void {
     hiddenSections = new Set();
     hiddenStands = new Set();
@@ -258,6 +273,7 @@
 
     const onUp = (upEvent: PointerEvent) => {
       if (upEvent.pointerId !== pointerId) return;
+      if (dragging) suppressNodeDblClickUntil = Date.now() + 400;
       finish();
     };
 
@@ -559,8 +575,9 @@
                 {@const isDragging = draggingId === node.id}
                 <g
                   transform="translate({pos.x - CONTROL_NODE_WIDTH / 2}, {pos.y - CONTROL_NODE_HEIGHT / 2})"
-                  class="cursor-grab {isDragging ? 'cursor-grabbing' : ''}"
+                  class="cursor-grab {isDragging ? 'cursor-grabbing' : ''} {node.canister ? 'cursor-pointer' : ''}"
                   onpointerdown={(e) => onNodePointerDown(node.id, e)}
+                  ondblclick={(e) => onNodeDoubleClick(node, e)}
                   onmouseenter={() => (hoveredNode = node)}
                   onmouseleave={() => (hoveredNode = null)}
                   aria-label="{node.label} node"
@@ -604,7 +621,7 @@
               {/if}
             </span>
           {:else}
-            <span>Hold and drag nodes to untangle the graph. Use Show / hide to filter sections, stands, and canisters.</span>
+            <span>Hold and drag to move nodes. Double-click a canister to show or hide it. Use Show / hide for sections and stands.</span>
           {/if}
         </div>
       </div>
