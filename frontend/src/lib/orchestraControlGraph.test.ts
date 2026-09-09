@@ -289,6 +289,7 @@ test('filterControlGraph hides canisters in a disabled section', () => {
     hiddenSections: new Set(['Deployments']),
     hiddenStands: new Set(),
     hiddenCanisters: new Set(),
+    hiddenPrincipals: new Set(),
   });
   assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_BE));
   assert.ok(filtered.nodes.some((n) => n.canister?.canister_id === CASALS));
@@ -300,8 +301,21 @@ test('filterControlGraph hides a single canister', () => {
     hiddenSections: new Set(),
     hiddenStands: new Set(),
     hiddenCanisters: new Set([REALM_FE]),
+    hiddenPrincipals: new Set(),
   });
   assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_FE));
+});
+
+test('filterControlGraph hides a principal node', () => {
+  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const filtered = filterControlGraph(full, {
+    hiddenSections: new Set(),
+    hiddenStands: new Set(),
+    hiddenCanisters: new Set(),
+    hiddenPrincipals: new Set([INSTALLER]),
+  });
+  assert.ok(!filtered.nodes.some((n) => n.principal === INSTALLER));
+  assert.ok(!filtered.edges.some((e) => e.from === `principal:${INSTALLER}`));
 });
 
 test('standVisibilityKey joins section and stand', () => {

@@ -622,15 +622,20 @@ export interface ControlGraphVisibility {
   hiddenSections: ReadonlySet<string>;
   hiddenStands: ReadonlySet<string>;
   hiddenCanisters: ReadonlySet<string>;
+  hiddenPrincipals: ReadonlySet<string>;
 }
 
 export const EMPTY_CONTROL_GRAPH_VISIBILITY: ControlGraphVisibility = {
   hiddenSections: new Set(),
   hiddenStands: new Set(),
   hiddenCanisters: new Set(),
+  hiddenPrincipals: new Set(),
 };
 
 export function isNodeHiddenByScope(node: ControlNode, vis: ControlGraphVisibility): boolean {
+  if (node.kind === 'principal' && node.principal && vis.hiddenPrincipals.has(node.principal)) {
+    return true;
+  }
   if (node.canister?.canister_id && vis.hiddenCanisters.has(node.canister.canister_id)) {
     return true;
   }
@@ -641,21 +646,18 @@ export function isNodeHiddenByScope(node: ControlNode, vis: ControlGraphVisibili
   return false;
 }
 
-/** Hide scoped canisters (and principals only connected to hidden canisters). */
+/** Hide scoped canisters/principals and drop their edges. */
 export function filterControlGraph(
   graph: ControlGraph,
   vis: ControlGraphVisibility,
 ): ControlGraph {
-  const canisterVisible = (node: ControlNode): boolean =>
-    node.kind === 'canister' && !isNodeHiddenByScope(node, vis);
+  const nodeVisible = (node: ControlNode): boolean => !isNodeHiddenByScope(node, vis);
 
   const edges = graph.edges.filter((e) => {
     const fromNode = graph.nodes.find((n) => n.id === e.from);
     const toNode = graph.nodes.find((n) => n.id === e.to);
     if (!fromNode || !toNode) return false;
-    if (fromNode.kind === 'canister' && !canisterVisible(fromNode)) return false;
-    if (toNode.kind === 'canister' && !canisterVisible(toNode)) return false;
-    return true;
+    return nodeVisible(fromNode) && nodeVisible(toNode);
   });
 
   const activeIds = new Set<string>();
@@ -664,10 +666,7 @@ export function filterControlGraph(
     activeIds.add(e.to);
   }
 
-  const nodes = graph.nodes.filter((n) => {
-    if (isNodeHiddenByScope(n, vis)) return false;
-    return activeIds.has(n.id);
-  });
+  const nodes = graph.nodes.filter((n) => nodeVisible(n) && activeIds.has(n.id));
 
   return { nodes, edges, warnings: graph.warnings };
 }

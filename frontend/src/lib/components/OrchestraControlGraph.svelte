@@ -67,6 +67,8 @@
   let hiddenSections = $state<Set<string>>(new Set());
   let hiddenStands = $state<Set<string>>(new Set());
   let hiddenCanisters = $state<Set<string>>(new Set());
+  let hiddenPrincipals = $state<Set<string>>(new Set());
+  let principalsOpen = $state(true);
   let suppressNodeDblClickUntil = 0;
 
   const DRAG_THRESHOLD_PX = 5;
@@ -84,15 +86,21 @@
     }),
   );
 
+  const edgeFilteredGraph = $derived(filterControlGraphByEdgeTypes(fullGraph, edgeTypes));
+
+  const principalNodes = $derived(
+    edgeFilteredGraph.nodes
+      .filter((n) => n.kind === 'principal' && n.principal)
+      .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
+  );
+
   const graph = $derived(
-    filterControlGraph(
-      filterControlGraphByEdgeTypes(fullGraph, edgeTypes),
-      {
-        hiddenSections,
-        hiddenStands,
-        hiddenCanisters,
-      },
-    ),
+    filterControlGraph(edgeFilteredGraph, {
+      hiddenSections,
+      hiddenStands,
+      hiddenCanisters,
+      hiddenPrincipals,
+    }),
   );
 
   const layoutWidth = $derived(
@@ -197,28 +205,48 @@
     hiddenCanisters = next;
   }
 
-  function toggleCanisterVisibility(node: ControlNode): void {
+  function principalVisible(principal: string): boolean {
+    return !hiddenPrincipals.has(principal);
+  }
+
+  function setPrincipalVisible(principal: string, visible: boolean): void {
+    const next = new Set(hiddenPrincipals);
+    if (visible) next.delete(principal);
+    else next.add(principal);
+    hiddenPrincipals = next;
+  }
+
+  function toggleNodeVisibility(node: ControlNode): void {
     const cid = node.canister?.canister_id;
-    if (!cid) return;
-    setCanisterVisible(cid, hiddenCanisters.has(cid));
+    if (cid) {
+      setCanisterVisible(cid, hiddenCanisters.has(cid));
+      return;
+    }
+    if (node.principal) {
+      setPrincipalVisible(node.principal, hiddenPrincipals.has(node.principal));
+    }
   }
 
   function onNodeDoubleClick(node: ControlNode, event: MouseEvent): void {
     if (Date.now() < suppressNodeDblClickUntil) return;
-    if (!node.canister?.canister_id) return;
+    if (!node.canister?.canister_id && !node.principal) return;
     event.preventDefault();
     event.stopPropagation();
-    toggleCanisterVisibility(node);
+    toggleNodeVisibility(node);
   }
 
   function showAllScopes(): void {
     hiddenSections = new Set();
     hiddenStands = new Set();
     hiddenCanisters = new Set();
+    hiddenPrincipals = new Set();
   }
 
   const anyScopeHidden = $derived(
-    hiddenSections.size > 0 || hiddenStands.size > 0 || hiddenCanisters.size > 0,
+    hiddenSections.size > 0 ||
+      hiddenStands.size > 0 ||
+      hiddenCanisters.size > 0 ||
+      hiddenPrincipals.size > 0,
   );
 
   function nodeStyle(node: ControlNode): { fill: string; stroke: string } {
@@ -403,7 +431,7 @@
         {#if fullGraph.nodes.length === 0}
           No control relationships to graph — enable an edge type or refresh orchestration status.
         {:else}
-          Nothing visible — turn on edge types above and/or use Show all for sections, stands, and canisters.
+          Nothing visible — turn on edge types above and/or use Show all for sections, stands, canisters, and principals.
         {/if}
       </div>
     {/if}
@@ -447,6 +475,54 @@
         </div>
         {#if visibilityOpen}
           <div class="overflow-y-auto px-2 py-2 space-y-1 {isExpanded ? 'max-h-none flex-1 min-h-0' : 'max-h-56'}">
+            {#if principalNodes.length}
+              <div class="rounded-md border border-[var(--color-border-primary)]/60 bg-white mb-2">
+                <div class="flex items-center gap-2 px-2 py-1.5">
+                  <button
+                    type="button"
+                    class="p-0.5 text-primary-400"
+                    aria-label="{principalsOpen ? 'Collapse' : 'Expand'} principals"
+                    onclick={() => (principalsOpen = !principalsOpen)}
+                  >
+                    <svg
+                      class="w-3 h-3 transition-transform {principalsOpen ? 'rotate-90' : ''}"
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
+                    >
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </button>
+                  <span class="flex-1 min-w-0 text-xs font-semibold text-primary-800">Principals</span>
+                  <span class="text-[10px] text-primary-400">{principalNodes.length}</span>
+                </div>
+                {#if principalsOpen}
+                  <div class="border-t border-[var(--color-border-primary)]/50 px-2 py-1 space-y-0.5">
+                    {#each principalNodes as node (node.id)}
+                      {@const principal = node.principal ?? ''}
+                      {@const principalOn = principalVisible(principal)}
+                      <div class="flex items-center gap-2 py-0.5 pl-1">
+                        <span class="flex-1 min-w-0 text-[10px] text-primary-600 truncate font-mono" title={principal}>
+                          {node.label}
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={principalOn}
+                          aria-label="{principalOn ? 'Hide' : 'Show'} principal {node.label}"
+                          class="relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors
+                                 {principalOn ? 'bg-sky-600' : 'bg-primary-200'}"
+                          onclick={() => setPrincipalVisible(principal, !principalOn)}
+                        >
+                          <span
+                            class="inline-block h-2.5 w-2.5 transform rounded-full bg-white shadow transition-transform
+                                   {principalOn ? 'translate-x-3' : 'translate-x-0.5'}"
+                          ></span>
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
             {#each tree.sections as section (section.name)}
               {@const secOn = sectionVisible(section.name)}
               <div class="rounded-md border border-[var(--color-border-primary)]/60 bg-white">
@@ -603,7 +679,7 @@
                 {@const isDragging = draggingId === node.id}
                 <g
                   transform="translate({pos.x - CONTROL_NODE_WIDTH / 2}, {pos.y - CONTROL_NODE_HEIGHT / 2})"
-                  class="cursor-grab {isDragging ? 'cursor-grabbing' : ''} {node.canister ? 'cursor-pointer' : ''}"
+                  class="cursor-grab {isDragging ? 'cursor-grabbing' : ''} {node.canister || node.principal ? 'cursor-pointer' : ''}"
                   onpointerdown={(e) => onNodePointerDown(node.id, e)}
                   ondblclick={(e) => onNodeDoubleClick(node, e)}
                   onmouseenter={() => (hoveredNode = node)}
@@ -649,7 +725,7 @@
               {/if}
             </span>
           {:else}
-            <span>Hold and drag to move nodes. Double-click a canister to show or hide it. Use Show / hide for sections and stands.</span>
+            <span>Hold and drag to move nodes. Double-click a canister or principal to show or hide it.</span>
           {/if}
         </div>
       </div>
