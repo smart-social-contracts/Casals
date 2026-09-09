@@ -10,6 +10,7 @@ import {
   filterControlGraphByEdgeTypes,
   frozenGraphViewport,
   graphViewport,
+  inferManagedCanistersFromTree,
   isUphillOrchestraIcEdge,
   layoutControlGraph,
   standVisibilityKey,
@@ -168,6 +169,26 @@ test('isUphillOrchestraIcEdge detects casals to multisig', () => {
   };
   assert.equal(isUphillOrchestraIcEdge(from, to), true);
   assert.equal(isUphillOrchestraIcEdge(to, from), false);
+});
+
+test('inferManagedCanistersFromTree reads baton id from cached controllers', () => {
+  const tree = fixtureTree();
+  const inferred = inferManagedCanistersFromTree(tree, BATON, {
+    section: 'Deployments',
+    stand: 'testrealm7',
+  });
+  assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
+});
+
+test('buildControlGraph infers baton_manages without orchestration status', () => {
+  const graph = buildControlGraph(
+    fixtureTree(),
+    null,
+    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
+    { casalsBackendId: CASALS },
+  );
+  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_BE}`));
+  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_FE}`));
 });
 
 test('buildControlGraph adds baton edges from orchestration status', () => {

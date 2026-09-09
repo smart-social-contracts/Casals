@@ -105,6 +105,40 @@ function batonControlsTarget(
   return false;
 }
 
+/** When orchestration_status omits managed_canisters, infer from cached IC controllers. */
+export function inferManagedCanistersFromTree(
+  tree: Tree,
+  batonCanisterId: string,
+  standHint?: { section?: string; stand?: string },
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const sec of tree.sections) {
+    if (standHint?.section && sec.name !== standHint.section) continue;
+    for (const stand of sec.stands) {
+      if (standHint?.stand && stand.name !== standHint.stand) continue;
+      for (const c of stand.canisters) {
+        const cid = c.canister_id;
+        if (!cid || cid === batonCanisterId || seen.has(cid)) continue;
+        if (isBatonCanister(c) || isMultisigCanister(c)) continue;
+        if (!(c.controllers ?? []).includes(batonCanisterId)) continue;
+        seen.add(cid);
+        out.push(cid);
+      }
+    }
+  }
+  return out;
+}
+
+function resolveManagedCanisterIds(tree: Tree, baton: BatonRef): string[] {
+  const fromStatus = baton.managed_canisters ?? [];
+  const fromTree = inferManagedCanistersFromTree(tree, baton.canister_id, {
+    section: baton.section,
+    stand: baton.stand,
+  });
+  return [...new Set([...fromStatus, ...fromTree])];
+}
+
 export interface NodePosition {
   x: number;
   y: number;
@@ -374,7 +408,7 @@ export function buildControlGraph(
         addEdge('baton_commander', resolveNodeId(cmd.principal), batonId);
       }
 
-      const managed = b.managed_canisters ?? [];
+      const managed = resolveManagedCanisterIds(tree, b);
       for (const mid of managed) {
         if (!mid) continue;
         const managedId = canisterNodeId(mid);
