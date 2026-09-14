@@ -66,6 +66,15 @@ populated orchestra" bug.
 8. **The CLIs are thin.** `gaas new` and `realms seed` become
    `casals up <sheet> -e <env>` plus product-specific catalog content. They
    carry no topology or control tables.
+9. **No backward compatibility.** Casals has no users besides us and is not in
+   production use. v1 sheets, `deploy_sheet`, arrangements, `templates.json`,
+   `environments/*.json` and every compatibility shim are deleted, not
+   deprecated. Stable-memory migrations of existing conductors are not
+   required: prod conductors are rebuilt from their exported v2 sheet.
+10. **Parity of surfaces.** Everything the frontend shows about an orchestra
+    (canisters, stands, sections, IC controllers, commanders, batons, multisig,
+    cycles, health, plan, drift) is also available from the `casals` CLI
+    (`casals show`, `casals graph`), and vice versa.
 
 ---
 
@@ -450,6 +459,17 @@ casals up casals.json -e production [--identity prod-identity] [--yes]
 9. `domains` reconcile (CLI side), then `verify()`.
 
 `casals plan|apply|verify|export -e <env>` are the same steps individually.
+
+`casals show -e <env>` is the full picture of a live orchestra, read from the
+conductor **and** the IC (controllers via `canister_info`, never the cache):
+sections → stands → canisters with id, kind, mode, wasm family@version and
+hash, status, cycles, IC controllers (names resolved back to sheet names /
+aliases), commanders with permissions, baton config and managed set, multisig
+signers/threshold, `unmanaged` canisters, and the current plan/drift summary.
+`--json` for machines, `--canister <name>` for one. `casals graph -e <env>`
+emits the control graph (Mermaid; `--ascii`) with the same three edge types as
+the frontend's Control view. Every fact the frontend renders is reachable from
+these two commands.
 `casals destroy -e <env>` is the inverse (requires the sheet's canisters to be
 marked `retire: true` first, or `--all --confirm-destructive`), sweeping cycles
 to the deployer.
@@ -602,8 +622,22 @@ make e2e ORCHESTRA=gaas KEEP=1 # one orchestra, replica left running
 make e2e-verify                # oracle against the running replica
 ```
 
-With `KEEP=1` the run ends by printing: the Casals frontend URL (replica
-gateway), every bound canister id, and the `casals … -e local` command line.
+With `KEEP=1` the replica is left running and every orchestra in the run gets
+its **own conductor** on that replica, so all of them are browsable at once.
+The run ends with a table, one row per test, in this shape:
+
+```
+Test #1  minimal           conductor + one managed backend            PASS  Casals frontend: http://<id>.localhost:8000/
+Test #2  governed          multisig, proposal-only apply, commanders  PASS  Casals frontend: http://<id>.localhost:8000/
+…
+Test #8  gaas              Governance-as-a-Service platform           PASS  Casals frontend: http://<id>.localhost:8000/
+Test #9  realmsgos         Realms GOS product                         PASS  Casals frontend: http://<id>.localhost:8000/
+```
+
+plus, per test, the `casals show -e local --conductor <id>` command line and
+every bound canister id. Each frontend is a normal Casals UI for that
+orchestra: Orchestra tree, Control graph, Plan/Drift panel. What the oracle
+asserted for test *n* is exactly what the frontend of test *n* displays.
 You then use the browser (Orchestra → Control graph, and the new
 Plan/Drift panel) and the `casals` CLI (`plan`, `verify`, `oracle`,
 `export`) to check what the test checked, mutate things by hand, and run
