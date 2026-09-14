@@ -316,7 +316,7 @@ reports balances. Estimation (`estimate_deploy`) becomes a plan annotation.
 |---|---|---|
 | `set_sheet(sheet, env)` | update | store the desired state (validated, placeholders unresolved). Commander permission `sheet.set`. |
 | `plan()` | update¹ | read live IC state, resolve placeholders, return `Plan { hash, items[], drift[], unmanaged[], unverifiable[] }` |
-| `apply(plan_hash)` | update | execute that plan, in order, stop at first failure; returns `ApplyResult` |
+| `apply(plan_hash, max_items?)` | update | execute that plan, in order, stop at first failure; `max_items` bounds one call (progress in the UI, resumability under test); returns `ApplyResult { applied[], remaining, next_hash }` |
 | `verify()` | update¹ | `plan()` with the assertion that `items` is empty; used by the timer and the UI |
 | `export_sheet()` | query | live state rendered as a v2 sheet (migration + audit) |
 | `get_plan(hash)` / `last_apply()` | query | inspection |
@@ -522,7 +522,149 @@ validated on the IC in a single short session at the end.
 
 ---
 
-## 11. Open questions
+## 11. Test plan
+
+Unit tests are not the gate. The gate is: **for every orchestra in the corpus,
+after `casals up`, the live replica state equals the sheet — as judged by a
+checker that is not Casals.**
+
+### 11.1 The oracle
+
+`tests/e2e/oracle.py` — an independent grader. It reads the sheet, resolves
+placeholders from the id bindings `casals up` wrote, and queries the replica
+directly:
+
+| Sheet field | Oracle reads it from | via |
+|---|---|---|
+| canister exists, module hash | management canister `canister_info` | `icp canister status` / `dfx canister info` as anonymous |
+| `controllers` | same | same (never Casals' cache) |
+| `commanders` | conductor `get_tree` — Casals' own state is the truth for its own permissions | `icp canister call` |
+| `governance.multisig.signers` / `threshold` | multisig `get_signers` / `get_config` | direct query |
+| `baton.*`, `hand_off` | baton `get_config`, `managed_canisters` + management-canister controllers | direct |
+| `registry.wasms` / `publish` | file registry listing by sha256; conductor `list_authorized_wasms` | direct |
+| `config[].converged_when` | the named query on the target canister | direct |
+| `health` | the query / HTTP against the replica gateway | direct |
+| `cycles.min_balance_tc` | `canister_status.cycles` | direct |
+| `unmanaged` expectations | every canister the replica knows vs. the sheet | `icp canister list` / registry of created ids |
+
+The oracle **never** calls `plan()` or `verify()`. Casals' own `verify()` is
+itself under test: a separate assertion requires `verify()` and the oracle to
+agree (both empty, or the same items) in every end state.
+
+`oracle.py` is also the tool you run by hand: `casals oracle -e local` prints a
+pass/fail table per sheet field per canister.
+
+### 11.2 Orchestra corpus
+
+`tests/e2e/orchestras/<name>/casals.json`, simple → complex. Each is a real v2
+sheet; the two production sheets are included **by reference** (the repo files,
+not copies) so the tests break when they drift.
+
+| # | Orchestra | Exercises |
+|---|---|---|
+| 1 | `minimal` | conductor + one managed backend, deployer as the only principal |
+| 2 | `governed` | + self-controlled multisig, conductor `controllers: [$multisig]`, section + stand commanders, `apply_requires_proposal` |
+| 3 | `baton-stand` | one stand with baton, 2-of-2, `hand_off`, `$stand.backend` |
+| 4 | `adopted` | a canister installed by the test via dfx, then adopted; `config` + `controllers` reconciled, module never touched; hash change → information only |
+| 5 | `demo` | `seed/sheets/demo.json` as v2: three stands, three batons, shared multisig |
+| 6 | `retire-and-pool` | `retire: true`, pool behaviour, `sweep_on_retire`, `reuse_pool` on/off |
+| 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5) |
+| 8 | `gaas` | `gos-as-a-service/casals.json` (`-e local`) |
+| 9 | `realmsgos` | `realms/casals.json` (`-e local`), product wasms built once and cached |
+
+### 11.3 Scenario matrix
+
+Every orchestra runs every applicable scenario. A scenario passes only when
+the oracle passes on its end state.
+
+| Scenario | Steps | Asserts |
+|---|---|---|
+| **fresh** | empty replica → `casals up` | oracle passes; `plan` empty; `verify` agrees |
+| **idempotent** | `casals up` again | zero `create/install/update_settings/stop/start` calls (counted from the conductor audit log + a management-call counter in the test build); ids and module hashes unchanged |
+| **drift: controller** | `dfx canister update-settings --add-controller <x>` on each canister in turn | `plan` = exactly one `set_controllers` item; `apply`; oracle passes |
+| **drift: commander** | `casals set_commander` / remove via CLI | one `set_commanders` item; heals |
+| **drift: stopped** | `dfx canister stop` | one `start` item; heals |
+| **drift: signer** | multisig proposal changing threshold | one `configure_multisig` item, marked destructive if it removes a signer |
+| **drift: adopted code** | reinstall the adopted canister with another wasm via dfx | `plan` shows information, **no** item; oracle passes |
+| **partial sheet** | `set_sheet` with only the governance stand | `unmanaged` lists everything else; `items` empty; nothing stopped (the 2026-09-14 incident) |
+| **destructive gating** | add `retire: true` / `upgrade: reinstall` | item marked destructive; `apply` without `confirm_destructive` rejected; with it, applied; cycles swept |
+| **crash / resume** | `casals up` with `CASALS_FAULT_AFTER=<n>` for every `n` in the plan (CLI side) and `apply(hash, max_items=1)` loops (canister side) | every resume converges; no duplicate canister; no reinstall; oracle passes |
+| **stale plan** | `plan`, mutate replica, `apply(old_hash)` | rejected with the new hash |
+| **proposal-only** | orchestra 2/8/9 with `apply_requires_proposal` | direct `apply` rejected; `ApplySheet` proposal applies |
+| **export round-trip** | `export_sheet()` → `set_sheet` → `plan` | empty |
+| **destroy** | `casals destroy --all --confirm-destructive` | replica has no orchestra canisters; deployer balance ≥ before − fees |
+
+### 11.4 Running it from a laptop
+
+```
+make e2e                       # corpus 1–7 (~15 min), replica torn down after
+make e2e ORCHESTRA=gaas KEEP=1 # one orchestra, replica left running
+make e2e-verify                # oracle against the running replica
+```
+
+With `KEEP=1` the run ends by printing: the Casals frontend URL (replica
+gateway), every bound canister id, and the `casals … -e local` command line.
+You then use the browser (Orchestra → Control graph, and the new
+Plan/Drift panel) and the `casals` CLI (`plan`, `verify`, `oracle`,
+`export`) to check what the test checked, mutate things by hand, and run
+`make e2e-verify` again. Nothing in the harness is hidden from those two
+surfaces: if the oracle can see it, the UI and the CLI show it.
+
+CI: corpus 1–7 on every PR; 8 and 9 nightly and on demand (the realms product
+build is the slow part). The two production sheets must pass **fresh +
+idempotent + partial sheet + export round-trip** before anything in §8 touches
+the IC.
+
+### 11.5 Design gap surfaced by the corpus: runtime-created stands
+
+GaaS mints realm stands at runtime through the installer (`create_stand`).
+Those are neither in the sheet nor drift. v2 adds to a section:
+
+```jsonc
+"stand_template": {
+  "name_pattern": "realm-*",
+  "created_by": "$canister:realm-installer",
+  "canisters": [ … same shape as a stand, with `baton` … ],
+  "controllers": …, "commanders": …
+}
+```
+
+Stands matching the template are reconciled *against the template*; stands
+matching nothing are `unmanaged`. Orchestra 7 exists to prove this.
+
+---
+
+## 12. Cleanup
+
+Yes — but **driven by the migration, not before it.** A big-bang cleanup
+before v2 exists would remove things production still runs on and has no test
+to prove it did not break anything. The rule: every v2 milestone ends by
+deleting what it made dead, with the corpus green before and after.
+
+What is dead once v2 lands (§8 has the list): `environments/*.json` in both
+CLIs, the two CLI topology tables and the phase machinery around them
+(`gaas/phases.py` is ~2.4k lines, `realms` seed/governance ~1.5k), Casals'
+`_resolve_provision_controllers`, `retire_missing`, `adopted`, `deploy_sheet`
+(one release later), `seed/templates.json` + `scripts/seed.py`,
+`casals-config/arrangements/*` and their generators, `default_sheet.py`.
+
+Two things are independent of v2 and can go now, safely:
+
+- Documentation that describes today's process. `realms` has ~590 markdown
+  files; this spec makes most runbooks about `gaas new`/`realms seed`
+  wrong. Delete rather than update: one `docs/OPERATIONS.md` per repo that
+  points at the sheet and `casals up`, written *after* the corpus passes.
+- Dead surfaces in `Casals/src/main.py` (4.5k lines) that no test and no CLI
+  path reaches; identify with coverage from the corpus run, remove
+  anything at 0 %.
+
+CI enforces the end state: `grep` for principals, controller and commander
+tables in the CLIs fails the build; the only allowed reference to a canister
+id outside Casals' runtime bindings is in test fixtures.
+
+---
+
+## 13. Open questions
 
 1. `config` convergence: require `converged_when` for production sheets, or
    allow "run every apply" calls?
@@ -534,10 +676,13 @@ validated on the IC in a single short session at the end.
    holds hashes.
 4. Keep Casals' `default_sheet.py` (built-in demo on first boot) or require a
    sheet always? Recommended: require; demo becomes `seed/sheets/demo.json` v2.
+5. Management-call counter for the **idempotent** scenario: a test-only build
+   flag in Casals, or infer from the conductor audit log alone? Recommended:
+   audit log + `icp` replica log; no test-only code paths in the canister.
 
 ---
 
-## 12. Out of scope
+## 14. Out of scope
 
 - Baton/multisig protocol changes beyond the `ApplySheet` proposal type.
 - Frontend work other than rendering `plan` / `drift` / `unmanaged`
