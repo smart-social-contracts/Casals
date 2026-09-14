@@ -205,6 +205,15 @@
       "kind": "backend",
       "wasm_type": "multisig",
       "description": "Multisig v1.4 — cycles_balance query (Casals cycles snapshot reads it when it is not a controller); send_cycles / SendCycles deposit path; DestroyCanisters drains doomed canisters to the Casals treasury before delete (embedded sweeper)."
+    },
+    {
+      "key": "orchestration-multisig",
+      "version": "1.5.0",
+      "file": "orchestration-multisig@1.5.0.wasm.gz",
+      "path": "orchestration-multisig@1.5.0.wasm",
+      "kind": "backend",
+      "wasm_type": "multisig",
+      "description": "Multisig v1.5 — ApplySheet loops Casals apply(text) for production plan execution; CallCanister generic text→text admin calls; proposal.result stores execution summary; version() query."
     }
   ]
 }

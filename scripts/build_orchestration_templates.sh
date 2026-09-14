@@ -50,5 +50,6 @@ echo "==> Multisig"
 MULTISIG_WASM="$MULTISIG_DIR/.icp/cache/artifacts/multisig"
 embed_candid "$MULTISIG_WASM" "$MULTISIG_DIR/multisig.did"
 emit "orchestration-multisig@1.4.0" "$MULTISIG_WASM"
+emit "orchestration-multisig@1.5.0" "$MULTISIG_WASM"
 
 echo "Done. Orchestration artifacts in seed/templates/"

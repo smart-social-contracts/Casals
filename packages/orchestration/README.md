@@ -35,9 +35,28 @@ The Baton never upgrades itself. The multisig upgrades Batons with a plain `inst
 
 Execute failures land as proposal status `#failed` (audit `execute_failed`); human `reject` stays `#rejected`.
 
-### Multisig `BatonAction` variants (v1.2)
+### Multisig `BatonAction` variants (v1.5)
 
 Includes baton/controller actions plus **`DestroyCanisters`** (one proposal, many ids + Casals treasury; drain remaining cycles to the conductor, then IC stop/delete as the multisig — if drain fails, do not delete), **`DestroyCanister`** (single id, same IC path), and **`DestroyStand`** (Casals `destroy_stand`, which also drains first). `SetCanisterControllers` only succeeds when the multisig is already an IC controller of the target. Casals is never a lasting controller.
+
+**v1.5 — declarative orchestra apply:**
+
+| Action | Purpose |
+|--------|---------|
+| **`ApplySheet`** | Production `apply` path (§6.3): loops `casals_backend.apply(text)` until the plan is fully applied or a stop condition is hit. |
+| **`CallCanister`** | Generic `text → text` inter-canister call for future admin endpoints (e.g. `set_sheet`) without a new variant each time. Reply stored on the proposal (truncated to 4 KiB). |
+
+`ApplySheet` record: `{ casals_backend, plan_hash, confirm_destructive, max_items }`.
+
+On execution the multisig sends this JSON on every iteration (UTF-8 text argument to `apply`):
+
+```json
+{"plan_hash":"<hash>","max_items":<nat>,"confirm_destructive":<bool>}
+```
+
+Loop semantics: call `apply` → parse the Casals envelope; stop with proposal status `#failed` when `ok == false`, when `remaining` cannot be parsed, when the inter-canister call traps, or after **50** iterations; stop with `#executed` and a summary in `proposal.result` when `remaining == 0` or when `failed` is non-null (partial apply). Between iterations, `next_plan_hash` from the response replaces `plan_hash` when present. Summary text looks like `iterations=N applied=M remaining=R next_plan_hash=…`.
+
+Executed proposals expose the summary or call reply via `get_proposal(...).result` (`opt text`). Query `version()` returns `1.5.0`.
 
 ## Casals demo (opt-in)
 
