@@ -134,6 +134,60 @@ def _ic_run_status(status) -> str:
     return "unknown"
 
 
+def _is_canister_status_denied(msg: str) -> bool:
+    """True when the IC rejected canister_status because Casals is not a controller."""
+    m = (msg or "").lower()
+    if not m:
+        return False
+    return any(
+        marker in m
+        for marker in (
+            "ic0542",
+            "not allowed to read the canister status",
+            "not allowed to read canister status",
+        )
+    )
+
+
+def _is_multisig_canister(canister_st) -> bool:
+    """True when *canister_st* is the governance multisig (self-reported cycles path)."""
+    if canister_st is None:
+        return False
+    wasm_type = (getattr(canister_st, "wasm_type", "") or "").strip().lower()
+    if wasm_type == "multisig":
+        return True
+    wasm_key = (getattr(canister_st, "wasm_key", "") or "").strip().lower()
+    return wasm_key.startswith("orchestration-multisig") or wasm_key == "multisig"
+
+
+def _self_reported_status_dict(cycles: int) -> dict:
+    """canister_status-shaped payload from a multisig ``cycles_balance`` query."""
+    return {
+        "cycles": int(cycles),
+        "settings": {"freezing_threshold": 0},
+        "status": {"running": None},
+        "source": "self_reported",
+    }
+
+
+def _fetch_multisig_cycles_balance_gen(canister_st):
+    """Generator: multisig ``cycles_balance`` query → self-reported status dict."""
+    cid = (canister_st.canister_id or "").strip() if canister_st else ""
+    if not cid:
+        return None
+    res = yield ic.call_raw(
+        Principal.from_str(cid),
+        "cycles_balance",
+        ic.candid_encode("()"),
+        0,
+    )
+    decoded = ic.candid_decode(unwrap_call_result(res))
+    vals = _nats_in(decoded)
+    if not vals:
+        raise Exception(f"cycles_balance: unexpected reply: {decoded[:200]}")
+    return _self_reported_status_dict(vals[0])
+
+
 def _fetch_canister_status_gen(canister_st):
     """Try direct canister_status; on failure ask the stand's Baton (failure-soft).
 
@@ -168,6 +222,13 @@ def _fetch_canister_status_result_gen(canister_st):
             return (status, None)
     except Exception as e:
         err_msg = err_msg or str(e)
+    if _is_canister_status_denied(err_msg) and _is_multisig_canister(canister_st):
+        try:
+            status = yield from _fetch_multisig_cycles_balance_gen(canister_st)
+            if status is not None:
+                return (status, None)
+        except Exception as e:
+            err_msg = err_msg or str(e)
     return (None, err_msg or "canister_status unavailable")
 
 
@@ -180,14 +241,19 @@ def apply_canister_balance_to_row(row, status, error, min_c, topup_c, batch_ts):
         bal = _status_cycles(status)
         frz = _status_freezing(status)
         label = cycles_status(bal, frz, min_c)
+        self_reported = isinstance(status, dict) and status.get("source") == "self_reported"
         row.update({
             "cycles": bal,
             "freezing_threshold": frz,
             "headroom": bal - frz,
             "status": label,
-            "runtime_status": _ic_run_status(status),
+            "runtime_status": "unknown" if self_reported else _ic_run_status(status),
             "refreshed_at": batch_ts,
         })
+        if self_reported:
+            row["source"] = "self_reported"
+        else:
+            row.pop("source", None)
         row.pop("error", None)
         return label, bal
     row.update({"status": "error", "error": error or "canister_status unavailable"})

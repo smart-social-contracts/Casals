@@ -71,6 +71,7 @@
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
   import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, aggregateBurnIntervalSeries, burnIntervalSeriesFromSamples, bucketBurnSeries, burnBucketChoicesForSpan, defaultBurnBucketIndex, dedupeSeriesPoints, type ChartEventMarker, type Series, type TreemapInput } from '$lib/charts';
+  import { isSelfReportedCycles } from '$lib/cyclesSelfReported';
 
   let report = $state<CyclesReport | null>(null);
   let history = $state<CycleHistory | null>(null);
@@ -2431,7 +2432,11 @@
                     <CalculatedAtHint at={canisterCalculatedAt(s)} label="Balance calculated" />
                   </span>
                   <Fiat value={s.cycles} block class="text-right" />
-                  {#if s.error}<div class="text-[11px] text-red-500" title={s.error}>error</div>{/if}
+                  {#if isSelfReportedCycles(s)}
+                    <div class="text-[11px] text-primary-400" title="Balance from the canister's cycles_balance query; IC runtime state is unknown">self-reported</div>
+                  {:else if s.error}
+                    <div class="text-[11px] text-red-500" title={s.error}>error</div>
+                  {/if}
                 </td>
                 <td class="px-4 py-2.5 text-right hidden md:table-cell font-mono text-primary-500">
                   {formatCycles(s.min_cycles)}
@@ -2508,7 +2513,11 @@
                       <CalculatedAtHint at={canisterCalculatedAt(c)} label="Balance calculated" />
                     </span>
                     {#if c.cycles !== undefined}<Fiat value={c.cycles} block class="text-right" />{/if}
-                    {#if c.error}<div class="text-[11px] text-red-500" title={c.error}>error</div>{/if}
+                    {#if isSelfReportedCycles(c)}
+                      <div class="text-[11px] text-primary-400" title="Balance from the canister's cycles_balance query; IC runtime state is unknown">self-reported</div>
+                    {:else if c.error}
+                      <div class="text-[11px] text-red-500" title={c.error}>error</div>
+                    {/if}
                   </td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden sm:table-cell">{c.deposited ? formatCycles(c.deposited) : '—'}</td>
                   <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden md:table-cell">{poolUsed(c)}</td>

@@ -1584,6 +1584,188 @@ def test_fetch_canister_status_gen_failure_soft(monkeypatch):
     assert status is None
 
 
+_IC0542_STATUS_DENIED = (
+    "Rejection code 5, Caller 6dk2i-uaaaa-aaaal-qxitq-cai is not allowed to read the canister status"
+)
+
+
+class _StatusDeniedResult:
+    Err = _IC0542_STATUS_DENIED
+
+
+def test_is_canister_status_denied_matches_ic0542():
+    import cycles as cycles_mod
+
+    assert cycles_mod._is_canister_status_denied(_IC0542_STATUS_DENIED)
+    assert cycles_mod._is_canister_status_denied("IC0542 permission denied")
+    assert not cycles_mod._is_canister_status_denied("not a controller")
+    assert not cycles_mod._is_canister_status_denied("")
+
+
+def test_is_multisig_canister_detects_wasm_type_and_key():
+    import cycles as cycles_mod
+    from types import SimpleNamespace
+
+    assert cycles_mod._is_multisig_canister(SimpleNamespace(wasm_type="multisig", wasm_key=""))
+    assert cycles_mod._is_multisig_canister(
+        SimpleNamespace(wasm_type="", wasm_key="orchestration-multisig@gov")
+    )
+    assert cycles_mod._is_multisig_canister(SimpleNamespace(wasm_type="", wasm_key="multisig"))
+    assert not cycles_mod._is_multisig_canister(
+        SimpleNamespace(wasm_type="motoko", wasm_key="hello-world")
+    )
+
+
+def test_apply_canister_balance_self_reported_marks_source_and_unknown_runtime():
+    import cycles as cycles_mod
+
+    row = {"name": "multisig", "canister_id": "msig-id"}
+    status = cycles_mod._self_reported_status_dict(8_000_000_000_000)
+    label, bal = cycles_mod.apply_canister_balance_to_row(row, status, None, 0, 0, 321)
+    assert label == "ok"
+    assert bal == 8_000_000_000_000
+    assert row["status"] == "ok"
+    assert row["source"] == "self_reported"
+    assert row["runtime_status"] == "unknown"
+    assert row["cycles"] == 8_000_000_000_000
+    assert row["headroom"] == 8_000_000_000_000
+    assert "error" not in row
+
+
+def test_fetch_canister_status_multisig_self_reported_fallback(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _StatusDeniedResult()
+
+    def fake_baton_gen(_canister_st):
+        yield
+        return None
+
+    class FakeIc:
+        @staticmethod
+        def candid_encode(arg):
+            return arg
+
+        @staticmethod
+        def candid_decode(raw):
+            return "5_000_000_000_000 : nat"
+
+        @staticmethod
+        def call_raw(_principal, _method, _arg, _cycles):
+            return type("Call", (), {"Ok": "raw-reply"})()
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(cycles_mod, "ic", FakeIc)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton_gen)
+
+    class St:
+        canister_id = "msig-id"
+        wasm_type = "multisig"
+        wasm_key = "orchestration-multisig"
+        stand = None
+
+    status, err = _drive_fetch_result_gen(St(), [_StatusDeniedResult(), None, type("Call", (), {"Ok": "raw-reply"})()])
+    assert err is None
+    assert status is not None
+    assert cycles_mod._status_cycles(status) == 5_000_000_000_000
+    assert status.get("source") == "self_reported"
+
+    row = {"name": "multisig", "canister_id": "msig-id"}
+    label, bal = cycles_mod.apply_canister_balance_to_row(row, status, err, 0, 0, 99)
+    assert label != "error"
+    assert bal == 5_000_000_000_000
+    assert row["source"] == "self_reported"
+
+
+def test_fetch_canister_status_ic0542_non_multisig_still_error(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _StatusDeniedResult()
+
+    def fake_baton_gen(_canister_st):
+        yield
+        return None
+
+    multisig_calls = []
+
+    def fake_multisig_gen(canister_st):
+        multisig_calls.append(canister_st.canister_id)
+        yield
+        return None
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton_gen)
+    monkeypatch.setattr(cycles_mod, "_fetch_multisig_cycles_balance_gen", fake_multisig_gen)
+
+    class St:
+        canister_id = "realm-backend"
+        wasm_type = "motoko"
+        wasm_key = "realm-backend"
+        stand = None
+
+    status, err = _drive_fetch_result_gen(St(), [_StatusDeniedResult(), None])
+    assert status is None
+    assert err is not None
+    assert "not allowed to read" in err.lower()
+    assert multisig_calls == []
+
+
+def test_fetch_canister_status_multisig_cycles_balance_fails(monkeypatch):
+    import cycles as cycles_mod
+
+    class FakePrincipal:
+        @staticmethod
+        def from_str(cid):
+            return cid
+
+    class FakeMgmt:
+        @staticmethod
+        def canister_status(args):
+            return _StatusDeniedResult()
+
+    def fake_baton_gen(_canister_st):
+        yield
+        return None
+
+    def fake_multisig_gen(_canister_st):
+        yield
+        raise Exception("cycles_balance query rejected")
+
+    monkeypatch.setattr(cycles_mod, "Principal", FakePrincipal)
+    monkeypatch.setattr(cycles_mod, "management_canister", FakeMgmt)
+    monkeypatch.setattr(ob, "_canister_status_via_baton_gen", fake_baton_gen)
+    monkeypatch.setattr(cycles_mod, "_fetch_multisig_cycles_balance_gen", fake_multisig_gen)
+
+    class St:
+        canister_id = "msig-id"
+        wasm_type = "multisig"
+        wasm_key = "orchestration-multisig"
+        stand = None
+
+    status, err = _drive_fetch_result_gen(St(), [_StatusDeniedResult(), None, None])
+    assert status is None
+    assert err is not None
+    assert "not allowed to read" in err.lower()
+
+
 # ── create_canister orphan row cleanup ───────────────────────────────────────
 
 def _drive_create_canister_impl(params, monkeypatch, *, existing=None):
