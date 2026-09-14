@@ -1,8 +1,7 @@
 {
-  "$comment": "Opt-in hello-world demo orchestra (v2). Deploy explicitly: casals up seed/sheets/demo.json -e local",
   "version": 2,
   "name": "demo",
-  "description": "Default Casals demo orchestra: hello-world stands per language, each with its own Baton, plus a shared Multisig top commander.",
+  "description": "three stands, three batons, shared multisig",
   "environments": {
     "local": {
       "network": "local",

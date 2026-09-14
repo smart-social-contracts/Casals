@@ -1,0 +1,81 @@
+{
+  "version": 2,
+  "name": "adopted",
+  "description": "adopted backend reconciles control and config only",
+  "environments": {
+    "local": {
+      "network": "local",
+      "dns": { "provider": "none" },
+      "flags": { "test_mode": true, "ii_bypass": true, "demo_data": false },
+      "principals": { "operator": "$deployer" },
+      "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
+    }
+  },
+  "conductor": {
+    "backend": {
+      "wasm": "casals-backend",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": ["$deployer"]
+    },
+    "frontend": {
+      "wasm": "casals-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": ["$deployer"]
+    },
+    "file_registry": {
+      "wasm": "file-registry",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": ["$self"]
+    },
+    "file_registry_frontend": {
+      "wasm": "file-registry-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": ["$self"]
+    }
+  },
+  "registry": {
+    "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
+    "wasms": [
+      { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
+      { "family": "casals-frontend", "version": "main", "source": "build:casals_frontend" },
+      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
+      { "family": "file-registry-frontend", "version": "main", "source": "build:ic_file_registry_frontend" },
+      { "family": "hello-world-motoko", "version": "1.0.0", "source": "local:seed/templates/hello-world-motoko.wasm.gz" }
+    ]
+  },
+  "sections": [
+    {
+      "name": "External",
+      "stands": [
+        {
+          "name": "Adopted",
+          "canisters": [
+            {
+              "name": "external-backend",
+              "mode": "adopted",
+              "kind": "backend",
+              "wasm": "hello-world-motoko@1.0.0",
+              "controllers": ["$self", "$deployer"],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": { "test_flags": "$env.flags" },
+                  "converged_when": { "query": "get_canister_config_json", "equals_args": true }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "cycles": {
+    "min_balance_tc": 0.5,
+    "top_up_from": "$self",
+    "conductor_min_balance_tc": 2.0
+  }
+}

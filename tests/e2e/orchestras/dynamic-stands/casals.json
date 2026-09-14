@@ -1,0 +1,108 @@
+{
+  "version": 2,
+  "name": "dynamic-stands",
+  "description": "stand_template with runtime-created stands via installer",
+  "environments": {
+    "local": {
+      "network": "local",
+      "dns": { "provider": "none" },
+      "flags": { "test_mode": true, "ii_bypass": true },
+      "principals": { "operator": "$deployer" },
+      "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
+    }
+  },
+  "conductor": {
+    "backend": {
+      "wasm": "casals-backend",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": ["$deployer"]
+    },
+    "frontend": {
+      "wasm": "casals-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": ["$deployer"]
+    },
+    "file_registry": {
+      "wasm": "file-registry",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": ["$self"]
+    },
+    "file_registry_frontend": {
+      "wasm": "file-registry-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": ["$self"]
+    }
+  },
+  "registry": {
+    "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
+    "wasms": [
+      { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
+      { "family": "casals-frontend", "version": "main", "source": "build:casals_frontend" },
+      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
+      { "family": "file-registry-frontend", "version": "main", "source": "build:ic_file_registry_frontend" },
+      { "family": "hello-world-basilisk", "version": "1.0.0", "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz" },
+      { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
+      { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" },
+      { "family": "orchestration-baton", "version": "1.3.0", "source": "local:seed/templates/orchestration-baton@1.3.0.wasm.gz" }
+    ]
+  },
+  "sections": [
+    {
+      "name": "Platform",
+      "stands": [
+        {
+          "name": "Installer",
+          "canisters": [
+            {
+              "name": "installer",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "hello-world-basilisk@1.0.0",
+              "controllers": ["$self", "$deployer"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Realms",
+      "stand_template": {
+        "name_pattern": "realm-*",
+        "created_by": "$canister:installer",
+        "canisters": [
+          {
+            "name": "{stand}-backend",
+            "mode": "managed",
+            "kind": "backend",
+            "wasm": "hello-world-rust@1.0.0",
+            "controllers": ["$self", "$deployer"]
+          },
+          {
+            "name": "{stand}-frontend",
+            "mode": "managed",
+            "kind": "frontend",
+            "wasm": "hello-world-frontend@1.0.0",
+            "controllers": ["$self", "$deployer"]
+          }
+        ],
+        "baton": {
+          "wasm": "orchestration-baton@1.3.0",
+          "top_commander": "$self",
+          "commanders": ["$self", "$stand.backend"],
+          "threshold": 2,
+          "manages": ["backend", "frontend"],
+          "hand_off": true
+        }
+      }
+    }
+  ],
+  "cycles": {
+    "min_balance_tc": 0.5,
+    "top_up_from": "$self",
+    "conductor_min_balance_tc": 2.0
+  }
+}
