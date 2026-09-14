@@ -271,6 +271,13 @@ environment installs. `version: main` without a hash is allowed for
 }
 ```
 
+Reserved canister names (fixed by `src/sheetv2.py`): `casals-backend`,
+`casals-frontend`, `file-registry`, `file-registry-frontend` for the conductor
+block, `multisig` for `governance.multisig`. `iter_canisters` yields them under
+synthetic section `Casals` / stand `conductor` and `System` / `governance`.
+Baton canisters are `kind: backend` with a name ending in `-baton`;
+`$stand.backend` / `$stand.frontend` skip them.
+
 The conductor is part of the sheet so that `plan` also reports drift on Casals'
 own controllers (today's biggest blind spot) and so that bootstrap has one
 input. Casals cannot change its own controllers when the multisig owns it; the
@@ -396,6 +403,74 @@ skipped (reported `requires: multisig`) when Casals is the caller.
   apply.
 
 ---
+
+### 5.5 Wire contract (JSON over `text -> text`, like every Casals endpoint)
+
+All new endpoints follow the existing `_ok(...)` / `_err(...)` envelope
+(`{"ok": true, ...}` / `{"ok": false, "error": "..."}`).
+
+```jsonc
+// set_sheet(args)          update, commander permission `sheet.set`
+{ "sheet": { …v2 sheet… }, "env": "local" }
+→ { "ok": true, "sheet_hash": "<sha256>", "env": "local", "warnings": [] }
+
+// get_sheet()              query
+→ { "ok": true, "sheet": {…}, "env": "local", "sheet_hash": "…" }   // or sheet: null
+
+// plan(args)               update (reads only). args optional: {"refresh": true}
+→ { "ok": true, "plan": Plan }
+
+// verify()                 update (reads only)
+→ { "ok": true, "converged": bool, "plan": Plan }
+
+// apply(args)              update
+{ "plan_hash": "…", "max_items": 5, "confirm_destructive": false }
+→ { "ok": true, "plan_hash": "…", "applied": [PlanItem+{"result": "ok"}],
+    "failed": PlanItem+{"error": "…"} | null,
+    "remaining": 3, "next_plan_hash": "…" | null }
+    // stale: { "ok": false, "error": "stale plan", "current_plan_hash": "…" }
+    // gated: { "ok": false, "error": "destructive items require confirm_destructive" }
+
+// export_sheet()           query → { "ok": true, "sheet": {…v2…}, "bindings": {"<name>": "<canister id>"} }
+// get_plan(args)           query {"plan_hash": "…"} → { "ok": true, "plan": Plan }
+// last_apply()             query → { "ok": true, "apply": ApplyResult | null }
+// get_bindings()           query → { "ok": true, "bindings": {"<name>": "<id>"}, "self": "<id>", "env": "local" }
+```
+
+```jsonc
+Plan = {
+  "hash": "<sha256 of canonical(sheet_hash + env + items)>",
+  "sheet_hash": "…", "env": "local", "created_at_ns": 0,
+  "items": [PlanItem],           // ordered; empty == converged
+  "drift": [PlanItem],           // subset of items caused by out-of-band change (informational)
+  "unmanaged": [{"canister_id": "…", "name": "…"|null, "reason": "not in sheet"}],
+  "unverifiable": [{"target": "…", "field": "domains", "reason": "…"}],
+  "info": [{"target": "…", "note": "adopted module hash changed: … -> …"}]
+}
+PlanItem = {
+  "seq": 0,
+  "kind": "create_canister|install_code|upgrade_code|reinstall_code|set_controllers|set_commanders|"
+          "configure_baton|hand_off|configure_multisig|authorize_wasm|publish|config_call|top_up|"
+          "stop|start|retire|register_section|register_stand",
+  "target": {"name": "…", "canister_id": "…"|null, "section": "…"|null, "stand": "…"|null},
+  "reason": "human sentence",
+  "destructive": false,
+  "requires": "self|multisig|operator",
+  "current": {…}, "desired": {…},       // field-specific; e.g. controllers lists
+  "call": {"canister": "aaaaa-aa", "method": "update_settings", "args": {…}}  // what will be executed
+}
+```
+
+Bindings (sheet name → canister id) are Casals' `Canister` records; the
+conductor's own four canisters are bound at bootstrap by `set_sheet`'s
+companion `bind_conductor({"casals-frontend": id, "file-registry": id, …})`
+(update, controller-only, idempotent).
+
+Stale-plan rule, precisely: `apply` requires `plan_hash` to equal the hash of
+the **most recent stored plan** and the stored sheet hash to be unchanged.
+Before executing each item, its precondition is re-read from the IC for that
+target only; a failed precondition aborts with `failed` set and a fresh
+`next_plan_hash`. A whole-orchestra re-plan on every apply is not required.
 
 ## 6. Safety
 
