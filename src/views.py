@@ -5,6 +5,7 @@ import json
 
 from auth import _normalize_permissions, _parse_permissions
 from commanders import commanders_view, legacy_commander_principal, legacy_permissions
+from models import CanisterStatus
 from orchestration_governance import parse_orchestration_policies
 from stand_template import parse_stand_template
 from util import canister_url
@@ -52,6 +53,8 @@ def _canister_view(st) -> dict:
         "wasm_key": st.wasm_key,
         "wasm_hash": st.wasm_hash,
         "status": st.status,
+        "adopted": bool(getattr(st, "adopted", False))
+        or st.status == CanisterStatus.REGISTERED,
         "snapshot_id": st.snapshot_id,
         "min_cycles": int(st.min_cycles or 0),
         "topup_cycles": int(st.topup_cycles or 0),

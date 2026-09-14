@@ -12,6 +12,7 @@ Plus the supporting governance/operational records:
 """
 
 from ic_python_db import (
+    Boolean,
     Entity,
     Integer,
     ManyToOne,
@@ -111,6 +112,12 @@ class Canister(Entity, TimestampedMixin):
     wasm_key = String(max_length=256, default="")   # AuthorizedWasm.key currently installed
     wasm_hash = String(max_length=128, default="")  # verified module hash (hex)
     status = String(max_length=32, default=CanisterStatus.REGISTERED)
+    # True for canisters Casals did not create (register_canister): their code
+    # is installed by someone else (e.g. the realms CLI via dfx), so deploy_sheet
+    # must never reinstall them on a hash mismatch, whatever ``status`` says.
+    # Casals-created canisters (CREATED -> INSTALLED) stay False. Sticky: it
+    # survives adoption (REGISTERED -> INSTALLED) and stop/start.
+    adopted = Boolean(default=False)
     snapshot_id = String(max_length=128, default="")  # last pre-upgrade snapshot
     created_by = String(max_length=64, default="")
     # Subnet the canister actually lives on, when known (set when Casals creates

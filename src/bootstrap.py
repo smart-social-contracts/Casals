@@ -138,6 +138,7 @@ def _register_file_registry_internal(dk: Stand, registry_id: str) -> bool:
     st.canister_id = registry_id
     st.kind = CanisterKind.BACKEND
     st.status = CanisterStatus.REGISTERED
+    st.adopted = True  # deployed by the operator (icp deploy), not by Casals
     st.created_by = ic.id().to_str()
     list(PooledCanister.instances())
     if PooledCanister[registry_id] is not None:
@@ -175,6 +176,7 @@ def _register_file_registry_frontend_internal(dk: Stand, frontend_id: str) -> bo
     st.kind = CanisterKind.FRONTEND
     st.wasm_type = ASSETS
     st.status = CanisterStatus.REGISTERED
+    st.adopted = True
     st.created_by = ic.id().to_str()
     list(PooledCanister.instances())
     if PooledCanister[frontend_id] is not None:

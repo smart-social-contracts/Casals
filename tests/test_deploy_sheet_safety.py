@@ -159,6 +159,7 @@ def _drive_deploy_sheet(
     monkeypatch.setattr(main, "_verify_module_hash", fake_verify)
     monkeypatch.setattr(lifecycle, "_verify_module_hash", fake_verify)
     monkeypatch.setattr(main, "_ensure_provision_controllers_gen", fake_ensure)
+    monkeypatch.setattr(lifecycle, "_ensure_provision_controllers_gen", fake_ensure)
     monkeypatch.setattr(main, "_maybe_provision_assets", fake_assets)
     monkeypatch.setattr(main, "_append_event", lambda kind, cid, payload: events.append((kind, cid, payload)))
 
@@ -190,7 +191,7 @@ def _product_stand():
     )
 
 
-def _canister(name, canister_id, stand=None, status=CanisterStatus.REGISTERED):
+def _canister(name, canister_id, stand=None, status=CanisterStatus.REGISTERED, adopted=False):
     return types.SimpleNamespace(
         name=name,
         canister_id=canister_id,
@@ -200,6 +201,7 @@ def _canister(name, canister_id, stand=None, status=CanisterStatus.REGISTERED):
         wasm_key="",
         wasm_hash="",
         wasm_type="",
+        adopted=adopted,
     )
 
 
@@ -593,3 +595,97 @@ def test_stop_then_start_restores_registered_or_installed(monkeypatch):
     _drive_lifecycle(monkeypatch, "stop_canister", installed)
     _drive_lifecycle(monkeypatch, "start_canister", installed)
     assert installed.status == CanisterStatus.INSTALLED
+
+
+def test_deploy_sheet_marks_registered_canister_adopted(monkeypatch):
+    """Legacy REGISTERED records (pre-flag) become adopted on the next deploy."""
+    expected = "expected" + "00" * 30
+    existing = _canister("marketplace", "btqpr-5qaaa-aaaas-amxga-cai", stand=_product_stand())
+    existing._verify_result = (True, expected)
+    sheet = _sheet_for([{"name": "marketplace", "wasm_key": "marketplace-backend@main", "kind": "backend"}])
+
+    res, pull_calls, _events = _drive_deploy_sheet(monkeypatch, sheet=sheet, existing={"marketplace": existing})
+
+    assert res["adopted_canisters"] == ["marketplace"]
+    assert existing.status == CanisterStatus.INSTALLED
+    assert existing.adopted is True
+    assert pull_calls == []
+
+
+def test_deploy_sheet_never_reinstalls_adopted_installed_canister_on_mismatch(monkeypatch):
+    """The 2026-09-14 incident path: an adopted canister that was flipped to
+    INSTALLED (adoption, start) and whose owner then shipped a new wasm via dfx
+    must be skipped, not reinstalled in place."""
+    existing = _canister(
+        "file-registry",
+        "fzan7-diaaa-aaaas-amx4q-cai",
+        stand=_product_stand(),
+        status=CanisterStatus.INSTALLED,
+        adopted=True,
+    )
+    existing.wasm_key = "file-registry-backend@main"
+    existing.wasm_hash = "old" + "00" * 30
+    existing._verify_result = (False, "3de2d1cc" + "00" * 28)
+    sheet = _sheet_for([{"name": "file-registry", "wasm_key": "file-registry-backend@main", "kind": "backend"}])
+
+    res, pull_calls, events = _drive_deploy_sheet(monkeypatch, sheet=sheet, existing={"file-registry": existing})
+
+    assert res["ok"] is True, res
+    assert res["reinstalled_canisters"] == []
+    assert pull_calls == []
+    assert res["hash_mismatch_canisters"] == [{
+        "name": "file-registry",
+        "actual_hash": "3de2d1cc" + "00" * 28,
+        "expected_hash": "expected" + "00" * 30,
+        "adopted": True,
+    }]
+    assert any(e[0] == "canister_hash_mismatch_skipped" for e in events)
+
+
+def test_deploy_sheet_adopted_installed_matching_hash_is_skipped(monkeypatch):
+    expected = "expected" + "00" * 30
+    existing = _canister(
+        "file-registry", "fzan7-diaaa-aaaas-amx4q-cai", stand=_product_stand(),
+        status=CanisterStatus.INSTALLED, adopted=True,
+    )
+    existing.wasm_key = "something-else"
+    existing._verify_result = (True, expected)
+    sheet = _sheet_for([{"name": "file-registry", "wasm_key": "file-registry-backend@main", "kind": "backend"}])
+
+    res, pull_calls, _events = _drive_deploy_sheet(monkeypatch, sheet=sheet, existing={"file-registry": existing})
+
+    assert res["skipped_canisters"] == ["file-registry"]
+    assert pull_calls == []
+    assert existing.wasm_key == "marketplace-backend@main"
+
+
+def test_deploy_sheet_adopted_reinstall_needs_explicit_opt_in(monkeypatch):
+    existing = _canister(
+        "file-registry", "fzan7-diaaa-aaaas-amx4q-cai", stand=_product_stand(),
+        status=CanisterStatus.INSTALLED, adopted=True,
+    )
+    existing._verify_results = [(False, "3de2d1cc" + "00" * 28), (True, "expected" + "00" * 30)]
+    sheet = _sheet_for([{"name": "file-registry", "wasm_key": "file-registry-backend@main", "kind": "backend"}])
+
+    res, pull_calls, _events = _drive_deploy_sheet(
+        monkeypatch, sheet=sheet, existing={"file-registry": existing}, allow_adopted_reinstall=True
+    )
+
+    assert res["reinstalled_canisters"] == ["file-registry"]
+    assert pull_calls and pull_calls[0]["mode"] == {"reinstall": None}
+
+
+def test_deploy_sheet_still_reinstalls_casals_created_canister_on_mismatch(monkeypatch):
+    """Casals-created (adopted=False) canisters keep the repair semantics."""
+    existing = _canister(
+        "agora", "aaaaa-aa", stand=_product_stand(), status=CanisterStatus.INSTALLED
+    )
+    existing.wasm_key = "marketplace-backend@main"
+    existing.wasm_hash = "stale" + "00" * 30  # record disagrees with the catalog
+    existing._verify_result = (True, "expected" + "00" * 30)
+    sheet = _sheet_for([{"name": "agora", "wasm_key": "marketplace-backend@main", "kind": "backend"}])
+
+    res, pull_calls, _events = _drive_deploy_sheet(monkeypatch, sheet=sheet, existing={"agora": existing})
+
+    assert res["reinstalled_canisters"] == ["agora"]
+    assert pull_calls and pull_calls[0]["mode"] == {"reinstall": None}

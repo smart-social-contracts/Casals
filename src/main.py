@@ -1911,6 +1911,8 @@ def register_canister(args: text) -> Async[text]:
         if wasm_type:
             st.wasm_type = wasm_type
         st.status = CanisterStatus.REGISTERED
+        # Not ours: never reinstall it on a hash mismatch (see deploy_sheet).
+        st.adopted = True
         st.created_by = _caller()
         list(PooledCanister.instances())
         if PooledCanister[st.canister_id] is not None:
@@ -2256,7 +2258,12 @@ def deploy_sheet(args: text) -> Async[text]:
                         yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
                         result["skipped_canisters"].append(stname)
                         continue
-                    if existing.status == CanisterStatus.REGISTERED:
+                    was_registered = existing.status == CanisterStatus.REGISTERED
+                    if was_registered:
+                        # REGISTERED is only ever set by register_canister, so
+                        # records from before the ``adopted`` flag existed get
+                        # it here, before adoption may flip them to INSTALLED.
+                        existing.adopted = True
                         adopted, actual = yield from _adopt_registered_canister_gen(
                             existing, dk, w)
                         if adopted:
@@ -2301,6 +2308,39 @@ def deploy_sheet(args: text) -> Async[text]:
                                 "name": stname,
                                 "actual_hash": actual,
                                 "expected_hash": w.wasm_hash,
+                            }
+                            result["hash_mismatch_canisters"].append(mismatch)
+                            _append_event(
+                                "canister_hash_mismatch_skipped",
+                                existing.canister_id,
+                                mismatch,
+                            )
+                            continue
+                    if not was_registered and bool(getattr(existing, "adopted", False)):
+                        # Not created by Casals (adopted, later marked INSTALLED
+                        # by adoption or a start): its code is someone else's to
+                        # install. A hash mismatch means they shipped a new
+                        # build, not that the canister is broken — never
+                        # reinstall it (that would discard its state) unless
+                        # explicitly opted in.
+                        ok, actual = yield from _verify_module_hash(
+                            existing.canister_id, w.wasm_hash)
+                        if ok:
+                            existing.wasm_key = w.key
+                            existing.wasm_hash = actual
+                            existing.stand = dk
+                            yield from _ensure_provision_controllers_gen(
+                                existing.canister_id, dk, w)
+                            result["skipped_canisters"].append(stname)
+                            continue
+                        # Bare (no module): actual == "" -> fall through and
+                        # install; mode "reinstall" is valid on an empty canister.
+                        if actual and not allow_adopted_reinstall:
+                            mismatch = {
+                                "name": stname,
+                                "actual_hash": actual,
+                                "expected_hash": w.wasm_hash,
+                                "adopted": True,
                             }
                             result["hash_mismatch_canisters"].append(mismatch)
                             _append_event(
