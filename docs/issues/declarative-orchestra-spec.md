@@ -71,6 +71,14 @@ populated orchestra" bug.
    `environments/*.json` and every compatibility shim are deleted, not
    deprecated. Stable-memory migrations of existing conductors are not
    required: prod conductors are rebuilt from their exported v2 sheet.
+11. **Agnostic.** Casals core (canister, CLI, oracle, harness) knows nothing
+    about GaaS, Realms, installers, marketplaces or realms. Every
+    product-specific behaviour must be expressible with the generic sheet
+    primitives (`config` calls, `health` checks, `stand_template`, `adopted`
+    canisters, `registry.publish`). If a product needs something the sheet
+    cannot say, the sheet grows a *generic* field; Casals never grows a
+    product branch. CI greps the Casals repo for `realm`, `gaas`,
+    `marketplace`, `installer` outside `tests/e2e/orchestras/` and docs.
 10. **Parity of surfaces.** Everything the frontend shows about an orchestra
     (canisters, stands, sections, IC controllers, commanders, batons, multisig,
     cycles, health, plan, drift) is also available from the `casals` CLI
@@ -576,9 +584,14 @@ pass/fail table per sheet field per canister.
 
 ### 11.2 Orchestra corpus
 
-`tests/e2e/orchestras/<name>/casals.json`, simple → complex. Each is a real v2
-sheet; the two production sheets are included **by reference** (the repo files,
-not copies) so the tests break when they drift.
+`tests/e2e/orchestras/<name>/casals.json`, simple → complex. Orchestras 1–7
+live in the Casals repo and use only generic hello-world / orchestration
+wasms (§2.11). Orchestras 8 and 9 are the real `casals.json` of the
+`gos-as-a-service` and `realms` repos and run **in those repos' CI**, using
+the same harness Casals ships (`casals e2e <sheet> …`, `casals oracle`). The
+Casals repo never references either product; the products depend on Casals,
+not the other way round. The laptop table (§11.4) can still run all nine
+because `make e2e` accepts extra sheet paths.
 
 | # | Orchestra | Exercises |
 |---|---|---|
