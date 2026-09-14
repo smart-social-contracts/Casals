@@ -76,7 +76,9 @@ def _sheet_for(canisters):
     }
 
 
-def _drive_deploy_sheet(monkeypatch, *, sheet, existing=None, allow_adopted_reinstall=False):
+def _drive_deploy_sheet(
+    monkeypatch, *, sheet, existing=None, allow_adopted_reinstall=False, extra_args=None, retired=None
+):
     import main
 
     existing = existing or {}
@@ -113,7 +115,15 @@ def _drive_deploy_sheet(monkeypatch, *, sheet, existing=None, allow_adopted_rein
     monkeypatch.setattr(main, "_resolve_install_arg", lambda spec, w: b"")
     monkeypatch.setattr(main, "wasm_type_of_wasm", lambda w: "basilisk")
     monkeypatch.setattr(main, "_is_retire_protected", lambda st: False)
-    monkeypatch.setattr(main, "_retire_canister", lambda st: (_ for _ in ()).throw(AssertionError("retire")))
+    if retired is None:
+        monkeypatch.setattr(main, "_retire_canister", lambda st: (_ for _ in ()).throw(AssertionError("retire")))
+    else:
+        def fake_retire(st):
+            retired.append(st.name)
+            return
+            yield  # pragma: no cover - generator shape
+
+        monkeypatch.setattr(main, "_retire_canister", fake_retire)
     monkeypatch.setattr(main, "assert_subnet_allowed", lambda *a, **k: None)
     monkeypatch.setattr(main, "apply_commanders_from_spec", lambda *a, **k: None)
     monkeypatch.setattr(main, "_teardown_priority_from_spec", lambda spec: 0)
@@ -155,6 +165,8 @@ def _drive_deploy_sheet(monkeypatch, *, sheet, existing=None, allow_adopted_rein
     args = {}
     if allow_adopted_reinstall:
         args["allow_adopted_reinstall"] = True
+    if extra_args:
+        args.update(extra_args)
 
     gen = main.deploy_sheet(json.dumps(args) if args else "{}")
     try:
@@ -489,3 +501,95 @@ def test_adopt_skips_when_not_registered(monkeypatch):
     assert adopted is False
     assert actual == ""
     assert calls["verify"] == 0
+
+
+def test_deploy_sheet_retires_canisters_missing_from_sheet_by_default(monkeypatch):
+    """A partial sheet stops and pools every registered canister it omits."""
+    expected = "expected" + "00" * 30
+    existing = _canister("marketplace", "btqpr-5qaaa-aaaas-amxga-cai", stand=_product_stand())
+    existing._verify_result = (True, expected)
+    sheet = _sheet_for([{"name": "multisig", "wasm_key": "orchestration-multisig", "kind": "backend"}])
+    retired = []
+
+    res, _pulls, _events = _drive_deploy_sheet(
+        monkeypatch, sheet=sheet, existing={"marketplace": existing}, retired=retired
+    )
+
+    assert res["ok"] is True, res
+    assert retired == ["marketplace"]
+    assert res["retired_canisters"] == ["marketplace"]
+    assert res["kept_canisters"] == []
+
+
+def test_deploy_sheet_retire_missing_false_keeps_omitted_canisters(monkeypatch):
+    """``retire_missing: false`` makes a partial sheet additive."""
+    expected = "expected" + "00" * 30
+    existing = _canister("marketplace", "btqpr-5qaaa-aaaas-amxga-cai", stand=_product_stand())
+    existing._verify_result = (True, expected)
+    sheet = _sheet_for([{"name": "multisig", "wasm_key": "orchestration-multisig", "kind": "backend"}])
+    retired = []
+
+    res, _pulls, events = _drive_deploy_sheet(
+        monkeypatch,
+        sheet=sheet,
+        existing={"marketplace": existing},
+        retired=retired,
+        extra_args={"retire_missing": False},
+    )
+
+    assert res["ok"] is True, res
+    assert retired == []
+    assert res["retired_canisters"] == []
+    assert res["kept_canisters"] == ["marketplace"]
+    assert existing.status == CanisterStatus.REGISTERED
+    deployed = [e for e in events if e[0] == "sheet_deployed"]
+    assert deployed and deployed[0][2]["kept_canisters"] == ["marketplace"]
+
+
+def _drive_lifecycle(monkeypatch, fn_name, canister):
+    import main
+
+    def canister_getitem(_self, key):
+        return canister if key == canister.name else None
+
+    monkeypatch.setattr(main, "Canister", MagicMock(instances=lambda: [canister], __getitem__=canister_getitem))
+    monkeypatch.setattr(main, "_require_commander", lambda dk, perm: None)
+    monkeypatch.setattr(main, "_append_event", lambda kind, cid, payload: None)
+    monkeypatch.setattr(
+        main,
+        "management_canister",
+        types.SimpleNamespace(
+            start_canister=lambda a: iter(()), stop_canister=lambda a: iter(())
+        ),
+    )
+    gen = getattr(main, fn_name)(json.dumps({"canister": canister.name}))
+    try:
+        while True:
+            next(gen)
+    except StopIteration as done:
+        return json.loads(done.value)
+
+
+def test_start_canister_keeps_adopted_status(monkeypatch):
+    """Starting an adopted (REGISTERED) canister must not mark it INSTALLED:
+    that would let the next deploy_sheet reinstall it on a hash mismatch."""
+    adopted = _canister("marketplace", "btqpr-5qaaa-aaaas-amxga-cai", stand=_product_stand())
+    res = _drive_lifecycle(monkeypatch, "start_canister", adopted)
+    assert res["ok"] is True, res
+    assert adopted.status == CanisterStatus.REGISTERED
+
+
+def test_stop_then_start_restores_registered_or_installed(monkeypatch):
+    adopted = _canister("marketplace", "btqpr-5qaaa-aaaas-amxga-cai", stand=_product_stand())
+    _drive_lifecycle(monkeypatch, "stop_canister", adopted)
+    assert adopted.status == CanisterStatus.STOPPED
+    _drive_lifecycle(monkeypatch, "start_canister", adopted)
+    assert adopted.status == CanisterStatus.REGISTERED
+
+    installed = _canister(
+        "agora", "aaaaa-aa", stand=_product_stand(), status=CanisterStatus.INSTALLED
+    )
+    installed.wasm_hash = "ab" * 32
+    _drive_lifecycle(monkeypatch, "stop_canister", installed)
+    _drive_lifecycle(monkeypatch, "start_canister", installed)
+    assert installed.status == CanisterStatus.INSTALLED

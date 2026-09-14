@@ -2108,6 +2108,12 @@ def deploy_sheet(args: text) -> Async[text]:
         (``REGISTERED`` status) whose live module hash differs from the
         authorized WASM. **Discards stable memory** on those canisters. Default
         false — mismatches are skipped and reported in ``hash_mismatch_canisters``.
+      - ``retire_missing``: default true. When false, canisters registered on
+        the conductor but absent from the sheet are left as they are instead of
+        being stopped and returned to the pool. Use it for partial sheets (e.g.
+        adding one stand) so the pool cannot hand a live canister to the new
+        stand and reinstall it. Whatever is left out is reported in
+        ``kept_canisters``.
     """
     try:
         _require_can_add()
@@ -2119,12 +2125,14 @@ def deploy_sheet(args: text) -> Async[text]:
             return _err("no sheet loaded")
 
         allow_adopted_reinstall = bool(params.get("allow_adopted_reinstall"))
+        retire_missing = params.get("retire_missing", True) is not False
 
         result = {
             "created_sections": [], "created_stands": [], "created_canisters": [],
             "reused_canisters": [], "reinstalled_canisters": [], "retired_canisters": [],
             "skipped_canisters": [], "adopted_canisters": [], "protected_canisters": [],
             "installed_bare_canisters": [], "hash_mismatch_canisters": [],
+            "kept_canisters": [],
             "errors": [],
         }
 
@@ -2216,6 +2224,9 @@ def deploy_sheet(args: text) -> Async[text]:
             if st.name not in desired:
                 if _is_retire_protected(st):
                     result["protected_canisters"].append(st.name)
+                    continue
+                if not retire_missing:
+                    result["kept_canisters"].append(st.name)
                     continue
                 yield from _retire_canister(st)
                 result["retired_canisters"].append(st.name)
@@ -2333,7 +2344,8 @@ def deploy_sheet(args: text) -> Async[text]:
             "created_sections", "created_stands", "created_canisters",
             "reused_canisters", "reinstalled_canisters", "retired_canisters",
             "adopted_canisters", "protected_canisters",
-            "installed_bare_canisters", "hash_mismatch_canisters")})
+            "installed_bare_canisters", "hash_mismatch_canisters",
+            "kept_canisters")})
 
         # Optionally apply the active arrangement (post-deploy config) in the same
         # call, so a single deploy can bring an environment fully up and ready.
@@ -2933,7 +2945,15 @@ def start_canister(args: text) -> Async[text]:
             return _err(f"unknown canister '{params['canister']}'")
         _require_commander(st.stand, "canister.lifecycle")
         yield management_canister.start_canister({"canister_id": Principal.from_str(st.canister_id)})
-        st.status = CanisterStatus.INSTALLED
+        # Only undo a STOPPED. Forcing INSTALLED on an adopted (REGISTERED)
+        # canister would drop its hash-mismatch protection: the next
+        # deploy_sheet would reinstall it in place and wipe its state.
+        if st.status == CanisterStatus.STOPPED:
+            st.status = (
+                CanisterStatus.INSTALLED
+                if (st.wasm_hash or "").strip()
+                else CanisterStatus.REGISTERED
+            )
         _append_event("start_canister", st.canister_id, {})
         return _ok()
     except Exception as e:
