@@ -1,0 +1,282 @@
+"""Registry WASM/source resolution and chunked upload to the file registry."""
+
+from __future__ import annotations
+
+import base64
+import gzip
+import hashlib
+import json
+import os
+import re
+import subprocess
+import urllib.request
+from dataclasses import dataclass
+from typing import Any
+
+CHUNK_BYTES = 1024 * 1024
+FINALIZE_BATCH_CHUNKS = 8
+RELEASE_RE = re.compile(r"^release:([^/]+)/([^@]+)@([^:]+):(.+)$")
+
+BUILD_TARGETS = {
+    "casals_backend": ("make", "build-backend"),
+    "ic_file_registry": ("make", "build-registry"),
+    "ic_file_registry_frontend": ("make", "build-registry-frontend"),
+    "casals_frontend": None,  # asset canister — handled specially
+}
+
+WASM_PATHS = {
+    "casals_backend": ".basilisk/casals_backend/casals_backend.wasm",
+    "ic_file_registry": ".basilisk/ic_file_registry/ic_file_registry.wasm",
+}
+
+
+@dataclass
+class ResolvedArtifact:
+    family: str
+    version: str
+    data: bytes
+    sha256: str
+    path: str
+    wasm_type: str | None = None
+    is_frontend_asset: bool = False
+    icp_canister: str | None = None
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def registry_path(family: str, version: str) -> str:
+    return f"{family}@{version}.wasm.gz"
+
+
+def resolve_source(
+    source: str,
+    *,
+    sheet_dir: str,
+    project_root: str,
+    expected_sha256: str | None = None,
+) -> tuple[bytes, str]:
+    """Resolve a registry source string to (bytes, sha256 hex)."""
+    src = (source or "").strip()
+    data: bytes
+
+    if src.startswith("local:"):
+        rel = src[6:]
+        path = rel if os.path.isabs(rel) else os.path.join(sheet_dir, rel)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"local source not found: {path}")
+        with open(path, "rb") as f:
+            raw = f.read()
+        data = gzip.decompress(raw) if path.endswith(".gz") else raw
+    elif src.startswith("build:"):
+        canister = src[6:].strip()
+        data = _build_canister_artifact(canister, project_root)
+    elif src.startswith("https://") or src.startswith("http://"):
+        with urllib.request.urlopen(src, timeout=120) as resp:
+            raw = resp.read()
+        data = gzip.decompress(raw) if src.endswith(".gz") else raw
+    elif src.startswith("release:"):
+        data = _download_github_release(src)
+    else:
+        raise ValueError(f"unsupported registry source: {source!r}")
+
+    digest = sha256_hex(data)
+    if expected_sha256 and expected_sha256.lower() != digest:
+        raise ValueError(
+            f"sha256 mismatch for {source}: expected {expected_sha256}, got {digest}"
+        )
+    return data, digest
+
+
+def _build_canister_artifact(canister: str, project_root: str) -> bytes:
+    if canister in BUILD_TARGETS and BUILD_TARGETS[canister]:
+        make_target = BUILD_TARGETS[canister][1]
+        result = subprocess.run(
+            ["make", make_target],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"make {make_target} failed:\n{result.stderr[-800:]}")
+    wasm_rel = WASM_PATHS.get(canister)
+    if wasm_rel:
+        path = os.path.join(project_root, wasm_rel)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"built wasm not found: {path}")
+        with open(path, "rb") as f:
+            return f.read()
+    if canister in ("casals_frontend", "ic_file_registry_frontend"):
+        # Asset canisters: registry stores a marker; actual deploy uses icp asset recipe.
+        return b"ASSET_CANISTER"
+    raise ValueError(f"unknown build canister: {canister}")
+
+
+def _download_github_release(source: str) -> bytes:
+    m = RELEASE_RE.match(source)
+    if not m:
+        raise ValueError(f"invalid release source: {source}")
+    owner_repo, _repo, tag, asset = m.group(1), m.group(2), m.group(3), m.group(4)
+    url = f"https://github.com/{owner_repo}/releases/download/{tag}/{asset}"
+    with urllib.request.urlopen(url, timeout=120) as resp:
+        raw = resp.read()
+    return gzip.decompress(raw) if asset.endswith(".gz") else raw
+
+
+def iter_registry_entries(sheet: dict) -> list[ResolvedArtifact]:
+    """Resolve all registry.wasms entries from a sheet (no upload)."""
+    registry = sheet.get("registry") or {}
+    wasms = registry.get("wasms") or []
+    out: list[ResolvedArtifact] = []
+    for entry in wasms:
+        if not isinstance(entry, dict):
+            continue
+        family = str(entry.get("family") or "")
+        version = str(entry.get("version") or "")
+        source = str(entry.get("source") or "")
+        expected = (entry.get("sha256") or "").strip() or None
+        data, digest = resolve_source(
+            source,
+            sheet_dir=".",
+            project_root=os.getcwd(),
+            expected_sha256=expected,
+        )
+        icp_name = None
+        if source.startswith("build:"):
+            icp_name = source[6:].strip()
+        out.append(
+            ResolvedArtifact(
+                family=family,
+                version=version,
+                data=data,
+                sha256=digest,
+                path=registry_path(family, version),
+                wasm_type=entry.get("wasm_type"),
+                is_frontend_asset=icp_name in ("casals_frontend", "ic_file_registry_frontend"),
+                icp_canister=icp_name,
+            )
+        )
+    return out
+
+
+def registry_file_hashes(ic, registry_id: str, namespace: str) -> dict[str, str]:
+    res = ic.call_update(registry_id, "list_files", json.dumps({"namespace": namespace}))
+    if isinstance(res, list):
+        return {
+            item.get("path"): item.get("sha256", "")
+            for item in res
+            if isinstance(item, dict) and item.get("path")
+        }
+    return {}
+
+
+def upload_bytes(
+    ic,
+    registry_id: str,
+    namespace: str,
+    path: str,
+    data: bytes,
+    sha256: str,
+) -> str:
+    """Chunk-upload bytes; return recorded sha256."""
+    total = (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES
+    for i in range(total):
+        chunk = data[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
+        res = ic.call_update(
+            registry_id,
+            "store_file_chunk",
+            json.dumps({
+                "namespace": namespace,
+                "path": path,
+                "chunk_index": i,
+                "total_chunks": total,
+                "data_b64": base64.b64encode(chunk).decode("ascii"),
+                "content_type": "application/wasm",
+            }),
+            timeout=600,
+        )
+        if not (isinstance(res, dict) and res.get("ok")):
+            raise RuntimeError(f"chunk {i}/{total} upload failed: {res}")
+    return _finalize_upload(ic, registry_id, namespace, path, sha256)
+
+
+def _finalize_upload(ic, registry_id: str, namespace: str, path: str, sha256: str) -> str:
+    payload = json.dumps({
+        "namespace": namespace,
+        "path": path,
+        "expected_sha256": sha256,
+        "batch_size": FINALIZE_BATCH_CHUNKS,
+    })
+    processed = -1
+    res: Any = None
+    while True:
+        try:
+            res = ic.call_update(registry_id, "finalize_chunked_file_step", payload, timeout=600)
+        except RuntimeError as exc:
+            text = str(exc).lower()
+            if "ic0536" not in text and "no update method" not in text:
+                raise
+            res = ic.call_update(
+                registry_id,
+                "finalize_chunked_file",
+                json.dumps({"namespace": namespace, "path": path, "sha256": sha256}),
+                timeout=600,
+            )
+            break
+        if not (isinstance(res, dict) and res.get("ok")):
+            raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
+        if res.get("done"):
+            break
+        done_now = int(res.get("processed", 0) or 0)
+        if done_now <= processed:
+            raise RuntimeError(f"finalize stalled for {namespace}/{path}")
+        processed = done_now
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
+    return str(res.get("sha256") or sha256)
+
+
+def ensure_registry_uploads(
+    ic,
+    sheet: dict,
+    *,
+    sheet_path: str,
+    project_root: str,
+    registry_id: str,
+    namespace: str = "wasms",
+    progress=None,
+) -> list[dict]:
+    """Upload missing/changed wasms; return summary rows."""
+    sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
+    existing = registry_file_hashes(ic, registry_id, namespace)
+    rows: list[dict] = []
+    registry = sheet.get("registry") or {}
+    for entry in registry.get("wasms") or []:
+        if not isinstance(entry, dict):
+            continue
+        family = str(entry.get("family") or "")
+        version = str(entry.get("version") or "")
+        source = str(entry.get("source") or "")
+        expected = (entry.get("sha256") or "").strip() or None
+        path = registry_path(family, version)
+        data, digest = resolve_source(
+            source,
+            sheet_dir=sheet_dir,
+            project_root=project_root,
+            expected_sha256=expected,
+        )
+        if not expected:
+            if progress:
+                progress(f"  {family}@{version} sha256={digest}")
+        reg_hash = existing.get(path, "")
+        if reg_hash == digest:
+            rows.append({"family": family, "version": version, "path": path, "action": "skipped", "sha256": digest})
+            continue
+        if entry.get("is_frontend_asset") or source.startswith("build:casals_frontend") or source.startswith("build:ic_file_registry_frontend"):
+            rows.append({"family": family, "version": version, "path": path, "action": "asset_canister", "sha256": digest})
+            continue
+        upload_bytes(ic, registry_id, namespace, path, data, digest)
+        rows.append({"family": family, "version": version, "path": path, "action": "uploaded", "sha256": digest})
+    return rows
