@@ -79,6 +79,11 @@ populated orchestra" bug.
     cannot say, the sheet grows a *generic* field; Casals never grows a
     product branch. CI greps the Casals repo for `realm`, `gaas`,
     `marketplace`, `installer` outside `tests/e2e/orchestras/` and docs.
+12. **Less code.** Simplicity and cleanness over completeness of edge
+    handling. One way to do each thing; no compatibility shims, no
+    duplicated helpers, no speculative options. A module that can be
+    deleted should be. Reviewers reject additions that a smaller change
+    would cover.
 10. **Parity of surfaces.** Everything the frontend shows about an orchestra
     (canisters, stands, sections, IC controllers, commanders, batons, multisig,
     cycles, health, plan, drift) is also available from the `casals` CLI
