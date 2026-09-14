@@ -61,15 +61,17 @@ from commanders import (
     section_commander_can,
 )
 from cycle_sweep import return_cycles_gen
-from arrangement_helpers import (
-    normalize_execute_principals,
-    normalize_parameter_schema,
-    normalize_parameters,
-    parse_execute_principals_json,
-    parse_parameter_schema_json,
-    validate_and_normalize_steps,
+from sheet_api import (
+    apply_gen as _apply_plan_gen,
+    bind_conductor_impl,
+    export_sheet_impl,
+    get_bindings_impl,
+    get_sheet_impl,
+    plan_gen as _plan_gen,
+    set_sheet_impl,
+    verify_gen as _verify_plan_gen,
 )
-from arrangement import _apply_arrangement_gen, _get_active_arrangement
+from sheet_storage import get_plan_record, load_apply_result
 from bootstrap import _ensure_core_bootstrap, _is_retire_protected
 from orchestration_bridge import (
     _baton_in_stand,
@@ -182,7 +184,6 @@ from lifecycle import (
     _versions_in_family,
 )
 from models import (
-    Arrangement,
     AuthorizedWasm,
     CycleSample,
     CyclesSnapshot,
@@ -240,7 +241,6 @@ from services import (
     GrantPermissionArg,
     StoreArg,
 )
-from sheet import _default_sheet_copy, _load_sheet, _set_live_sheet, get_live_sheet
 from util import (
     canister_url,
     cycles_status,
@@ -419,7 +419,6 @@ except RuntimeError:
 def _bootstrap() -> None:
     try:
         _settings()
-        _load_sheet()
         try:
             _ensure_core_bootstrap()
         except Exception as e:  # pragma: no cover - defensive at install time
@@ -525,8 +524,8 @@ def _instance_commander_has_permission(permission: str) -> bool:
     return False
 
 
-def _require_arrangement_permission(permission: str) -> None:
-    """Authorize arrangement management (create/activate/delete)."""
+def _require_sheet_permission(permission: str) -> None:
+    """Authorize sheet.set (controller or commander with permission)."""
     if _is_controller():
         return
     if _instance_commander_has_permission(permission):
@@ -534,26 +533,25 @@ def _require_arrangement_permission(permission: str) -> None:
     raise Exception(f"unauthorized: caller lacks '{permission}'")
 
 
-def _require_arrangement_apply(arr) -> None:
-    """Authorize apply_arrangement for one arrangement."""
+def _require_any_commander() -> None:
+    """Any section/stand commander may call plan/verify."""
     if _is_controller():
         return
-    principals = parse_execute_principals_json(
-        getattr(arr, "execute_principals_json", "") or "[]"
-    )
-    if principals and _caller() in principals:
-        return
-    raise Exception(
-        "unauthorized: caller is not a Casals controller or listed in execute_principals"
-    )
+    caller = _caller()
+    list(Section.instances())
+    for sec in Section.instances():
+        if is_commander(sec, caller):
+            return
+    list(Stand.instances())
+    for stand in Stand.instances():
+        if is_commander(stand, caller):
+            return
+    raise Exception("unauthorized: caller is not a commander")
 
 
-def _arrangement_execute_principals_view(arr) -> list:
-    return parse_execute_principals_json(getattr(arr, "execute_principals_json", "") or "[]")
-
-
-def _arrangement_parameter_schema_view(arr) -> dict:
-    return parse_parameter_schema_json(getattr(arr, "parameter_schema_json", "") or "{}")
+def _require_sheet_apply() -> None:
+    """Authorize apply (controller or commander with sheet.apply)."""
+    _require_sheet_permission("sheet.apply")
 
 
 def _section_commander_can(sec, permission: str) -> bool:
@@ -596,6 +594,50 @@ def _caller_can_manage_subnet_whitelist() -> bool:
 def _require_subnet_whitelist_auth() -> None:
     if not _caller_can_manage_subnet_whitelist():
         raise Exception("unauthorized: caller lacks subnet.whitelist permission")
+
+
+def _caller_can_manage_registry_publishers() -> bool:
+    """Controllers, or a section/stand commander holding ``registry.publish.grant``."""
+    if _is_controller():
+        return True
+    list(Section.instances())
+    for sec in Section.instances():
+        if _section_commander_can(sec, "registry.publish.grant"):
+            return True
+    list(Stand.instances())
+    for stand in Stand.instances():
+        if entity_has_permission(stand, _caller(), "registry.publish.grant"):
+            return True
+    return False
+
+
+def _require_registry_publisher_auth() -> None:
+    if not _caller_can_manage_registry_publishers():
+        raise Exception("unauthorized: caller lacks registry.publish.grant permission")
+
+
+def _parse_registry_publisher_args(args: text) -> tuple:
+    """Validate grant/revoke publisher args; return (namespace, principal)."""
+    params = json.loads(args) if args else {}
+    namespace = (params.get("namespace") or "").strip()
+    if not namespace:
+        raise Exception("namespace is required")
+    principal = _validate_principal_text(params.get("principal", ""))
+    if principal == ANONYMOUS:
+        raise Exception("anonymous principal is not allowed")
+    return namespace, principal
+
+
+def _relay_registry_publish(method: str, args: text):
+    """Generator: relay grant_publish / revoke_publish to the file-registry."""
+    namespace, principal = _parse_registry_publisher_args(args)
+    fr = _file_registry()
+    relay_arg = json.dumps({"namespace": namespace, "principal": principal})
+    res = yield getattr(fr, method)(relay_arg)
+    reply = json.loads(unwrap_call_result(res))
+    if reply.get("error"):
+        raise Exception(reply["error"])
+    return namespace, principal
 
 
 def _require_can_add_in_section(sec, permission: str) -> None:
@@ -689,7 +731,7 @@ def get_status() -> text:
         "stands": Stand.count(),
         "canisters": Canister.count(),
         "authorized_wasms": AuthorizedWasm.count(),
-        "arrangements": Arrangement.count(),
+        "arrangements": 0,
         "events": OrchestrationEvent.count(),
         "principal_aliases": PrincipalAlias.count(),
         "cycle_samples": CycleSample.count(),
@@ -892,10 +934,11 @@ def get_canister_deployment(args: text) -> text:
 
 @query
 def get_sheet() -> text:
-    """Return the live sheet — the desired orchestra. Editable via set_sheet,
-    applied via deploy_sheet. Persisted across restarts/upgrades (the bundled
-    default only seeds the first boot)."""
-    return json.dumps(get_live_sheet() or {"sections": []})
+    """Return the stored v2 sheet (§5.5)."""
+    try:
+        return _ok(**get_sheet_impl())
+    except Exception as e:
+        return _err(str(e))
 
 
 @query
@@ -983,202 +1026,100 @@ def assign_pool_canister(args: text) -> Async[text]:
 
 @update
 def set_sheet(args: text) -> text:
-    """Replace the live sheet and persist it to stable storage (survives
-    restarts/upgrades). Nothing on-chain changes until deploy_sheet. Controller
-    or open-access caller. Args: the sheet object, or {"sheet": {...}}."""
+    """Store validated v2 sheet (§5.5). Requires controller or ``sheet.set``."""
     try:
-        _require_can_add()
-        params = json.loads(args)
-        sheet = params.get("sheet", params)
-        _set_live_sheet(sheet)
-        _append_event("sheet_edited", "", {"sections": len(get_live_sheet().get("sections", []))})
-        return _ok(sheet=get_live_sheet())
+        _require_sheet_permission("sheet.set")
+        params = json.loads(args) if args else {}
+        return _ok(**set_sheet_impl(params))
     except Exception as e:
         return _err(str(e))
 
 
 @update
-def reset_sheet() -> text:
-    """Reset the live sheet back to the bundled default and persist it.
-    Controller or open-access."""
+def bind_conductor(args: text) -> text:
+    """Bind conductor canister ids (controller-only, idempotent). §5.5."""
     try:
-        _require_can_add()
-        _set_live_sheet(_default_sheet_copy())
-        _append_event("sheet_reset", "", {})
-        return _ok(sheet=get_live_sheet())
+        _require_admin()
+        params = json.loads(args) if args else {}
+        return _ok(**bind_conductor_impl(params))
     except Exception as e:
         return _err(str(e))
 
 
-# ── Arrangements (environment config overlays) ─────────────────────────────
-#
-# A sheet describes the orchestra's topology + code; an Arrangement describes how
-# one environment is configured *after* a deploy: a flat map of `parameters` plus
-# an ordered list of declarative post-deploy `steps` ({target, method, args}).
-# Exactly one arrangement is active per Casals instance. Casals never interprets
-# the parameters/steps — it stores and forwards them (see arrangement.py).
+@update
+def plan(args: text) -> Async[text]:
+    """Compute reconciliation plan from live IC state (§5.5)."""
+    try:
+        _require_any_commander()
+        params = json.loads(args) if args else {}
+        result = yield from _plan_gen(params)
+        return _ok(plan=result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def verify() -> Async[text]:
+    """Plan with converged assertion (§5.5)."""
+    try:
+        _require_any_commander()
+        result = yield from _verify_plan_gen()
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def apply(args: text) -> Async[text]:
+    """Execute a stored plan by hash (§5.5). Requires ``sheet.apply``."""
+    try:
+        _require_sheet_apply()
+        params = json.loads(args) if args else {}
+        result = yield from _apply_plan_gen(params)
+        if isinstance(result, dict) and result.get("ok") is False:
+            return json.dumps(result)
+        return _ok(**result)
+    except Exception as e:
+        return _err(str(e))
+
 
 @query
-def list_arrangements() -> text:
-    """List all arrangements (post-deploy config overlays). Exactly one is active."""
-    list(Arrangement.instances())
-    out = []
-    for a in Arrangement.instances():
-        try:
-            nparams = len(json.loads(a.parameters_json or "{}"))
-        except (json.JSONDecodeError, ValueError):
-            nparams = 0
-        try:
-            nsteps = len(json.loads(a.steps_json or "[]"))
-        except (json.JSONDecodeError, ValueError):
-            nsteps = 0
-        schema = _arrangement_parameter_schema_view(a)
-        out.append({
-            "name": a.name,
-            "description": a.description,
-            "active": bool(int(getattr(a, "active", 0) or 0)),
-            "parameter_count": nparams,
-            "step_count": nsteps,
-            "execute_principal_count": len(_arrangement_execute_principals_view(a)),
-            "parameter_schema_count": len(schema),
-        })
-    out.sort(key=lambda x: (not x["active"], x["name"]))
-    return json.dumps(out)
+def export_sheet() -> text:
+    """Best-effort v2 sheet from live Casals state (§5.5)."""
+    try:
+        return _ok(**export_sheet_impl())
+    except Exception as e:
+        return _err(str(e))
 
 
 @query
-def get_arrangement(args: text) -> text:
-    """Return one arrangement in full (parameters + steps).
-    Args (JSON, optional): {"name": str} — absent/empty => the active arrangement."""
+def get_plan(args: text) -> text:
+    """Return a stored plan by hash (§5.5)."""
     try:
         params = json.loads(args) if args else {}
-    except (json.JSONDecodeError, ValueError):
-        params = {}
-    name = (params.get("name") or "").strip()
-    list(Arrangement.instances())
-    a = Arrangement[name] if name else _get_active_arrangement()
-    if a is None:
-        return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
-    try:
-        parameters = json.loads(a.parameters_json or "{}")
-    except (json.JSONDecodeError, ValueError):
-        parameters = {}
-    try:
-        steps = json.loads(a.steps_json or "[]")
-    except (json.JSONDecodeError, ValueError):
-        steps = []
-    return json.dumps({
-        "ok": True,
-        "name": a.name,
-        "description": a.description,
-        "active": bool(int(getattr(a, "active", 0) or 0)),
-        "parameters": parameters,
-        "steps": steps,
-        "execute_principals": _arrangement_execute_principals_view(a),
-        "parameter_schema": _arrangement_parameter_schema_view(a),
-    })
-
-
-@update
-def set_arrangement(args: text) -> text:
-    """Create or update an arrangement (upsert by name).
-
-    Args (JSON): {name, description?, parameters?, parameter_schema?, steps?, execute_principals?, active?}.
-      - parameters: default values merged at apply time (overridable per run).
-      - parameter_schema: form schema for apply-time inputs (Candid-UI style).
-      - steps: an ordered list of {target, method, args} declarative calls.
-      - execute_principals: principals allowed to apply this arrangement.
-      - active: if true, mark this arrangement active (clearing any other).
-
-    Requires ``arrangement.create`` (or Casals controller). Setting ``active: true``
-    also requires ``arrangement.activate``. parameters/steps are validated here so a
-    malformed arrangement is rejected at write time, not silently at apply time.
-    Idempotent."""
-    try:
-        _require_arrangement_permission("arrangement.create")
-        params = json.loads(args)
-        name = (params.get("name") or "").strip()
-        if not name:
-            return _err("name required")
-        if params.get("active"):
-            _require_arrangement_permission("arrangement.activate")
-        list(Arrangement.instances())
-        a = Arrangement[name]
-        created = a is None
-        if created:
-            a = Arrangement(name=name)
-            a.created_by = _caller()
-        if "description" in params:
-            a.description = (params.get("description") or "")[:512]
-        if "parameters" in params:
-            a.parameters_json = json.dumps(normalize_parameters(params.get("parameters")))
-        if "parameter_schema" in params:
-            a.parameter_schema_json = json.dumps(
-                normalize_parameter_schema(params.get("parameter_schema")),
-                separators=(",", ":"),
-            )
-        if "steps" in params:
-            a.steps_json = json.dumps(validate_and_normalize_steps(params.get("steps")))
-        if "execute_principals" in params:
-            principals = normalize_execute_principals(params.get("execute_principals"))
-            a.execute_principals_json = json.dumps(principals, separators=(",", ":"))
-        if params.get("active"):
-            for other in Arrangement.instances():
-                if other.name != name and int(getattr(other, "active", 0) or 0) == 1:
-                    other.active = 0
-            a.active = 1
-        _append_event("arrangement_set", "",
-                      {"name": name, "created": created, "active": bool(int(a.active or 0))})
-        return _ok(name=name, created=created, active=bool(int(a.active or 0)),
-                   execute_principals=_arrangement_execute_principals_view(a),
-                   parameter_schema=_arrangement_parameter_schema_view(a))
+        ph = (params.get("plan_hash") or "").strip()
+        plan = get_plan_record(ph)
+        if not plan:
+            return _err("plan not found")
+        return _ok(plan=plan)
     except Exception as e:
         return _err(str(e))
 
 
-@update
-def set_active_arrangement(args: text) -> text:
-    """Mark one arrangement active (clearing any other).
-
-    Requires ``arrangement.activate`` (or Casals controller).
-    Args (JSON): {"name": str}."""
+@query
+def last_apply() -> text:
+    """Return the last apply result (§5.5)."""
     try:
-        _require_arrangement_permission("arrangement.activate")
-        params = json.loads(args)
-        name = (params.get("name") or "").strip()
-        if not name:
-            return _err("name required")
-        list(Arrangement.instances())
-        a = Arrangement[name]
-        if a is None:
-            return _err(f"unknown arrangement '{name}'")
-        for other in Arrangement.instances():
-            if other.name != name and int(getattr(other, "active", 0) or 0) == 1:
-                other.active = 0
-        a.active = 1
-        _append_event("arrangement_activated", "", {"name": name})
-        return _ok(name=name)
+        return _ok(apply=load_apply_result())
     except Exception as e:
         return _err(str(e))
 
 
-@update
-def delete_arrangement(args: text) -> text:
-    """Delete an arrangement.
-
-    Requires ``arrangement.delete`` (or Casals controller).
-    Args (JSON): {"name": str}."""
+@query
+def get_bindings() -> text:
+    """Return name → canister id bindings (§5.5)."""
     try:
-        _require_arrangement_permission("arrangement.delete")
-        params = json.loads(args)
-        name = (params.get("name") or "").strip()
-        list(Arrangement.instances())
-        a = Arrangement[name]
-        if a is None:
-            return _err(f"unknown arrangement '{name}'")
-        a.delete()
-        _append_event("arrangement_deleted", "", {"name": name})
-        return _ok(name=name)
+        return _ok(**get_bindings_impl())
     except Exception as e:
         return _err(str(e))
 
@@ -2091,365 +2032,6 @@ def create_canister(args: text) -> Async[text]:
 
 
 @update
-def deploy_sheet(args: text) -> Async[text]:
-    """Idempotently reconcile the whole orchestra to the live sheet.
-
-    For the sheet's Sections ⊃ Stands ⊃ Canisters:
-      - create any missing section/stand;
-      - create any missing canister, reusing a pooled (free) canister before
-        paying to create a new one;
-      - reinstall a canister whose authorized WASM no longer matches the sheet;
-      - retire any canister not in the sheet — its canister is stopped and returned
-        to the pool (never deleted), so a later deploy can reuse it.
-
-    Safe to re-run (idempotent). Controller or open-access caller. Args (JSON,
-    optional):
-      - ``sheet``: set the live sheet before deploying.
-      - ``apply_arrangement``: run the active arrangement after deploy.
-      - ``allow_adopted_reinstall``: when true, reinstall adopted canisters
-        (``REGISTERED`` status) whose live module hash differs from the
-        authorized WASM. **Discards stable memory** on those canisters. Default
-        false — mismatches are skipped and reported in ``hash_mismatch_canisters``.
-      - ``retire_missing``: default true. When false, canisters registered on
-        the conductor but absent from the sheet are left as they are instead of
-        being stopped and returned to the pool. Use it for partial sheets (e.g.
-        adding one stand) so the pool cannot hand a live canister to the new
-        stand and reinstall it. Whatever is left out is reported in
-        ``kept_canisters``.
-    """
-    try:
-        _require_can_add()
-        params = json.loads(args) if args else {}
-        if params.get("sheet"):
-            _set_live_sheet(params["sheet"])
-        sheet = get_live_sheet()
-        if not sheet:
-            return _err("no sheet loaded")
-
-        allow_adopted_reinstall = bool(params.get("allow_adopted_reinstall"))
-        retire_missing = params.get("retire_missing", True) is not False
-
-        result = {
-            "created_sections": [], "created_stands": [], "created_canisters": [],
-            "reused_canisters": [], "reinstalled_canisters": [], "retired_canisters": [],
-            "skipped_canisters": [], "adopted_canisters": [], "protected_canisters": [],
-            "installed_bare_canisters": [], "hash_mismatch_canisters": [],
-            "kept_canisters": [],
-            "errors": [],
-        }
-
-        list(Section.instances())
-        list(Stand.instances())
-        list(Canister.instances())
-
-        # Pass 0: self-heal the pool. A canister marked `in_use` that backs no
-        # live canister is an orphan from a partial deploy (e.g. an out-of-cycles
-        # trap that rolled back mid-provision, skipping the normal cleanup). Free
-        # it so its cycles are reused instead of stranded.
-        live_cids = {st.canister_id for st in Canister.instances() if st.canister_id}
-        reclaimed = 0
-        list(PooledCanister.instances())
-        for p in PooledCanister.instances():
-            if p.canister_id and p.status == "in_use" and p.canister_id not in live_cids:
-                _pool_free(p.canister_id)
-                _append_event("pool_reclaimed", p.canister_id, {"was_canister": p.canister_name})
-                reclaimed += 1
-        if reclaimed:
-            result["reclaimed_orphans"] = reclaimed
-
-        # Pass 1: ensure sections + stands exist; collect the desired canister set.
-        desired = {}  # canister name -> {stand, kind, wasm_key}
-        for sec_spec in sheet.get("sections", []):
-            sname = (sec_spec.get("name") or "").strip()
-            if not sname:
-                continue
-            sec = Section[sname]
-            if sec is None:
-                sec = Section(name=sname)
-                sec.description = (sec_spec.get("description") or "")[:512]
-                apply_commanders_from_spec(sec, sec_spec)
-                sec.created_by = _caller()
-                _append_event("section_created", "", {"name": sname})
-                result["created_sections"].append(sname)
-            # Keep the section's desired subnet placement in sync with the sheet.
-            # (Existing canisters aren't moved; this only affects new canisters.)
-            sec.subnet = (sec_spec.get("subnet") or "").strip()
-            sec.subnet_type = (sec_spec.get("subnet_type") or "").strip()
-            persist_tpl = stand_template_json_to_persist(sec_spec)
-            if persist_tpl is not None:
-                sec.stand_template_json = persist_tpl
-            try:
-                assert_subnet_allowed(sec.subnet, sec.subnet_type)
-            except Exception as e:
-                result["errors"].append(f"section '{sname}': {e}")
-            for stand_spec in sec_spec.get("stands", []):
-                dname = (stand_spec.get("name") or "").strip()
-                if not dname:
-                    continue
-                dk = Stand[dname]
-                if dk is None:
-                    dk = Stand(name=dname)
-                    dk.section = sec
-                    dk.description = (stand_spec.get("description") or "")[:512]
-                    apply_commanders_from_spec(dk, stand_spec)
-                    dk.created_by = _caller()
-                    _append_event("stand_created", "", {"section": sname, "name": dname})
-                    result["created_stands"].append(dname)
-                elif dk.section is None or dk.section.name != sname:
-                    # Repair a stale/orphaned section FK: the stand exists but lost
-                    # its link to the section, which drops it (and its canisters) from
-                    # get_tree even though the entities are still there.
-                    dk.section = sec
-                    _append_event("stand_relinked", "", {"section": sname, "name": dname})
-                # Sync the stand's desired subnet placement with the sheet (only
-                # affects newly created canisters; existing canisters aren't moved).
-                dk.subnet = (stand_spec.get("subnet") or "").strip()
-                dk.subnet_type = (stand_spec.get("subnet_type") or "").strip()
-                try:
-                    assert_subnet_allowed(dk.subnet, dk.subnet_type)
-                except Exception as e:
-                    result["errors"].append(f"stand '{dname}': {e}")
-                for canister_spec in stand_spec.get("canisters", []):
-                    stname = (canister_spec.get("name") or "").strip()
-                    if not stname:
-                        continue
-                    desired[stname] = {
-                        "stand": dname,
-                        "kind": canister_spec.get("kind") or CanisterKind.BACKEND,
-                        "wasm_key": (canister_spec.get("wasm_key") or "").strip(),
-                        "install_arg": canister_spec.get("install_arg"),
-                        "teardown_priority": _teardown_priority_from_spec(canister_spec),
-                    }
-
-        # Pass 2: retire canisters no longer in the sheet (canisters -> pool).
-        for st in list(Canister.instances()):
-            if st.name not in desired:
-                if _is_retire_protected(st):
-                    result["protected_canisters"].append(st.name)
-                    continue
-                if not retire_missing:
-                    result["kept_canisters"].append(st.name)
-                    continue
-                yield from _retire_canister(st)
-                result["retired_canisters"].append(st.name)
-
-        # Pass 3: create / fix the desired canisters.
-        for stname, spec in desired.items():
-            try:
-                list(Stand.instances())
-                dk = Stand[spec["stand"]]
-                if dk is None:
-                    result["errors"].append(f"{stname}: stand '{spec['stand']}' missing")
-                    continue
-                w = _resolve_authorized_wasm(spec["wasm_key"], dk.section)
-                init_arg = _resolve_install_arg(spec.get("install_arg"), w)
-                list(Canister.instances())
-                existing = Canister[stname]
-                if existing is not None:
-                    existing.teardown_priority = spec["teardown_priority"]
-                    if (existing.wasm_key == w.key and existing.wasm_hash == w.wasm_hash
-                            and existing.status == CanisterStatus.INSTALLED):
-                        # Always repair the stand FK in case it points to a stale
-                        # entity from a prior deploy (the stand was deleted/recreated).
-                        if existing.stand is None or existing.stand.name != dk.name:
-                            existing.stand = dk
-                        if not (existing.wasm_type or "").strip():
-                            existing.wasm_type = wasm_type_of_wasm(w)
-                        yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
-                        result["skipped_canisters"].append(stname)
-                        continue
-                    was_registered = existing.status == CanisterStatus.REGISTERED
-                    if was_registered:
-                        # REGISTERED is only ever set by register_canister, so
-                        # records from before the ``adopted`` flag existed get
-                        # it here, before adoption may flip them to INSTALLED.
-                        existing.adopted = True
-                        adopted, actual = yield from _adopt_registered_canister_gen(
-                            existing, dk, w)
-                        if adopted:
-                            existing.kind = spec["kind"]
-                            _append_event(
-                                "canister_adopted",
-                                existing.canister_id,
-                                {"name": stname, "wasm_key": w.key},
-                            )
-                            result["adopted_canisters"].append(stname)
-                            continue
-                        if not actual:
-                            yield from _pull_and_install(
-                                existing.canister_id, w.registry_namespace,
-                                w.registry_path, w.wasm_hash, {"install": None},
-                                init_arg, wasm_type_of_wasm(w))
-                            ok, actual = yield from _verify_module_hash(
-                                existing.canister_id, w.wasm_hash)
-                            if not ok:
-                                result["errors"].append(
-                                    f"{stname}: hash mismatch after install")
-                                continue
-                            yield from _maybe_provision_assets(
-                                existing.canister_id, w, dk)
-                            existing.stand = dk
-                            existing.kind = spec["kind"]
-                            existing.wasm_key = w.key
-                            existing.wasm_type = wasm_type_of_wasm(w)
-                            existing.wasm_hash = actual
-                            existing.status = CanisterStatus.INSTALLED
-                            yield from _ensure_provision_controllers_gen(
-                                existing.canister_id, dk, w)
-                            _append_event(
-                                "canister_installed_bare",
-                                existing.canister_id,
-                                {"name": stname, "wasm_key": w.key},
-                            )
-                            result["installed_bare_canisters"].append(stname)
-                            continue
-                        if not allow_adopted_reinstall:
-                            mismatch = {
-                                "name": stname,
-                                "actual_hash": actual,
-                                "expected_hash": w.wasm_hash,
-                            }
-                            result["hash_mismatch_canisters"].append(mismatch)
-                            _append_event(
-                                "canister_hash_mismatch_skipped",
-                                existing.canister_id,
-                                mismatch,
-                            )
-                            continue
-                    if not was_registered and bool(getattr(existing, "adopted", False)):
-                        # Not created by Casals (adopted, later marked INSTALLED
-                        # by adoption or a start): its code is someone else's to
-                        # install. A hash mismatch means they shipped a new
-                        # build, not that the canister is broken — never
-                        # reinstall it (that would discard its state) unless
-                        # explicitly opted in.
-                        ok, actual = yield from _verify_module_hash(
-                            existing.canister_id, w.wasm_hash)
-                        if ok:
-                            existing.wasm_key = w.key
-                            existing.wasm_hash = actual
-                            existing.stand = dk
-                            yield from _ensure_provision_controllers_gen(
-                                existing.canister_id, dk, w)
-                            result["skipped_canisters"].append(stname)
-                            continue
-                        # Bare (no module): actual == "" -> fall through and
-                        # install; mode "reinstall" is valid on an empty canister.
-                        if actual and not allow_adopted_reinstall:
-                            mismatch = {
-                                "name": stname,
-                                "actual_hash": actual,
-                                "expected_hash": w.wasm_hash,
-                                "adopted": True,
-                            }
-                            result["hash_mismatch_canisters"].append(mismatch)
-                            _append_event(
-                                "canister_hash_mismatch_skipped",
-                                existing.canister_id,
-                                mismatch,
-                            )
-                            continue
-                    # Present but wrong WASM/status: reinstall fresh code in place.
-                    yield from _pull_and_install(existing.canister_id, w.registry_namespace,
-                                                 w.registry_path, w.wasm_hash, {"reinstall": None},
-                                                 init_arg, wasm_type_of_wasm(w))
-                    ok, actual = yield from _verify_module_hash(existing.canister_id, w.wasm_hash)
-                    if not ok:
-                        result["errors"].append(f"{stname}: hash mismatch after reinstall")
-                        continue
-                    yield from _maybe_provision_assets(existing.canister_id, w, dk)
-                    existing.stand = dk
-                    existing.kind = spec["kind"]
-                    existing.wasm_key = w.key
-                    existing.wasm_type = wasm_type_of_wasm(w)
-                    existing.wasm_hash = actual
-                    existing.status = CanisterStatus.INSTALLED
-                    yield from _ensure_provision_controllers_gen(existing.canister_id, dk, w)
-                    _append_event("canister_reinstalled", existing.canister_id,
-                                  {"name": stname, "wasm_key": w.key})
-                    result["reinstalled_canisters"].append(stname)
-                    continue
-                # Missing: provision from the pool (reuse) or create.
-                free_before = _pool_take_free() != ""
-                st = yield from _provision_canister(dk, stname, spec["kind"], w, init_arg)
-                st.teardown_priority = spec["teardown_priority"]
-                if free_before:
-                    result["reused_canisters"].append(st.name)
-                else:
-                    result["created_canisters"].append(st.name)
-            except Exception as inner:
-                result["errors"].append(f"{stname}: {inner}")
-
-        _append_event("sheet_deployed", "", {k: result[k] for k in (
-            "created_sections", "created_stands", "created_canisters",
-            "reused_canisters", "reinstalled_canisters", "retired_canisters",
-            "adopted_canisters", "protected_canisters",
-            "installed_bare_canisters", "hash_mismatch_canisters",
-            "kept_canisters")})
-
-        # Optionally apply the active arrangement (post-deploy config) in the same
-        # call, so a single deploy can bring an environment fully up and ready.
-        # Off by default to keep deploy_sheet's behaviour backward-compatible.
-        if params.get("apply_arrangement"):
-            arr = _get_active_arrangement()
-            if arr is not None:
-                result["arrangement"] = yield from _apply_arrangement_gen(arr)
-            else:
-                result["arrangement"] = {"applied": 0, "failed": 0,
-                                         "note": "no active arrangement"}
-
-        return _ok(**result)
-    except Exception as e:
-        _log.error(f"deploy_sheet error: {e}")
-        return _err(f"{e} :: {traceback.format_exc()[-600:]}")
-
-
-@update
-def apply_arrangement(args: text) -> Async[text]:
-    """Apply an arrangement's post-deploy steps in order against their targets.
-
-    Run this after deploy_sheet to bring an environment to its configured,
-    ready-to-use state (set parameters, trigger canister self-reconciliation,
-    etc.). Caller must be a Casals controller or listed in the arrangement's
-    ``execute_principals``. Steps are best-effort and idempotent
-    (see arrangement._apply_arrangement_gen): re-applying converges.
-
-    Args (JSON, optional):
-      - "name": str — absent/empty => the active arrangement.
-      - "parameters": object — apply-time parameter overrides (merged with defaults).
-      - "offset": int — first step to run (default 0).
-      - "limit": int — max steps to run this call (default/<=0 => run to the end).
-
-    Long arrangements can exceed a single message's instruction budget, so apply
-    them in batches: start at offset 0 and re-call with the returned "next_offset"
-    until "done" is true. Each batch is its own message; applied state persists.
-    The returned applied/failed counts are for THIS batch.
-    """
-    try:
-        params = json.loads(args) if args else {}
-        name = (params.get("name") or "").strip()
-        offset = int(params.get("offset", 0) or 0)
-        limit = int(params.get("limit", 0) or 0)
-        runtime_parameters = params.get("parameters")
-        list(Arrangement.instances())
-        arr = Arrangement[name] if name else _get_active_arrangement()
-        if arr is None:
-            return _err(f"unknown arrangement '{name}'" if name else "no active arrangement")
-        _require_arrangement_apply(arr)
-        summary = yield from _apply_arrangement_gen(arr, offset, limit, runtime_parameters)
-        _append_event("arrangement_applied", "",
-                      {"name": arr.name, "offset": summary.get("offset", 0),
-                       "next_offset": summary.get("next_offset", 0),
-                       "done": summary.get("done", True),
-                       "applied": summary.get("applied", 0),
-                       "failed": summary.get("failed", 0)})
-        return _ok(**summary)
-    except Exception as e:
-        _log.error(f"apply_arrangement error: {e}")
-        return _err(f"{e} :: {traceback.format_exc()[-400:]}")
-
-
-@update
 def set_subnet_whitelist(args: text) -> Async[text]:
     """Set the platform subnet whitelist. Args (JSON): {subnets: [id, ...]}.
 
@@ -2474,6 +2056,40 @@ def set_subnet_whitelist(args: text) -> Async[text]:
         s.subnet_whitelist_json = encoded
         _append_event("subnet_whitelist_changed", "", {"count": len(subnet_whitelist())})
         return _ok(subnet_whitelist=subnet_whitelist())
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def grant_registry_publisher(args: text) -> Async[text]:
+    """Grant file-registry publish access. Args (JSON): {namespace, principal}.
+
+    Authorized for Casals controllers or a section/stand commander holding
+    ``registry.publish.grant``. Relays to the configured file-registry canister."""
+    try:
+        _require_registry_publisher_auth()
+        namespace, principal = yield from _relay_registry_publish("grant_publish", args)
+        _append_event(
+            "registry_publisher_granted", "", {"namespace": namespace, "principal": principal},
+        )
+        return _ok(namespace=namespace, principal=principal)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def revoke_registry_publisher(args: text) -> Async[text]:
+    """Revoke file-registry publish access. Args (JSON): {namespace, principal}.
+
+    Authorized for Casals controllers or a section/stand commander holding
+    ``registry.publish.grant``. Relays to the configured file-registry canister."""
+    try:
+        _require_registry_publisher_auth()
+        namespace, principal = yield from _relay_registry_publish("revoke_publish", args)
+        _append_event(
+            "registry_publisher_revoked", "", {"namespace": namespace, "principal": principal},
+        )
+        return _ok(namespace=namespace, principal=principal)
     except Exception as e:
         return _err(str(e))
 
@@ -2537,125 +2153,6 @@ def refresh_fx() -> Async[text]:
         return _err(str(e))
 
 
-
-
-@query
-def estimate_deploy(args: text) -> text:
-    """Estimate the cycles needed to deploy the (live or supplied) sheet.
-
-    Idempotent-aware: a canister already matching the sheet costs nothing; a canister
-    present but on the wrong WASM is reinstalled in place (no new canister);
-    only a *missing* canister needs a canister — and a free pooled canister
-    matching its target subnet is reused before paying to create a new one.
-
-    The conductor pays the full endowment per *new* canister it creates, so the
-    top-up shortfall is `new_canisters * endowment + reserve − balance` (clamped
-    at zero). Args (JSON, optional): {"sheet": {...}} to estimate a draft sheet
-    without saving it; absent => the live sheet.
-    """
-    try:
-        try:
-            params = json.loads(args) if args else {}
-        except (json.JSONDecodeError, ValueError):
-            params = {}
-        sheet = params.get("sheet") or get_live_sheet() or {"sections": []}
-
-        list(Section.instances())
-        list(Canister.instances())
-        list(AuthorizedWasm.instances())
-        list(PooledCanister.instances())
-
-        desired = 0
-        matching = 0
-        reinstalls = 0
-        unresolved = 0
-        missing = []  # (subnet, subnet_type) per missing canister
-        for sec_spec in sheet.get("sections", []) or []:
-            sname = (sec_spec.get("name") or "").strip()
-            sec = Section[sname] if sname else None
-            for stand_spec in sec_spec.get("stands", []) or []:
-                target = _spec_target_subnet(sec_spec, stand_spec)
-                for canister_spec in stand_spec.get("canisters", []) or []:
-                    stname = (canister_spec.get("name") or "").strip()
-                    if not stname:
-                        continue
-                    desired += 1
-                    wasm_key = (canister_spec.get("wasm_key") or "").strip()
-                    try:
-                        w = _resolve_authorized_wasm(wasm_key, sec)
-                    except Exception:
-                        w = None
-                    existing = Canister[stname]
-                    if existing is not None:
-                        if (w is not None and existing.wasm_key == w.key
-                                and existing.wasm_hash == w.wasm_hash
-                                and existing.status == CanisterStatus.INSTALLED):
-                            matching += 1
-                        else:
-                            reinstalls += 1  # reused in place, no new canister
-                        continue
-                    if w is None:
-                        unresolved += 1  # can't be created — would error, not spend
-                        continue
-                    missing.append(target)
-
-        # Free pool canisters available for reuse, with their recorded placement.
-        free = [(p.subnet or "", p.subnet_type or "")
-                for p in PooledCanister.instances() if p.status == "free" and p.canister_id]
-        free_total = len(free)
-
-        # Match missing canisters to free canisters, satisfying the most-constrained
-        # targets first so we don't strand a subnet-specific canister. This yields
-        # the minimum number of new canisters (best case).
-        remaining = list(free)
-
-        def _consume(pred) -> bool:
-            for i in range(len(remaining)):
-                s, t = remaining[i]
-                if pred(s, t):
-                    remaining.pop(i)
-                    return True
-            return False
-
-        reused = 0
-        for (tsub, ttype) in [m for m in missing if m[0]]:
-            if _consume(lambda s, t, want=tsub: s == want):
-                reused += 1
-        for (tsub, ttype) in [m for m in missing if not m[0] and m[1]]:
-            if _consume(lambda s, t, want=ttype: t == want):
-                reused += 1
-        for (tsub, ttype) in [m for m in missing if not m[0] and not m[1]]:
-            if _consume(lambda s, t: True):
-                reused += 1
-
-        new_canisters = len(missing) - reused
-        s = _settings()
-        endow = int(s.create_cycles or 0) or CREATE_CYCLES
-        reserve = int(s.treasury_reserve or 0)
-        balance = int(ic.canister_balance128())
-        create_cost = new_canisters * endow
-        available = max(0, balance - reserve)
-        shortfall = max(0, create_cost - available)
-        return json.dumps({
-            "ok": True,
-            "desired_canisters": desired,
-            "matching_canisters": matching,
-            "reinstall_canisters": reinstalls,
-            "unresolved_canisters": unresolved,
-            "missing_canisters": len(missing),
-            "free_pool": free_total,
-            "reused_from_pool": reused,
-            "new_canisters": new_canisters,
-            "per_canister_cycles": endow,
-            "create_cost_cycles": create_cost,
-            "balance_cycles": balance,
-            "reserve_cycles": reserve,
-            "available_cycles": available,
-            "shortfall_cycles": shortfall,
-            "ready": shortfall == 0 and unresolved == 0,
-        })
-    except Exception as e:
-        return _err(str(e))
 
 
 @update

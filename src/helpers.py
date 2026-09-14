@@ -225,9 +225,10 @@ def _orchestra_identity() -> tuple:
     name = (s.orchestra_name or "").strip()
     description = (s.orchestra_description or "").strip()
     if not name or not description:
-        from sheet import get_live_sheet
+        from sheet_storage import load_sheet_doc
 
-        sheet = get_live_sheet() or {}
+        sheet, _env, _sh = load_sheet_doc()
+        sheet = sheet or {}
         if not name:
             name = (sheet.get("name") or "").strip()
         if not description:
