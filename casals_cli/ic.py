@@ -28,6 +28,8 @@ class IcAccess(Protocol):
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any: ...
     def call_update(self, canister_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any: ...
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
+    def deployer_cycles_balance(self) -> int | None: ...
+    def icp_project(self, project_dir: str, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
     def canister_cycles(self, canister_id: str) -> int | None: ...
 
 
@@ -143,6 +145,38 @@ class IcClient:
         out = self.icp(["identity", "principal"]).stdout.strip()
         return out.split()[-1] if out else ""
 
+    def deployer_cycles_balance(self) -> int | None:
+        """Cycles balance for the active identity (user principal, not a canister)."""
+        result = self.icp(["cycles", "balance", "-q"], check=False)
+        if result.returncode != 0:
+            return None
+        text = (result.stdout or "").strip()
+        m = re.search(r"([\d_]+)", text)
+        return int(m.group(1).replace("_", "")) if m else None
+
+    def icp_project(
+        self,
+        project_dir: str,
+        argv: list[str],
+        *,
+        timeout: int = 300,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        cmd = ["icp"] + argv + self._base_flags() + ["--project-root-override", project_dir]
+        result = subprocess.run(
+            cmd,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if check and result.returncode != 0:
+            raise RuntimeError(
+                f"icp {' '.join(argv)} failed (project={project_dir}):\n"
+                f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
+            )
+        return result
+
     def canister_cycles(self, canister_id: str) -> int | None:
         try:
             out = self.icp(["canister", "status", canister_id], check=False).stdout
@@ -209,6 +243,21 @@ class RecordingIc:
     def deployer_principal(self) -> str:
         self.record("deployer_principal")
         return self.deployer
+
+    def deployer_cycles_balance(self) -> int | None:
+        self.record("deployer_cycles_balance")
+        return self.cycles.get("__deployer__")
+
+    def icp_project(
+        self,
+        project_dir: str,
+        argv: list[str],
+        *,
+        timeout: int = 300,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        self.record("icp_project", project_dir, tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
 
     def read_controllers(self, canister_id: str) -> list[str]:
         self.record("read_controllers", canister_id)

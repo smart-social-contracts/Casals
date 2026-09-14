@@ -25,14 +25,27 @@ def check_funds(ic, sheet: dict, env: str, deployer: str) -> None:
     budget_tc = float(cycles_cfg.get("budget_tc", 0) or 0)
     if budget_tc <= 0:
         return
-    bal = ic.canister_cycles(deployer) or 0
+    bal = ic.deployer_cycles_balance()
+    if bal is None:
+        raise RuntimeError(
+            f"could not read cycles balance for deployer {deployer}; "
+            f"try: icp cycles balance -e {env}"
+        )
     have_tc = cycles_to_tc(bal)
     _progress(f"deployer cycles: {have_tc:.2f} TC (budget {budget_tc:.2f} TC)")
     if have_tc < budget_tc:
-        raise RuntimeError(
+        shortfall = budget_tc - have_tc
+        msg = (
             f"deployer has {have_tc:.2f} TC but environments.{env}.cycles.budget_tc "
-            f"requires {budget_tc:.2f} TC"
+            f"requires {budget_tc:.2f} TC (shortfall {shortfall:.2f} TC)"
         )
+        if env == "local":
+            _progress(
+                f"Hint: mint cycles on local with "
+                f"`icp cycles mint --cycles {shortfall:.1f}t -e local` "
+                f"(local replica seeds balances at `icp network start`)"
+            )
+        raise RuntimeError(msg)
 
 
 def print_plan_table(plan: dict) -> None:

@@ -22,6 +22,9 @@ class Bindings:
     conductor: dict[str, str] = field(default_factory=dict)
     created_at: str = ""
     backend_id: str = ""
+    icp_project_dir: str = ""
+    conductor_module_hashes: dict[str, str] = field(default_factory=dict)
+    asset_dist_hashes: dict[str, str] = field(default_factory=dict)
 
     @property
     def casals_backend_id(self) -> str:
@@ -40,6 +43,9 @@ class Bindings:
             "conductor": dict(self.conductor),
             "backend_id": self.backend_id or self.casals_backend_id,
             "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
+            "icp_project_dir": self.icp_project_dir,
+            "conductor_module_hashes": dict(self.conductor_module_hashes),
+            "asset_dist_hashes": dict(self.asset_dist_hashes),
         }
 
     @classmethod
@@ -54,6 +60,13 @@ class Bindings:
             conductor={k: str(v) for k, v in conductor.items()},
             created_at=str(data.get("created_at") or ""),
             backend_id=backend,
+            icp_project_dir=str(data.get("icp_project_dir") or ""),
+            conductor_module_hashes={
+                k: str(v) for k, v in (data.get("conductor_module_hashes") or {}).items()
+            },
+            asset_dist_hashes={
+                k: str(v) for k, v in (data.get("asset_dist_hashes") or {}).items()
+            },
         )
 
     def save(self) -> None:

@@ -104,12 +104,18 @@ class TestBindings:
             network_url="http://127.0.0.1:8000",
             deployer="aaaaa-aa",
             conductor={"casals-backend": "bbbbb-bb"},
+            icp_project_dir="/tmp/icp-project",
+            conductor_module_hashes={"casals-frontend": "abc"},
+            asset_dist_hashes={"casals_frontend": "def"},
         )
         b.save()
         loaded = load_bindings("minimal", "local")
         assert loaded is not None
         assert loaded.conductor["casals-backend"] == "bbbbb-bb"
         assert loaded.casals_backend_id == "bbbbb-bb"
+        assert loaded.icp_project_dir == "/tmp/icp-project"
+        assert loaded.conductor_module_hashes["casals-frontend"] == "abc"
+        assert loaded.asset_dist_hashes["casals_frontend"] == "def"
 
 
 # ── read_state (ic-py wiring, no replica) ────────────────────────────────────
@@ -145,7 +151,7 @@ class TestUpSequencing:
     def _governed_ic(self) -> RecordingIc:
         ic = RecordingIc(env="local")
         ic.deployer = "deployer-principal"
-        ic.cycles["deployer-principal"] = 100_000_000_000_000
+        ic.cycles["__deployer__"] = 100_000_000_000_000
         ic.converged = False
         return ic
 
@@ -202,8 +208,121 @@ class TestUpSequencing:
         )
         monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda *a, **k: [])
         run_up(ic, CORPUS, "local", yes=True, project_root=REPO_ROOT)
-        icp_ops = [c for c in ic.calls if c[0] in ("create_detached", "install_wasm", "settings_update")]
+        icp_ops = [
+            c for c in ic.calls
+            if c[0] in ("create_detached", "install_wasm", "settings_update", "icp_project")
+        ]
         assert icp_ops == []
+
+
+class TestFrontendBootstrap:
+    def test_first_deploy_links_and_deploys(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import Bindings
+        from casals_cli.frontend_bootstrap import bootstrap_asset_canister, dir_content_hash
+
+        ic = RecordingIc(env="local")
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>")
+        project_dir = str(tmp_path / "icp-project")
+        bindings = Bindings(
+            sheet_name="minimal",
+            env="local",
+            network_url="http://127.0.0.1:8000",
+            deployer="deployer",
+        )
+        monkeypatch.setattr(
+            "casals_cli.frontend_bootstrap.icp_project_dir",
+            lambda _n, _e: project_dir,
+        )
+        ic.module_hashes["new-canister-001"] = "assetwasm001"
+        bootstrap_asset_canister(
+            ic, bindings, key="frontend", project_dir=project_dir,
+            dist_path=str(dist), deployer="deployer",
+        )
+        project_calls = [c for c in ic.calls if c[0] == "icp_project"]
+        argv_lists = [c[1][1] for c in project_calls]
+        assert ("canister", "link", "casals_frontend", "new-canister-001", "--force") in argv_lists
+        assert ("deploy", "casals_frontend", "--no-create", "--mode", "install", "-y") in argv_lists
+        assert bindings.conductor_module_hashes.get("casals-frontend") == "assetwasm001"
+        assert bindings.asset_dist_hashes.get("casals_frontend") == dir_content_hash(str(dist))
+
+    def test_second_run_skips_when_dist_unchanged(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import Bindings
+        from casals_cli.frontend_bootstrap import bootstrap_asset_canister, dir_content_hash
+
+        ic = RecordingIc(env="local")
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>")
+        dhash = dir_content_hash(str(dist))
+        project_dir = str(tmp_path / "icp-project")
+        bindings = Bindings(
+            sheet_name="minimal",
+            env="local",
+            network_url="http://127.0.0.1:8000",
+            deployer="deployer",
+            conductor={"casals-frontend": "fe-id"},
+            conductor_module_hashes={"casals-frontend": "assetwasm001"},
+            asset_dist_hashes={"casals_frontend": dhash},
+        )
+        ic.module_hashes["fe-id"] = "assetwasm001"
+        bootstrap_asset_canister(
+            ic, bindings, key="frontend", project_dir=project_dir,
+            dist_path=str(dist), deployer="deployer",
+        )
+        assert not [c for c in ic.calls if c[0] == "icp_project"]
+
+    def test_dist_change_triggers_sync_only(self, tmp_path):
+        from casals_cli.bindings import Bindings
+        from casals_cli.frontend_bootstrap import bootstrap_asset_canister, dir_content_hash
+
+        ic = RecordingIc(env="local")
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>v2</html>")
+        dhash = dir_content_hash(str(dist))
+        project_dir = str(tmp_path / "icp-project")
+        bindings = Bindings(
+            sheet_name="minimal",
+            env="local",
+            network_url="http://127.0.0.1:8000",
+            deployer="deployer",
+            conductor={"casals-frontend": "fe-id"},
+            conductor_module_hashes={"casals-frontend": "assetwasm001"},
+            asset_dist_hashes={"casals_frontend": "oldhash000"},
+        )
+        ic.module_hashes["fe-id"] = "assetwasm001"
+        bootstrap_asset_canister(
+            ic, bindings, key="frontend", project_dir=project_dir,
+            dist_path=str(dist), deployer="deployer",
+        )
+        sync_calls = [
+            c for c in ic.calls
+            if c[0] == "icp_project" and c[1][1][:2] == ("sync", "casals_frontend")
+        ]
+        assert len(sync_calls) == 1
+        assert bindings.asset_dist_hashes["casals_frontend"] == dhash
+
+
+class TestFundCheck:
+    def test_uses_deployer_cycles_balance(self):
+        from casals_cli.up import check_funds
+
+        ic = RecordingIc()
+        ic.cycles["__deployer__"] = 50_000_000_000_000
+        sheet = {"environments": {"local": {"cycles": {"budget_tc": 40}}}}
+        check_funds(ic, sheet, "local", "deployer-principal")
+        assert any(c[0] == "deployer_cycles_balance" for c in ic.calls)
+
+    def test_local_shortfall_includes_mint_hint(self):
+        from casals_cli.up import check_funds
+
+        ic = RecordingIc()
+        ic.cycles["__deployer__"] = 1_000_000_000_000
+        sheet = {"environments": {"local": {"cycles": {"budget_tc": 100}}}}
+        with pytest.raises(RuntimeError, match="shortfall"):
+            check_funds(ic, sheet, "local", "deployer-principal")
 
 
 # ── oracle ───────────────────────────────────────────────────────────────────
