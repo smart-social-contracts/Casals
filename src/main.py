@@ -61,18 +61,7 @@ from commanders import (
     section_commander_can,
 )
 from cycle_sweep import return_cycles_gen
-from sheet_api import (
-    apply_gen as _apply_plan_gen,
-    bind_conductor_impl,
-    export_sheet_impl,
-    get_bindings_impl,
-    get_sheet_impl,
-    plan_gen as _plan_gen,
-    set_sheet_impl,
-    verify_gen as _verify_plan_gen,
-)
-from sheet_storage import get_plan_record, load_apply_result
-from bootstrap import _ensure_core_bootstrap, _is_retire_protected
+from bootstrap import _is_retire_protected
 from orchestration_bridge import (
     _baton_in_stand,
     _configure_baton_gen,
@@ -252,6 +241,20 @@ from version_http import version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from wasm_types import infer_wasm_type, wasm_type_of_wasm
 
+# After util/views: sheetv2 needs a real `re`, which is only importable once
+# the earlier imports have initialised the WASI import system.
+from sheet_api import (
+    apply_gen as _apply_plan_gen,
+    bind_conductor_impl,
+    export_sheet_impl,
+    get_bindings_impl,
+    get_sheet_impl,
+    plan_gen as _plan_gen,
+    set_sheet_impl,
+    verify_gen as _verify_plan_gen,
+)
+from sheet_storage import get_plan_record, load_apply_result
+
 # IC HTTP gateway types (GET /version — gos-as-a-service#39).
 # Incoming Header is a Candid tuple, not the outgoing HttpHeader record.
 Header = Tuple[str, str]
@@ -419,10 +422,6 @@ except RuntimeError:
 def _bootstrap() -> None:
     try:
         _settings()
-        try:
-            _ensure_core_bootstrap()
-        except Exception as e:  # pragma: no cover - defensive at install time
-            _log.error(f"core bootstrap error: {e}")
         _arm_autopilot()
         _arm_cycle_sampler()
     except Exception as e:  # pragma: no cover - defensive at install time
@@ -1146,18 +1145,10 @@ def set_settings(args: text) -> text:
             s.open_access = 1 if params["open_access"] else 0
         if "file_registry_canister_id" in params:
             s.file_registry_canister_id = (params["file_registry_canister_id"] or "").strip()
-            try:
-                _ensure_core_bootstrap()
-            except Exception as e:
-                _log.error(f"core bootstrap after set_settings: {e}")
         if "file_registry_frontend_canister_id" in params:
             s.file_registry_frontend_canister_id = (
                 params["file_registry_frontend_canister_id"] or ""
             ).strip()
-            try:
-                _ensure_core_bootstrap()
-            except Exception as e:
-                _log.error(f"core bootstrap after set_settings: {e}")
         if "casals_frontend_canister_id" in params:
             s.casals_frontend_canister_id = (
                 params["casals_frontend_canister_id"] or ""

@@ -7,6 +7,8 @@ import gzip
 import hashlib
 import json
 import os
+
+from sheetv2 import WASM_NAMESPACE, registry_path
 import re
 import subprocess
 import urllib.request
@@ -20,8 +22,6 @@ RELEASE_RE = re.compile(r"^release:([^/]+)/([^@]+)@([^:]+):(.+)$")
 BUILD_TARGETS = {
     "casals_backend": ("make", "build-backend"),
     "ic_file_registry": ("make", "build-registry"),
-    "ic_file_registry_frontend": ("make", "build-registry-frontend"),
-    "casals_frontend": None,  # asset canister — handled specially
 }
 
 WASM_PATHS = {
@@ -46,10 +46,6 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def registry_path(family: str, version: str) -> str:
-    return f"{family}@{version}.wasm.gz"
-
-
 def resolve_source(
     source: str,
     *,
@@ -63,9 +59,11 @@ def resolve_source(
 
     if src.startswith("local:"):
         rel = src[6:]
-        path = rel if os.path.isabs(rel) else os.path.join(sheet_dir, rel)
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"local source not found: {path}")
+        # Relative paths resolve against the sheet's directory, then the project root.
+        candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
+        path = next((c for c in candidates if os.path.isfile(c)), None)
+        if path is None:
+            raise FileNotFoundError(f"local source not found: {' or '.join(candidates)}")
         with open(path, "rb") as f:
             raw = f.read()
         data = gzip.decompress(raw) if path.endswith(".gz") else raw
@@ -108,9 +106,6 @@ def _build_canister_artifact(canister: str, project_root: str) -> bytes:
             raise FileNotFoundError(f"built wasm not found: {path}")
         with open(path, "rb") as f:
             return f.read()
-    if canister in ("casals_frontend", "ic_file_registry_frontend"):
-        # Asset canisters: registry stores a marker; actual deploy uses icp asset recipe.
-        return b"ASSET_CANISTER"
     raise ValueError(f"unknown build canister: {canister}")
 
 
@@ -118,7 +113,7 @@ def _download_github_release(source: str) -> bytes:
     m = RELEASE_RE.match(source)
     if not m:
         raise ValueError(f"invalid release source: {source}")
-    owner_repo, _repo, tag, asset = m.group(1), m.group(2), m.group(3), m.group(4)
+    owner_repo, tag, asset = m.group(1), m.group(3), m.group(4)
     url = f"https://github.com/{owner_repo}/releases/download/{tag}/{asset}"
     with urllib.request.urlopen(url, timeout=120) as resp:
         raw = resp.read()
@@ -245,7 +240,7 @@ def ensure_registry_uploads(
     sheet_path: str,
     project_root: str,
     registry_id: str,
-    namespace: str = "wasms",
+    namespace: str = WASM_NAMESPACE,
     progress=None,
 ) -> list[dict]:
     """Upload missing/changed wasms; return summary rows."""
@@ -273,9 +268,6 @@ def ensure_registry_uploads(
         reg_hash = existing.get(path, "")
         if reg_hash == digest:
             rows.append({"family": family, "version": version, "path": path, "action": "skipped", "sha256": digest})
-            continue
-        if entry.get("is_frontend_asset") or source.startswith("build:casals_frontend") or source.startswith("build:ic_file_registry_frontend"):
-            rows.append({"family": family, "version": version, "path": path, "action": "asset_canister", "sha256": digest})
             continue
         upload_bytes(ic, registry_id, namespace, path, data, digest)
         rows.append({"family": family, "version": version, "path": path, "action": "uploaded", "sha256": digest})

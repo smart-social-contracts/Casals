@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import json
 
-from basilisk import Principal, ic
+from basilisk import Principal
 from basilisk.canisters.management import management_canister
 
 from commanders import list_commanders
 from config_call import call_text_method_gen, config_text_arg
 from cycles import _status_cycles, _ic_run_status
-from helpers import _settings, unwrap_call_result
-from lifecycle import _canister_info_gen, _fetch_canister_controllers
+from helpers import unwrap_call_result
+from lifecycle import _canister_info_gen
 from models import AuthorizedWasm, Canister, PooledCanister, Section, Stand
 from orchestration_bridge import _baton_status_gen, _multisig_list_signers_gen
 from sheetv2 import (

@@ -15,12 +15,16 @@
     edgeAnchors,
     edgePathBetween,
     frozenGraphViewport,
-    graphLayoutSignature,
     filterControlGraph,
     filterControlGraphByEdgeTypes,
     layerGroupEnabled,
     setLayerGroupVisibility,
     standVisibilityKey,
+    serializeControlGraphView,
+    parseControlGraphView,
+    clampControlGraphZoom,
+    CONTROL_GRAPH_ZOOM_STEP,
+    type ControlGraphView,
     CONTROL_NODE_WIDTH,
     CONTROL_NODE_HEIGHT,
     CONTROL_EDGE_META,
@@ -39,6 +43,8 @@
     orchestrationStatus?: OrchestrationStatus | null;
     casalsBackendId?: string;
     principalLabel?: (principal: string) => string;
+    onRefreshControllers?: () => Promise<void>;
+    controllersRefreshing?: boolean;
   }
 
   let {
@@ -46,14 +52,16 @@
     orchestrationStatus = null,
     casalsBackendId = '',
     principalLabel,
+    onRefreshControllers,
+    controllersRefreshing = false,
   }: Props = $props();
 
   let edgeTypes = $state<ControlEdgeTypeVisibility>({ ...DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY });
   let hoveredEdge = $state<ControlEdge | null>(null);
   let hoveredNode = $state<ControlNode | null>(null);
+  let hoveredLegendType = $state<ControlEdgeType | null>(null);
   let containerWidth = $state(960);
   let customPositions = $state<Record<string, NodePosition>>({});
-  let layoutSignature = $state('');
   let frozenViewport = $state({ minX: 0, minY: 0, width: 720, height: 400 });
   let svgEl = $state<SVGSVGElement | null>(null);
   let draggingId = $state<string | null>(null);
@@ -70,9 +78,15 @@
   let hiddenPrincipals = $state<Set<string>>(new Set());
   let principalsOpen = $state(true);
   let suppressNodeDblClickUntil = 0;
+  let zoom = $state(1);
+  let savedViews = $state<Record<string, ControlGraphView>>({});
+  let selectedViewName = $state('');
+  let viewNameInput = $state('');
+  let fileInputEl = $state<HTMLInputElement | null>(null);
 
   const DRAG_THRESHOLD_PX = 5;
   const VISIBILITY_SIDEBAR_WIDTH = 288;
+  const VIEWS_STORAGE_KEY = 'casals.controlGraph.views';
 
   const batons = $derived(
     mergeBatonStatus(findBatonsInTree(tree), resolveBatons(orchestrationStatus, tree)),
@@ -108,13 +122,11 @@
   );
   const autoPositions = $derived(layoutControlGraph(graph, layoutWidth));
 
+  // Dragged positions are only discarded by Reset layout or loading a view.
+  // In particular a browser zoom changes layoutWidth, and re-laying out there
+  // would throw away the arrangement the operator just built.
   $effect(() => {
-    const sig = graphLayoutSignature(graph, layoutWidth);
-    if (sig !== layoutSignature) {
-      layoutSignature = sig;
-      customPositions = {};
-      frozenViewport = frozenGraphViewport(autoPositions, layoutWidth);
-    }
+    frozenViewport = frozenGraphViewport(autoPositions, layoutWidth);
   });
 
   $effect(() => {
@@ -242,12 +254,152 @@
     hiddenPrincipals = new Set();
   }
 
+  function hideAllScopes(): void {
+    hiddenSections = new Set(tree.sections.map((s) => s.name));
+    hiddenStands = new Set(
+      tree.sections.flatMap((s) => s.stands.map((d) => standVisibilityKey(s.name, d.name))),
+    );
+    hiddenCanisters = new Set(
+      tree.sections.flatMap((s) =>
+        s.stands.flatMap((d) => d.canisters.map((c) => c.canister_id).filter(Boolean)),
+      ),
+    );
+    hiddenPrincipals = new Set(principalNodes.map((n) => n.principal ?? '').filter(Boolean));
+  }
+
   const anyScopeHidden = $derived(
     hiddenSections.size > 0 ||
       hiddenStands.size > 0 ||
       hiddenCanisters.size > 0 ||
       hiddenPrincipals.size > 0,
   );
+
+  function zoomBy(delta: number): void {
+    zoom = clampControlGraphZoom(zoom + delta);
+  }
+
+  function currentView(name: string): ControlGraphView {
+    return serializeControlGraphView({
+      name,
+      zoom,
+      edgeTypes,
+      hiddenSections,
+      hiddenStands,
+      hiddenCanisters,
+      hiddenPrincipals,
+      positions: customPositions,
+    });
+  }
+
+  function applyView(view: ControlGraphView): void {
+    edgeTypes = { ...view.edgeTypes };
+    hiddenSections = new Set(view.hidden.sections);
+    hiddenStands = new Set(view.hidden.stands);
+    hiddenCanisters = new Set(view.hidden.canisters);
+    hiddenPrincipals = new Set(view.hidden.principals);
+    zoom = clampControlGraphZoom(view.zoom);
+    customPositions = { ...view.positions };
+  }
+
+  function readStoredViews(): Record<string, ControlGraphView> {
+    if (typeof localStorage === 'undefined') return {};
+    try {
+      const raw = localStorage.getItem(VIEWS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const out: Record<string, ControlGraphView> = {};
+      for (const [name, value] of Object.entries(parsed)) {
+        try {
+          out[name] = parseControlGraphView(JSON.stringify(value));
+        } catch {
+          /* skip unreadable entry */
+        }
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeStoredViews(views: Record<string, ControlGraphView>): void {
+    savedViews = views;
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(VIEWS_STORAGE_KEY, JSON.stringify(views));
+    } catch {
+      /* quota or private mode; in-memory copy still works */
+    }
+  }
+
+  $effect(() => {
+    savedViews = readStoredViews();
+  });
+
+  function saveView(): void {
+    const name = viewNameInput.trim() || selectedViewName.trim();
+    if (!name) return;
+    writeStoredViews({ ...savedViews, [name]: currentView(name) });
+    selectedViewName = name;
+    viewNameInput = '';
+  }
+
+  function loadSelectedView(): void {
+    const view = savedViews[selectedViewName];
+    if (view) applyView(view);
+  }
+
+  function deleteSelectedView(): void {
+    if (!selectedViewName) return;
+    const next = { ...savedViews };
+    delete next[selectedViewName];
+    writeStoredViews(next);
+    selectedViewName = '';
+  }
+
+  function downloadView(): void {
+    const name = viewNameInput.trim() || selectedViewName.trim() || 'control-graph-view';
+    const blob = new Blob([JSON.stringify(currentView(name), null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name.replace(/[^a-z0-9._-]+/gi, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function uploadView(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const view = parseControlGraphView(await file.text());
+      applyView(view);
+      writeStoredViews({ ...savedViews, [view.name]: view });
+      selectedViewName = view.name;
+    } catch (e) {
+      uploadError = e instanceof Error ? e.message : String(e);
+    } finally {
+      input.value = '';
+    }
+  }
+
+  let uploadError = $state('');
+
+  const savedViewNames = $derived(Object.keys(savedViews).sort((a, b) => a.localeCompare(b)));
+
+  function nodeIdLine(node: ControlNode): string {
+    if (node.principal) return shortPrincipal(node.principal);
+    if (node.canister?.canister_id) return shortPrincipal(node.canister.canister_id);
+    return '';
+  }
+
+  // Self-loops are not drawn, so surface self-control on hover instead.
+  function isSelfControlled(node: ControlNode): boolean {
+    const id = node.canister?.canister_id;
+    return Boolean(id && (node.canister?.controllers ?? []).includes(id));
+  }
 
   function nodeStyle(node: ControlNode): { fill: string; stroke: string } {
     const c = node.canister;
@@ -344,6 +496,43 @@
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Edge layers</div>
         <div class="flex items-center gap-1.5">
+          {#if onRefreshControllers}
+            <button
+              type="button"
+              class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50 disabled:opacity-50"
+              title="Fetch live IC controllers for all canisters"
+              disabled={controllersRefreshing}
+              onclick={() => void onRefreshControllers()}
+            >
+              {controllersRefreshing ? 'Refreshing…' : 'Refresh controllers'}
+            </button>
+          {/if}
+          <div class="inline-flex items-center rounded-md border border-primary-200 bg-white overflow-hidden">
+            <button
+              type="button"
+              class="px-2 py-1 text-[11px] font-medium text-primary-600 hover:bg-primary-50"
+              aria-label="Zoom out"
+              onclick={() => zoomBy(-CONTROL_GRAPH_ZOOM_STEP)}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              class="px-1.5 py-1 text-[10px] font-mono text-primary-500 border-x border-primary-200 hover:bg-primary-50"
+              title="Reset zoom to 100%"
+              onclick={() => (zoom = 1)}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              class="px-2 py-1 text-[11px] font-medium text-primary-600 hover:bg-primary-50"
+              aria-label="Zoom in"
+              onclick={() => zoomBy(CONTROL_GRAPH_ZOOM_STEP)}
+            >
+              +
+            </button>
+          </div>
           <button
             type="button"
             class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50"
@@ -404,9 +593,15 @@
             class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors
                    {enabled
               ? 'bg-white border-primary-200 text-primary-700 hover:bg-primary-50'
-              : 'bg-primary-100/80 border-primary-100 text-primary-400 line-through'}"
-            title="{enabled ? 'Hide' : 'Show'} {meta.tooltip}"
+              : 'bg-primary-100/80 border-primary-100 text-primary-400 line-through'}
+                   {hoveredLegendType === type ? 'ring-2 ring-primary-300' : ''}"
+            title={meta.tooltip}
+            aria-label="{enabled ? 'Hide' : 'Show'} {meta.label}"
             aria-pressed={enabled}
+            onmouseenter={() => (hoveredLegendType = type as ControlEdgeType)}
+            onmouseleave={() => (hoveredLegendType = null)}
+            onfocus={() => (hoveredLegendType = type as ControlEdgeType)}
+            onblur={() => (hoveredLegendType = null)}
             onclick={() => toggleEdgeType(type as ControlEdgeType)}
           >
             <svg width="28" height="8" aria-hidden="true" class="{enabled ? '' : 'opacity-40'}">
@@ -421,8 +616,80 @@
               />
             </svg>
             {meta.label}
+            {#if meta.legendScope}
+              <span class="text-primary-400 font-normal">· {meta.legendScope}</span>
+            {/if}
           </button>
         {/each}
+      </div>
+
+      <div class="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[var(--color-border-primary)]/60">
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-primary-500 mr-1">Views</span>
+        <select
+          class="px-1.5 py-1 rounded-md text-[11px] border border-primary-200 bg-white text-primary-700 max-w-[11rem]"
+          aria-label="Saved views"
+          bind:value={selectedViewName}
+        >
+          <option value="">— saved views —</option>
+          {#each savedViewNames as name (name)}
+            <option value={name}>{name}</option>
+          {/each}
+        </select>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50 disabled:opacity-40"
+          disabled={!selectedViewName}
+          onclick={loadSelectedView}
+        >
+          Load
+        </button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50 disabled:opacity-40"
+          disabled={!selectedViewName}
+          onclick={deleteSelectedView}
+        >
+          Delete
+        </button>
+        <input
+          class="px-1.5 py-1 rounded-md text-[11px] border border-primary-200 bg-white text-primary-700 w-32"
+          placeholder="New view name"
+          aria-label="View name"
+          bind:value={viewNameInput}
+        />
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50 disabled:opacity-40"
+          title="Save visibility, edge layers, zoom, and node positions"
+          disabled={!viewNameInput.trim() && !selectedViewName}
+          onclick={saveView}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50"
+          onclick={downloadView}
+        >
+          Download
+        </button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded-md text-[11px] font-medium border border-primary-200 bg-white text-primary-600 hover:bg-primary-50"
+          onclick={() => fileInputEl?.click()}
+        >
+          Upload
+        </button>
+        <input
+          bind:this={fileInputEl}
+          type="file"
+          accept="application/json,.json"
+          class="hidden"
+          onchange={uploadView}
+        />
+        {#if uploadError}
+          <span class="text-[10px] text-red-600">{uploadError}</span>
+        {/if}
       </div>
     </div>
 
@@ -464,14 +731,23 @@
             </svg>
             <span>Show / hide</span>
           </button>
-          <button
-            type="button"
-            class="text-[10px] font-medium text-primary-500 hover:text-primary-700 disabled:opacity-40"
-            onclick={showAllScopes}
-            disabled={!anyScopeHidden}
-          >
-            Show all
-          </button>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="text-[10px] font-medium text-primary-500 hover:text-primary-700 disabled:opacity-40"
+              onclick={showAllScopes}
+              disabled={!anyScopeHidden}
+            >
+              Show all
+            </button>
+            <button
+              type="button"
+              class="text-[10px] font-medium text-primary-500 hover:text-primary-700"
+              onclick={hideAllScopes}
+            >
+              Hide all
+            </button>
+          </div>
         </div>
         {#if visibilityOpen}
           <div class="overflow-y-auto px-2 py-2 space-y-1 {isExpanded ? 'max-h-none flex-1 min-h-0' : 'max-h-56'}">
@@ -626,10 +902,10 @@
         <div class="overflow-auto rounded-lg border border-[var(--color-border-primary)] bg-white {isExpanded ? 'flex-1 min-h-0' : ''}">
           <svg
             bind:this={svgEl}
-            width={frozenViewport.width}
-            height={frozenViewport.height}
+            width={frozenViewport.width * zoom}
+            height={frozenViewport.height * zoom}
             viewBox="0 0 {frozenViewport.width} {frozenViewport.height}"
-            class="block max-w-full touch-none select-none"
+            class="block touch-none select-none"
             style="touch-action: none;"
             role="img"
             aria-label="Orchestra control graph"
@@ -695,14 +971,23 @@
                     stroke-width={isDragging ? 2.5 : 2}
                     opacity={hoveredEdge && !graph.edges.some((e) => (e.from === node.id || e.to === node.id) && e.id === hoveredEdge.id) ? 0.55 : 1}
                   />
-                  <text x="10" y="22" fill="#1e293b" class="text-[11px] font-semibold pointer-events-none">
-                    {node.label.length > 18 ? `${node.label.slice(0, 16)}…` : node.label}
-                  </text>
-                  {#if node.sublabel}
-                    <text x="10" y="40" fill="#64748b" class="text-[9px] uppercase tracking-wide pointer-events-none">
-                      {node.sublabel}
-                    </text>
-                  {/if}
+                  <foreignObject
+                    x="8"
+                    y="6"
+                    width={CONTROL_NODE_WIDTH - 16}
+                    height={CONTROL_NODE_HEIGHT - 12}
+                    class="pointer-events-none"
+                  >
+                    <div
+                      xmlns="http://www.w3.org/1999/xhtml"
+                      class="flex flex-col justify-center h-full min-w-0 leading-tight"
+                    >
+                      <div class="text-[11px] font-semibold text-slate-800 break-words">{node.label}</div>
+                      {#if nodeIdLine(node)}
+                        <div class="text-[9px] font-mono text-slate-400 mt-0.5 truncate">{nodeIdLine(node)}</div>
+                      {/if}
+                    </div>
+                  </foreignObject>
                 </g>
               {/if}
             {/each}
@@ -712,6 +997,8 @@
         <div class="mt-3 pt-2 border-t border-[var(--color-border-primary)] text-xs text-primary-500 min-h-[1.25rem] shrink-0">
           {#if hoveredEdge}
             <span class="text-primary-700">{CONTROL_EDGE_META[hoveredEdge.type].tooltip}</span>
+          {:else if hoveredLegendType}
+            <span class="text-primary-700">{CONTROL_EDGE_META[hoveredLegendType].tooltip}</span>
           {:else if hoveredNode}
             <span class="font-mono text-[11px] text-primary-700">
               {hoveredNode.label}
@@ -722,6 +1009,9 @@
               {/if}
               {#if hoveredNode.section && hoveredNode.stand}
                 · {hoveredNode.section} / {hoveredNode.stand}
+              {/if}
+              {#if isSelfControlled(hoveredNode)}
+                <span class="text-primary-500">· self-controlled (upgrades itself)</span>
               {/if}
             </span>
           {:else}

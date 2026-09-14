@@ -31,6 +31,7 @@ class IcAccess(Protocol):
     def deployer_cycles_balance(self) -> int | None: ...
     def icp_project(self, project_dir: str, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
     def canister_cycles(self, canister_id: str) -> int | None: ...
+    def top_up(self, canister_id: str, cycles: int) -> None: ...
 
 
 class IcClient:
@@ -49,8 +50,8 @@ class IcClient:
         self.network_url = network_url or NETWORK_URLS.get(env, NETWORK_URLS["local"])
         self._agent = None
 
-    def _base_flags(self) -> list[str]:
-        flags = ["-e", self.env]
+    def _base_flags(self, env: bool = True) -> list[str]:
+        flags = ["-e", self.env] if env else []
         if self.identity:
             flags += ["--identity", self.identity]
         return flags
@@ -60,8 +61,8 @@ class IcClient:
             return ["--project-root-override", self.project_root]
         return []
 
-    def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]:
-        cmd = ["icp"] + argv + self._base_flags() + self._project_root_flag()
+    def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True, env: bool = True) -> subprocess.CompletedProcess[str]:
+        cmd = ["icp"] + argv + self._base_flags(env) + self._project_root_flag()
         result = subprocess.run(
             cmd,
             cwd=self.project_root,
@@ -103,18 +104,16 @@ class IcClient:
 
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any:
         cmd = ["canister", "call", canister_id, method, "--query"]
-        cmd += self._base_flags() + self._project_root_flag()
         if text_arg is None:
-            cmd.append("()")
-        else:
-            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".candid", delete=False, encoding="utf-8")
-            tmp.write(candid_text_arg(text_arg))
-            tmp.close()
-            try:
-                cmd += ["--args-file", tmp.name, "--args-format", "candid"]
-                return parse_icp_output(self.icp(cmd, timeout=120).stdout)
-            finally:
-                os.unlink(tmp.name)
+            return parse_icp_output(self.icp(cmd + ["()"], timeout=120).stdout)
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".candid", delete=False, encoding="utf-8")
+        tmp.write(candid_text_arg(text_arg))
+        tmp.close()
+        try:
+            cmd += ["--args-file", tmp.name, "--args-format", "candid"]
+            return parse_icp_output(self.icp(cmd, timeout=120).stdout)
+        finally:
+            os.unlink(tmp.name)
 
     def call_update(
         self,
@@ -125,7 +124,6 @@ class IcClient:
         timeout: int = 300,
     ) -> Any:
         cmd = ["canister", "call", canister_id, method]
-        cmd += self._base_flags() + self._project_root_flag()
         if text_arg is None:
             cmd.append("()")
             return parse_icp_output(self.icp(cmd, timeout=timeout).stdout)
@@ -142,7 +140,7 @@ class IcClient:
         return self.call_update(backend_id, method, text_arg, timeout=timeout)
 
     def deployer_principal(self) -> str:
-        out = self.icp(["identity", "principal"]).stdout.strip()
+        out = self.icp(["identity", "principal"], env=False).stdout.strip()
         return out.split()[-1] if out else ""
 
     def deployer_cycles_balance(self) -> int | None:
@@ -162,7 +160,11 @@ class IcClient:
         timeout: int = 300,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        # `icp canister link` is local project bookkeeping: no --identity flag.
+        needs_identity = argv[:2] != ["canister", "link"]
         cmd = ["icp"] + argv + self._base_flags() + ["--project-root-override", project_dir]
+        if not needs_identity and self.identity:
+            cmd = [f for f in cmd if f not in ("--identity", self.identity)]
         result = subprocess.run(
             cmd,
             cwd=project_dir,
@@ -185,6 +187,9 @@ class IcClient:
         m = re.search(r"(?:Balance|Cycles):\s*([\d_]+)", out)
         return int(m.group(1).replace("_", "")) if m else None
 
+    def top_up(self, canister_id: str, cycles: int) -> None:
+        self.icp(["canister", "top-up", canister_id, "--amount", str(cycles)])
+
     def create_detached(self) -> str:
         out = self.icp(["canister", "create", "--detached"]).stdout
         m = re.search(r"ID\s+([a-z0-9-]+)", out)
@@ -201,7 +206,9 @@ class IcClient:
     def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None) -> None:
         cmd = ["canister", "settings", "update", canister_id, "-f"]
         if set_controllers is not None:
-            cmd += ["--set-controllers", ",".join(set_controllers)]
+            cmd.append("--remove-all-controllers")
+            for c in set_controllers:
+                cmd += ["--add-controller", c]
         self.icp(cmd)
 
     def stop_canister(self, canister_id: str) -> None:
@@ -209,9 +216,6 @@ class IcClient:
 
     def delete_canister(self, canister_id: str) -> None:
         self.icp(["canister", "delete", canister_id, "-y"])
-
-    def top_up(self, canister_id: str, amount_tc: float) -> None:
-        self.icp(["canister", "top-up", canister_id, "--amount", f"{amount_tc}t"])
 
 
 class RecordingIc:
@@ -316,6 +320,10 @@ class RecordingIc:
     def canister_cycles(self, canister_id: str) -> int | None:
         self.record("canister_cycles", canister_id)
         return self.cycles.get(canister_id)
+
+    def top_up(self, canister_id: str, cycles: int) -> None:
+        self.record("top_up", canister_id, cycles)
+        self.cycles[canister_id] = (self.cycles.get(canister_id) or 0) + cycles
 
     def create_detached(self) -> str:
         self.record("create_detached")

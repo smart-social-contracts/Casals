@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 from basilisk import ic
 
 from applier import apply_plan_gen
 from audit import _append_event
-from commanders import entity_has_permission, list_commanders, persist_commanders
-from helpers import _caller, _is_controller, _settings
+from helpers import _caller, _settings
 from live_state import collect_live_state_gen, _bindings_map
-from models import Canister, Section, Stand
+from models import Canister
 from planner import PlanningError, build_plan  # noqa: F401 — re-export for callers
 from sheet_storage import (
-    get_plan_record,
-    latest_plan_hash,
-    load_apply_result,
     load_sheet_doc,
     store_apply_result,
     store_plan,
@@ -25,14 +20,11 @@ from sheet_storage import (
 )
 from sheetv2 import (
     CONDUCTOR_NAMES,
-    MULTISIG_NAME,
     ResolveContext,
     resolve,
     sheet_hash,
     validate,
 )
-from stand_template import stand_template_json_to_persist
-from commanders import apply_commanders_from_spec
 
 
 def _now_ns() -> int:
@@ -134,27 +126,32 @@ def verify_gen():
 
 
 def apply_gen(args: dict):
+    """Apply the plan identified by ``plan_hash``.
+
+    Staleness is decided by recomputing the plan against live state: if the
+    world moved since the operator looked at the plan, the hash no longer
+    matches and nothing is applied.
+    """
     plan_hash = (args.get("plan_hash") or "").strip()
     if not plan_hash:
         raise ValueError("plan_hash required")
-    if plan_hash != latest_plan_hash():
-        current = latest_plan_hash()
-        return {"ok": False, "error": "stale plan", "current_plan_hash": current}
-    plan = get_plan_record(plan_hash)
-    if not plan:
-        raise ValueError("unknown plan hash")
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
-    if (plan.get("sheet_hash") or "") != sh:
-        current = latest_plan_hash()
-        return {"ok": False, "error": "stale plan", "current_plan_hash": current}
     ctx = _resolve_ctx(env, sheet)
     resolved = resolve(sheet, env, ctx)
     bindings = _bindings_map()
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
     live["bindings"] = bindings
+    try:
+        plan = build_plan(
+            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh,
+        )
+    except PlanningError as exc:
+        raise ValueError("; ".join(exc.errors)) from exc
+    if plan.get("hash") != plan_hash:
+        return {"ok": False, "error": "stale plan", "current_plan_hash": plan.get("hash")}
     destructive = [it for it in (plan.get("items") or []) if it.get("destructive")]
     if destructive and not args.get("confirm_destructive"):
         return {"ok": False, "error": "destructive items require confirm_destructive"}
@@ -175,43 +172,7 @@ def apply_gen(args: dict):
 
 
 def export_sheet_impl() -> dict:
-    sheet, env, _sh = load_sheet_doc()
-    bindings = _bindings_map()
-    exported = {
-        "version": 2,
-        "name": (_settings().orchestra_name or "exported"),
-        "environments": (sheet or {}).get("environments") or {},
-        "conductor": (sheet or {}).get("conductor") or {},
-        "registry": (sheet or {}).get("registry") or {"wasms": []},
-        "sections": [],
-    }
-    list(Section.instances())
-    for sec in Section.instances():
-        sname = (sec.name or "").strip()
-        if sname in ("Casals", "System"):
-            continue
-        sec_obj = {"name": sname, "stands": []}
-        cmd = list_commanders(sec)
-        if cmd:
-            sec_obj["commanders"] = cmd
-        for stand in sec.stands or []:
-            dname = (stand.name or "").strip()
-            stand_obj = {"name": dname, "canisters": []}
-            scmd = list_commanders(stand)
-            if scmd:
-                stand_obj["commanders"] = scmd
-            for st in stand.canisters or []:
-                if not (st.canister_id or "").strip():
-                    continue
-                stand_obj["canisters"].append({
-                    "name": st.name,
-                    "mode": "adopted" if getattr(st, "adopted", False) else "managed",
-                    "kind": st.kind or "backend",
-                    "wasm": st.wasm_key or "",
-                    "controllers": ["$self"],
-                })
-            if stand_obj["canisters"]:
-                sec_obj["stands"].append(stand_obj)
-        if sec_obj["stands"]:
-            exported["sections"].append(sec_obj)
-    return {"sheet": exported, "bindings": bindings}
+    """The sheet this conductor runs, plus its name → id bindings. Once `verify`
+    passes, this *is* the live state rendered as a sheet."""
+    sheet, env, sh = load_sheet_doc()
+    return {"sheet": sheet or {}, "env": env, "sheet_hash": sh, "bindings": _bindings_map()}

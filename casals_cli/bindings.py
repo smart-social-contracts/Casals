@@ -10,7 +10,11 @@ from typing import Any
 
 from sheetv2 import CONDUCTOR_NAMES
 
-BINDINGS_DIR = os.path.expanduser("~/.casals")
+
+
+def bindings_dir() -> str:
+    """`$CASALS_HOME` (tests, CI) or `~/.casals`."""
+    return os.environ.get("CASALS_HOME") or os.path.expanduser("~/.casals")
 
 
 @dataclass
@@ -32,7 +36,7 @@ class Bindings:
 
     def path(self) -> str:
         safe = self.sheet_name.replace("/", "_")
-        return os.path.join(BINDINGS_DIR, f"{safe}.{self.env}.json")
+        return os.path.join(bindings_dir(), f"{safe}.{self.env}.json")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,7 +74,7 @@ class Bindings:
         )
 
     def save(self) -> None:
-        os.makedirs(BINDINGS_DIR, exist_ok=True)
+        os.makedirs(bindings_dir(), exist_ok=True)
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
         with open(self.path(), "w", encoding="utf-8") as f:
@@ -100,16 +104,31 @@ def resolve_backend_id(bindings: Bindings | None, conductor_override: str | None
     return ""
 
 
+def live_bindings(ic, sheet_name: str, env: str, conductor_override: str | None = None) -> tuple[str, dict[str, str]]:
+    """(backend id, name → canister id) for an orchestra: local bindings file + the
+    conductor's `get_bindings` (stand canisters are only known to the conductor)."""
+    local = load_bindings(sheet_name, env)
+    backend = resolve_backend_id(local, conductor_override)
+    if not backend:
+        raise RuntimeError("no conductor; run casals up or pass --conductor")
+    ids = dict(local.conductor) if local else {}
+    res = ic.query(backend, "get_bindings")
+    if isinstance(res, dict) and res.get("bindings"):
+        ids.update(res["bindings"])
+    ids[CONDUCTOR_NAMES["backend"]] = backend
+    return backend, ids
+
+
 def find_bindings_for_env(env: str, conductor: str | None = None) -> Bindings | None:
     """Locate a bindings file for ``env``, optionally matching ``conductor``."""
-    if not os.path.isdir(BINDINGS_DIR):
+    if not os.path.isdir(bindings_dir()):
         return None
     matches: list[Bindings] = []
     suffix = f".{env}.json"
-    for fname in os.listdir(BINDINGS_DIR):
+    for fname in os.listdir(bindings_dir()):
         if not fname.endswith(suffix):
             continue
-        path = os.path.join(BINDINGS_DIR, fname)
+        path = os.path.join(bindings_dir(), fname)
         try:
             with open(path, encoding="utf-8") as f:
                 b = Bindings.from_dict(json.load(f))

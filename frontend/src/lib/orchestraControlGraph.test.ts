@@ -3,13 +3,20 @@ import { test } from 'node:test';
 import type { Tree } from './api.ts';
 import {
   buildControlGraph,
+  clampControlGraphZoom,
+  DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY,
   DEFAULT_CONTROL_GRAPH_LAYERS,
+  MAX_CONTROL_GRAPH_ZOOM,
+  MIN_CONTROL_GRAPH_ZOOM,
+  parseControlGraphView,
+  serializeControlGraphView,
   edgeAnchors,
   edgePathBetween,
   filterControlGraph,
   filterControlGraphByEdgeTypes,
   frozenGraphViewport,
   graphViewport,
+  inferManagedCanistersFromStand,
   inferManagedCanistersFromTree,
   isUphillOrchestraIcEdge,
   layoutControlGraph,
@@ -180,9 +187,33 @@ test('inferManagedCanistersFromTree reads baton id from cached controllers', () 
   assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
 });
 
+test('inferManagedCanistersFromStand links same-stand peers without controller cache', () => {
+  const tree = fixtureTree();
+  for (const sec of tree.sections) {
+    for (const stand of sec.stands) {
+      for (const c of stand.canisters) {
+        c.controllers = [];
+      }
+    }
+  }
+  const inferred = inferManagedCanistersFromStand(tree, BATON, {
+    section: 'Deployments',
+    stand: 'testrealm7',
+  });
+  assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
+});
+
 test('buildControlGraph infers baton_manages without orchestration status', () => {
+  const tree = fixtureTree();
+  for (const sec of tree.sections) {
+    for (const stand of sec.stands) {
+      for (const c of stand.canisters) {
+        c.controllers = [];
+      }
+    }
+  }
   const graph = buildControlGraph(
-    fixtureTree(),
+    tree,
     null,
     [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
     { casalsBackendId: CASALS },
@@ -212,7 +243,11 @@ test('buildControlGraph adds baton edges from orchestration status', () => {
 
   assert.ok(graph.edges.some((e) => e.type === 'baton_top_commander' && e.to === `canister:${BATON}`));
   assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_BE}`));
-  assert.ok(graph.edges.some((e) => e.type === 'baton_ic_control' && e.to === `canister:${REALM_BE}`));
+  assert.ok(
+    graph.edges.some(
+      (e) => e.type === 'ic_controller' && e.from === `canister:${BATON}` && e.to === `canister:${REALM_BE}`,
+    ),
+  );
 });
 
 test('buildControlGraph respects layer toggles', () => {
@@ -225,7 +260,6 @@ test('buildControlGraph respects layer toggles', () => {
     baton_top_commander: false,
     baton_commander: false,
     baton_manages: false,
-    baton_ic_control: false,
   });
   assert.equal(graph.edges.every((e) => e.type === 'casals_commander'), true);
 });
@@ -252,11 +286,10 @@ test('filterControlGraphByEdgeTypes can hide a single edge type', () => {
     casals_commander: true,
     baton_top_commander: true,
     baton_commander: true,
-    baton_manages: true,
-    baton_ic_control: false,
+    baton_manages: false,
   });
-  assert.ok(full.edges.some((e) => e.type === 'baton_ic_control'));
-  assert.ok(!graph.edges.some((e) => e.type === 'baton_ic_control'));
+  assert.ok(full.edges.some((e) => e.type === 'baton_manages'));
+  assert.ok(!graph.edges.some((e) => e.type === 'baton_manages'));
 });
 
 test('layoutControlGraph assigns positions by rank', () => {
@@ -337,6 +370,52 @@ test('filterControlGraph hides a principal node', () => {
   });
   assert.ok(!filtered.nodes.some((n) => n.principal === INSTALLER));
   assert.ok(!filtered.edges.some((e) => e.from === `principal:${INSTALLER}`));
+});
+
+test('a saved view round-trips visibility, edge layers, zoom, and positions', () => {
+  const view = serializeControlGraphView({
+    name: 'baton only',
+    zoom: 1.4,
+    edgeTypes: { ...DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY, ic_controller: false },
+    hiddenSections: new Set(['Casals']),
+    hiddenStands: new Set(['Deployments|testrealm7']),
+    hiddenCanisters: new Set([REALM_FE]),
+    hiddenPrincipals: new Set([INSTALLER]),
+    positions: { [`canister:${REALM_BE}`]: { x: 120, y: 340 } },
+  });
+
+  const parsed = parseControlGraphView(JSON.stringify(view));
+  assert.equal(parsed.name, 'baton only');
+  assert.equal(parsed.zoom, 1.4);
+  assert.equal(parsed.edgeTypes.ic_controller, false);
+  assert.equal(parsed.edgeTypes.baton_manages, true);
+  assert.deepEqual(parsed.hidden.canisters, [REALM_FE]);
+  assert.deepEqual(parsed.hidden.principals, [INSTALLER]);
+  assert.deepEqual(parsed.positions[`canister:${REALM_BE}`], { x: 120, y: 340 });
+});
+
+test('parseControlGraphView drops malformed entries instead of throwing', () => {
+  const parsed = parseControlGraphView(
+    JSON.stringify({
+      zoom: 'huge',
+      edgeTypes: { ic_controller: 'yes', baton_manages: false },
+      hidden: { canisters: ['a', 7, null], principals: 'nope' },
+      positions: { good: { x: 1, y: 2 }, bad: { x: 'left', y: 2 }, alsoBad: 5 },
+    }),
+  );
+  assert.equal(parsed.zoom, 1);
+  assert.equal(parsed.edgeTypes.ic_controller, true);
+  assert.equal(parsed.edgeTypes.baton_manages, false);
+  assert.deepEqual(parsed.hidden.canisters, ['a']);
+  assert.deepEqual(parsed.hidden.principals, []);
+  assert.deepEqual(Object.keys(parsed.positions), ['good']);
+});
+
+test('clampControlGraphZoom keeps zoom inside the supported range', () => {
+  assert.equal(clampControlGraphZoom(10), MAX_CONTROL_GRAPH_ZOOM);
+  assert.equal(clampControlGraphZoom(0.01), MIN_CONTROL_GRAPH_ZOOM);
+  assert.equal(clampControlGraphZoom(Number.NaN), 1);
+  assert.equal(clampControlGraphZoom(1.2), 1.2);
 });
 
 test('standVisibilityKey joins section and stand', () => {

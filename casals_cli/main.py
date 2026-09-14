@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
 from casals_cli import commands, show, up
-from casals_cli.bindings import load_bindings
+from casals_cli.bindings import live_bindings
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
 from casals_cli.util import emit_error, emit_json, load_json_file
@@ -44,9 +43,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ("cycles", "cycle balances"),
         ("pool", "canister pool"),
     ):
-        sub.add_parser(name, help=help_text)
+        sub.add_parser(name, help=help_text).add_argument("sheet", nargs="?", help="path to casals.json")
 
     apply_p = sub.add_parser("apply", help="execute plan items")
+    apply_p.add_argument("sheet", nargs="?", help="path to casals.json")
     apply_p.add_argument("--confirm-destructive", action="store_true")
     apply_p.add_argument("--max-items", type=int, default=5)
 
@@ -133,10 +133,7 @@ def main(argv: list[str] | None = None) -> None:
             show.cmd_graph(ic, args, sheet)
         elif cmd == "oracle":
             sheet = load_json_file(args.sheet)
-            bindings_obj = load_bindings(str(sheet.get("name") or ""), args.env)
-            bmap = dict(bindings_obj.conductor) if bindings_obj else {}
-            if args.conductor:
-                bmap["casals-backend"] = args.conductor
+            _backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, args.conductor)
             report = run_oracle(sheet, args.env, bmap, ic)
             if args.json:
                 emit_json({"ok": report.passed, "rows": [r.__dict__ for r in report.rows]})

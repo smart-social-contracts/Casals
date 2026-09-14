@@ -1411,6 +1411,28 @@ export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResul
   ) as UpdateResult & { subnet_whitelist?: string[] };
 }
 
+export async function grantRegistryPublisher(
+  namespace: string,
+  principal: string,
+): Promise<UpdateResult & { namespace?: string; principal?: string }> {
+  return _parseUpdate(
+    await (await _actor(true)).grant_registry_publisher(
+      JSON.stringify({ namespace, principal }),
+    ),
+  ) as UpdateResult & { namespace?: string; principal?: string };
+}
+
+export async function revokeRegistryPublisher(
+  namespace: string,
+  principal: string,
+): Promise<UpdateResult & { namespace?: string; principal?: string }> {
+  return _parseUpdate(
+    await (await _actor(true)).revoke_registry_publisher(
+      JSON.stringify({ namespace, principal }),
+    ),
+  ) as UpdateResult & { namespace?: string; principal?: string };
+}
+
 // Refresh (and cache, server-side) the cycles→currency rate for the configured
 // display currency. Throttled on the backend; safe to call on page load.
 export async function refreshFx(): Promise<UpdateResult> {

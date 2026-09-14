@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from sheetv2 import (
     MULTISIG_NAME,

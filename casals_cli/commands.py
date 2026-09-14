@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, validate
 
 from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, resolve_backend_id
-from casals_cli.up import apply_loop, apply_operator_items, print_plan_table, reconcile_domains
-from casals_cli.util import emit_error, emit_json, load_json_file
+from casals_cli.up import apply_loop, apply_operator_items, print_plan_table
+from casals_cli.util import emit_error, emit_json
 
 
 def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]:

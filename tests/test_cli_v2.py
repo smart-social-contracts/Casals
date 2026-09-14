@@ -12,6 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolated_casals_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CASALS_HOME", str(tmp_path / "casals-home"))
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
@@ -97,7 +102,7 @@ class TestRegistry:
 
 class TestBindings:
     def test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("casals_cli.bindings.BINDINGS_DIR", str(tmp_path))
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         b = Bindings(
             sheet_name="minimal",
             env="local",
@@ -158,7 +163,7 @@ class TestUpSequencing:
     def test_first_up_records_bootstrap_calls(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
         ic.converged = True
-        monkeypatch.setattr("casals_cli.bindings.BINDINGS_DIR", str(tmp_path))
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
             bindings.conductor.setdefault("casals-backend", "backend-id")
             bindings.conductor.setdefault("file-registry", "fr-id")
@@ -167,7 +172,6 @@ class TestUpSequencing:
 
         monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
         monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda *a, **k: [])
-        monkeypatch.setattr("casals_cli.up.wire_registry_into_conductor", lambda *a, **k: None)
         monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
         with patch.object(ic, "call_update", wraps=ic.call_update) as mock_call:
             run_up(ic, CORPUS, "local", yes=True, project_root=REPO_ROOT)
@@ -180,7 +184,7 @@ class TestUpSequencing:
     def test_second_up_skips_create_install(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
         ic.converged = True
-        monkeypatch.setattr("casals_cli.bindings.BINDINGS_DIR", str(tmp_path))
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         b = Bindings(
             sheet_name="governed",
             env="local",

@@ -24,6 +24,7 @@
     listAuthorizedWasms,
     refreshControllersCache,
     orchestrationStatus,
+    orchestrationRefresh,
     canisterBrowse,
     canisterExec,
     shortHash,
@@ -78,6 +79,7 @@
     augmentTreeWithCasals,
     isCasalsCanister,
   } from '$lib/orchestraGovernance';
+  import { treeMissingControllerCount } from '$lib/orchestraControlGraph';
   import { entityCommanders } from '$lib/commanderAccess';
   import { canTagCanister } from '$lib/commanderPermissions';
   import type { Field } from '$lib/components/FormModal.svelte';
@@ -128,6 +130,8 @@
 
   let overviewOpen = $state(false);
   let orchestraView = $state<OrchestraView>('tree');
+  let controllersRefreshing = $state(false);
+  let controlAutoRefreshDone = $state(false);
   let filterQuery = $state('');
 
   const displayTree = $derived.by(() => {
@@ -235,6 +239,43 @@
     }
     return [...ids];
   }
+
+  // orchestration_status is a query and returns only baton ids; live commanders,
+  // managed canisters, and top_commander need the orchestration_refresh update.
+  function batonDetailMissing(s: OrchestrationStatus | null): boolean {
+    const batons = s?.batons ?? [];
+    if (!batons.length) return false;
+    return batons.some((b) => !b.commanders && !b.managed_canisters);
+  }
+
+  async function refreshControllersAndTree(): Promise<void> {
+    controllersRefreshing = true;
+    try {
+      const [, fresh, liveOrch] = await Promise.all([
+        refreshControllersCache(),
+        getTree(),
+        orchestrationRefresh().catch(() => null),
+      ]);
+      tree = fresh;
+      writeCachedTree(backendCanisterId(), fresh, browserTreeStorage());
+      if (liveOrch) orchStatus = liveOrch;
+    } catch (e: any) {
+      toasts.error(e?.message ?? String(e));
+    } finally {
+      controllersRefreshing = false;
+    }
+  }
+
+  $effect(() => {
+    if (orchestraView !== 'control') {
+      controlAutoRefreshDone = false;
+      return;
+    }
+    if (!tree || controlAutoRefreshDone || controllersRefreshing) return;
+    if (treeMissingControllerCount(tree) === 0 && !batonDetailMissing(orchStatus)) return;
+    controlAutoRefreshDone = true;
+    void refreshControllersAndTree();
+  });
 
   async function load(opts: { background?: boolean } = {}) {
     const background = Boolean(opts.background);
@@ -1051,6 +1092,8 @@
           orchestrationStatus={orchStatus}
           casalsBackendId={backendCanisterId()}
           principalLabel={(p) => principalLabels.get(p)?.display ?? shortPrincipal(p)}
+          onRefreshControllers={refreshControllersAndTree}
+          controllersRefreshing={controllersRefreshing}
         />
       </div>
     {/if}

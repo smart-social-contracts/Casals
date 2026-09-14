@@ -7,8 +7,7 @@ export type ControlEdgeType =
   | 'casals_commander'
   | 'baton_top_commander'
   | 'baton_commander'
-  | 'baton_manages'
-  | 'baton_ic_control';
+  | 'baton_manages';
 
 export interface ControlGraphLayers {
   icControllers: boolean;
@@ -88,23 +87,6 @@ function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {
   return c.name === 'casals-backend' || c.name === 'casals-frontend';
 }
 
-function batonControlsTarget(
-  tree: Tree,
-  batonCanisterId: string,
-  targetCanisterId: string,
-): boolean {
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        if (c.canister_id === targetCanisterId) {
-          return (c.controllers ?? []).some((p) => p === batonCanisterId);
-        }
-      }
-    }
-  }
-  return false;
-}
-
 /** When orchestration_status omits managed_canisters, infer from cached IC controllers. */
 export function inferManagedCanistersFromTree(
   tree: Tree,
@@ -130,13 +112,35 @@ export function inferManagedCanistersFromTree(
   return out;
 }
 
+/** Same-stand realm canisters when status/cache are empty (sheet topology). */
+export function inferManagedCanistersFromStand(
+  tree: Tree,
+  batonCanisterId: string,
+  standHint?: { section?: string; stand?: string },
+): string[] {
+  if (!standHint?.section || !standHint?.stand) return [];
+  const out: string[] = [];
+  for (const sec of tree.sections) {
+    if (sec.name !== standHint.section) continue;
+    for (const stand of sec.stands) {
+      if (stand.name !== standHint.stand) continue;
+      for (const c of stand.canisters) {
+        const cid = c.canister_id;
+        if (!cid || cid === batonCanisterId) continue;
+        if (isBatonCanister(c) || isMultisigCanister(c) || isCasalsCanister(c)) continue;
+        out.push(cid);
+      }
+    }
+  }
+  return out;
+}
+
 function resolveManagedCanisterIds(tree: Tree, baton: BatonRef): string[] {
+  const hint = { section: baton.section, stand: baton.stand };
   const fromStatus = baton.managed_canisters ?? [];
-  const fromTree = inferManagedCanistersFromTree(tree, baton.canister_id, {
-    section: baton.section,
-    stand: baton.stand,
-  });
-  return [...new Set([...fromStatus, ...fromTree])];
+  const fromTree = inferManagedCanistersFromTree(tree, baton.canister_id, hint);
+  const fromStand = inferManagedCanistersFromStand(tree, baton.canister_id, hint);
+  return [...new Set([...fromStatus, ...fromTree, ...fromStand])];
 }
 
 export interface NodePosition {
@@ -146,47 +150,49 @@ export interface NodePosition {
 
 export const CONTROL_EDGE_META: Record<
   ControlEdgeType,
-  { label: string; tooltip: string; stroke: string; dash?: string; width?: number }
+  { label: string; legendScope?: string; tooltip: string; stroke: string; dash?: string; width?: number }
 > = {
   ic_controller: {
     label: 'IC controller',
-    tooltip: 'IC controller — can call install_code / update_settings on the target',
+    tooltip:
+      'On-chain controllers list — can install_code, update_settings, or stop/start the canister (includes baton co-controllers after handoff).',
     stroke: '#4f46e5',
     width: 2,
   },
   casals_commander: {
-    label: 'Casals commander',
-    tooltip: 'Casals commander — delegated permissions on this section or stand',
+    label: 'Commander',
+    legendScope: 'orchestra',
+    tooltip:
+      'Orchestra commander — Casals-delegated permissions on a section or stand (provision, upgrade via Casals).',
     stroke: '#64748b',
     dash: '6 4',
     width: 1.5,
   },
   baton_top_commander: {
-    label: 'Baton top commander',
-    tooltip: 'Baton top commander — configures baton commanders and upgrade policy',
+    label: 'Commander',
+    legendScope: 'baton config',
+    tooltip:
+      'Baton config commander — owns baton settings: commanders, upgrade policy, and managed canister set.',
     stroke: '#ea580c',
     dash: '2 4',
     width: 1.5,
   },
   baton_commander: {
-    label: 'Baton commander',
-    tooltip: 'Baton commander — can propose managed upgrades',
+    label: 'Commander',
+    legendScope: 'baton upgrades',
+    tooltip:
+      'Baton upgrade commander — can propose managed upgrades; quorum (e.g. Casals + realm backend 2-of-2) must approve.',
     stroke: '#f97316',
     dash: '2 4',
     width: 1.5,
   },
   baton_manages: {
-    label: 'Baton manages',
-    tooltip: 'Baton managed set — upgrades flow through this baton',
+    label: 'Baton client',
+    tooltip:
+      'Realm canister registered as a baton client — routine upgrades are routed through baton policy, not ad-hoc IC installs.',
     stroke: '#fb923c',
     dash: '8 4',
     width: 1.5,
-  },
-  baton_ic_control: {
-    label: 'Baton IC control',
-    tooltip: 'Baton is also an IC co-controller of this canister',
-    stroke: '#c2410c',
-    width: 2.5,
   },
 };
 
@@ -225,16 +231,17 @@ export function isUphillOrchestraIcEdge(from: ControlNode, to: ControlNode): boo
   return from.rank > to.rank;
 }
 
-function standCommanderTarget(stand: Stand): string | null {
-  const backends = stand.canisters.filter(
-    (c) =>
-      c.kind === 'backend' &&
-      c.canister_id &&
-      !isBatonWasm(c.wasm_key) &&
-      !isMultisigWasm(c.wasm_key),
-  );
-  const named = backends.find((c) => c.name.endsWith('-backend'));
-  return named?.canister_id ?? backends[0]?.canister_id ?? null;
+export function treeMissingControllerCount(tree: Tree | null | undefined): number {
+  if (!tree) return 0;
+  let missing = 0;
+  for (const sec of tree.sections) {
+    for (const stand of sec.stands) {
+      for (const c of stand.canisters) {
+        if (c.canister_id && !(c.controllers?.length)) missing += 1;
+      }
+    }
+  }
+  return missing;
 }
 
 function findCanisterByPrincipal(
@@ -278,7 +285,7 @@ export function buildControlGraph(
     const fromNode = nodes.get(from);
     const toNode = nodes.get(to);
     if (
-      (type === 'ic_controller' || type === 'baton_ic_control') &&
+      type === 'ic_controller' &&
       fromNode &&
       toNode &&
       isUphillOrchestraIcEdge(fromNode, toNode)
@@ -342,13 +349,15 @@ export function buildControlGraph(
         }
       }
 
+      // A commander's grant covers the whole stand, so every canister in it is
+      // a commanded target — not just the stand's main backend.
       if (layers.commanders) {
-        const target = standCommanderTarget(stand);
-        if (target) {
-          const targetId = canisterNodeId(target);
-          for (const cmd of entityCommanders(stand)) {
-            if (!cmd.principal) continue;
-            addEdge('casals_commander', resolveNodeId(cmd.principal), targetId, stand.name);
+        for (const cmd of entityCommanders(stand)) {
+          if (!cmd.principal) continue;
+          const from = resolveNodeId(cmd.principal);
+          for (const c of stand.canisters) {
+            if (!c.canister_id) continue;
+            addEdge('casals_commander', from, canisterNodeId(c.canister_id), stand.name);
           }
         }
       }
@@ -359,9 +368,10 @@ export function buildControlGraph(
         if (!cmd.principal) continue;
         const from = resolveNodeId(cmd.principal);
         for (const stand of sec.stands) {
-          const target = standCommanderTarget(stand);
-          if (!target) continue;
-          addEdge('casals_commander', from, canisterNodeId(target), sec.name);
+          for (const c of stand.canisters) {
+            if (!c.canister_id) continue;
+            addEdge('casals_commander', from, canisterNodeId(c.canister_id), sec.name);
+          }
         }
       }
     }
@@ -413,9 +423,6 @@ export function buildControlGraph(
         if (!mid) continue;
         const managedId = canisterNodeId(mid);
         addEdge('baton_manages', batonId, managedId);
-        if (layers.icControllers && batonControlsTarget(tree, b.canister_id, mid)) {
-          addEdge('baton_ic_control', batonId, managedId);
-        }
       }
     }
 
@@ -426,12 +433,12 @@ export function buildControlGraph(
 
   if (layers.icControllers && missingControllers > 0) {
     warnings.push(
-      `${missingControllers} canister(s) have no cached IC controllers — refresh the controller cache from a canister row in Tree view.`,
+      `${missingControllers} canister(s) have no cached IC controllers — use Refresh on this view or open Tree and reload.`,
     );
   }
 
   const activeEdges = edges.filter((e) => {
-    if (e.type === 'ic_controller' || e.type === 'baton_ic_control') return layers.icControllers;
+    if (e.type === 'ic_controller') return layers.icControllers;
     if (e.type === 'casals_commander') return layers.commanders;
     return layers.baton;
   });
@@ -477,8 +484,8 @@ export function layoutControlGraph(
   return positions;
 }
 
-export const CONTROL_NODE_WIDTH = 148;
-export const CONTROL_NODE_HEIGHT = 56;
+export const CONTROL_NODE_WIDTH = 200;
+export const CONTROL_NODE_HEIGHT = 68;
 
 export interface EdgeAnchors {
   from: NodePosition;
@@ -593,12 +600,110 @@ export function frozenGraphViewport(
   };
 }
 
-export function graphLayoutSignature(graph: ControlGraph, layoutWidth: number): string {
-  return `${layoutWidth}|${graph.nodes.map((n) => n.id).sort().join(',')}`;
+export const CONTROL_GRAPH_VIEW_VERSION = 1;
+export const MIN_CONTROL_GRAPH_ZOOM = 0.4;
+export const MAX_CONTROL_GRAPH_ZOOM = 2.5;
+export const CONTROL_GRAPH_ZOOM_STEP = 0.2;
+
+export function clampControlGraphZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(Math.max(Number(zoom.toFixed(2)), MIN_CONTROL_GRAPH_ZOOM), MAX_CONTROL_GRAPH_ZOOM);
+}
+
+export interface ControlGraphView {
+  version: number;
+  name: string;
+  savedAt: string;
+  zoom: number;
+  edgeTypes: ControlEdgeTypeVisibility;
+  hidden: {
+    sections: string[];
+    stands: string[];
+    canisters: string[];
+    principals: string[];
+  };
+  positions: Record<string, NodePosition>;
+}
+
+export function serializeControlGraphView(input: {
+  name: string;
+  zoom: number;
+  edgeTypes: ControlEdgeTypeVisibility;
+  hiddenSections: ReadonlySet<string>;
+  hiddenStands: ReadonlySet<string>;
+  hiddenCanisters: ReadonlySet<string>;
+  hiddenPrincipals: ReadonlySet<string>;
+  positions: Record<string, NodePosition>;
+}): ControlGraphView {
+  return {
+    version: CONTROL_GRAPH_VIEW_VERSION,
+    name: input.name,
+    savedAt: new Date().toISOString(),
+    zoom: input.zoom,
+    edgeTypes: { ...input.edgeTypes },
+    hidden: {
+      sections: [...input.hiddenSections],
+      stands: [...input.hiddenStands],
+      canisters: [...input.hiddenCanisters],
+      principals: [...input.hiddenPrincipals],
+    },
+    positions: { ...input.positions },
+  };
+}
+
+function coerceStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string');
+}
+
+function coercePositions(value: unknown): Record<string, NodePosition> {
+  const out: Record<string, NodePosition> = {};
+  if (!value || typeof value !== 'object') return out;
+  for (const [id, pos] of Object.entries(value as Record<string, unknown>)) {
+    if (!pos || typeof pos !== 'object') continue;
+    const { x, y } = pos as { x?: unknown; y?: unknown };
+    if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
+      out[id] = { x, y };
+    }
+  }
+  return out;
+}
+
+/** Parse an uploaded/stored view, ignoring unknown keys. Throws on bad JSON. */
+export function parseControlGraphView(raw: string): ControlGraphView {
+  const data = JSON.parse(raw) as Record<string, unknown>;
+  if (!data || typeof data !== 'object') throw new Error('view must be a JSON object');
+
+  const edgeTypes = { ...DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY };
+  const rawEdges = data.edgeTypes;
+  if (rawEdges && typeof rawEdges === 'object') {
+    for (const key of Object.keys(edgeTypes) as ControlEdgeType[]) {
+      const v = (rawEdges as Record<string, unknown>)[key];
+      if (typeof v === 'boolean') edgeTypes[key] = v;
+    }
+  }
+
+  const hidden = (data.hidden ?? {}) as Record<string, unknown>;
+  const zoom = typeof data.zoom === 'number' && Number.isFinite(data.zoom) ? data.zoom : 1;
+
+  return {
+    version: typeof data.version === 'number' ? data.version : CONTROL_GRAPH_VIEW_VERSION,
+    name: typeof data.name === 'string' ? data.name : 'Imported view',
+    savedAt: typeof data.savedAt === 'string' ? data.savedAt : new Date().toISOString(),
+    zoom: clampControlGraphZoom(zoom),
+    edgeTypes,
+    hidden: {
+      sections: coerceStringArray(hidden.sections),
+      stands: coerceStringArray(hidden.stands),
+      canisters: coerceStringArray(hidden.canisters),
+      principals: coerceStringArray(hidden.principals),
+    },
+    positions: coercePositions(data.positions),
+  };
 }
 
 export const CONTROL_EDGE_TYPE_GROUPS: Record<keyof ControlGraphLayers, ControlEdgeType[]> = {
-  icControllers: ['ic_controller', 'baton_ic_control'],
+  icControllers: ['ic_controller'],
   commanders: ['casals_commander'],
   baton: ['baton_top_commander', 'baton_commander', 'baton_manages'],
 };
@@ -611,7 +716,6 @@ export const DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY: ControlEdgeTypeVisibility = {
   baton_top_commander: true,
   baton_commander: true,
   baton_manages: true,
-  baton_ic_control: true,
 };
 
 export function layerGroupEnabled(

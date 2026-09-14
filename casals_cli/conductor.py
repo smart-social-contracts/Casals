@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
 
@@ -84,6 +83,10 @@ def _bootstrap_wasm_canister(
     if progress:
         progress(f"  conductor {name}: create + install")
     cid = existing_id or ic.create_detached()
+    bindings.conductor[name] = cid
+    bindings.save()  # persist before install: a failure later must not orphan the canister
+    bindings.conductor[name] = cid
+    bindings.save()  # persist before install: a failure later must not orphan the canister
     ic.install_wasm(cid, wasm_path, mode="install")
     ic.settings_update(cid, set_controllers=[deployer])
     new_hash = ic.read_module_hash(cid)
@@ -112,11 +115,19 @@ def bootstrap_conductor(
 
     casals_dist = ensure_asset_build("frontend", project_root, progress=progress)
     registry_dist = ensure_asset_build("file_registry_frontend", project_root, progress=progress)
-    write_icp_project(project_dir, casals_dist, registry_dist)
-
     for key in CONDUCTOR_KEYS:
         name = CONDUCTOR_NAMES[key]
+        # Regenerate the private icp project each round so a UI deployed now sees
+        # the backend ids created in earlier rounds.
+        write_icp_project(project_dir, casals_dist, registry_dist, bindings.env, ic.network_url, bindings.conductor)
         existing_id = bindings.conductor.get(name, "")
+
+        # Once apply has handed a conductor canister over (e.g. controllers [$self]),
+        # the deployer can no longer touch it: upgrades flow through plan/apply.
+        if existing_id and deployer not in ic.read_controllers(existing_id):
+            if progress:
+                progress(f"  {name}: {existing_id} (controlled by conductor — skip)")
+            continue
 
         if key in ASSET_KEYS:
             bootstrap_asset_canister(
@@ -161,15 +172,6 @@ def bootstrap_conductor(
     bindings.deployer = deployer
     bindings.save()
     return bindings
-
-
-def wire_registry_into_conductor(ic, backend_id: str, registry_id: str, registry_frontend_id: str | None) -> None:
-    settings: dict[str, Any] = {"file_registry_canister_id": registry_id}
-    if registry_frontend_id:
-        settings["file_registry_frontend_canister_id"] = registry_frontend_id
-    res = ic.call_update(backend_id, "set_settings", __import__("json").dumps(settings))
-    if not (isinstance(res, dict) and res.get("ok")):
-        raise RuntimeError(f"set_settings failed: {res}")
 
 
 def bind_conductor(ic, backend_id: str, conductor_ids: dict[str, str]) -> None:

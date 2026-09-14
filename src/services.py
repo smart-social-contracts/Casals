@@ -37,6 +37,12 @@ class FileRegistryService(Service):
     @service_update
     def list_files_icc(self, namespace: text) -> text: ...
 
+    @service_update
+    def grant_publish(self, args: text) -> text: ...
+
+    @service_update
+    def revoke_publish(self, args: text) -> text: ...
+
 
 # ── Certified-assets canister ─────────────────────────────────────────────
 #

@@ -5,14 +5,10 @@ Standard library only; safe to import from the Basilisk canister and the CLI.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
-import re
-from dataclasses import dataclass
 from typing import Any, Iterator
 
-from util import PRINCIPAL_RE
 
 SCHEMA_VERSION = 2
 
@@ -32,13 +28,52 @@ SYNTHETIC_STAND_CONDUCTOR = "conductor"
 SYNTHETIC_SECTION_GOVERNANCE = "System"
 SYNTHETIC_STAND_GOVERNANCE = "governance"
 MULTISIG_NAME = "multisig"
-WASM_REF_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*(@[a-zA-Z0-9][a-zA-Z0-9._-]*)?$")
+_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+_ENV_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
+_BARE_PLACEHOLDERS = ("$multisig", "$self", "$deployer")
+_PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
 
-PLACEHOLDER_RE = re.compile(
-    r"\$(?:multisig|self|deployer|canister:[a-zA-Z0-9._-]+|"
-    r"stand\.(?:backend|frontend|baton)|principal:[a-zA-Z0-9._-]+|"
-    r"env(?:\.[a-zA-Z0-9_]+)+)"
-)
+
+def _is_wasm_ref(value: str) -> bool:
+    """`family` or `family@version`; names are [A-Za-z0-9._-] and start alphanumeric."""
+    parts = value.split("@")
+    if len(parts) > 2:
+        return False
+    for part in parts:
+        if not part or not part[0].isalnum() or not set(part) <= _NAME_CHARS:
+            return False
+    return True
+
+
+def find_placeholder_tokens(text: str) -> list[str]:
+    """Placeholder tokens in ``text``, in order (no regex: the canister has none)."""
+    tokens: list[str] = []
+    i = 0
+    while True:
+        i = text.find("$", i)
+        if i < 0:
+            return tokens
+        rest = text[i:]
+        token = None
+        for bare in _BARE_PLACEHOLDERS:
+            if rest.startswith(bare) and not (len(rest) > len(bare) and rest[len(bare)] in _NAME_CHARS):
+                token = bare
+                break
+        if token is None:
+            for prefix in _PREFIXED_PLACEHOLDERS:
+                if rest.startswith(prefix):
+                    chars = _ENV_CHARS if prefix == "$env." else _NAME_CHARS
+                    j = len(prefix)
+                    while j < len(rest) and rest[j] in chars:
+                        j += 1
+                    if j > len(prefix):
+                        token = rest[:j]
+                    break
+        if token is None:
+            i += 1
+            continue
+        tokens.append(token)
+        i += len(token)
 
 
 class UnresolvedPlaceholder(Exception):
@@ -50,21 +85,21 @@ class UnresolvedPlaceholder(Exception):
         super().__init__(f"unresolved placeholder {name!r} at {path}")
 
 
-@dataclass
 class ResolveContext:
     """Runtime bindings used when resolving placeholders."""
 
-    deployer: str | None
-    self_id: str | None
-    canister_ids: dict[str, str]
-    env_values: dict[str, Any]
+    def __init__(self, deployer=None, self_id=None, canister_ids=None, env_values=None):
+        self.deployer = deployer
+        self.self_id = self_id
+        self.canister_ids = dict(canister_ids or {})
+        self.env_values = dict(env_values or {})
 
 
 def find_placeholders(value: Any) -> set[str]:
     """Return every placeholder token found in nested dict/list/str values."""
     found: set[str] = set()
     if isinstance(value, str):
-        found.update(PLACEHOLDER_RE.findall(value))
+        found.update(find_placeholder_tokens(value))
     elif isinstance(value, dict):
         for v in value.values():
             found.update(find_placeholders(v))
@@ -72,6 +107,14 @@ def find_placeholders(value: Any) -> set[str]:
         for item in value:
             found.update(find_placeholders(item))
     return found
+
+
+WASM_NAMESPACE = "wasm"  # file-registry namespace for every wasm; shared by CLI and canister
+
+
+def registry_path(family: str, version: str | None) -> str:
+    """File-registry path of a wasm inside WASM_NAMESPACE: one rule, shared by CLI and canister."""
+    return f"{family}@{version or 'main'}.wasm.gz"
 
 
 def wasm_ref(s: str) -> tuple[str, str | None]:
@@ -156,14 +199,13 @@ def stand_member(stand: dict, role: str) -> dict | None:
     return matches[0] if matches else None
 
 
-def iter_canisters(sheet: dict) -> Iterator[tuple[dict, dict, dict]]:
-    """Yield ``(section, stand, canister)`` for every declared canister.
+def iter_canisters(sheet: dict) -> Iterator[tuple[dict, dict, str, dict]]:
+    """Yield ``(section, stand, name, canister)`` for every declared canister.
 
     Conductor entries appear under synthetic section ``Casals`` / stand
     ``conductor``; governance ``multisig`` under ``System`` / ``governance``.
     """
-    for section, stand, _name, canister in _iter_named_canisters(sheet):
-        yield section, stand, canister
+    return _iter_named_canisters(sheet)
 
 
 def resolve(sheet: dict, env: str, ctx: ResolveContext) -> dict:
@@ -190,7 +232,7 @@ def resolve_partial(
             return [resolve_value(v, f"{path}[{i}]", stand) for i, v in enumerate(value)]
         if not isinstance(value, str):
             return value
-        tokens = PLACEHOLDER_RE.findall(value)
+        tokens = find_placeholder_tokens(value)
         if not tokens:
             return value
         if len(tokens) == 1 and value == tokens[0]:
@@ -215,7 +257,7 @@ def resolve_partial(
             out = out.replace(token, str(replacement))
         return out
 
-    copied = copy.deepcopy(sheet)
+    copied = json.loads(json.dumps(sheet))
     for section, stand, _name, canister in _iter_named_canisters(copied):
         _resolve_canister_tree(canister, "canister", stand, resolve_value)
     if isinstance(copied.get("conductor"), dict):
@@ -432,7 +474,7 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
     if kind not in KINDS:
         errors.append(f"{path}.kind must be one of {sorted(KINDS)}")
     wasm = canister.get("wasm")
-    if not isinstance(wasm, str) or not WASM_REF_RE.match(wasm):
+    if not isinstance(wasm, str) or not _is_wasm_ref(wasm):
         errors.append(f"{path}.wasm must be family or family@version")
     upgrade = canister.get("upgrade", "upgrade")
     if upgrade not in UPGRADES:
@@ -530,7 +572,7 @@ def _validate_baton(value: Any, path: str, errors: list[str]) -> None:
     if not isinstance(value, dict):
         errors.append(f"{path} must be an object")
         return
-    if not isinstance(value.get("wasm"), str) or not WASM_REF_RE.match(value["wasm"]):
+    if not isinstance(value.get("wasm"), str) or not _is_wasm_ref(value["wasm"]):
         errors.append(f"{path}.wasm must be family or family@version")
     for field in ("top_commander", "threshold", "manages", "hand_off"):
         if field not in value:
@@ -659,9 +701,9 @@ def _looks_like_raw_principal(value: str) -> bool:
     text = value.strip()
     if not text or text.startswith("$") or "@" in text:
         return False
-    if not PRINCIPAL_RE.match(text):
-        return False
     segments = text.split("-")
+    if len(segments) < 2 or not all(seg.isalnum() for seg in segments):
+        return False
     if len(segments) >= 5:
         return True
     if len(segments) <= 3 and len(text) < 30:

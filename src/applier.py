@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import json
 
-from basilisk import ic
+from basilisk import Principal
 from basilisk.canisters.management import management_canister
 
 from audit import _append_event
-from commanders import apply_commanders_from_spec, persist_commanders
+from commanders import persist_commanders
 from config_call import call_text_method_gen, config_text_arg
-from cycles import resolve_topup_source
 from helpers import _settings, unwrap_call_result
 from lifecycle import (
     _allocate_canister,
     _canister_info_gen,
     _fetch_canister_controllers,
-    _install_arg_for,
     _pull_and_install,
     _resolve_authorized_wasm,
     _resolve_install_arg,
@@ -30,8 +28,7 @@ from orchestration_bridge import _configure_baton_gen, _hand_to_baton_gen, _mult
 from planner import build_plan, PlanningError
 from pool import _pool_mark_in_use
 from services import FileRegistryService
-from sheetv2 import wasm_ref
-from stand_template import stand_template_json_to_persist
+from sheetv2 import WASM_NAMESPACE, registry_path
 from wasm_types import wasm_type_of_wasm
 
 
@@ -118,24 +115,29 @@ def _execute_item(item: dict, sheet: dict):
         family = (entry.get("family") or "").strip()
         version = (entry.get("version") or "").strip()
         key = f"{family}@{version}" if version else family
-        path = entry.get("source") or ""
-        ns = "wasm"
+        path = registry_path(family, version)
+        ns = WASM_NAMESPACE
         fr = FileRegistryService(_settings().file_registry_canister_id)
-        size = yield fr.get_file_size_icc(ns, path.split(":")[-1] if ":" in path else path)
-        if not size:
-            raise Exception(f"registry missing path for {key}")
-        sha = (entry.get("sha256") or "").strip().lower()
+        size_res = yield fr.get_file_size_icc(ns, path)
+        info = json.loads(unwrap_call_result(size_res))
+        if info.get("error") or not int(info.get("size") or 0):
+            raise Exception(f"registry missing {ns}/{path} for {key}")
+        registry_sha = (info.get("sha256") or "").lower()
+        sha = (entry.get("sha256") or "").strip().lower() or registry_sha
+        if sha != registry_sha:
+            raise Exception(f"{key}: sheet pins sha256 {sha} but registry holds {registry_sha}")
         list(AuthorizedWasm.instances())
         w = AuthorizedWasm[key]
         if w is None:
             AuthorizedWasm(
                 key=key, family=family, version=version,
                 registry_namespace=ns,
-                registry_path=path.split(":")[-1] if ":" in path else path,
+                registry_path=path,
                 wasm_hash=sha, kind=CanisterKind.BACKEND,
             )
         else:
             w.wasm_hash = sha
+            w.registry_path = path
         return
     if kind == "register_section":
         sname = name
@@ -241,18 +243,17 @@ def _execute_item(item: dict, sheet: dict):
     if kind == "top_up":
         min_tc = float((item.get("desired") or {}).get("min_balance_tc") or 0)
         amount = int(min_tc * 1_000_000_000_000)
-        src = resolve_topup_source(_settings())
         res = yield management_canister.deposit_cycles(
-            {"canister_id": ic.Principal.from_str(cid)}
+            {"canister_id": Principal.from_str(cid)}
         ).with_cycles(amount)
         unwrap_call_result(res)
         return
     if kind == "stop":
-        res = yield management_canister.stop_canister({"canister_id": ic.Principal.from_str(cid)})
+        res = yield management_canister.stop_canister({"canister_id": Principal.from_str(cid)})
         unwrap_call_result(res)
         return
     if kind == "start":
-        res = yield management_canister.start_canister({"canister_id": ic.Principal.from_str(cid)})
+        res = yield management_canister.start_canister({"canister_id": Principal.from_str(cid)})
         unwrap_call_result(res)
         return
     if kind == "retire":

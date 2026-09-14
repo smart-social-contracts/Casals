@@ -10,7 +10,7 @@ from typing import Any
 from sheetv2 import CONDUCTOR_NAMES, env_block, validate
 
 from casals_cli.bindings import Bindings, load_bindings
-from casals_cli.conductor import bind_conductor, bootstrap_conductor, wire_registry_into_conductor
+from casals_cli.conductor import bind_conductor, bootstrap_conductor
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
 
@@ -63,6 +63,18 @@ def print_plan_table(plan: dict) -> None:
         _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
 
 
+def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
+    """The conductor pays for everything it creates. When its balance drops below
+    `cycles.conductor_min_balance_tc`, refill it to `environments.<env>.cycles.budget_tc`."""
+    budget = tc_to_cycles(float((env_block(sheet, env).get("cycles") or {}).get("budget_tc", 0) or 0))
+    floor = tc_to_cycles(float((sheet.get("cycles") or {}).get("conductor_min_balance_tc", 0) or 0))
+    have = ic.canister_cycles(backend_id) or 0
+    if have >= floor or have >= budget:
+        return
+    _progress(f"  funding conductor: +{cycles_to_tc(budget - have):.2f} TC (below {cycles_to_tc(floor):.1f} TC floor)")
+    ic.top_up(backend_id, budget - have)
+
+
 def apply_operator_items(ic, backend_id: str, plan: dict, deployer: str) -> None:
     """Execute plan items requiring operator/multisig via icp while deployer is still controller."""
     for item in plan.get("items") or []:
@@ -88,21 +100,19 @@ def apply_loop(
     max_items: int = 5,
     confirm_destructive: bool = False,
 ) -> dict:
-    """plan → apply batches until remaining == 0."""
+    """plan → apply until the plan has no item the conductor can do itself."""
     while True:
         plan_res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
             raise RuntimeError(f"plan failed: {plan_res}")
         plan = plan_res.get("plan") or {}
-        items = plan.get("items") or []
-        if not items:
+        if not any((it.get("requires") or "self") == "self" for it in plan.get("items") or []):
             return plan
-        plan_hash = plan.get("hash") or ""
         apply_res = ic.call_update(
             backend_id,
             "apply",
             json.dumps({
-                "plan_hash": plan_hash,
+                "plan_hash": plan.get("hash") or "",
                 "max_items": max_items,
                 "confirm_destructive": confirm_destructive,
             }),
@@ -110,15 +120,16 @@ def apply_loop(
         )
         if not (isinstance(apply_res, dict) and apply_res.get("ok")):
             raise RuntimeError(f"apply failed: {apply_res}")
-        applied = apply_res.get("applied") or []
-        for row in applied:
-            target = (row.get("target") or {}).get("name") or "?"
-            _progress(f"  applied {row.get('kind')} → {target}")
-        remaining = int(apply_res.get("remaining") or 0)
-        if remaining <= 0:
-            break
-    final = ic.call_update(backend_id, "plan", "{}")
-    return (final.get("plan") or {}) if isinstance(final, dict) else {}
+        for row in apply_res.get("applied") or []:
+            _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
+        failed = apply_res.get("failed")
+        if failed:
+            raise RuntimeError(
+                f"apply stopped at {failed.get('kind')} → {(failed.get('target') or {}).get('name')}: "
+                f"{failed.get('error')}"
+            )
+        if not apply_res.get("applied"):
+            raise RuntimeError(f"apply made no progress: {apply_res}")
 
 
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
@@ -176,13 +187,10 @@ def run_up(
     backend_id = conductor_override or bindings.casals_backend_id
     if not backend_id:
         raise RuntimeError("no conductor backend id after bootstrap")
+    fund_conductor(ic, sheet, env, backend_id)
 
     registry_id = bindings.conductor.get(CONDUCTOR_NAMES["file_registry"], "")
-    registry_fe_id = bindings.conductor.get(CONDUCTOR_NAMES["file_registry_frontend"], "")
-
-    # wire registry settings (like make deploy / seed --wire-registry-only)
-    if registry_id:
-        wire_registry_into_conductor(ic, backend_id, registry_id, registry_fe_id or None)
+    bindings.conductor.get(CONDUCTOR_NAMES["file_registry_frontend"], "")
 
     # 4. registry upload (CLI uploads bytes; authorize via apply)
     _progress("step 4: registry upload")
@@ -218,7 +226,7 @@ def run_up(
     _progress("step 7: apply")
     mid_plan = ic.call_update(backend_id, "plan", "{}").get("plan") or {}
     apply_operator_items(ic, backend_id, mid_plan, deployer)
-    final_plan = apply_loop(ic, backend_id, max_items=max_items, confirm_destructive=yes)
+    apply_loop(ic, backend_id, max_items=max_items, confirm_destructive=yes)
     mid_plan2 = ic.call_update(backend_id, "plan", "{}").get("plan") or {}
     apply_operator_items(ic, backend_id, mid_plan2, deployer)
 

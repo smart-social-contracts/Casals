@@ -651,6 +651,20 @@ def _merge_controllers(*groups: list) -> list:
     return out
 
 
+def _candid_blob_bytes(literal: str) -> bytes:
+    """Decode the inside of a candid text blob: printable chars literal, others `\\xx`."""
+    out = bytearray()
+    i = 0
+    while i < len(literal):
+        if literal[i] == "\\":
+            out.append(int(literal[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.append(ord(literal[i]))
+            i += 1
+    return bytes(out)
+
+
 def _canister_info_gen(canister_id: str):
     """Generator: ``canister_info`` (callable without controller rights).
 
@@ -672,19 +686,11 @@ def _canister_info_gen(canister_id: str):
         text = decoded if isinstance(decoded, str) else str(decoded)
         controllers = _principals_in(text)
         mh = ""
-        marker = "module_hash = opt blob "
+        marker = 'opt blob "'  # module_hash is the only blob in canister_info
         idx = text.find(marker)
         if idx >= 0:
             start = idx + len(marker)
-            if text[start:start + 4] == "blob":
-                blob_start = text.find("blob ", start) + 5
-                end = text.find(";", blob_start)
-                if end < 0:
-                    end = text.find("}", blob_start)
-                hex_part = text[blob_start:end].strip()
-                if hex_part.startswith('"') and hex_part.endswith('"'):
-                    raw = bytes(int(hex_part[i + 1:i + 3], 16) for i in range(1, len(hex_part) - 1, 2))
-                    mh = _to_hex(raw).lower()
+            mh = _to_hex(_candid_blob_bytes(text[start:text.index('"', start)])).lower()
         return {"controllers": controllers, "module_hash": mh}
     except Exception as e:
         return {"error": str(e)}

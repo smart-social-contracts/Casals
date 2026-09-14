@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import json
-import sys
-import urllib.request
 from typing import Any
 
 from sheetv2 import (
-    CONDUCTOR_NAMES,
-    MULTISIG_NAME,
     ResolveContext,
     env_block,
-    find_canister,
     iter_canisters,
     resolve_partial,
 )
 
-from casals_cli.bindings import load_bindings, resolve_backend_id
+from casals_cli.bindings import live_bindings
 from casals_cli.util import cycles_to_tc, emit_json
 
 
@@ -30,9 +24,8 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
     tree = ic.query(backend_id, "get_tree")
     sheet_res = ic.query(backend_id, "get_sheet")
     plan_res = ic.call_update(backend_id, "plan", "{}")
-    orch = ic.query(backend_id, "orchestration_status")
+    orch = ic.query(backend_id, "orchestration_status", "{}")
     last_apply = ic.query(backend_id, "last_apply")
-    bindings_res = ic.query(backend_id, "get_bindings")
 
     id_to_name = {v: k for k, v in bindings.items()}
     if isinstance(tree, dict):
@@ -48,8 +41,7 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
     resolved, _ = resolve_partial(sheet, env, ctx, partial=True)
 
     canisters_out = []
-    for section, stand, canister in iter_canisters(resolved):
-        cname = canister.get("name") or ""
+    for section, stand, cname, canister in iter_canisters(resolved):
         cid = bindings.get(cname, "")
         row: dict[str, Any] = {
             "section": section.get("name"),
@@ -80,7 +72,7 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
         "env": env,
         "backend_id": backend_id,
         "sheet": sheet_res,
-        "bindings": bindings_res,
+        "bindings": bindings,
         "tree": tree,
         "orchestration_status": orch,
         "last_apply": last_apply,
@@ -168,15 +160,7 @@ def mermaid_graph(view: dict, sheet: dict, bindings: dict[str, str]) -> str:
 
 
 def cmd_show(ic, args, sheet: dict) -> None:
-    sheet_name = str(sheet.get("name") or "")
-    bindings_obj = load_bindings(sheet_name, args.env)
-    backend = resolve_backend_id(bindings_obj, getattr(args, "conductor", None))
-    if not backend:
-        raise RuntimeError("no conductor; run casals up or pass --conductor")
-    bmap = dict(bindings_obj.conductor) if bindings_obj else {}
-    bres = ic.query(backend, "get_bindings")
-    if isinstance(bres, dict) and bres.get("bindings"):
-        bmap.update(bres["bindings"])
+    backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, getattr(args, "conductor", None))
     view = build_live_view(ic, sheet, args.env, backend, bmap)
     if getattr(args, "json", False):
         emit_json(view)
@@ -185,10 +169,7 @@ def cmd_show(ic, args, sheet: dict) -> None:
 
 
 def cmd_graph(ic, args, sheet: dict) -> None:
-    sheet_name = str(sheet.get("name") or "")
-    bindings_obj = load_bindings(sheet_name, args.env)
-    backend = resolve_backend_id(bindings_obj, getattr(args, "conductor", None))
-    bmap = dict(bindings_obj.conductor) if bindings_obj else {}
+    backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, getattr(args, "conductor", None))
     view = build_live_view(ic, sheet, args.env, backend, bmap)
     if getattr(args, "ascii", False):
         print(render_show_text(view))

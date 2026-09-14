@@ -6,7 +6,9 @@
   import { get } from 'svelte/store';
   import { ensureFx } from '$lib/fx.svelte';
   import { canManageSubnetWhitelist } from '$lib/subnetAccess';
+  import { canManageRegistryPublishers } from '$lib/registryPublisherAccess';
   import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
+  import RegistryPublishersPanel from '$lib/components/RegistryPublishersPanel.svelte';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
   import { formatCommitDatetime, shortSha } from '$lib/buildIdentity';
@@ -52,6 +54,7 @@
   let openHelp = $state<string | null>(null);
   let subnetWhitelist = $state<string[]>([]);
   let canEditSubnetWhitelist = $state(false);
+  let canManagePublishers = $state(false);
 
   const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
 
@@ -67,6 +70,24 @@
 
   function toggleHelp(id: string) {
     openHelp = openHelp === id ? null : id;
+  }
+
+  async function refreshPublisherAccess() {
+    if (!get(isAuthenticated)) {
+      canManagePublishers = false;
+      return;
+    }
+    const caller = get(principal);
+    if (!caller) {
+      canManagePublishers = false;
+      return;
+    }
+    if (get(isController) === true) {
+      canManagePublishers = true;
+      return;
+    }
+    const tree = await getTree().catch(() => null);
+    canManagePublishers = canManageRegistryPublishers(tree, caller);
   }
 
   async function refreshSubnetEditAccess() {
@@ -111,6 +132,7 @@
       displayCurrency = meta.display_currency || 'USD';
       subnetWhitelist = meta.subnet_whitelist ?? [];
       await refreshSubnetEditAccess();
+      await refreshPublisherAccess();
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -124,8 +146,10 @@
   $effect(() => {
     if ($isAuthenticated && $principal) {
       void refreshSubnetEditAccess();
+      void refreshPublisherAccess();
     } else {
       canEditSubnetWhitelist = false;
+      canManagePublishers = false;
     }
   });
 
@@ -775,5 +799,15 @@
         }}
       />
     </div>
+
+    {#if canManagePublishers}
+      <div class="card p-5 pb-0 w-full">
+        <RegistryPublishersPanel
+          registryCanisterId={meta?.file_registry_canister_id ?? fileRegistryId}
+          registryFrontendCanisterId={meta?.file_registry_frontend_canister_id ?? fileRegistryFrontendId}
+          canEdit={canManagePublishers}
+        />
+      </div>
+    {/if}
   {/if}
 </div>

@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import copy
-import fnmatch
 import hashlib
 import json
-from typing import Any, Callable
 
 from sheetv2 import (
     CONDUCTOR_NAMES,
@@ -52,6 +49,22 @@ class PlanningError(Exception):
     def __init__(self, errors: list[str]) -> None:
         self.errors = errors
         super().__init__(errors[0] if errors else "planning failed")
+
+
+def _glob_match(name: str, pattern: str) -> bool:
+    """`*` wildcard match (stand_template.name_pattern); no other glob syntax."""
+    parts = pattern.split("*")
+    if len(parts) == 1:
+        return name == pattern
+    if not name.startswith(parts[0]) or not name.endswith(parts[-1]):
+        return False
+    pos = len(parts[0])
+    for part in parts[1:-1]:
+        idx = name.find(part, pos)
+        if idx < 0:
+            return False
+        pos = idx + len(part)
+    return pos <= len(name) - len(parts[-1])
 
 
 def build_plan(
@@ -148,7 +161,8 @@ class _PlanContext:
             key = f"{family}@{version}" if version else family
             expected_hash = (entry.get("sha256") or "").strip().lower()
             live_entry = self.auth_wasms.get(key) or self.auth_wasms.get(family)
-            if live_entry is None or (expected_hash and live_entry.get("wasm_hash") != expected_hash):
+            live_hash = (live_entry or {}).get("wasm_hash") or ""
+            if not live_hash or (expected_hash and live_hash != expected_hash):
                 self.add(
                     "authorize_wasm",
                     {"name": key, "canister_id": None, "section": None, "stand": None},
@@ -226,7 +240,7 @@ class _PlanContext:
         if template:
             pattern = (template.get("name_pattern") or "").strip()
             for st_name, st_live in self.stands_live.items():
-                if (st_live.get("section") or "") == sname and fnmatch.fnmatch(st_name, pattern):
+                if (st_live.get("section") or "") == sname and _glob_match(st_name, pattern):
                     template_stands.append((st_name, template))
                     self.matched_template_stands.add(st_name)
         for sj, stand_spec in enumerate(sec_spec.get("stands") or []):
@@ -478,7 +492,7 @@ class _PlanContext:
         for cid, cname in self.known_ids.items():
             if cname and cname in self.sheet_names:
                 continue
-            st_sec = (self.stands_live.get(cname or "") or {}).get("section") if cname else None
+            (self.stands_live.get(cname or "") or {}).get("section") if cname else None
             if cname and cname in self.stands_live:
                 if cname not in self.declared_stands and cname not in self.matched_template_stands:
                     for cn in self._stand_canister_names(cname):
@@ -580,12 +594,12 @@ def _instantiate_template_stand(template: dict, stand_name: str) -> dict:
     spec = {"name": stand_name, "canisters": [], "commanders": template.get("commanders") or []}
     for c in template.get("canisters") or []:
         if isinstance(c, dict):
-            cc = copy.deepcopy(c)
+            cc = json.loads(json.dumps(c))
             if isinstance(cc.get("name"), str):
                 cc["name"] = cc["name"].replace("{stand}", stand_name)
             spec["canisters"].append(cc)
     if isinstance(template.get("baton"), dict):
-        baton = copy.deepcopy(template["baton"])
+        baton = json.loads(json.dumps(template["baton"]))
         spec["baton"] = baton
     return spec
 

@@ -283,6 +283,11 @@ synthetic section `Casals` / stand `conductor` and `System` / `governance`.
 Baton canisters are `kind: backend` with a name ending in `-baton`;
 `$stand.backend` / `$stand.frontend` skip them.
 
+The two conductor frontends are asset canisters: the CLI deploys and syncs
+their `dist` (frontend builds are not reproducible, so idempotency is by dist
+content hash in the bindings file). They have **no `registry.wasms` entry**;
+`plan` manages only their controllers.
+
 The conductor is part of the sheet so that `plan` also reports drift on Casals'
 own controllers (today's biggest blind spot) and so that bootstrap has one
 input. Casals cannot change its own controllers when the multisig owns it; the
@@ -347,7 +352,7 @@ reports balances. Estimation (`estimate_deploy`) becomes a plan annotation.
 | `plan()` | update¹ | read live IC state, resolve placeholders, return `Plan { hash, items[], drift[], unmanaged[], unverifiable[] }` |
 | `apply(plan_hash, max_items?)` | update | execute that plan, in order, stop at first failure; `max_items` bounds one call (progress in the UI, resumability under test); returns `ApplyResult { applied[], remaining, next_hash }` |
 | `verify()` | update¹ | `plan()` with the assertion that `items` is empty; used by the timer and the UI |
-| `export_sheet()` | query | live state rendered as a v2 sheet (migration + audit) |
+| `export_sheet()` | query | the sheet this conductor runs + bindings; after `verify` passes it is the live state rendered as a v2 sheet (audit) |
 | `get_plan(hash)` / `last_apply()` | query | inspection |
 
 ¹ Reading live controllers requires inter-canister calls (`canister_status` /
@@ -533,7 +538,10 @@ casals up casals.json -e production [--identity prod-identity] [--yes]
 3. **conductor**: create + install the four conductor canisters from
    `conductor.*` with controllers `[$deployer]` (nothing else exists yet).
    Idempotent: if `~/.casals/<sheet-name>.<env>.json` binds ids and they are
-   alive with the right hash, skip.
+   alive with the right hash, skip. Then fund the conductor backend: it pays
+   for every canister it creates (`top_up_from: $self`), so when its balance
+   is below `cycles.conductor_min_balance_tc` the deployer refills it to
+   `budget_tc`. No-op otherwise.
 4. **registry**: upload every `registry.wasms` / `publish` entry to the file
    registry by sha256, authorize on the conductor.
 5. `set_sheet(sheet, env)`.

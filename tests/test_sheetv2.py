@@ -238,7 +238,7 @@ def test_canonical_json_key_order_independent():
 
 def test_iter_canisters_includes_conductor_and_multisig():
     sheet = _load_corpus("governed")
-    names = [c.get("name") or "" for _s, _t, c in sv2.iter_canisters(sheet)]
+    names = [n for _s, _t, n, _c in sv2.iter_canisters(sheet)]
     logical = sv2.canister_names(sheet)
     assert "casals-backend" in logical
     assert "multisig" in logical

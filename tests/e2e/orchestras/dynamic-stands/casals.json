@@ -41,9 +41,7 @@
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
     "wasms": [
       { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
-      { "family": "casals-frontend", "version": "main", "source": "build:casals_frontend" },
       { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
-      { "family": "file-registry-frontend", "version": "main", "source": "build:ic_file_registry_frontend" },
       { "family": "hello-world-basilisk", "version": "1.0.0", "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz" },
       { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
       { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" },
