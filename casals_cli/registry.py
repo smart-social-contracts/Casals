@@ -243,7 +243,9 @@ def ensure_registry_uploads(
     namespace: str = WASM_NAMESPACE,
     progress=None,
 ) -> list[dict]:
-    """Upload missing/changed wasms; return summary rows."""
+    """Upload missing/changed wasms and pin each entry's ``sha256`` in ``sheet`` to
+    the artifact actually uploaded: what the conductor then plans against is
+    exactly this build. Returns summary rows."""
     sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
     existing = registry_file_hashes(ic, registry_id, namespace)
     rows: list[dict] = []
@@ -263,6 +265,7 @@ def ensure_registry_uploads(
             expected_sha256=expected,
         )
         if not expected:
+            entry["sha256"] = digest
             if progress:
                 progress(f"  {family}@{version} sha256={digest}")
         reg_hash = existing.get(path, "")

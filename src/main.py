@@ -726,6 +726,7 @@ def get_status() -> text:
     orchestra_name, orchestra_description = _orchestra_identity()
     return json.dumps({
         "version": VERSION,
+        "cycles": int(ic.canister_balance128()),  # the conductor's own balance; readable by anyone
         "sections": Section.count(),
         "stands": Stand.count(),
         "canisters": Canister.count(),
@@ -1036,9 +1037,9 @@ def set_sheet(args: text) -> text:
 
 @update
 def bind_conductor(args: text) -> text:
-    """Bind conductor canister ids (controller-only, idempotent). §5.5."""
+    """Bind conductor canister ids (needs sheet.set, idempotent). §5.5."""
     try:
-        _require_admin()
+        _require_sheet_permission("sheet.set")
         params = json.loads(args) if args else {}
         return _ok(**bind_conductor_impl(params))
     except Exception as e:

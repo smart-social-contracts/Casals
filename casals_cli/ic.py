@@ -286,7 +286,7 @@ class RecordingIc:
             return {"ok": True, "plan": {"hash": "h1", "items": [{"seq": 0, "kind": "create_canister", "target": {"name": "x"}, "requires": "self"}], "unverifiable": [], "drift": [], "unmanaged": [], "info": []}}
         if method == "apply":
             self.converged = True
-            return {"ok": True, "plan_hash": "h1", "applied": [{"kind": "noop", "target": {"name": "x"}, "result": "ok"}], "failed": None, "remaining": 0, "next_plan_hash": None}
+            return {"ok": True, "plan_hash": "h1", "applied": [{"kind": "noop", "target": {"name": "x"}, "result": "ok"}], "failed": None, "skipped": [], "remaining": 0}
         if method == "verify":
             return {"ok": True, "converged": self.converged, "plan": {"hash": "h0", "items": []}}
         if method == "set_sheet":

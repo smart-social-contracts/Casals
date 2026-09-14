@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from auth import _normalize_permissions
 from sheetv2 import (
     CONDUCTOR_NAMES,
     MULTISIG_NAME,
@@ -17,6 +18,7 @@ from sheetv2 import (
     sheet_hash,
     wasm_ref,
     canister_names,
+    find_placeholder_tokens,
 )
 
 TC = 1_000_000_000_000
@@ -67,6 +69,15 @@ def _glob_match(name: str, pattern: str) -> bool:
     return pos <= len(name) - len(parts[-1])
 
 
+def _placeholders_in(value) -> set[str]:
+    """Placeholder tokens left in a (partially) resolved value."""
+    if isinstance(value, dict):
+        return set().union(*(_placeholders_in(v) for v in value.values())) if value else set()
+    if isinstance(value, list):
+        return set().union(*(_placeholders_in(v) for v in value)) if value else set()
+    return set(find_placeholder_tokens(value)) if isinstance(value, str) else set()
+
+
 def build_plan(
     resolved_sheet: dict,
     env: str,
@@ -93,6 +104,7 @@ class _PlanContext:
         self.errors: list[str] = []
         self.items: list[dict] = []
         self.info: list[dict] = []
+        self.deferred: list[dict] = []  # fields still naming a canister that does not exist yet
         self.bindings = dict(live_state.get("bindings") or {})
         self.canisters_live = live_state.get("canisters") or {}
         self.sections_live = live_state.get("sections") or {}
@@ -105,6 +117,16 @@ class _PlanContext:
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
         self.declared_stands: set[str] = set()
         self.matched_template_stands: set[str] = set()
+
+    def defer_if_unresolved(self, value, name: str, field: str) -> bool:
+        """True (and recorded) when ``value`` still holds a placeholder such as
+        `$multisig`: the canister it names is not created yet, so this field is
+        compared on the next pass, after the create items ran."""
+        tokens = _placeholders_in(value)
+        if not tokens:
+            return False
+        self.deferred.append({"target": name, "field": field, "waiting_for": sorted(tokens)})
+        return True
 
     def binding(self, name: str) -> str:
         return (self.bindings.get(name) or "").strip()
@@ -184,7 +206,7 @@ class _PlanContext:
         self.add(
             "set_commanders",
             {"name": SYNTHETIC_SECTION_CONDUCTOR, "canister_id": self.self_id,
-             "section": SYNTHETIC_SECTION_CONDUCTOR, "stand": SYNTHETIC_STAND_CONDUCTOR},
+             "section": SYNTHETIC_SECTION_CONDUCTOR, "stand": None},
             "conductor commanders differ",
             destructive=destructive,
             current={"commanders": live},
@@ -195,10 +217,10 @@ class _PlanContext:
         mid = self.binding(MULTISIG_NAME)
         if not mid:
             return
-        desired_signers = sorted(str(s).strip() for s in (multisig_spec.get("signers") or []) if str(s).strip())
+        desired_signers = sorted({str(s).strip() for s in (multisig_spec.get("signers") or []) if str(s).strip()})
         desired_threshold = int(multisig_spec.get("threshold") or 1)
         ms_live = self.live_state.get("multisig") or {}
-        live_signers = sorted(str(s).strip() for s in (ms_live.get("signers") or []) if str(s).strip())
+        live_signers = sorted({str(s).strip() for s in (ms_live.get("signers") or []) if str(s).strip()})
         live_threshold = int(ms_live.get("threshold") or 0)
         if desired_signers == live_signers and desired_threshold == live_threshold:
             return
@@ -363,6 +385,9 @@ class _PlanContext:
             )
             return
 
+        # Code changes need a controller: Casals when it is one, else the deployer /
+        # multisig (the conductor's own canisters at bootstrap, or under governance).
+        code_requires = "self" if self.self_id in live_ctls else "multisig"
         if mode == "managed":
             if not live_hash:
                 self.add(
@@ -370,6 +395,7 @@ class _PlanContext:
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
                     f"install {name}",
                     desired={"wasm": spec.get("wasm"), "hash": expected_hash},
+                    requires=code_requires,
                     section_order=si, stand_order=sj,
                 )
             elif expected_hash and live_hash != expected_hash:
@@ -381,7 +407,7 @@ class _PlanContext:
                             "reinstall_code",
                             {"name": name, "canister_id": cid, "section": section, "stand": stand},
                             f"reinstall {name} (hash drift)",
-                            destructive=True,
+                            destructive=True, requires=code_requires,
                             current={"module_hash": live_hash},
                             desired={"module_hash": expected_hash},
                             section_order=si, stand_order=sj,
@@ -391,6 +417,7 @@ class _PlanContext:
                         "upgrade_code",
                         {"name": name, "canister_id": cid, "section": section, "stand": stand},
                         f"upgrade {name} (hash drift)",
+                        requires=code_requires,
                         current={"module_hash": live_hash},
                         desired={"module_hash": expected_hash},
                         section_order=si, stand_order=sj,
@@ -431,7 +458,7 @@ class _PlanContext:
                 expected = cfg.get("args") if cw.get("equals_args") else cw.get("equals")
                 actual = self.config_queries.get(qkey)
                 needs = actual is None or not _config_converged(actual, expected, cw)
-            if needs:
+            if needs and not self.defer_if_unresolved(cfg.get("args"), name, f"config.{cfg.get('method')}"):
                 self.add(
                     "config_call",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
@@ -440,13 +467,16 @@ class _PlanContext:
                     section_order=si, stand_order=sj,
                 )
 
-        if live_ctls != desired_ctls:
+        if live_ctls != desired_ctls and not self.defer_if_unresolved(desired_ctls, name, "controllers"):
             err = _lockout_controllers(name, live_ctls, desired_ctls, self.self_id)
             if err:
                 self.errors.append(err)
             else:
+                # Casals does it when it is a controller (even when that removes itself:
+                # the sheet says so, and the item is ordered last); otherwise the
+                # deployer or the multisig must.
                 removes_self = self.self_id in live_ctls and self.self_id not in desired_ctls
-                requires = "multisig" if self.self_id not in live_ctls or removes_self else "self"
+                requires = "self" if self.self_id in live_ctls else "multisig"
                 self.add(
                     "set_controllers",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
@@ -510,6 +540,11 @@ class _PlanContext:
                         "field": "domains",
                         "reason": "dns provider none on this environment",
                     })
+        if self.deferred and not self.items:
+            raise PlanningError([
+                f"{d['target']}.{d['field']} waits for {', '.join(d['waiting_for'])}, which nothing creates"
+                for d in self.deferred
+            ])
         plan_items_for_hash = [{k: v for k, v in it.items() if k != "seq"} for it in self.items]
         ph = hashlib.sha256(
             canonical_json({"sheet_hash": self.sh, "env": self.env, "items": plan_items_for_hash}).encode("utf-8")
@@ -523,6 +558,7 @@ class _PlanContext:
             "drift": drift,
             "unmanaged": unmanaged,
             "unverifiable": unverifiable,
+            "deferred": self.deferred,
             "info": self.info,
         }
 
@@ -552,7 +588,7 @@ def _normalize_commanders(entries: list) -> list[dict]:
         if isinstance(e, dict):
             p = str(e.get("principal") or "").strip()
             if p:
-                out.append({"principal": p, "permissions": str(e.get("permissions") or "")})
+                out.append({"principal": p, "permissions": _normalize_permissions(e.get("permissions"))})
         elif isinstance(e, str) and e.strip():
             out.append({"principal": e.strip(), "permissions": ""})
     out.sort(key=lambda x: x["principal"])

@@ -64,8 +64,9 @@ def _parse_permissions(stored: str) -> list:
 def _normalize_permissions(perms) -> str:
     """Turn an incoming permissions value (list or str) into the stored form.
 
-    A set covering every permission is collapsed to "*". Unknown keys are
-    dropped. None => "" (full access, unchanged).
+    "<group>.*" expands to every key of that group. A set covering every
+    permission is collapsed to "*". Unknown keys are dropped. None => ""
+    (full access, unchanged).
     """
     if perms is None:
         return ""
@@ -75,7 +76,9 @@ def _normalize_permissions(perms) -> str:
         keys = [str(k).strip() for k in perms if str(k).strip()]
     if "*" in keys:
         return "*"
-    keys = [k for k in keys if k in PERMISSION_KEYS]
+    for glob in [k for k in keys if k.endswith(".*")]:  # "canister.*" → every canister.<x> key
+        keys += [k for k in PERMISSION_KEYS if k.startswith(glob[:-1])]
+    keys = [k for k in PERMISSION_KEYS if k in keys]
     if set(keys) >= set(PERMISSION_KEYS):
         return "*"
     return ",".join(keys)

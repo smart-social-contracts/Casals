@@ -25,7 +25,6 @@ from lifecycle import (
 )
 from models import AuthorizedWasm, Canister, CanisterKind, CanisterStatus, Section, Stand
 from orchestration_bridge import _configure_baton_gen, _hand_to_baton_gen, _multisig_configure_gen
-from planner import build_plan, PlanningError
 from pool import _pool_mark_in_use
 from services import FileRegistryService
 from sheetv2 import WASM_NAMESPACE, registry_path
@@ -33,20 +32,19 @@ from wasm_types import wasm_type_of_wasm
 
 
 def apply_plan_gen(plan: dict, *, max_items: int = 0, confirm_destructive: bool = False,
-                   resolved_sheet: dict, env: str, live_state: dict, self_id: str,
-                   sheet_hash_value: str):
-    """Generator: execute plan items; return ApplyResult §5.5."""
+                   resolved_sheet: dict, live_state: dict, self_id: str):
+    """Generator: execute the plan items Casals can do itself, in order, stopping
+    at the first failure. Items with `requires != self` (its own controllers, the
+    multisig's) are left for the deployer / multisig and reported as ``skipped``."""
     items = list(plan.get("items") or [])
     if not confirm_destructive and any(it.get("destructive") for it in items):
         return {"ok": False, "error": "destructive items require confirm_destructive"}
-    limit = int(max_items or 0)
-    if limit <= 0:
-        limit = len(items)
+    mine = [it for it in items if (it.get("requires") or "self") == "self"]
+    skipped = [it for it in items if (it.get("requires") or "self") != "self"]
+    limit = int(max_items or 0) or len(mine)
     applied = []
     failed = None
-    for it in items[:limit]:
-        if it.get("destructive") and not confirm_destructive:
-            return {"ok": False, "error": "destructive items require confirm_destructive"}
+    for it in mine[:limit]:
         try:
             if not (yield from _precondition_holds_gen(it, live_state, self_id)):
                 failed = {**it, "error": "precondition no longer holds"}
@@ -58,22 +56,12 @@ def apply_plan_gen(plan: dict, *, max_items: int = 0, confirm_destructive: bool 
         except Exception as e:
             failed = {**it, "error": str(e)}
             break
-    remaining = len(items) - len(applied) - (1 if failed else 0)
-    next_hash = None
-    if failed or remaining:
-        try:
-            next_plan = build_plan(
-                resolved_sheet, env, live_state, self_id=self_id, sheet_hash_value=sheet_hash_value,
-            )
-            next_hash = next_plan.get("hash")
-        except PlanningError:
-            next_hash = None
     return {
         "plan_hash": plan.get("hash"),
         "applied": applied,
         "failed": failed,
-        "remaining": remaining,
-        "next_plan_hash": next_hash,
+        "skipped": skipped,
+        "remaining": len(mine) - len(applied) - (1 if failed else 0),
     }
 
 
@@ -103,6 +91,22 @@ def _precondition_holds_gen(item: dict, live_state: dict, self_id: str):
     if kind in ("stop", "start", "retire", "top_up", "config_call"):
         return True
     return True
+
+
+def _ensure_stand(section: str, stand: str | None):
+    """Section (and stand) records exist; return the stand, or the section when no stand is given."""
+    list(Section.instances())
+    sec = Section[section]
+    if sec is None:
+        sec = Section(name=section)
+    if not stand:
+        return sec
+    list(Stand.instances())
+    dk = Stand[stand]
+    if dk is None:
+        dk = Stand(name=stand)
+        dk.section = sec
+    return dk
 
 
 def _execute_item(item: dict, sheet: dict):
@@ -140,29 +144,14 @@ def _execute_item(item: dict, sheet: dict):
             w.registry_path = path
         return
     if kind == "register_section":
-        sname = name
-        list(Section.instances())
-        if Section[sname] is None:
-            Section(name=sname)
+        _ensure_stand(name, None)
         return
     if kind == "register_stand":
-        dname = name
-        sec_name = (target.get("section") or "").strip()
-        list(Section.instances())
-        sec = Section[sec_name]
-        if sec is None:
-            sec = Section(name=sec_name)
-        list(Stand.instances())
-        if Stand[dname] is None:
-            st = Stand(name=dname)
-            st.section = sec
+        _ensure_stand((target.get("section") or "").strip(), name)
         return
     if kind == "create_canister":
-        list(Stand.instances())
-        stand_name = (target.get("stand") or "").strip()
-        dk = Stand[stand_name]
-        if dk is None:
-            raise Exception(f"stand '{stand_name}' missing")
+        # Synthetic stands (Casals/conductor, System/governance) are never registered by a plan item.
+        dk = _ensure_stand((target.get("section") or "").strip(), (target.get("stand") or "").strip())
         reuse = bool((item.get("desired") or {}).get("reuse_pool"))
         subnet, subnet_type = _target_subnet(dk)
         new_cid, _reused = yield from _allocate_canister(subnet, subnet_type, reuse_pool=reuse)
@@ -203,13 +192,7 @@ def _execute_item(item: dict, sheet: dict):
         desired = (item.get("desired") or {}).get("commanders") or []
         sec_name = (target.get("section") or "").strip()
         stand_name = (target.get("stand") or "").strip()
-        list(Section.instances())
-        if stand_name and stand_name != sec_name:
-            ent = Stand[stand_name]
-        else:
-            ent = Section[sec_name]
-        if ent is None:
-            raise Exception(f"entity missing for commanders on {name}")
+        ent = _ensure_stand(sec_name, stand_name or None)
         persist_commanders(ent, desired)
         return
     if kind == "configure_multisig":

@@ -16,12 +16,13 @@ from sheet_storage import (
     load_sheet_doc,
     store_apply_result,
     store_plan,
+    sheet_deployer,
     store_sheet_doc,
 )
 from sheetv2 import (
     CONDUCTOR_NAMES,
     ResolveContext,
-    resolve,
+    resolve_partial,
     sheet_hash,
     validate,
 )
@@ -35,7 +36,7 @@ def _resolve_ctx(env: str, sheet: dict) -> ResolveContext:
     doc_env, _, _ = load_sheet_doc()
     use_env = env or doc_env or "local"
     return ResolveContext(
-        deployer=_caller(),
+        deployer=sheet_deployer(),
         self_id=ic.id().to_str(),
         canister_ids=_bindings_map(),
         env_values=(sheet.get("environments") or {}).get(use_env) or {},
@@ -50,7 +51,7 @@ def set_sheet_impl(args: dict) -> dict:
     errors = validate(sheet, env)
     if errors:
         raise ValueError("; ".join(errors[:8]))
-    sh = store_sheet_doc(sheet, env)
+    sh = store_sheet_doc(sheet, env, _caller())
     _append_event("sheet_set", "", {"env": env, "sheet_hash": sh})
     return {"sheet_hash": sh, "env": env, "warnings": []}
 
@@ -105,7 +106,7 @@ def plan_gen(args: dict | None = None):
     if not sheet:
         raise ValueError("no sheet set")
     ctx = _resolve_ctx(env, sheet)
-    resolved = resolve(sheet, env, ctx)
+    resolved, _unresolved = resolve_partial(sheet, env, ctx)  # `$multisig` etc. resolve once created
     bindings = _bindings_map()
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
@@ -139,7 +140,7 @@ def apply_gen(args: dict):
     if not sheet:
         raise ValueError("no sheet set")
     ctx = _resolve_ctx(env, sheet)
-    resolved = resolve(sheet, env, ctx)
+    resolved, _unresolved = resolve_partial(sheet, env, ctx)  # `$multisig` etc. resolve once created
     bindings = _bindings_map()
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
@@ -160,10 +161,8 @@ def apply_gen(args: dict):
         max_items=int(args.get("max_items") or 0),
         confirm_destructive=bool(args.get("confirm_destructive")),
         resolved_sheet=resolved,
-        env=env,
         live_state=live,
         self_id=self_id,
-        sheet_hash_value=sh,
     )
     if result.get("error") and not result.get("applied"):
         return result

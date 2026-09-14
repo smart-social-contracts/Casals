@@ -33,7 +33,7 @@ def load_sheet_doc() -> tuple[dict | None, str, str]:
     return sheet, env, sh
 
 
-def store_sheet_doc(sheet: dict, env: str) -> str:
+def store_sheet_doc(sheet: dict, env: str, deployer: str) -> str:
     """Validate and persist the unresolved v2 sheet; return its hash."""
     errors = validate(sheet, env)
     if errors:
@@ -43,7 +43,12 @@ def store_sheet_doc(sheet: dict, env: str) -> str:
     row.sheet_json = canonical_json(sheet)
     row.env = (env or "local").strip() or "local"
     row.sheet_hash = sh
+    row.deployer = deployer
     return sh
+
+
+def sheet_deployer() -> str:
+    return (_doc().deployer or "").strip()
 
 
 def store_plan(plan: dict) -> None:

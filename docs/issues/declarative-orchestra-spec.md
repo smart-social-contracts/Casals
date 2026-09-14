@@ -260,7 +260,10 @@ hash → no-op.
 
 **DECISION (recommended):** `sha256` is mandatory for anything a `production`
 environment installs. `version: main` without a hash is allowed for
-`local`/`test` only.
+`local`/`test` only: `casals up` then pins the hash of the artifact it just
+resolved/uploaded into the sheet it submits, so the conductor always plans
+against a fully hashed sheet (a new build is a new desired state and yields
+`upgrade_code` items).
 
 ### 4.6 `conductor` — Casals itself
 
@@ -395,8 +398,11 @@ changed the IC out of band (e.g. controllers set via dfx).
 Derived, not declared: registry → conductor config → governance (multisig
 exists before anything references `$multisig`) → per section in sheet order:
 create → install → config → baton → controllers → commanders. Controller
-changes that remove Casals itself are always **last** in the plan and are
-skipped (reported `requires: multisig`) when Casals is the caller.
+changes that remove Casals itself are always **last** in the plan. A
+`set_controllers` item is `requires: self` when Casals is a live controller
+of the target (it can always execute it, including removing itself), otherwise
+`requires: multisig` — the deployer executes it while still a controller
+(bootstrap), the multisig thereafter.
 
 ### 5.4 Idempotency contract
 
@@ -437,11 +443,12 @@ All new endpoints follow the existing `_ok(...)` / `_err(...)` envelope
 { "plan_hash": "…", "max_items": 5, "confirm_destructive": false }
 → { "ok": true, "plan_hash": "…", "applied": [PlanItem+{"result": "ok"}],
     "failed": PlanItem+{"error": "…"} | null,
-    "remaining": 3, "next_plan_hash": "…" | null }
+    "skipped": [PlanItem],          // requires != self: left for the deployer / multisig
+    "remaining": 3 }                // callers re-plan; the next hash is not predicted
     // stale: { "ok": false, "error": "stale plan", "current_plan_hash": "…" }
     // gated: { "ok": false, "error": "destructive items require confirm_destructive" }
 
-// export_sheet()           query → { "ok": true, "sheet": {…v2…}, "bindings": {"<name>": "<canister id>"} }
+// export_sheet()           query → { "ok": true, "sheet": {…v2…}, "env": "local", "sheet_hash": "…", "bindings": {"<name>": "<canister id>"} }
 // get_plan(args)           query {"plan_hash": "…"} → { "ok": true, "plan": Plan }
 // last_apply()             query → { "ok": true, "apply": ApplyResult | null }
 // get_bindings()           query → { "ok": true, "bindings": {"<name>": "<id>"}, "self": "<id>", "env": "local" }

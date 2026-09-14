@@ -431,6 +431,7 @@ class SheetDocument(Entity):
     sheet_json = String(max_length=524288, default="")
     env = String(max_length=64, default="local")
     sheet_hash = String(max_length=128, default="")
+    deployer = String(max_length=64, default="")  # the principal that called set_sheet: what `$deployer` means
 
 
 class PlanRecord(Entity, TimestampedMixin):

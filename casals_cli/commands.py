@@ -7,7 +7,7 @@ import sys
 
 
 from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, resolve_backend_id
-from casals_cli.up import apply_loop, apply_operator_items, print_plan_table
+from casals_cli.up import converge, print_plan_table
 from casals_cli.util import emit_error, emit_json
 
 
@@ -36,17 +36,13 @@ def cmd_plan(ic, args) -> None:
 
 def cmd_apply(ic, args) -> None:
     backend, _ = _backend(args)
-    deployer = ic.deployer_principal()
-    plan_res = ic.call_update(backend, "plan", "{}")
-    plan = (plan_res.get("plan") or {}) if isinstance(plan_res, dict) else {}
-    apply_operator_items(ic, backend, plan, deployer)
-    confirm = bool(getattr(args, "confirm_destructive", False))
-    max_items = int(getattr(args, "max_items", 5) or 5)
-    final = apply_loop(ic, backend, max_items=max_items, confirm_destructive=confirm)
+    final = converge(
+        ic, backend, ic.deployer_principal(),
+        yes=bool(getattr(args, "confirm_destructive", False)),
+        max_items=int(getattr(args, "max_items", 5) or 5),
+    )
     if getattr(args, "json", False):
         emit_json({"ok": True, "plan": final})
-    else:
-        print_plan_table(final)
 
 
 def cmd_verify(ic, args) -> None:

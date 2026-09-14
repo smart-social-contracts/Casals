@@ -69,7 +69,7 @@ class TestPlanApplySmoke:
             })
             if res.get("remaining", 0) == 0:
                 break
-            ph = res.get("next_plan_hash") or _ok("plan", {})["plan"]["hash"]
+            ph = _ok("plan", {})["plan"]["hash"]
             plan_row = _ok("plan", {})
             ph = plan_row["plan"]["hash"]
             items = plan_row["plan"]["items"]

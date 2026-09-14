@@ -68,68 +68,66 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
     `cycles.conductor_min_balance_tc`, refill it to `environments.<env>.cycles.budget_tc`."""
     budget = tc_to_cycles(float((env_block(sheet, env).get("cycles") or {}).get("budget_tc", 0) or 0))
     floor = tc_to_cycles(float((sheet.get("cycles") or {}).get("conductor_min_balance_tc", 0) or 0))
-    have = ic.canister_cycles(backend_id) or 0
+    have = int((ic.query(backend_id, "get_status") or {}).get("cycles") or 0)
     if have >= floor or have >= budget:
         return
     _progress(f"  funding conductor: +{cycles_to_tc(budget - have):.2f} TC (below {cycles_to_tc(floor):.1f} TC floor)")
     ic.top_up(backend_id, budget - have)
 
 
-def apply_operator_items(ic, backend_id: str, plan: dict, deployer: str) -> None:
-    """Execute plan items requiring operator/multisig via icp while deployer is still controller."""
+def deployer_items(ic, plan: dict, deployer: str) -> int:
+    """Controller changes the conductor cannot make itself (its own controllers,
+    the multisig's) the CLI executes as deployer while it still is a controller.
+    Returns how many it did."""
+    done = 0
     for item in plan.get("items") or []:
-        req = item.get("requires")
-        if req not in ("operator", "multisig"):
+        if item.get("kind") != "set_controllers" or (item.get("requires") or "self") == "self":
             continue
-        if item.get("kind") != "set_controllers":
-            continue
+        cid = (item.get("target") or {}).get("canister_id")
         desired = (item.get("desired") or {}).get("controllers")
-        target = (item.get("target") or {})
-        cid = target.get("canister_id")
-        if not cid or not isinstance(desired, list):
-            continue
-        if deployer not in (ic.read_controllers(cid) or []):
-            continue
-        ic.settings_update(cid, set_controllers=desired)
+        if cid and isinstance(desired, list) and deployer in (ic.read_controllers(cid) or []):
+            ic.settings_update(cid, set_controllers=desired)
+            _progress(f"  applied set_controllers → {item['target'].get('name')} (as deployer)")
+            done += 1
+    return done
 
 
-def apply_loop(
-    ic,
-    backend_id: str,
-    *,
-    max_items: int = 5,
-    confirm_destructive: bool = False,
-) -> dict:
-    """plan → apply until the plan has no item the conductor can do itself."""
+def converge(ic, backend_id: str, deployer: str, *, yes: bool, max_items: int) -> dict:
+    """plan → apply until the plan is empty. Returns the (empty) final plan.
+    Each round the conductor applies what it can, then the deployer does the
+    controller changes only it can; a round that changes nothing is an error."""
+    last_hash = None
     while True:
         plan_res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
             raise RuntimeError(f"plan failed: {plan_res}")
         plan = plan_res.get("plan") or {}
-        if not any((it.get("requires") or "self") == "self" for it in plan.get("items") or []):
+        items = plan.get("items") or []
+        print_plan_table(plan)
+        if not items:
             return plan
-        apply_res = ic.call_update(
-            backend_id,
-            "apply",
-            json.dumps({
-                "plan_hash": plan.get("hash") or "",
-                "max_items": max_items,
-                "confirm_destructive": confirm_destructive,
-            }),
-            timeout=1800,
-        )
-        if not (isinstance(apply_res, dict) and apply_res.get("ok")):
-            raise RuntimeError(f"apply failed: {apply_res}")
-        for row in apply_res.get("applied") or []:
-            _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
-        failed = apply_res.get("failed")
-        if failed:
-            raise RuntimeError(
-                f"apply stopped at {failed.get('kind')} → {(failed.get('target') or {}).get('name')}: "
-                f"{failed.get('error')}"
+        if plan.get("hash") == last_hash:
+            emit_error("orchestra not converged: a plan/apply round changed nothing", plan=plan)
+        last_hash = plan.get("hash")
+        if any(i.get("destructive") for i in items) and not yes:
+            raise RuntimeError("plan has destructive items; pass --yes to continue")
+        if any((i.get("requires") or "self") == "self" for i in items):
+            apply_res = ic.call_update(
+                backend_id, "apply",
+                json.dumps({"plan_hash": plan.get("hash"), "max_items": max_items, "confirm_destructive": yes}),
+                timeout=1800,
             )
-        if not apply_res.get("applied"):
-            raise RuntimeError(f"apply made no progress: {apply_res}")
+            if not (isinstance(apply_res, dict) and apply_res.get("ok")):
+                raise RuntimeError(f"apply failed: {apply_res}")
+            for row in apply_res.get("applied") or []:
+                _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
+            failed = apply_res.get("failed")
+            if failed:
+                raise RuntimeError(
+                    f"apply stopped at {failed.get('kind')} → {(failed.get('target') or {}).get('name')}: "
+                    f"{failed.get('error')}"
+                )
+        deployer_items(ic, plan, deployer)
 
 
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
@@ -213,31 +211,9 @@ def run_up(
     if not (isinstance(set_res, dict) and set_res.get("ok")):
         raise RuntimeError(f"set_sheet failed: {set_res}")
 
-    # 6. plan → print
-    _progress("step 6: plan")
-    plan_res = ic.call_update(backend_id, "plan", "{}")
-    plan = (plan_res.get("plan") or {}) if isinstance(plan_res, dict) else {}
-    print_plan_table(plan)
-    destructive = any(i.get("destructive") for i in (plan.get("items") or []))
-    if destructive and not yes:
-        raise RuntimeError("plan has destructive items; pass --yes to continue")
-
-    # 7. apply loop + operator/multisig items
-    _progress("step 7: apply")
-    mid_plan = ic.call_update(backend_id, "plan", "{}").get("plan") or {}
-    apply_operator_items(ic, backend_id, mid_plan, deployer)
-    apply_loop(ic, backend_id, max_items=max_items, confirm_destructive=yes)
-    mid_plan2 = ic.call_update(backend_id, "plan", "{}").get("plan") or {}
-    apply_operator_items(ic, backend_id, mid_plan2, deployer)
-
-    # 8. final plan must be empty except unverifiable
-    _progress("step 8: final plan check")
-    plan_res = ic.call_update(backend_id, "plan", "{}")
-    plan = (plan_res.get("plan") or {}) if isinstance(plan_res, dict) else {}
-    remaining_items = plan.get("items") or []
-    if remaining_items:
-        print_plan_table(plan)
-        emit_error("orchestra not converged after apply", plan=plan)
+    # 6-8. plan → apply until empty
+    _progress("step 6: plan/apply")
+    plan = converge(ic, backend_id, deployer, yes=yes, max_items=max_items)
 
     # 9. domains + verify
     _progress("step 9: domains + verify")

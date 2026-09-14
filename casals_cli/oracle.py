@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
 
+from auth import _normalize_permissions, _parse_permissions
 from sheetv2 import (
+    CONDUCTOR_NAMES,
     MULTISIG_NAME,
+    WASM_NAMESPACE,
     ResolveContext,
     env_block,
+    registry_path,
     resolve,
     stand_member,
     wasm_ref,
 )
 from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on conductor dicts
 
+from casals_cli.registry import registry_file_hashes
 from casals_cli.util import cycles_to_tc, tc_to_cycles
 
 Result = Literal["PASS", "FAIL", "SKIP"]
@@ -51,18 +57,24 @@ def _resolve_controllers(cname: str, ctx: ResolveContext, sheet: dict, env: str)
     return set()
 
 
-def _tree_commanders(tree: dict, canister_name: str) -> list[dict]:
-    out: list[dict] = []
-    if not isinstance(tree, dict):
-        return out
-    for sec in tree.get("sections") or []:
-        for stand in sec.get("stands") or []:
-            for c in stand.get("canisters") or []:
-                if c.get("name") == canister_name:
-                    out.extend(stand.get("commanders") or [])
-                    out.extend(sec.get("commanders") or [])
-                    out.extend(c.get("commanders") or [])
-    return out
+def _grade_commanders(report: OracleReport, name: str, declared, live_entity: dict | None) -> None:
+    """Declared commanders (principal → granted permission keys) must equal the tree's."""
+    if not declared:
+        return
+    want = {c["principal"]: set(_parse_permissions(_normalize_permissions(c.get("permissions")))) for c in declared}
+    have = {c["principal"]: set(c.get("permissions") or []) for c in (live_entity or {}).get("commanders") or []}
+    if want == have:
+        report.add(name, "commanders", "PASS", f"{len(want)} commanders")
+    else:
+        report.add(name, "commanders", "FAIL", f"declared={sorted(want)} live={sorted(have)}")
+
+
+def multisig_signers(ic, ms_id: str) -> tuple[set[str], int]:
+    """`list_signers` of the Motoko multisig, read straight off the candid text."""
+    out = ic.icp(["canister", "call", ms_id, "list_signers", "--query", "()"]).stdout
+    signers = set(re.findall(r'principal "([a-z0-9-]+)"', out))
+    m = re.search(r"threshold = (\d+)", out)
+    return signers, int(m.group(1)) if m else 0
 
 
 def run_oracle(
@@ -85,14 +97,21 @@ def run_oracle(
     )
     resolved = resolve(sheet, env, ctx)
     tree = ic.query(backend_id, "get_tree") if backend_id else {}
-    wasms = ic.query(backend_id, "list_authorized_wasms", "{}") if backend_id else {}
-    auth_by_key = {}
-    if isinstance(wasms, dict):
-        for w in wasms.get("wasms") or wasms.get("authorized") or []:
-            if isinstance(w, dict):
-                auth_by_key[w.get("key") or w.get("family", "")] = w
+    # Expected module hashes come from the file registry (what `casals up` uploaded),
+    # or from the sheet when pinned — never from the conductor's catalog.
+    registry_id = bindings.get(CONDUCTOR_NAMES["file_registry"], "")
+    registry_hashes = registry_file_hashes(ic, registry_id, WASM_NAMESPACE) if registry_id else {}
     if authorized_hashes:
-        auth_by_key.update({k: {"wasm_hash": v} for k, v in authorized_hashes.items()})
+        registry_hashes.update(authorized_hashes)
+
+    # commanders: Casals' own state (get_tree) is the truth for its own permissions
+    tree_secs = {sec.get("name"): sec for sec in (tree.get("sections") or []) if isinstance(sec, dict)}
+    tree_stands = {st.get("name"): st for sec in tree_secs.values() for st in sec.get("stands") or []}
+    _grade_commanders(report, "Casals", (resolved.get("conductor") or {}).get("commanders"), tree_secs.get("Casals"))
+    for sec in resolved.get("sections") or []:
+        _grade_commanders(report, sec.get("name", ""), sec.get("commanders"), tree_secs.get(sec.get("name")))
+        for st in sec.get("stands") or []:
+            _grade_commanders(report, st.get("name", ""), st.get("commanders"), tree_stands.get(st.get("name")))
 
     sheet_ids = set(bindings.get(n) for n in bindings if n)
     for section, stand, cname, canister in _iter_named_canisters(resolved):
@@ -106,8 +125,9 @@ def run_oracle(
 
         live_hash = ic.read_module_hash(cid)
         family, version = wasm_ref(str(canister.get("wasm") or ""))
-        key = f"{family}@{version}" if version else family
-        expected_hash = (authorized_hashes or {}).get(key) or (auth_by_key.get(key) or {}).get("wasm_hash")
+        entry = next((e for e in (sheet.get("registry") or {}).get("wasms") or []
+                      if e.get("family") == family and (not version or e.get("version") == version)), {})
+        expected_hash = (entry.get("sha256") or registry_hashes.get(registry_path(family, entry.get("version") or version)) or "")
         if mode == "managed" and expected_hash:
             if live_hash and live_hash.lower() == expected_hash.lower():
                 report.add(cname, "module_hash", "PASS", live_hash)
@@ -131,14 +151,6 @@ def run_oracle(
                 "FAIL",
                 f"desired={sorted(desired_ctrls)} live={sorted(live_ctrls)}",
             )
-
-        declared_cmds = canister.get("commanders") or []
-        if declared_cmds:
-            live_cmds = _tree_commanders(tree, cname)
-            if len(live_cmds) >= len(declared_cmds):
-                report.add(cname, "commanders", "PASS", f"{len(live_cmds)} live")
-            else:
-                report.add(cname, "commanders", "FAIL", f"declared={len(declared_cmds)} live={len(live_cmds)}")
 
         min_tc = float((canister.get("cycles") or {}).get("min_balance_tc") or (sheet.get("cycles") or {}).get("min_balance_tc") or 0)
         if min_tc > 0:
@@ -192,17 +204,16 @@ def run_oracle(
     ms = gov.get("multisig") or {}
     if ms_id and ms:
         try:
-            cfg = ic.query(ms_id, "get_config", "{}")
-            signers = set(cfg.get("signers") or []) if isinstance(cfg, dict) else set()
+            signers, threshold = multisig_signers(ic, ms_id)
             desired = set(ms.get("signers") or [])
             if signers == desired:
-                report.add(MULTISIG_NAME, "signers", "PASS", f"threshold={cfg.get('threshold')}")
+                report.add(MULTISIG_NAME, "signers", "PASS", f"{len(signers)} signers")
             else:
                 report.add(MULTISIG_NAME, "signers", "FAIL", f"desired={desired} live={signers}")
-            if isinstance(cfg, dict) and int(cfg.get("threshold") or 0) == int(ms.get("threshold") or 0):
-                report.add(MULTISIG_NAME, "threshold", "PASS", str(cfg.get("threshold")))
+            if threshold == int(ms.get("threshold") or 0):
+                report.add(MULTISIG_NAME, "threshold", "PASS", str(threshold))
             else:
-                report.add(MULTISIG_NAME, "threshold", "FAIL", str(cfg))
+                report.add(MULTISIG_NAME, "threshold", "FAIL", f"desired={ms.get('threshold')} live={threshold}")
         except Exception as exc:
             report.add(MULTISIG_NAME, "multisig", "FAIL", str(exc))
 
