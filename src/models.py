@@ -423,6 +423,35 @@ class PrincipalAlias(Entity, TimestampedMixin):
     created_by = String(max_length=64, default="")
 
 
+class SheetDocument(Entity):
+    """Singleton v2 sheet storage (canonical JSON; larger than Settings.sheet_json)."""
+
+    __alias__ = "key"
+    key = String(max_length=32, default="singleton")
+    sheet_json = String(max_length=524288, default="")
+    env = String(max_length=64, default="local")
+    sheet_hash = String(max_length=128, default="")
+
+
+class PlanRecord(Entity, TimestampedMixin):
+    """Stored reconciliation plan (last 20 retained)."""
+
+    __alias__ = "plan_hash"
+    plan_hash = String(min_length=1, max_length=128)
+    plan_json = String(max_length=262144, default="")
+    sheet_hash = String(max_length=128, default="")
+    env = String(max_length=64, default="")
+    created_at_ns = Integer(default=0)
+
+
+class ApplyRecord(Entity):
+    """Last apply result (singleton)."""
+
+    __alias__ = "key"
+    key = String(max_length=32, default="singleton")
+    result_json = String(max_length=262144, default="")
+
+
 class OrchestrationEvent(Entity, TimestampedMixin):
     """Append-only audit block.
 

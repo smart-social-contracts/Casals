@@ -42,6 +42,8 @@ PERMISSIONS = [
     ("arrangement.create",                 "Create / update arrangements",    "Arrangements"),
     ("arrangement.activate",               "Activate arrangements",           "Arrangements"),
     ("arrangement.delete",                 "Delete arrangements",             "Arrangements"),
+    ("sheet.set",                          "Set orchestra sheet",             "Sheet"),
+    ("sheet.apply",                        "Apply reconciliation plan",       "Sheet"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
