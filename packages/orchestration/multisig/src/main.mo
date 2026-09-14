@@ -1,10 +1,12 @@
 import Array "mo:core/Array";
 import Cycles "mo:core/Cycles";
+import IC "mo:core/InternetComputer";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 
+import JsonParse "json_parse";
 import SweepWasm "SweepWasm";
 import Types "types";
 
@@ -15,7 +17,11 @@ persistent actor Self {
   type Proposal = Types.Proposal;
   type AuditEvent = Types.AuditEvent;
   type Result = Types.Result;
+  type ExecuteResult = Types.ExecuteResult;
   type Timestamp = Types.Timestamp;
+
+  private let VERSION : Text = "1.5.0";
+  private let MAX_APPLY_ITERATIONS : Nat = 50;
 
   private stable var signers : [Principal] = [];
   private stable var threshold : Nat = 1;
@@ -88,13 +94,13 @@ persistent actor Self {
     };
     let executed = await executeAction(p.action);
     switch (executed) {
-      case (#ok) {
+      case (#ok(r)) {
         log("executed", "proposal " # Nat.toText(p.id));
-        { p with status = #executed };
+        { p with status = #executed; result = r };
       };
       case (#err(e)) {
         log("execute_failed", e);
-        { p with status = #failed };
+        { p with status = #failed; result = ?e };
       };
     };
   };
@@ -251,7 +257,124 @@ persistent actor Self {
     out # "]";
   };
 
-  private func executeAction(action : BatonAction) : async Result {
+  private func applySheetPayload(
+    plan_hash : Text,
+    max_items : Nat,
+    confirm_destructive : Bool,
+  ) : Text {
+    "{\"plan_hash\":\"" # plan_hash # "\",\"max_items\":" # Nat.toText(max_items) #
+      ",\"confirm_destructive\":" # (if confirm_destructive { "true" } else { "false" }) # "}";
+  };
+
+  private func applySheetSummary(
+    iterations : Nat,
+    total_applied : Nat,
+    remaining : Nat,
+    next_plan_hash : ?Text,
+    note : Text,
+  ) : Text {
+    var out =
+      "iterations=" # Nat.toText(iterations) #
+      " applied=" # Nat.toText(total_applied) #
+      " remaining=" # Nat.toText(remaining);
+    switch (next_plan_hash) {
+      case (?h) { out := out # " next_plan_hash=" # h };
+      case null {};
+    };
+    if (note.size() > 0) { out # " " # note } else { out };
+  };
+
+  private func executeApplySheet(a : {
+    casals_backend : Principal;
+    plan_hash : Text;
+    confirm_destructive : Bool;
+    max_items : Nat;
+  }) : async ExecuteResult {
+    let casals = actor (Principal.toText(a.casals_backend)) : actor {
+      apply : shared Text -> async Text;
+    };
+    var plan_hash = a.plan_hash;
+    var iterations : Nat = 0;
+    var total_applied : Nat = 0;
+    var last_remaining : Nat = 0;
+    var last_next : ?Text = null;
+    label apply_loop while (iterations < MAX_APPLY_ITERATIONS) {
+      iterations += 1;
+      let payload = applySheetPayload(plan_hash, a.max_items, a.confirm_destructive);
+      let resp = try {
+        await casals.apply(payload);
+      } catch (_) {
+        return #err("apply call failed");
+      };
+      if (JsonParse.responseNotOk(resp)) {
+        let summary = applySheetSummary(
+          iterations,
+          total_applied,
+          last_remaining,
+          last_next,
+          "error=" # JsonParse.truncate(resp, 512),
+        );
+        return #err(summary);
+      };
+      total_applied += JsonParse.countAppliedOk(resp);
+      last_remaining := switch (JsonParse.remaining(resp)) {
+        case (?r) r;
+        case null {
+          return #err(
+            applySheetSummary(iterations, total_applied, 0, last_next, "error=missing remaining"),
+          );
+        };
+      };
+      last_next := JsonParse.nextPlanHash(resp);
+      if (JsonParse.failedNonNull(resp)) {
+        let summary = applySheetSummary(
+          iterations,
+          total_applied,
+          last_remaining,
+          last_next,
+          "failed=" # JsonParse.truncate(resp, 512),
+        );
+        return #ok(?summary);
+      };
+      if (last_remaining == 0) {
+        return #ok(
+          ?applySheetSummary(iterations, total_applied, 0, last_next, ""),
+        );
+      };
+      switch (last_next) {
+        case (?h) { plan_hash := h };
+        case null {};
+      };
+    };
+    #err(
+      applySheetSummary(
+        iterations,
+        total_applied,
+        last_remaining,
+        last_next,
+        "error=iteration cap " # Nat.toText(MAX_APPLY_ITERATIONS),
+      ),
+    );
+  };
+
+  private func executeCallCanister(a : {
+    canister : Principal;
+    method : Text;
+    arg_json : Text;
+  }) : async ExecuteResult {
+    let raw = try {
+      await IC.call(a.canister, a.method, to_candid (a.arg_json));
+    } catch (_) {
+      return #err("call failed: " # Principal.toText(a.canister) # "." # a.method);
+    };
+    let resp : ?Text = from_candid (raw);
+    switch (resp) {
+      case null { #err("empty reply") };
+      case (?text) { #ok(?JsonParse.truncate(text, JsonParse.MAX_RESULT_CHARS)) };
+    };
+  };
+
+  private func executeAction(action : BatonAction) : async ExecuteResult {
     switch (action) {
       case (#UpgradeBaton(a)) {
         let ic = actor ("aaaaa-aa") : actor {
@@ -269,7 +392,7 @@ persistent actor Self {
             wasm_module = a.wasm_module;
             arg = a.arg;
           });
-          #ok;
+          #ok(null);
         } catch (_) { #err("install_code failed") };
       };
       case (#UpdateBatonSettings(a)) {
@@ -294,7 +417,7 @@ persistent actor Self {
               freezing_threshold = null;
             };
           });
-          #ok;
+          #ok(null);
         } catch (_) { #err("update_settings failed") };
       };
       case (#SetCanisterControllers(a)) {
@@ -319,7 +442,7 @@ persistent actor Self {
               freezing_threshold = null;
             };
           });
-          #ok;
+          #ok(null);
         } catch (_) { #err("update_settings failed") };
       };
       case (#AddCommander(a)) {
@@ -330,7 +453,7 @@ persistent actor Self {
           encodeCaps(a.capabilities) # "}";
         try {
           ignore await baton.add_commander(payload);
-          #ok;
+          #ok(null);
         } catch (_) { #err("add_commander failed") };
       };
       case (#RemoveCommander(a)) {
@@ -339,7 +462,7 @@ persistent actor Self {
         };
         try {
           ignore await baton.remove_commander(Principal.toText(a.commander));
-          #ok;
+          #ok(null);
         } catch (_) { #err("remove_commander failed") };
       };
       case (#SetPolicy(p)) {
@@ -349,7 +472,7 @@ persistent actor Self {
         try {
           ignore await baton.set_commander_policy(p.policy_json);
           log("set_policy", p.policy_json);
-          #ok;
+          #ok(null);
         } catch (_) { #err("set_commander_policy failed") };
       };
       case (#ManageSigners(a)) {
@@ -367,7 +490,7 @@ persistent actor Self {
         };
         let th = switch (a.new_threshold) { case (?t) t; case null threshold };
         switch (validateSigners(th, filtered)) {
-          case (#ok) { signers := filtered; threshold := th; #ok };
+          case (#ok) { signers := filtered; threshold := th; #ok(null) };
           case (#err(e)) { #err(e) };
         };
       };
@@ -380,14 +503,26 @@ persistent actor Self {
         let payload = "{\"stand\":\"" # a.stand # "\"}";
         try {
           let resp = await casals.destroy_stand(payload);
-          if (casalsResponseOk(resp)) { #ok } else { #err(casalsErrorDetail(resp)) };
+          if (casalsResponseOk(resp)) { #ok(null) } else { #err(casalsErrorDetail(resp)) };
         } catch (_) { #err("destroy_stand failed") };
       };
       case (#DestroyCanister(a)) {
-        await destroyCanistersOnIc([a.canister_id], a.casals_backend);
+        switch (await destroyCanistersOnIc([a.canister_id], a.casals_backend)) {
+          case (#ok) { #ok(null) };
+          case (#err(e)) { #err(e) };
+        };
       };
       case (#DestroyCanisters(a)) {
-        await destroyCanistersOnIc(a.canister_ids, a.casals_backend);
+        switch (await destroyCanistersOnIc(a.canister_ids, a.casals_backend)) {
+          case (#ok) { #ok(null) };
+          case (#err(e)) { #err(e) };
+        };
+      };
+      case (#ApplySheet(a)) {
+        await executeApplySheet(a);
+      };
+      case (#CallCanister(a)) {
+        await executeCallCanister(a);
       };
     };
   };
@@ -415,6 +550,7 @@ persistent actor Self {
       status = #pending;
       created_at = now();
       expires_at = now() + secs * 1_000_000_000;
+      result = null;
     };
     log("proposed", Nat.toText(id));
     let executed = await tryExecute(p);
@@ -481,5 +617,9 @@ persistent actor Self {
   /// reclaimed cycles did not stay on this canister after DestroyCanisters.
   public query func cycles_balance() : async Nat {
     Cycles.balance();
+  };
+
+  public query func version() : async Text {
+    VERSION;
   };
 };

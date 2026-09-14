@@ -22,6 +22,13 @@ module {
     #DestroyStand : { casals_backend : Principal; stand : Text };
     #DestroyCanister : { casals_backend : Principal; canister_id : Principal };
     #DestroyCanisters : { canister_ids : [Principal]; casals_backend : Principal };
+    #ApplySheet : {
+      casals_backend : Principal;
+      plan_hash : Text;
+      confirm_destructive : Bool;
+      max_items : Nat;
+    };
+    #CallCanister : { canister : Principal; method : Text; arg_json : Text };
   };
 
   public type ProposalStatus = { #pending; #executed; #rejected; #failed; #expired };
@@ -34,8 +41,10 @@ module {
     status : ProposalStatus;
     created_at : Timestamp;
     expires_at : Timestamp;
+    result : ?Text;
   };
 
   public type AuditEvent = { at : Timestamp; kind : Text; detail : Text };
   public type Result = { #ok; #err : Text };
+  public type ExecuteResult = { #ok : ?Text; #err : Text };
 };
