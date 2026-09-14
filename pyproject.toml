@@ -9,10 +9,14 @@ description = "CLI for querying and commanding a deployed Casals canister orches
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "cbor2>=5.4.0",
+    "ic-py>=1.0.0",
+]
 
 [project.scripts]
-casals = "casals_cli:main"
+casals = "casals_cli.main:main"
 
-[tool.setuptools]
-py-modules = ["casals_cli"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["casals_cli*"]

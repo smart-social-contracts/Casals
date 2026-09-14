@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest
+cbor2>=5.4.0
+ic-py>=1.0.0
