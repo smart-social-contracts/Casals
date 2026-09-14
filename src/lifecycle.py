@@ -651,8 +651,50 @@ def _merge_controllers(*groups: list) -> list:
     return out
 
 
+def _canister_info_gen(canister_id: str):
+    """Generator: ``canister_info`` (callable without controller rights).
+
+    Returns ``{"controllers": [...], "module_hash": "<hex>|''"}`` or
+    ``{"error": "..."}`` on failure.
+    """
+    cid = (canister_id or "").strip()
+    if not cid:
+        return {"error": "empty canister_id"}
+    try:
+        arg = f'(record {{ canister_id = principal "{cid}" }})'
+        res = yield ic.call_raw(
+            Principal.from_str(MANAGEMENT_CANISTER_ID),
+            "canister_info",
+            ic.candid_encode(arg),
+            0,
+        )
+        decoded = ic.candid_decode(unwrap_call_result(res))
+        text = decoded if isinstance(decoded, str) else str(decoded)
+        controllers = _principals_in(text)
+        mh = ""
+        marker = "module_hash = opt blob "
+        idx = text.find(marker)
+        if idx >= 0:
+            start = idx + len(marker)
+            if text[start:start + 4] == "blob":
+                blob_start = text.find("blob ", start) + 5
+                end = text.find(";", blob_start)
+                if end < 0:
+                    end = text.find("}", blob_start)
+                hex_part = text[blob_start:end].strip()
+                if hex_part.startswith('"') and hex_part.endswith('"'):
+                    raw = bytes(int(hex_part[i + 1:i + 3], 16) for i in range(1, len(hex_part) - 1, 2))
+                    mh = _to_hex(raw).lower()
+        return {"controllers": controllers, "module_hash": mh}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _fetch_canister_controllers(canister_id: str):
     """Generator: IC controller principals for ``canister_id``, or [] on failure."""
+    info = yield from _canister_info_gen(canister_id)
+    if isinstance(info, dict) and info.get("controllers") is not None:
+        return list(info.get("controllers") or [])
     try:
         status_res = yield management_canister.canister_status(
             {"canister_id": Principal.from_str(canister_id)}
@@ -675,6 +717,17 @@ def _fetch_canister_controllers(canister_id: str):
     except Exception as e:
         _log.warning(f"could not fetch controllers for {canister_id}: {e}")
         return []
+
+
+def _set_controllers(canister_id: str, controllers: list):
+    """Generator: replace the full IC controller set on a canister."""
+    principals = [Principal.from_str(c) for c in controllers if c]
+    res = yield management_canister.update_settings({
+        "canister_id": Principal.from_str(canister_id),
+        "settings": {"controllers": principals},
+    })
+    unwrap_call_result(res)
+    _persist_ic_controllers(canister_id, [c for c in controllers if c])
 
 
 def _authorized_wasm_for_hash(hash_hex: str):
@@ -920,33 +973,32 @@ def _create_canister_via_cmc(controllers: list, endow: int, subnet: str, subnet_
     return found[0]
 
 
-def _allocate_canister(subnet: str = "", subnet_type: str = ""):
-    """Generator: return a canister to back a deployment, preferring reuse.
+def _allocate_canister(subnet: str = "", subnet_type: str = "", *, reuse_pool: bool = False):
+    """Generator: return a canister to back a deployment.
 
-    Returns ``(canister_id, reused)``. Reuses a free pooled canister matching
-    the desired subnet placement when one exists; otherwise creates a new one.
-    The returned canister is marked in_use with no occupant yet.
+    Returns ``(canister_id, reused)``. By default a **fresh** canister is
+    created; pass ``reuse_pool=True`` to prefer a free pooled canister first
+    (sheet opt-in via ``cycles.reuse_pool``).
 
     A free pool entry is only reused after verifying the canister still exists
     on the IC and Casals controls it (``canister_status`` succeeds). Ghost
-    entries — ids whose canisters were destroyed but were later re-added as
-    ``free`` (e.g. by ``delete_stand`` on an orphaned stand) — are evicted and
-    the next candidate is tried, so a stale pool can never break provisioning.
+    entries are evicted and the next candidate is tried.
     """
-    while True:
-        cid = _pool_take_free(subnet, subnet_type)
-        if not cid:
-            break
-        controllers = yield from _fetch_canister_controllers(cid)
-        if controllers:
-            _pool_mark_in_use(cid, "")
-            return (cid, True)
-        _log.error(
-            f"_allocate_canister: pooled canister {cid} unreachable on IC "
-            f"(destroyed or not controlled); evicting from pool"
-        )
-        _append_event("pool_ghost_evicted", cid, {"subnet": subnet or subnet_type or "default"})
-        _pool_evict(cid)
+    if reuse_pool:
+        while True:
+            cid = _pool_take_free(subnet, subnet_type)
+            if not cid:
+                break
+            controllers = yield from _fetch_canister_controllers(cid)
+            if controllers:
+                _pool_mark_in_use(cid, "")
+                return (cid, True)
+            _log.error(
+                f"_allocate_canister: pooled canister {cid} unreachable on IC "
+                f"(destroyed or not controlled); evicting from pool"
+            )
+            _append_event("pool_ghost_evicted", cid, {"subnet": subnet or subnet_type or "default"})
+            _pool_evict(cid)
     endow = int(_settings().create_cycles or 0) or CREATE_CYCLES
     create_ctls = _create_time_controllers()
     if subnet or subnet_type:

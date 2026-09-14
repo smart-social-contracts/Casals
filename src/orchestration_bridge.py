@@ -12,9 +12,9 @@ import uuid
 from basilisk import Principal, ic
 from basilisk.canisters.management import management_canister
 
-from arrangement import _call_text_method
+from config_call import _call_text_method
 from audit import _append_event
-from helpers import unwrap_call_result
+from helpers import _principals_in, unwrap_call_result
 from lifecycle import (
     _fetch_canister_controllers,
     _add_controllers,
@@ -234,6 +234,35 @@ def _orchestration_status_all_gen(multisig_name="multisig"):
     return out
 
 
+def _multisig_list_signers_gen(canister_id: str):
+    """Generator: read multisig signers and threshold via ``list_signers``."""
+    cid = (canister_id or "").strip()
+    if not cid:
+        return {"error": "empty multisig id"}
+    try:
+        res = yield ic.call_raw(
+            Principal.from_str(cid), "list_signers", ic.candid_encode("()"), 1
+        )
+        decoded = ic.candid_decode(unwrap_call_result(res))
+        text = decoded if isinstance(decoded, str) else str(decoded)
+        signers = _principals_in(text)
+        threshold = 1
+        for marker in ("threshold = ", "threshold: nat = "):
+            idx = text.find(marker)
+            if idx >= 0:
+                start = idx + len(marker)
+                end = start
+                while end < len(text) and (text[end].isdigit() or text[end] == "_"):
+                    end += 1
+                num = text[start:end].replace("_", "")
+                if num.isdigit():
+                    threshold = int(num)
+                break
+        return {"signers": signers, "threshold": threshold}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _multisig_configure_gen(canister_id: str, signers: list, threshold: int, expiry_secs: int):
     """Generator: one-time multisig bootstrap (configure signers + threshold)."""
     signers = [str(s).strip() for s in (signers or []) if s and str(s).strip()]
@@ -306,6 +335,7 @@ def _hand_to_baton_gen(target_name: str, baton_name=""):
         controllers = desired
     else:
         controllers = current
+        _persist_ic_controllers(target_cid, controllers)
 
     managed_raw = yield from _baton_query(baton_id, "list_managed_canisters")
     managed = _parse_baton_json_reply(managed_raw) or []
