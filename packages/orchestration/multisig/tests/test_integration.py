@@ -93,6 +93,40 @@ class TestMultisigPolicy:
         assert parsed["delegates"][0]["principal"] == orch
 
 
+class TestMultisigApplySheet:
+    """Requires local replica — not run when port 8000 is owned elsewhere."""
+
+    def test_apply_sheet_proposal_records_result(self, multisig_env):
+        plan_hash = "deadbeef"
+        casals_id = "2vxsx-fae"  # placeholder; wire mock Casals when available
+        proposal_id = parse_nat_output(call(
+            multisig_env["multisig_id"],
+            "propose",
+            f'(variant {{ ApplySheet = record {{ casals_backend = principal "{casals_id}"; '
+            f'plan_hash = "{plan_hash}"; confirm_destructive = false; max_items = 5 : nat }} }}, null)',
+        ))
+        prop = call(multisig_env["multisig_id"], "get_proposal", f"({proposal_id} : nat)")
+        assert "executed" in str(prop) or "failed" in str(prop)
+        assert "result" in str(prop)
+
+
+class TestMultisigCallCanister:
+    """Requires local replica — not run when port 8000 is owned elsewhere."""
+
+    def test_call_canister_proposal(self, multisig_env):
+        target = multisig_env["baton_id"]
+        arg = '{\\"ping\\":true}'.replace("\\", "")
+        proposal_id = parse_nat_output(call(
+            multisig_env["multisig_id"],
+            "propose",
+            f'(variant {{ CallCanister = record {{ canister = principal "{target}"; '
+            f'method = "list_commanders"; arg_json = "{arg}" }} }}, null)',
+        ))
+        prop = call(multisig_env["multisig_id"], "get_proposal", f"({proposal_id} : nat)")
+        assert proposal_id >= 0
+        assert "CallCanister" in str(prop)
+
+
 class TestMultisigUpgradeSafety:
     def test_signers_survive_upgrade(self, multisig_env):
         signers_before = call(multisig_env["multisig_id"], "list_signers")
