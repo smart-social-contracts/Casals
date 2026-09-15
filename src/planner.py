@@ -8,6 +8,8 @@ import json
 from auth import _normalize_permissions
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    baton_managed_members,
+    stand_member,
     MULTISIG_NAME,
     SYNTHETIC_SECTION_CONDUCTOR,
     SYNTHETIC_STAND_CONDUCTOR,
@@ -53,22 +55,6 @@ class PlanningError(Exception):
         super().__init__(errors[0] if errors else "planning failed")
 
 
-def _glob_match(name: str, pattern: str) -> bool:
-    """`*` wildcard match (stand_template.name_pattern); no other glob syntax."""
-    parts = pattern.split("*")
-    if len(parts) == 1:
-        return name == pattern
-    if not name.startswith(parts[0]) or not name.endswith(parts[-1]):
-        return False
-    pos = len(parts[0])
-    for part in parts[1:-1]:
-        idx = name.find(part, pos)
-        if idx < 0:
-            return False
-        pos = idx + len(part)
-    return pos <= len(name) - len(parts[-1])
-
-
 def _placeholders_in(value) -> set[str]:
     """Placeholder tokens left in a (partially) resolved value."""
     if isinstance(value, dict):
@@ -95,7 +81,8 @@ def build_plan(
 
 class _PlanContext:
     def __init__(self, sheet, env, live_state, self_id, sheet_hash_value, now_ns):
-        self.sheet = sheet
+        self.stands_live = live_state.get("stands") or {}
+        self.sheet = sheet  # already materialized (sheetv2.materialize): template stands are declared stands
         self.env = env
         self.live_state = live_state
         self.self_id = self_id
@@ -105,18 +92,17 @@ class _PlanContext:
         self.items: list[dict] = []
         self.info: list[dict] = []
         self.deferred: list[dict] = []  # fields still naming a canister that does not exist yet
+        self.unverifiable: list[dict] = []
         self.bindings = dict(live_state.get("bindings") or {})
         self.canisters_live = live_state.get("canisters") or {}
         self.sections_live = live_state.get("sections") or {}
-        self.stands_live = live_state.get("stands") or {}
         self.auth_wasms = live_state.get("authorized_wasms") or {}
         self.known_ids = live_state.get("known_ids") or {}
         self.config_queries = live_state.get("config_queries") or {}
-        self.sheet_names = set(canister_names(sheet))
+        self.sheet_names = set(canister_names(self.sheet))
         self.reuse_pool = bool((sheet.get("cycles") or {}).get("reuse_pool"))
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
         self.declared_stands: set[str] = set()
-        self.matched_template_stands: set[str] = set()
 
     def defer_if_unresolved(self, value, name: str, field: str) -> bool:
         """True (and recorded) when ``value`` still holds a placeholder such as
@@ -247,7 +233,7 @@ class _PlanContext:
             )
         desired_sec = _normalize_commanders(sec_spec.get("commanders") or [])
         live_sec = _normalize_commanders((self.sections_live.get(sname) or {}).get("commanders") or [])
-        if desired_sec and desired_sec != live_sec:
+        if desired_sec and desired_sec != live_sec and not self.defer_if_unresolved(desired_sec, sname, "commanders"):
             self.add(
                 "set_commanders",
                 {"name": sname, "canister_id": None, "section": sname, "stand": None},
@@ -257,23 +243,12 @@ class _PlanContext:
                 desired={"commanders": desired_sec},
                 section_order=si,
             )
-        template = sec_spec.get("stand_template") if isinstance(sec_spec.get("stand_template"), dict) else None
-        template_stands: list[tuple[str, dict]] = []
-        if template:
-            pattern = (template.get("name_pattern") or "").strip()
-            for st_name, st_live in self.stands_live.items():
-                if (st_live.get("section") or "") == sname and _glob_match(st_name, pattern):
-                    template_stands.append((st_name, template))
-                    self.matched_template_stands.add(st_name)
         for sj, stand_spec in enumerate(sec_spec.get("stands") or []):
             if isinstance(stand_spec, dict):
                 dname = (stand_spec.get("name") or "").strip()
                 if dname:
                     self.declared_stands.add(dname)
                     self._plan_stand(stand_spec, sname, dname, si, sj)
-        for t_idx, (st_name, tmpl) in enumerate(template_stands):
-            if st_name not in self.declared_stands:
-                self._plan_stand(_instantiate_template_stand(tmpl, st_name), sname, st_name, si, 1000 + t_idx)
 
     def _plan_stand(self, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
         if not (self.stands_live.get(dname) or {}).get("exists"):
@@ -285,7 +260,7 @@ class _PlanContext:
             )
         desired_st = _normalize_commanders(stand_spec.get("commanders") or [])
         live_st = _normalize_commanders((self.stands_live.get(dname) or {}).get("commanders") or [])
-        if desired_st and desired_st != live_st:
+        if desired_st and desired_st != live_st and not self.defer_if_unresolved(desired_st, dname, "commanders"):
             self.add(
                 "set_commanders",
                 {"name": dname, "canister_id": None, "section": sname, "stand": dname},
@@ -295,60 +270,64 @@ class _PlanContext:
                 desired={"commanders": desired_st},
                 section_order=si, stand_order=sj,
             )
+        baton = stand_spec.get("baton") if isinstance(stand_spec.get("baton"), dict) else None
+        baton_member = stand_member(stand_spec, "baton") if baton else None
+        # members the baton co-controls → baton id, or a placeholder until it exists (deferred)
+        co_controlled = {m["name"]: self.binding(baton_member["name"]) or "$stand.baton"
+                         for m in baton_managed_members(stand_spec)}
         for canister_spec in stand_spec.get("canisters") or []:
             if isinstance(canister_spec, dict):
                 cname = (canister_spec.get("name") or "").strip()
                 if cname:
-                    self._plan_canister(cname, canister_spec, sname, dname, si, sj)
-        baton = stand_spec.get("baton")
-        if isinstance(baton, dict):
-            self._plan_baton(baton, stand_spec, sname, dname, si, sj)
+                    self._plan_canister(cname, canister_spec, sname, dname, si, sj,
+                                        extra_controllers=[co_controlled[cname]] if cname in co_controlled else ())
+        if baton and baton_member:
+            self._plan_baton(baton, baton_member["name"], stand_spec, sname, dname, si, sj)
 
-    def _plan_baton(self, baton_spec: dict, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
-        baton_name = _baton_name(baton_spec, dname, stand_spec)
-        if not self.binding(baton_name):
-            self._plan_canister(
-                baton_name, _baton_canister_spec(baton_spec, dname), sname, dname, si, sj,
-            )
+    def _plan_baton(self, baton_spec: dict, baton_name: str, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
+        """Baton policy: commanders/threshold on the baton, and its managed set (hand_off).
+        The baton canister itself is a regular `-baton` member of the stand."""
         bid = self.binding(baton_name)
+        if not bid:
+            return  # created first; policy is planned on the next pass
         bat_live = (self.live_state.get("batons") or {}).get(baton_name) or {}
-        desired_cmd = _normalize_commanders([
-            {"principal": p, "permissions": "*"} for p in (baton_spec.get("commanders") or [])
-        ])
-        live_cmd = _normalize_commanders(bat_live.get("commanders") or [])
-        if desired_cmd and desired_cmd != live_cmd:
+        # Baton commanders are principals (baton default capabilities); the approval
+        # threshold lives in the baton's upgrade_approval_policy.
+        desired_cmd = sorted({str(p).strip() for p in baton_spec.get("commanders") or [] if str(p).strip()})
+        if self.defer_if_unresolved(desired_cmd, baton_name, "baton.commanders"):
+            return
+        live_cmd = sorted({c.get("principal", "") for c in bat_live.get("commanders") or [] if isinstance(c, dict)})
+        desired_threshold = int(baton_spec.get("threshold") or 1)
+        live_threshold = int(((bat_live.get("config") or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
+        if desired_cmd != live_cmd or desired_threshold != live_threshold:
             self.add(
                 "configure_baton",
                 {"name": baton_name, "canister_id": bid, "section": sname, "stand": dname},
                 f"configure baton {baton_name}",
-                desired={"commanders": desired_cmd, "threshold": baton_spec.get("threshold")},
+                current={"commanders": live_cmd, "threshold": live_threshold},
+                desired={"commanders": desired_cmd, "threshold": desired_threshold},
                 section_order=si, stand_order=sj,
             )
         if baton_spec.get("hand_off"):
-            managed = baton_spec.get("manages") or []
-            needs = False
             managed_live = bat_live.get("managed_canisters") or []
-            for role in managed:
-                member = _stand_role_canister(stand_spec, role)
-                if member:
-                    mcid = self.binding(member)
-                    if mcid and isinstance(managed_live, list) and mcid not in managed_live:
-                        needs = True
-            if needs:
+            members = [stand_member(stand_spec, role) for role in baton_spec.get("manages") or []]
+            missing = [m["name"] for m in members if m and self.binding(m["name"])
+                       and self.binding(m["name"]) not in managed_live]
+            if missing:
                 self.add(
                     "hand_off",
                     {"name": baton_name, "canister_id": bid, "section": sname, "stand": dname},
-                    f"hand off stand {dname} to baton",
-                    destructive=True,
-                    desired={"manages": managed},
+                    f"register {', '.join(missing)} on baton {baton_name}",
+                    desired={"members": missing},
                     section_order=si, stand_order=sj,
                 )
 
-    def _plan_canister(self, name: str, spec: dict, section: str, stand: str, si: int, sj: int):
+    def _plan_canister(self, name: str, spec: dict, section: str, stand: str, si: int, sj: int,
+                       extra_controllers=()):
         mode = (spec.get("mode") or "managed").strip()
         cid = self.binding(name)
         lv = self.live(name)
-        desired_ctls = sorted(str(c).strip() for c in (spec.get("controllers") or []) if str(c).strip())
+        desired_ctls = sorted({str(c).strip() for c in [*(spec.get("controllers") or []), *extra_controllers] if str(c).strip()})
         live_ctls = sorted(str(c).strip() for c in (lv.get("controllers") or []) if str(c).strip())
         expected_hash = _expected_wasm_hash(self.sheet, spec)
         live_hash = (lv.get("module_hash") or "").lower()
@@ -364,6 +343,9 @@ class _PlanContext:
                 desired={"reuse_pool": self.reuse_pool},
                 section_order=si, stand_order=sj,
             )
+            return
+        if lv.get("error"):  # never plan against a canister we could not read
+            self.unverifiable.append({"target": name, "field": "canister_info", "reason": lv["error"]})
             return
 
         if spec.get("retire"):
@@ -428,7 +410,8 @@ class _PlanContext:
                 "note": f"adopted module hash changed: {live_hash} -> {expected_hash}",
             })
 
-        if (lv.get("status") or "").lower() == "stopped":
+        stopped = (lv.get("status") or "").lower() == "stopped"
+        if stopped:
             self.add(
                 "start",
                 {"name": name, "canister_id": cid, "section": section, "stand": stand},
@@ -447,7 +430,7 @@ class _PlanContext:
                 section_order=si, stand_order=sj,
             )
 
-        for cfg in spec.get("config") or []:
+        for cfg in [] if stopped else spec.get("config") or []:  # a stopped canister cannot be asked; start first
             if not isinstance(cfg, dict):
                 continue
             cw = cfg.get("converged_when")
@@ -524,12 +507,12 @@ class _PlanContext:
                 continue
             (self.stands_live.get(cname or "") or {}).get("section") if cname else None
             if cname and cname in self.stands_live:
-                if cname not in self.declared_stands and cname not in self.matched_template_stands:
+                if cname not in self.declared_stands:
                     for cn in self._stand_canister_names(cname):
                         unmanaged.append({"canister_id": cid, "name": cn, "reason": "stand not in sheet"})
                 continue
             unmanaged.append({"canister_id": cid, "name": cname, "reason": "not in sheet"})
-        unverifiable = []
+        unverifiable = self.unverifiable
         env_data = env_block(self.sheet, self.env)
         dns = env_data.get("dns") if isinstance(env_data.get("dns"), dict) else {}
         if (dns.get("provider") or "none").strip().lower() == "none":
@@ -614,59 +597,17 @@ def _lockout_controllers(name, live_ctls, desired_ctls, self_id) -> str | None:
 
 
 def _config_converged(actual, expected, cw: dict) -> bool:
+    """`equals_args`: every declared key reads back equal (the canister may report
+    more); `equals`: the reply is exactly the given value."""
     if isinstance(actual, dict) and actual.get("error"):
         return False
-    if cw.get("equals_args"):
+    if isinstance(actual, str):
         try:
-            if isinstance(actual, str):
-                actual = json.loads(actual)
+            actual = json.loads(actual)
         except (json.JSONDecodeError, ValueError):
             pass
-        return actual == expected
+    if cw.get("equals_args") and isinstance(actual, dict) and isinstance(expected, dict):
+        return all(actual.get(k) == v for k, v in expected.items())
     return actual == expected
 
 
-def _instantiate_template_stand(template: dict, stand_name: str) -> dict:
-    spec = {"name": stand_name, "canisters": [], "commanders": template.get("commanders") or []}
-    for c in template.get("canisters") or []:
-        if isinstance(c, dict):
-            cc = json.loads(json.dumps(c))
-            if isinstance(cc.get("name"), str):
-                cc["name"] = cc["name"].replace("{stand}", stand_name)
-            spec["canisters"].append(cc)
-    if isinstance(template.get("baton"), dict):
-        baton = json.loads(json.dumps(template["baton"]))
-        spec["baton"] = baton
-    return spec
-
-
-def _baton_name(baton_spec: dict, stand_name: str, stand_spec: dict | None = None) -> str:
-    for c in (stand_spec or {}).get("canisters") or []:
-        if isinstance(c, dict) and str(c.get("name", "")).endswith("-baton"):
-            return str(c["name"])
-    return (baton_spec.get("name") or f"{stand_name}-baton").replace("{stand}", stand_name)
-
-
-def _baton_canister_spec(baton_spec: dict, stand_name: str) -> dict:
-    return {
-        "name": _baton_name(baton_spec, stand_name),
-        "mode": "managed",
-        "kind": "backend",
-        "wasm": baton_spec.get("wasm"),
-        "install_arg": {"top_commander": baton_spec.get("top_commander") or "$self"},
-        "controllers": ["$self"],
-        "upgrade": "upgrade",
-    }
-
-
-def _stand_role_canister(stand_spec: dict, role: str) -> str:
-    role = (role or "").strip().lower()
-    for c in stand_spec.get("canisters") or []:
-        if not isinstance(c, dict):
-            continue
-        cname = (c.get("name") or "")
-        if role == "backend" and (c.get("kind") == "backend" or cname.endswith("-backend")):
-            return cname
-        if role == "frontend" and (c.get("kind") == "frontend" or cname.endswith("-frontend")):
-            return cname
-    return ""

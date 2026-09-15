@@ -12,6 +12,7 @@ from commanders import persist_commanders
 from config_call import call_text_method_gen, config_text_arg
 from helpers import _settings, unwrap_call_result
 from lifecycle import (
+    CANDID_NULL_ARG,
     _allocate_canister,
     _canister_info_gen,
     _fetch_canister_controllers,
@@ -24,7 +25,8 @@ from lifecycle import (
     _verify_module_hash,
 )
 from models import AuthorizedWasm, Canister, CanisterKind, CanisterStatus, Section, Stand
-from orchestration_bridge import _configure_baton_gen, _hand_to_baton_gen, _multisig_configure_gen
+from config_call import _call_text_method
+from orchestration_bridge import _configure_baton_gen, _multisig_configure_gen, _parse_baton_reply
 from pool import _pool_mark_in_use
 from services import FileRegistryService
 from sheetv2 import WASM_NAMESPACE, registry_path
@@ -168,7 +170,10 @@ def _execute_item(item: dict, sheet: dict):
         found = _find_canister_spec(sheet, name)
         wasm_ref = (found.get("wasm") or "").strip() if found else ""
         w = _resolve_authorized_wasm(wasm_ref, None)
-        init_arg = _resolve_install_arg((found or {}).get("install_arg"), w)
+        if not (found or {}).get("install_arg") and (found or {}).get("kind") == "frontend":
+            init_arg = CANDID_NULL_ARG  # asset canister init is `opt AssetCanisterArgs`
+        else:
+            init_arg = _resolve_install_arg((found or {}).get("install_arg"), w)
         mode = {"install": None}
         if kind == "upgrade_code":
             mode = {"upgrade": None}
@@ -207,15 +212,22 @@ def _execute_item(item: dict, sheet: dict):
         if baton_st is None:
             raise Exception(f"baton '{name}' not found")
         desired = item.get("desired") or {}
-        yield from _configure_baton_gen(baton_st, commanders=desired.get("commanders"))
+        yield from _configure_baton_gen(
+            baton_st, commanders=desired.get("commanders"),
+            approval_policy={"threshold": int(desired.get("threshold") or 1)},
+        )
         return
     if kind == "hand_off":
-        manages = (item.get("desired") or {}).get("manages") or []
-        stand_name = (target.get("stand") or "").strip()
-        for role in manages:
-            member = _stand_member_name(sheet, stand_name, role)
-            if member:
-                yield from _hand_to_baton_gen(member, baton_name=name)
+        # Bookkeeping on the baton only; the baton becomes a controller through the
+        # members' own set_controllers items (planner adds it to their desired set).
+        list(Canister.instances())
+        for member in (item.get("desired") or {}).get("members") or []:
+            member_cid = (Canister[member].canister_id or "").strip() if Canister[member] else ""
+            if not member_cid:
+                raise Exception(f"{member}: no canister id to register on baton {name}")
+            reply = yield from _call_text_method(cid, "add_managed_canister", member_cid)
+            _parse_baton_reply(reply)
+            _append_event("baton_hand_off", member_cid, {"baton": cid, "name": member})
         return
     if kind == "config_call":
         desired = item.get("desired") or {}
@@ -252,13 +264,3 @@ def _find_canister_spec(sheet: dict, name: str) -> dict:
     from sheetv2 import find_canister
     found = find_canister(sheet, name)
     return found[2] if found else {}
-
-
-def _stand_member_name(sheet: dict, stand_name: str, role: str) -> str:
-    from sheetv2 import stand_member
-    for sec in sheet.get("sections") or []:
-        for stand in sec.get("stands") or []:
-            if (stand.get("name") or "") == stand_name:
-                m = stand_member(stand, role)
-                return (m.get("name") or "") if m else ""
-    return ""

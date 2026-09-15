@@ -205,7 +205,7 @@ Raw principals in `sections` are a validation error; they belong in
     { "method": "set_canister_config_json",
       "args": { "file_registry_canister_id": "$canister:file_registry", "test_flags": "$env.flags" },
       "converged_when": { "query": "get_canister_config_json", "equals_args": true } }
-  ],
+  ],                                       // the no-arg query's JSON reply must contain every declared key with the same value
   "health": [                              // liveness for smoke checks + verify
     { "query": "health", "expect": { "status": "ok" } },
     { "http": "/", "status": 200 }         // frontends
@@ -218,24 +218,28 @@ Raw principals in `sections` are a validation error; they belong in
 Stands and sections carry `description`, `commanders` (same shape), and
 optionally `subnet` / `subnet_type` (ignored on local).
 
-Stands may declare a `baton`:
+Stands may declare a `baton` **policy**. The baton canister itself is an
+ordinary member of `canisters` (name ending `-baton`, its own `wasm`,
+`controllers`, and `install_arg: {"top_commander": "$self"}` so Casals can
+configure it); the block only says how it is run:
 
 ```jsonc
 "baton": {
-  "wasm": "orchestration-baton@1.3.0",
-  "top_commander": "$self",
   "commanders": ["$self", "$stand.backend"],
   "threshold": 2,
-  "manages": ["backend", "frontend"],     // stand canisters the baton co-controls after hand-off
-  "hand_off": true                        // controllers of managed canisters become [baton] + declared extras
-}
+  "manages": ["backend", "frontend"],     // stand members the baton co-controls
+  "hand_off": true                        // plan adds the baton to those members' desired controllers
+}                                         // and registers them on the baton (`add_managed_canister`)
 ```
 
 `mode: adopted` canisters: Casals never calls `install_code` on them, never
 compares module hash for reinstall, and reconciles only `controllers`,
 `commanders`, `config`, `health`, `cycles`. Their code is someone else's
 (realms CLI via dfx, or the operator). A hash change on an adopted canister is
-*information* in the plan, not an action.
+*information* in the plan, not an action. Their ids are the one fact Casals
+cannot derive, so the sheet declares them per environment:
+`environments.<env>.bindings: {"<canister name>": "<canister id>"}` (only
+adopted canisters may appear there; `set_sheet` binds them).
 
 ### 4.5 `registry` — code and content
 
@@ -336,9 +340,12 @@ a local replica (§10).
   "min_balance_tc": 1.0,          // per canister unless overridden
   "top_up_from": "$self",         // conductor pays from its own balance
   "conductor_min_balance_tc": 5.0,
-  "sweep_on_retire": true         // retired canisters return cycles to the conductor
+  "reuse_pool": false             // create items take a retired canister from the pool first
 }
 ```
+
+Retired canisters are stopped and pooled, never deleted, so their cycles stay
+with them for the next tenant; there is no sweep.
 
 `plan` includes `top_up` items when a canister is below its minimum; `verify`
 reports balances. Estimation (`estimate_deploy`) becomes a plan annotation.
@@ -695,7 +702,7 @@ because `make e2e` accepts extra sheet paths.
 | 3 | `baton-stand` | one stand with baton, 2-of-2, `hand_off`, `$stand.backend` |
 | 4 | `adopted` | a canister installed by the test via dfx, then adopted; `config` + `controllers` reconciled, module never touched; hash change → information only |
 | 5 | `demo` | `seed/sheets/demo.json` as v2: three stands, three batons, shared multisig |
-| 6 | `retire-and-pool` | `retire: true`, pool behaviour, `sweep_on_retire`, `reuse_pool` on/off |
+| 6 | `retire-and-pool` | `retire: true`, pool behaviour, `reuse_pool` |
 | 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5) |
 | 8 | `gaas` | `gos-as-a-service/casals.json` (`-e local`) |
 | 9 | `realmsgos` | `realms/casals.json` (`-e local`), product wasms built once and cached |

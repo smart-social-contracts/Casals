@@ -7,7 +7,7 @@ import sys
 
 
 from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, resolve_backend_id
-from casals_cli.up import converge, print_plan_table
+from casals_cli.up import converge, multisig_id, print_plan_table, run_up
 from casals_cli.util import emit_error, emit_json
 
 
@@ -22,9 +22,15 @@ def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]
     return backend, bindings
 
 
-def cmd_plan(ic, args) -> None:
-    backend, _ = _backend(args)
-    res = ic.call_update(backend, "plan", json.dumps({"refresh": bool(getattr(args, "refresh", False))}))
+def cmd_plan(ic, args, project_root: str) -> None:
+    """The diff between the sheet file and the world (`casals up` without apply);
+    without a file, the conductor's plan for the sheet it already holds."""
+    if getattr(args, "sheet", None):
+        res = run_up(ic, args.sheet, args.env, conductor_override=getattr(args, "conductor", None),
+                     project_root=project_root, dry_run=True)
+    else:
+        backend, _ = _backend(args)
+        res = ic.call_update(backend, "plan", "{}")
     if getattr(args, "json", False):
         emit_json(res)
     else:
@@ -37,7 +43,7 @@ def cmd_plan(ic, args) -> None:
 def cmd_apply(ic, args) -> None:
     backend, _ = _backend(args)
     final = converge(
-        ic, backend, ic.deployer_principal(),
+        ic, backend, ic.deployer_principal(), multisig_id(ic, backend),
         yes=bool(getattr(args, "confirm_destructive", False)),
         max_items=int(getattr(args, "max_items", 5) or 5),
     )

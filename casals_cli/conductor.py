@@ -7,6 +7,7 @@ import os
 from sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
 
 from casals_cli.bindings import Bindings
+from casals_cli.multisig import ensure_control
 from casals_cli.frontend_bootstrap import (
     bootstrap_asset_canister,
     ensure_asset_build,
@@ -57,6 +58,7 @@ def _bootstrap_wasm_canister(
     existing_id: str,
     expected_hash: str | None,
     deployer: str,
+    multisig_id: str,
     project_root: str,
     progress=None,
 ) -> None:
@@ -73,6 +75,7 @@ def _bootstrap_wasm_canister(
     if existing_id and has_code:
         if progress:
             progress(f"  conductor {name}: upgrade {existing_id}")
+        ensure_control(ic, existing_id, deployer, multisig_id)
         ic.install_wasm(existing_id, wasm_path, mode="upgrade")
         new_hash = ic.read_module_hash(existing_id)
         if new_hash:
@@ -83,8 +86,6 @@ def _bootstrap_wasm_canister(
     if progress:
         progress(f"  conductor {name}: create + install")
     cid = existing_id or ic.create_detached()
-    bindings.conductor[name] = cid
-    bindings.save()  # persist before install: a failure later must not orphan the canister
     bindings.conductor[name] = cid
     bindings.save()  # persist before install: a failure later must not orphan the canister
     ic.install_wasm(cid, wasm_path, mode="install")
@@ -103,9 +104,11 @@ def bootstrap_conductor(
     sheet_path: str,
     project_root: str,
     deployer: str,
+    multisig_id: str = "",
     progress=None,
 ) -> Bindings:
-    """Create + install conductor canisters with controllers [$deployer]. Idempotent."""
+    """Create + install conductor canisters with controllers [$deployer]. Idempotent.
+    Canisters already handed over are changed through the multisig (`ensure_control`)."""
     conductor = sheet.get("conductor") or {}
     sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
     sheet_name = bindings.sheet_name or str(sheet.get("name") or "")
@@ -121,14 +124,6 @@ def bootstrap_conductor(
         # the backend ids created in earlier rounds.
         write_icp_project(project_dir, casals_dist, registry_dist, bindings.env, ic.network_url, bindings.conductor)
         existing_id = bindings.conductor.get(name, "")
-
-        # Once apply has handed a conductor canister over (e.g. controllers [$self]),
-        # the deployer can no longer touch it: upgrades flow through plan/apply.
-        if existing_id and deployer not in ic.read_controllers(existing_id):
-            if progress:
-                progress(f"  {name}: {existing_id} (controlled by conductor — skip)")
-            continue
-
         if key in ASSET_KEYS:
             bootstrap_asset_canister(
                 ic,
@@ -137,6 +132,7 @@ def bootstrap_conductor(
                 project_dir=project_dir,
                 dist_path=casals_dist if key == "frontend" else registry_dist,
                 deployer=deployer,
+                multisig_id=multisig_id,
                 progress=progress,
             )
             continue
@@ -164,6 +160,7 @@ def bootstrap_conductor(
             existing_id=existing_id,
             expected_hash=expected_hash,
             deployer=deployer,
+            multisig_id=multisig_id,
             project_root=project_root,
             progress=progress,
         )

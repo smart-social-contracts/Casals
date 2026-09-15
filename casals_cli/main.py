@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             emit_json(result)
         elif cmd == "plan":
-            commands.cmd_plan(ic, args)
+            commands.cmd_plan(ic, args, REPO_ROOT)
         elif cmd == "apply":
             commands.cmd_apply(ic, args)
         elif cmd == "verify":

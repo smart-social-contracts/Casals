@@ -148,3 +148,10 @@ def find_bindings_for_env(env: str, conductor: str | None = None) -> Bindings | 
     raise RuntimeError(
         f"multiple bindings for env {env!r}; pass --conductor or run from a named sheet"
     )
+
+
+def live_stands(tree: dict) -> dict[str, str]:
+    """stand name → section name from the conductor's `get_tree`."""
+    return {st.get("name", ""): sec.get("name", "")
+            for sec in (tree.get("sections") or []) if isinstance(sec, dict)
+            for st in sec.get("stands") or [] if isinstance(st, dict)}

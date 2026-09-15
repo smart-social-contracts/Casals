@@ -7,7 +7,7 @@ from basilisk import Principal
 from basilisk.canisters.management import management_canister
 
 from commanders import list_commanders
-from config_call import call_text_method_gen, config_text_arg
+from config_call import call_text_method_gen
 from cycles import _status_cycles, _ic_run_status
 from helpers import unwrap_call_result
 from lifecycle import _canister_info_gen
@@ -94,6 +94,11 @@ def _stand_views() -> dict[str, dict]:
             "commanders": list_commanders(stand),
         }
     return out
+
+
+def stand_sections() -> dict[str, str]:
+    """stand name → section name, for `materialize`."""
+    return {n: v["section"] for n, v in _stand_views().items()}
 
 
 def _conductor_commanders() -> list:
@@ -193,12 +198,7 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
             if qkey in state["config_queries"]:
                 continue
             try:
-                if cw.get("equals_args"):
-                    arg = config_text_arg(cfg.get("args"))
-                else:
-                    arg = "()"
-                reply = yield from call_text_method_gen(cid, query, arg if arg != "()" else None)
-                state["config_queries"][qkey] = reply
+                state["config_queries"][qkey] = yield from call_text_method_gen(cid, query, None)
             except Exception as e:
                 state["config_queries"][qkey] = {"error": str(e)}
 

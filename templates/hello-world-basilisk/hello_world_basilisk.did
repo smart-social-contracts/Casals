@@ -92,7 +92,10 @@ type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
 
 service : {
+  "health_check" : () -> (text) query;
   "greet" : (text) -> (text);
+  "set_canister_config_json" : (text) -> (text);
+  "get_canister_config_json" : () -> (text) query;
   "__shell__" : (text) -> (text);
   "__browse__" : (text) -> (text) query;
   "__get_candid_interface_tmp_hack" : () -> (text) query;

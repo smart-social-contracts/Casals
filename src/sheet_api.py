@@ -9,7 +9,7 @@ from basilisk import ic
 from applier import apply_plan_gen
 from audit import _append_event
 from helpers import _caller, _settings
-from live_state import collect_live_state_gen, _bindings_map
+from live_state import collect_live_state_gen, _bindings_map, stand_sections
 from models import Canister
 from planner import PlanningError, build_plan  # noqa: F401 — re-export for callers
 from sheet_storage import (
@@ -22,6 +22,8 @@ from sheet_storage import (
 from sheetv2 import (
     CONDUCTOR_NAMES,
     ResolveContext,
+    env_block,
+    materialize,
     resolve_partial,
     sheet_hash,
     validate,
@@ -52,6 +54,10 @@ def set_sheet_impl(args: dict) -> dict:
     if errors:
         raise ValueError("; ".join(errors[:8]))
     sh = store_sheet_doc(sheet, env, _caller())
+    for name, cid in (env_block(sheet, env).get("bindings") or {}).items():
+        list(Canister.instances())
+        st = Canister[name] or Canister(name=name)
+        st.canister_id = cid.strip()
     _append_event("sheet_set", "", {"env": env, "sheet_hash": sh})
     return {"sheet_hash": sh, "env": env, "warnings": []}
 
@@ -101,12 +107,20 @@ def bind_conductor_impl(args: dict) -> dict:
     return {"bindings": bound}
 
 
+def _declared_world(env: str, sheet: dict) -> dict:
+    """The sheet as the planner, live-state collector and applier all see it:
+    placeholders resolved as far as the bindings allow (`$multisig` etc. resolve
+    once created) and runtime template stands materialized."""
+    declared = materialize(sheet, stand_sections())
+    resolved, _unresolved = resolve_partial(declared, env, _resolve_ctx(env, sheet))
+    return resolved
+
+
 def plan_gen(args: dict | None = None):
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
-    ctx = _resolve_ctx(env, sheet)
-    resolved, _unresolved = resolve_partial(sheet, env, ctx)  # `$multisig` etc. resolve once created
+    resolved = _declared_world(env, sheet)
     bindings = _bindings_map()
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
@@ -139,8 +153,7 @@ def apply_gen(args: dict):
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
-    ctx = _resolve_ctx(env, sheet)
-    resolved, _unresolved = resolve_partial(sheet, env, ctx)  # `$multisig` etc. resolve once created
+    resolved = _declared_world(env, sheet)
     bindings = _bindings_map()
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)

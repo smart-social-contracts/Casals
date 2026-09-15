@@ -29,6 +29,11 @@ WASM_PATHS = {
     "ic_file_registry": ".basilisk/ic_file_registry/ic_file_registry.wasm",
 }
 
+SOURCE_DIRS = {  # a build is skipped while its wasm is newer than everything here
+    "casals_backend": ["src", "casals_backend.did"],
+    "ic_file_registry": ["file_registry/src", "file_registry/ic_file_registry.did"],
+}
+
 
 @dataclass
 class ResolvedArtifact:
@@ -87,8 +92,23 @@ def resolve_source(
     return data, digest
 
 
+def _newest_mtime(paths: list[str]) -> float:
+    newest = 0.0
+    for p in paths:
+        for root, _dirs, files in os.walk(p) if os.path.isdir(p) else [(os.path.dirname(p), [], [os.path.basename(p)])]:
+            for f in files:
+                if not f.endswith(".pyc"):
+                    newest = max(newest, os.path.getmtime(os.path.join(root, f)))
+    return newest
+
+
 def _build_canister_artifact(canister: str, project_root: str) -> bytes:
-    if canister in BUILD_TARGETS and BUILD_TARGETS[canister]:
+    import basilisk  # the toolchain is an input too
+
+    wasm = os.path.join(project_root, WASM_PATHS.get(canister, ""))
+    inputs = [os.path.join(project_root, d) for d in SOURCE_DIRS.get(canister, [])] + [os.path.dirname(basilisk.__file__)]
+    up_to_date = os.path.isfile(wasm) and os.path.getmtime(wasm) > _newest_mtime(inputs)
+    if canister in BUILD_TARGETS and BUILD_TARGETS[canister] and not up_to_date:
         make_target = BUILD_TARGETS[canister][1]
         result = subprocess.run(
             ["make", make_target],

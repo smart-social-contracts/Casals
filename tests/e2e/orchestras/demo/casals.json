@@ -35,7 +35,10 @@
       "kind": "frontend",
       "mode": "managed",
       "controllers": ["$self"]
-    }
+    },
+    "commanders": [
+      { "principal": "$principal:operator", "permissions": "*" }
+    ]
   },
   "governance": {
     "multisig": {
@@ -69,8 +72,6 @@
           "name": "Motoko",
           "description": "Motoko hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "wasm": "orchestration-baton@1.3.0",
-            "top_commander": "$self",
             "commanders": ["$self", "$stand.backend"],
             "threshold": 2,
             "manages": ["backend", "frontend"],
@@ -82,7 +83,7 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$multisig" },
+              "install_arg": { "top_commander": "$self" },
               "controllers": ["$multisig", "$self"]
             },
             {
@@ -105,8 +106,6 @@
           "name": "Rust",
           "description": "Rust hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "wasm": "orchestration-baton@1.3.0",
-            "top_commander": "$self",
             "commanders": ["$self", "$stand.backend"],
             "threshold": 2,
             "manages": ["backend", "frontend"],
@@ -118,7 +117,7 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$multisig" },
+              "install_arg": { "top_commander": "$self" },
               "controllers": ["$multisig", "$self"]
             },
             {
@@ -141,8 +140,6 @@
           "name": "Python",
           "description": "Basilisk hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "wasm": "orchestration-baton@1.3.0",
-            "top_commander": "$self",
             "commanders": ["$self", "$stand.backend"],
             "threshold": 2,
             "manages": ["backend", "frontend"],
@@ -154,7 +151,7 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$multisig" },
+              "install_arg": { "top_commander": "$self" },
               "controllers": ["$multisig", "$self"]
             },
             {

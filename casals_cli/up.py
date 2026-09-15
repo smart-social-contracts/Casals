@@ -7,10 +7,11 @@ import os
 import sys
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, env_block, validate
+from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, validate
 
 from casals_cli.bindings import Bindings, load_bindings
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
+from casals_cli.multisig import set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
 
@@ -75,24 +76,31 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
     ic.top_up(backend_id, budget - have)
 
 
-def deployer_items(ic, plan: dict, deployer: str) -> int:
+def deployer_items(ic, plan: dict, deployer: str, multisig_id: str) -> None:
     """Controller changes the conductor cannot make itself (its own controllers,
-    the multisig's) the CLI executes as deployer while it still is a controller.
-    Returns how many it did."""
-    done = 0
+    the multisig's): the CLI does them as deployer while it is a controller, or
+    through the multisig when the deployer is a signer."""
     for item in plan.get("items") or []:
         if item.get("kind") != "set_controllers" or (item.get("requires") or "self") == "self":
             continue
         cid = (item.get("target") or {}).get("canister_id")
         desired = (item.get("desired") or {}).get("controllers")
-        if cid and isinstance(desired, list) and deployer in (ic.read_controllers(cid) or []):
+        if not cid or not isinstance(desired, list):
+            continue
+        if deployer in (ic.read_controllers(cid) or []):
             ic.settings_update(cid, set_controllers=desired)
             _progress(f"  applied set_controllers → {item['target'].get('name')} (as deployer)")
-            done += 1
-    return done
+        elif multisig_id:
+            set_controllers_via_multisig(ic, multisig_id, deployer, cid, desired)
+            _progress(f"  applied set_controllers → {item['target'].get('name')} (multisig proposal)")
 
 
-def converge(ic, backend_id: str, deployer: str, *, yes: bool, max_items: int) -> dict:
+def multisig_id(ic, backend_id: str) -> str:
+    res = ic.query(backend_id, "get_bindings")
+    return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
+
+
+def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int) -> dict:
     """plan → apply until the plan is empty. Returns the (empty) final plan.
     Each round the conductor applies what it can, then the deployer does the
     controller changes only it can; a round that changes nothing is an error."""
@@ -127,7 +135,8 @@ def converge(ic, backend_id: str, deployer: str, *, yes: bool, max_items: int) -
                     f"apply stopped at {failed.get('kind')} → {(failed.get('target') or {}).get('name')}: "
                     f"{failed.get('error')}"
                 )
-        deployer_items(ic, plan, deployer)
+            continue
+        deployer_items(ic, plan, deployer, multisig_id)  # last: handing the conductor over ends the deployer's reach
 
 
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
@@ -149,8 +158,10 @@ def run_up(
     conductor_override: str | None = None,
     max_items: int = 5,
     project_root: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Execute §7 bootstrap steps 1–9."""
+    """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
+    `set_sheet` and returns the plan: it needs a conductor and never applies."""
     project_root = project_root or os.getcwd()
     sheet = load_json_file(sheet_path)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
@@ -174,18 +185,24 @@ def run_up(
     check_funds(ic, sheet, env, deployer)
 
     # 3. conductor bootstrap
-    _progress("step 3: conductor bootstrap")
-    bindings = bootstrap_conductor(
-        ic, sheet, bindings,
-        sheet_path=sheet_path,
-        project_root=project_root,
-        deployer=deployer,
-        progress=_progress,
-    )
+    if dry_run:
+        if not bindings.casals_backend_id:
+            raise RuntimeError("no conductor yet; run casals up first")
+    else:
+        _progress("step 3: conductor bootstrap")
+        bindings = bootstrap_conductor(
+            ic, sheet, bindings,
+            sheet_path=sheet_path,
+            project_root=project_root,
+            deployer=deployer,
+            multisig_id=multisig_id(ic, bindings.casals_backend_id) if bindings.casals_backend_id else "",
+            progress=_progress,
+        )
     backend_id = conductor_override or bindings.casals_backend_id
     if not backend_id:
         raise RuntimeError("no conductor backend id after bootstrap")
-    fund_conductor(ic, sheet, env, backend_id)
+    if not dry_run:
+        fund_conductor(ic, sheet, env, backend_id)
 
     registry_id = bindings.conductor.get(CONDUCTOR_NAMES["file_registry"], "")
     bindings.conductor.get(CONDUCTOR_NAMES["file_registry_frontend"], "")
@@ -211,9 +228,15 @@ def run_up(
     if not (isinstance(set_res, dict) and set_res.get("ok")):
         raise RuntimeError(f"set_sheet failed: {set_res}")
 
+    if dry_run:
+        res = ic.call_update(backend_id, "plan", "{}")
+        if not (isinstance(res, dict) and res.get("ok")):
+            raise RuntimeError(f"plan failed: {res}")
+        return res
+
     # 6-8. plan → apply until empty
     _progress("step 6: plan/apply")
-    plan = converge(ic, backend_id, deployer, yes=yes, max_items=max_items)
+    plan = converge(ic, backend_id, deployer, multisig_id(ic, backend_id), yes=yes, max_items=max_items)
 
     # 9. domains + verify
     _progress("step 9: domains + verify")

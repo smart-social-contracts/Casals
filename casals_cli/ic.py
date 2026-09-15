@@ -299,6 +299,9 @@ class RecordingIc:
 
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]:
         self.record("icp", tuple(argv))
+        for prefix, out in getattr(self, "icp_outputs", {}).items():  # canned raw outputs (tests)
+            if tuple(argv[:len(prefix)]) == prefix:
+                return subprocess.CompletedProcess(argv, 0, out, "")
         op = argv[0] if argv else ""
         if op == "canister" and len(argv) > 1:
             sub = argv[1]

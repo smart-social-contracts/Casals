@@ -297,6 +297,7 @@ class TestFrontendBootstrap:
             asset_dist_hashes={"casals_frontend": "oldhash000"},
         )
         ic.module_hashes["fe-id"] = "assetwasm001"
+        ic.controllers["fe-id"] = ["deployer"]
         bootstrap_asset_canister(
             ic, bindings, key="frontend", project_dir=project_dir,
             dist_path=str(dist), deployer="deployer",
@@ -335,18 +336,22 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     with open(CORPUS, encoding="utf-8") as f:
         full_sheet = json.load(f)
     ic.deployer = "operator-principal"
+    from auth import _normalize_permissions, _parse_permissions
+    granted = lambda p: _parse_permissions(_normalize_permissions(p))  # noqa: E731
     ic.queries[(bindings["casals-backend"], "get_tree")] = {
-        "sections": [{
-            "name": "Product",
-            "stands": [{
-                "name": "Motoko",
-                "commanders": [{"principal": "operator-principal", "permissions": ["stand.*"]}],
-                "canisters": [{"name": "motoko-backend", "canister_id": bindings.get("motoko-backend")}],
-            }],
-        }],
+        "sections": [
+            {"name": "Casals", "stands": [],
+             "commanders": [{"principal": "operator-principal", "permissions": granted("*")}]},
+            {"name": "Product",
+             "commanders": [{"principal": "operator-principal", "permissions": granted("canister.*")}],
+             "stands": [{
+                 "name": "Motoko",
+                 "commanders": [{"principal": "operator-principal", "permissions": granted("stand.*")}],
+                 "canisters": [{"name": "motoko-backend", "canister_id": bindings.get("motoko-backend")}],
+             }]},
+        ],
         "principal_aliases": {},
     }
-    ic.queries[(bindings["casals-backend"], "list_authorized_wasms")] = {"wasms": []}
     for cname, cid in bindings.items():
         if cname == "motoko-backend":
             ic.controllers[cid] = [bindings["casals-backend"], bindings["multisig"]]
@@ -360,10 +365,11 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
             ic.controllers[cid] = [bindings.get("multisig", "ms-id")]
         ic.module_hashes[cid] = "a" * 64
         ic.cycles[cid] = 5_000_000_000_000
-    ic.queries[(bindings["multisig"], "get_config")] = {
-        "signers": ["operator-principal", "operator-principal"],
-        "threshold": 1,
-    }
+    ic.updates[(bindings["file-registry"], "list_files")] = [
+        {"path": "hello-world-motoko@1.0.0.wasm.gz", "sha256": "a" * 64},
+    ]
+    ic.icp_outputs = {("canister", "call", bindings["multisig"], "list_signers"):
+                      '(record { threshold = 1 : nat; signers = vec { principal "operator-principal" }; })'}
 
 
 class TestOracle:
@@ -380,9 +386,7 @@ class TestOracle:
             "motoko-backend": "motoko-id",
         }
         _governed_live(ic, sheet, bindings)
-        report = run_oracle(sheet, "local", bindings, ic, authorized_hashes={
-            "hello-world-motoko@1.0.0": "a" * 64,
-        })
+        report = run_oracle(sheet, "local", bindings, ic)
         failures = [r for r in report.rows if r.result == "FAIL"]
         assert not failures, failures
 
@@ -405,9 +409,7 @@ class TestOracle:
         }
         _governed_live(ic, sheet, bindings)
         mutator(ic, bindings)
-        report = run_oracle(sheet, "local", bindings, ic, authorized_hashes={
-            "hello-world-motoko@1.0.0": "a" * 64,
-        })
+        report = run_oracle(sheet, "local", bindings, ic)
         assert not report.passed
         assert any(r.field.startswith(field.split("[")[0]) or field in r.field for r in report.rows if r.result == "FAIL")
 

@@ -10,6 +10,7 @@ import subprocess
 from sheetv2 import CONDUCTOR_NAMES
 
 from casals_cli.bindings import bindings_dir
+from casals_cli.multisig import ensure_control
 
 ASSET_CANISTERS = {
     "frontend": {
@@ -143,6 +144,7 @@ def bootstrap_asset_canister(
     project_dir: str,
     dist_path: str,
     deployer: str,
+    multisig_id: str = "",
     progress=None,
 ) -> None:
     """Link detached id → deploy asset wasm + sync; idempotent on unchanged dist."""
@@ -161,6 +163,7 @@ def bootstrap_asset_canister(
         if live_hash.lower() != stored_module_hash.lower():
             if progress:
                 progress(f"  {conductor_name}: module hash drift, redeploying assets")
+            ensure_control(ic, existing_id, deployer, multisig_id)
             ic.icp_project(project_dir, ["canister", "link", icp_name, existing_id, "--force"])
             ic.icp_project(
                 project_dir,
@@ -180,6 +183,7 @@ def bootstrap_asset_canister(
         else:
             if progress:
                 progress(f"  {conductor_name}: syncing assets (dist changed)")
+            ensure_control(ic, existing_id, deployer, multisig_id)
             ic.icp_project(project_dir, ["sync", icp_name], timeout=900)
             bindings.asset_dist_hashes[icp_name] = dist_hash
             bindings.save()
@@ -190,6 +194,7 @@ def bootstrap_asset_canister(
         if dist_hash != stored_dist_hash:
             if progress:
                 progress(f"  {conductor_name}: syncing assets (dist changed)")
+            ensure_control(ic, existing_id, deployer, multisig_id)
             ic.icp_project(project_dir, ["sync", icp_name], timeout=900)
         elif progress:
             progress(f"  {conductor_name}: {existing_id} (recorded module hash)")

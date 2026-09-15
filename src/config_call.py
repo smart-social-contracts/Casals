@@ -17,13 +17,22 @@ def config_text_arg(args):
     return json.dumps(args)
 
 
+def candid_text_value(decoded: str) -> str:
+    """Inverse of `candid_text_tuple`: `("...")` → the unescaped text. Anything
+    that is not a single text literal is returned as is."""
+    d = (decoded or "").strip()
+    if d.startswith('("') and d.endswith('")'):
+        return d[2:-2].replace('\\"', '"').replace("\\\\", "\\")
+    return decoded
+
+
 def call_text_method_gen(canister_id: str, method: str, text_arg):
-    """Generator: invoke a text method via raw Candid encoding."""
+    """Generator: invoke a text-in / text-out method; return the reply text."""
     arg = "()" if text_arg is None else candid_text_tuple(text_arg)
     res = yield ic.call_raw(
         Principal.from_str(canister_id), method, ic.candid_encode(arg), 0
     )
-    return ic.candid_decode(unwrap_call_result(res))
+    return candid_text_value(ic.candid_decode(unwrap_call_result(res)))
 
 
 # Alias used by orchestration_bridge (formerly arrangement.py).

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
@@ -14,14 +13,18 @@ from sheetv2 import (
     MULTISIG_NAME,
     WASM_NAMESPACE,
     ResolveContext,
+    baton_managed_members,
     env_block,
     registry_path,
+    materialize,
     resolve,
     stand_member,
     wasm_ref,
 )
 from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on conductor dicts
 
+from casals_cli.bindings import live_stands
+from casals_cli.multisig import multisig_signers
 from casals_cli.registry import registry_file_hashes
 from casals_cli.util import cycles_to_tc, tc_to_cycles
 
@@ -48,12 +51,13 @@ class OracleReport:
         self.rows.append(OracleRow(canister=canister, field=field, result=result, detail=detail))
 
 
-def _resolve_controllers(cname: str, ctx: ResolveContext, sheet: dict, env: str) -> set[str]:
-    resolved = resolve(sheet, env, ctx)
-    for _sec, _stand, name, block in _iter_named_canisters(resolved):
+def _resolve_controllers(cname: str, ctx: ResolveContext, resolved: dict) -> set[str]:
+    for _sec, stand, name, block in _iter_named_canisters(resolved):
         if name == cname:
-            ctrls = block.get("controllers") or []
-            return {str(x) for x in ctrls}
+            ctrls = {str(x) for x in block.get("controllers") or []}
+            if any(m["name"] == cname for m in baton_managed_members(stand)):
+                ctrls.add(ctx.canister_ids.get(stand_member(stand, "baton")["name"], "$stand.baton"))
+            return ctrls
     return set()
 
 
@@ -69,14 +73,6 @@ def _grade_commanders(report: OracleReport, name: str, declared, live_entity: di
         report.add(name, "commanders", "FAIL", f"declared={sorted(want)} live={sorted(have)}")
 
 
-def multisig_signers(ic, ms_id: str) -> tuple[set[str], int]:
-    """`list_signers` of the Motoko multisig, read straight off the candid text."""
-    out = ic.icp(["canister", "call", ms_id, "list_signers", "--query", "()"]).stdout
-    signers = set(re.findall(r'principal "([a-z0-9-]+)"', out))
-    m = re.search(r"threshold = (\d+)", out)
-    return signers, int(m.group(1)) if m else 0
-
-
 def run_oracle(
     sheet: dict,
     env: str,
@@ -84,7 +80,6 @@ def run_oracle(
     ic,
     *,
     expect_unmanaged: list[str] | None = None,
-    authorized_hashes: dict[str, str] | None = None,
 ) -> OracleReport:
     """Grade live IC state against the sheet. Does not call plan() or verify()."""
     report = OracleReport()
@@ -95,14 +90,12 @@ def run_oracle(
         canister_ids=dict(bindings),
         env_values=env_block(sheet, env),
     )
-    resolved = resolve(sheet, env, ctx)
     tree = ic.query(backend_id, "get_tree") if backend_id else {}
+    resolved = resolve(materialize(sheet, live_stands(tree)), env, ctx)
     # Expected module hashes come from the file registry (what `casals up` uploaded),
     # or from the sheet when pinned — never from the conductor's catalog.
     registry_id = bindings.get(CONDUCTOR_NAMES["file_registry"], "")
     registry_hashes = registry_file_hashes(ic, registry_id, WASM_NAMESPACE) if registry_id else {}
-    if authorized_hashes:
-        registry_hashes.update(authorized_hashes)
 
     # commanders: Casals' own state (get_tree) is the truth for its own permissions
     tree_secs = {sec.get("name"): sec for sec in (tree.get("sections") or []) if isinstance(sec, dict)}
@@ -118,6 +111,9 @@ def run_oracle(
         cid = bindings.get(cname, "")
         mode = canister.get("mode", "managed")
 
+        if canister.get("retire"):
+            report.add(cname, "retired", "PASS" if not cid else "FAIL", cid or "not bound")
+            continue
         if not cid:
             report.add(cname, "exists", "FAIL", "no binding")
             continue
@@ -136,7 +132,7 @@ def run_oracle(
         elif mode == "adopted" and live_hash:
             report.add(cname, "module_hash", "SKIP", f"adopted live={live_hash}")
 
-        desired_ctrls = _resolve_controllers(cname, ctx, sheet, env)
+        desired_ctrls = _resolve_controllers(cname, ctx, resolved)
         try:
             live_ctrls = set(ic.read_controllers(cid))
         except Exception as exc:
@@ -217,22 +213,35 @@ def run_oracle(
         except Exception as exc:
             report.add(MULTISIG_NAME, "multisig", "FAIL", str(exc))
 
-    # batons
-    for section, stand, cname, canister in _iter_named_canisters(resolved):
-        baton = stand.get("baton")
-        if not isinstance(baton, dict):
-            continue
-        baton_c = stand_member(stand, "baton")
-        bname = (baton_c or {}).get("name") or ""
-        bid = bindings.get(bname, "")
-        if not bid:
-            report.add(bname or stand.get("name", ""), "baton", "FAIL", "no baton id")
-            continue
-        try:
-            cfg = ic.query(bid, "get_config", "{}")
-            report.add(bname, "baton.config", "PASS" if cfg else "FAIL", str(cfg)[:80])
-        except Exception as exc:
-            report.add(bname, "baton.config", "FAIL", str(exc))
+    # batons: commanders, approval threshold, managed set — read from the baton itself
+    for sec in resolved.get("sections") or []:
+        for stand in sec.get("stands") or []:
+            baton = stand.get("baton")
+            member = stand_member(stand, "baton") if isinstance(baton, dict) else None
+            if not member:
+                continue
+            bname = member["name"]
+            bid = bindings.get(bname, "")
+            if not bid:
+                report.add(bname, "baton", "FAIL", "no baton id")
+                continue
+            try:
+                cfg = ic.query(bid, "get_config")
+                cmds = ic.query(bid, "list_commanders")
+                managed = set(ic.query(bid, "list_managed_canisters") or [])
+            except Exception as exc:
+                report.add(bname, "baton", "FAIL", str(exc))
+                continue
+            want_cmds = set(baton.get("commanders") or [])
+            have_cmds = {c.get("principal") for c in cmds or [] if isinstance(c, dict)}
+            report.add(bname, "baton.commanders", "PASS" if want_cmds == have_cmds else "FAIL",
+                       f"{len(have_cmds)} commanders" if want_cmds == have_cmds else f"want={sorted(want_cmds)} have={sorted(have_cmds)}")
+            have_t = int(((cfg or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
+            report.add(bname, "baton.threshold", "PASS" if have_t == int(baton.get("threshold") or 0) else "FAIL", str(have_t))
+            if baton.get("hand_off"):
+                want_managed = {bindings.get(stand_member(stand, r)["name"], "") for r in baton.get("manages") or [] if stand_member(stand, r)}
+                report.add(bname, "baton.managed", "PASS" if want_managed <= managed else "FAIL",
+                           f"{len(managed)} managed" if want_managed <= managed else f"missing={sorted(want_managed - managed)}")
 
     # unmanaged expectation
     expect = set(expect_unmanaged or [])

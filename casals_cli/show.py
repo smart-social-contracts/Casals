@@ -8,10 +8,11 @@ from sheetv2 import (
     ResolveContext,
     env_block,
     iter_canisters,
+    materialize,
     resolve_partial,
 )
 
-from casals_cli.bindings import live_bindings
+from casals_cli.bindings import live_bindings, live_stands
 from casals_cli.util import cycles_to_tc, emit_json
 
 
@@ -38,7 +39,7 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
         canister_ids=dict(bindings),
         env_values=env_block(sheet, env),
     )
-    resolved, _ = resolve_partial(sheet, env, ctx, partial=True)
+    resolved, _ = resolve_partial(materialize(sheet, live_stands(tree)), env, ctx, partial=True)
 
     canisters_out = []
     for section, stand, cname, canister in iter_canisters(resolved):

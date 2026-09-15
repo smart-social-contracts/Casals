@@ -10,7 +10,7 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 | `baton-stand` | one stand with baton, 2-of-2 hand_off, `$stand.backend` |
 | `adopted` | adopted backend reconciles control and config only |
 | `demo` | three stands, three batons, shared multisig |
-| `retire-and-pool` | retire: true, sweep_on_retire, reuse_pool |
+| `retire-and-pool` | retire: true, pool behaviour, reuse_pool |
 | `dynamic-stands` | stand_template with runtime-created stands via installer |
 
 Production sheets (`gos-as-a-service/casals.json`, `realms/casals.json`) are

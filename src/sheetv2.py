@@ -174,6 +174,15 @@ def stand_of(sheet: dict, name: str) -> dict | None:
     return found[1]
 
 
+def baton_managed_members(stand: dict) -> list[dict]:
+    """Stand members the baton co-controls: `baton.manages` roles when `hand_off` is set."""
+    baton = stand.get("baton")
+    if not isinstance(baton, dict) or not baton.get("hand_off") or stand_member(stand, "baton") is None:
+        return []
+    members = (stand_member(stand, role) for role in baton.get("manages") or [])
+    return [m for m in members if m]
+
+
 def stand_member(stand: dict, role: str) -> dict | None:
     """Return the canister in ``stand`` whose kind or name suffix matches ``role``."""
     role = (role or "").strip().lower()
@@ -396,7 +405,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             if "commanders" in stand:
                 _validate_commanders(stand["commanders"], f"{stpath}.commanders", errors)
             if "baton" in stand and stand["baton"] is not None:
-                _validate_baton(stand["baton"], f"{stpath}.baton", errors)
+                _validate_baton(stand["baton"], f"{stpath}.baton", errors, stand)
             for ck, canister in enumerate(stand.get("canisters") or []):
                 cpath = f"{stpath}.canisters[{ck}]"
                 if not isinstance(canister, dict):
@@ -413,7 +422,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
     if isinstance(conductor, dict):
         backend = conductor.get("backend")
         if isinstance(backend, dict):
-            _validate_lockout_conductor(backend.get("controllers"), errors)
+            _validate_lockout_conductor(backend.get("controllers"), conductor.get("commanders"), errors)
     _validate_lockout_self_only(sheet, names, errors)
 
     _validate_domains(sheet.get("domains"), names, errors)
@@ -568,15 +577,20 @@ def _validate_commanders(value: Any, path: str, errors: list[str]) -> None:
             errors.append(f"{ep}.permissions must be a string")
 
 
-def _validate_baton(value: Any, path: str, errors: list[str]) -> None:
+def _validate_baton(value: Any, path: str, errors: list[str], stand: dict | None = None) -> None:
+    """`baton` is policy only: the baton canister is a regular `-baton` member of the stand."""
     if not isinstance(value, dict):
         errors.append(f"{path} must be an object")
         return
-    if not isinstance(value.get("wasm"), str) or not _is_wasm_ref(value["wasm"]):
-        errors.append(f"{path}.wasm must be family or family@version")
-    for field in ("top_commander", "threshold", "manages", "hand_off"):
+    for field in ("commanders", "threshold", "manages", "hand_off"):
         if field not in value:
             errors.append(f"{path}.{field} is required")
+    if stand is not None:
+        member = stand_member(stand, "baton")
+        if member is None:
+            errors.append(f"{path}: stand has no '-baton' canister")
+        elif (member.get("install_arg") or {}).get("top_commander") != "$self":
+            errors.append(f"{path}: the baton canister's install_arg.top_commander must be $self (Casals configures it)")
 
 
 def _validate_stand_template(value: Any, spath: str, names: dict[str, str], errors: list[str]) -> None:
@@ -606,7 +620,7 @@ def _validate_stand_template(value: Any, spath: str, names: dict[str, str], erro
     if "commanders" in value:
         _validate_commanders(value["commanders"], f"{path}.commanders", errors)
     if isinstance(value.get("baton"), dict):
-        _validate_baton(value["baton"], f"{path}.baton", errors)
+        _validate_baton(value["baton"], f"{path}.baton", errors, value)
 
 
 def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str]) -> None:
@@ -624,6 +638,17 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
             errors.append(f"{path}.network is required")
         if "cycles" in block and isinstance(block["cycles"], dict):
             _validate_cycles_block(block["cycles"], f"{path}.cycles", errors)
+        # `bindings` names the ids of adopted canisters: code Casals never installs.
+        bindings = block.get("bindings", {})
+        if not isinstance(bindings, dict):
+            errors.append(f"{path}.bindings must be an object")
+            continue
+        for cname, cid in bindings.items():
+            found = find_canister(sheet, cname)
+            if not found or not isinstance(cid, str) or not cid.strip():
+                errors.append(f"{path}.bindings.{cname}: unknown canister or empty id")
+            elif (found[2].get("mode") or "managed") != "adopted":
+                errors.append(f"{path}.bindings.{cname}: only adopted canisters take a declared id")
 
 
 def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
@@ -659,8 +684,6 @@ def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
             errors.append(f"{path}.{key} must be a number")
     if "reuse_pool" in value and not isinstance(value["reuse_pool"], bool):
         errors.append(f"{path}.reuse_pool must be a boolean")
-    if "sweep_on_retire" in value and not isinstance(value["sweep_on_retire"], bool):
-        errors.append(f"{path}.sweep_on_retire must be a boolean")
 
 
 def _validate_domains(value: Any, names: dict[str, str], errors: list[str]) -> None:
@@ -711,19 +734,19 @@ def _looks_like_raw_principal(value: str) -> bool:
     return len(text) >= 27
 
 
-def _validate_lockout_conductor(controllers: Any, errors: list[str]) -> None:
+def _validate_lockout_conductor(controllers: Any, commanders: Any, errors: list[str]) -> None:
+    """Someone other than Casals itself must be able to operate the conductor once the
+    sheet is applied: a principal controller, or (when only the multisig controls it)
+    a declared conductor commander who can call plan/apply."""
     if not isinstance(controllers, list):
         return
-    allowed = False
-    for item in controllers:
-        if item == "$multisig" or item == "$deployer":
-            allowed = True
-        elif isinstance(item, str) and item.startswith("$principal:"):
-            allowed = True
-    if not allowed:
+    principal = any(c == "$deployer" or (isinstance(c, str) and c.startswith("$principal:")) for c in controllers)
+    if not principal and "$multisig" not in controllers:
+        errors.append("conductor.backend.controllers must include $multisig, $principal:*, or $deployer")
+    elif not principal and not commanders:
         errors.append(
-            "conductor.backend.controllers must include at least one of "
-            "$multisig, $principal:*, or $deployer"
+            "conductor.backend is controlled only by $multisig and conductor.commanders is empty: "
+            "after apply nobody but the multisig could call plan/apply"
         )
 
 
@@ -946,3 +969,50 @@ def _resolve_token(
 def _resolve_canister_tree(canister: dict, path: str, stand: dict | None, resolve_value) -> None:
     for key, val in list(canister.items()):
         canister[key] = resolve_value(val, f"{path}.{key}", stand)
+
+
+def glob_match(name: str, pattern: str) -> bool:
+    """`*` wildcard match (stand_template.name_pattern); no other glob syntax."""
+    parts = pattern.split("*")
+    if len(parts) == 1:
+        return name == pattern
+    if not name.startswith(parts[0]) or not name.endswith(parts[-1]):
+        return False
+    pos = len(parts[0])
+    for part in parts[1:-1]:
+        idx = name.find(part, pos)
+        if idx < 0:
+            return False
+        pos = idx + len(part)
+    return pos <= len(name) - len(parts[-1])
+
+
+def instantiate_template_stand(template: dict, stand_name: str) -> dict:
+    """A `stand_template` rendered for one stand: `{stand}` in canister names."""
+    spec = json.loads(json.dumps({k: v for k, v in template.items() if k in ("canisters", "commanders", "baton")}))
+    spec["name"] = stand_name
+    for c in spec.get("canisters") or []:
+        if isinstance(c.get("name"), str):
+            c["name"] = c["name"].replace("{stand}", stand_name)
+    return spec
+
+
+def materialize(sheet: dict, live_stands: dict[str, str]) -> dict:
+    """Copy of the sheet where every live stand (name → section) matching a
+    section's `stand_template` is a declared stand, and the template's
+    `created_by` holds `stand.create` on the section. Planner, oracle and
+    `show` all reason about this one declared world."""
+    out = json.loads(json.dumps(sheet))
+    for section in out.get("sections") or []:
+        tmpl = section.get("stand_template")
+        if not isinstance(tmpl, dict):
+            continue
+        if tmpl.get("created_by"):
+            section["commanders"] = [*(section.get("commanders") or []),
+                                     {"principal": tmpl["created_by"], "permissions": ["stand.create"]}]
+        stands = section.setdefault("stands", [])
+        declared = {st.get("name") for st in stands}
+        for name, sec_name in sorted(live_stands.items()):
+            if sec_name == section.get("name") and name not in declared and glob_match(name, tmpl.get("name_pattern") or ""):
+                stands.append(instantiate_template_stand(tmpl, name))
+    return out

@@ -58,7 +58,7 @@ def _resolved(name: str) -> tuple[dict, str, dict]:
         ctx.canister_ids.setdefault(n, f"id-{n}")
     resolved, _unresolved = sv2.resolve_partial(sheet, env, ctx, partial=False)
     bindings = dict(ctx.canister_ids)
-    return resolved, env, bindings
+    return sv2.materialize(resolved, {}), env, bindings
 
 
 def _empty_live(resolved, bindings) -> dict:
@@ -129,27 +129,19 @@ def _converged_live(resolved, bindings) -> dict:
                 }
             baton = stand.get("baton")
             if isinstance(baton, dict):
-                bname = None
-                for c in stand.get("canisters") or []:
-                    if isinstance(c, dict) and str(c.get("name", "")).endswith("-baton"):
-                        bname = c["name"]
-                        break
-                if not bname:
-                    bname = (baton.get("name") or f"{dname}-baton").replace("{stand}", dname)
+                bname = sv2.stand_member(stand, "baton")["name"]
                 managed_ids = []
                 for role in baton.get("manages") or []:
-                    for c in stand.get("canisters") or []:
-                        if not isinstance(c, dict):
-                            continue
-                        cname = c.get("name", "")
-                        if role == "backend" and (c.get("kind") == "backend" or cname.endswith("-backend")):
-                            managed_ids.append(bindings.get(cname, ""))
-                        if role == "frontend" and (c.get("kind") == "frontend" or cname.endswith("-frontend")):
-                            managed_ids.append(bindings.get(cname, ""))
+                    member = sv2.stand_member(stand, role)
+                    if member and bindings.get(member["name"]):
+                        managed_ids.append(bindings[member["name"]])
+                        if baton.get("hand_off"):  # the baton co-controls what it manages
+                            live["canisters"][member["name"]]["controllers"] = sorted(
+                                set(live["canisters"][member["name"]]["controllers"]) | {bindings[bname]}
+                            )
                 live["batons"][bname] = {
-                    "commanders": _normalize([
-                        {"principal": p, "permissions": "*"} for p in (baton.get("commanders") or [])
-                    ]),
+                    "commanders": [{"principal": p, "capabilities": []} for p in baton.get("commanders") or []],
+                    "config": {"upgrade_approval_policy": {"threshold": baton.get("threshold")}},
                     "managed_canisters": [m for m in managed_ids if m],
                 }
     live["sections"][sv2.SYNTHETIC_SECTION_CONDUCTOR] = {"exists": True, "commanders": []}
@@ -165,12 +157,9 @@ def _converged_live(resolved, bindings) -> dict:
 
 
 def _normalize(entries):
-    out = []
-    for e in entries or []:
-        if isinstance(e, dict) and e.get("principal"):
-            out.append({"principal": str(e["principal"]), "permissions": str(e.get("permissions") or "")})
-    out.sort(key=lambda x: x["principal"])
-    return out
+    from planner import _normalize_commanders
+
+    return _normalize_commanders(entries)
 
 
 @pytest.mark.parametrize("name", CORPUS)
@@ -206,7 +195,7 @@ def test_adopted_hash_change_info_only():
     live["canisters"]["external-backend"]["module_hash"] = "bb" * 32
     # Ensure expected hash is known (corpus may omit sha256 for local)
     for reg in resolved.get("registry", {}).get("wasms", []):
-        if reg.get("family") == "hello-world-motoko":
+        if reg.get("family") == "hello-world-basilisk":
             reg["sha256"] = "aa" * 32
     plan = build_plan(resolved, env, live, self_id=SELF)
     assert not any(it["kind"] in ("upgrade_code", "reinstall_code", "install_code") for it in plan["items"])
@@ -253,9 +242,9 @@ def test_stand_template_matching():
     live = _empty_live(resolved, bindings)
     live["stands"]["realm-alpha"] = {"exists": True, "section": "Realms", "commanders": []}
     live["sections"]["Realms"] = {"exists": True, "commanders": []}
-    plan = build_plan(resolved, env, live, self_id=SELF)
+    plan = build_plan(sv2.materialize(resolved, {"realm-alpha": "Realms"}), env, live, self_id=SELF)
     names = {it["target"]["name"] for it in plan["items"]}
-    assert "realm-alpha-backend" in names or any("realm-alpha" in (it["target"].get("stand") or "") for it in plan["items"])
+    assert {"realm-alpha-baton", "realm-alpha-backend", "realm-alpha-frontend"} <= names
 
 
 def test_lockout_conductor_commanders():
