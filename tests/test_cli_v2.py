@@ -141,13 +141,15 @@ class TestReadState:
             "ic.system_state.canister_controllers",
             lambda agent, cid: calls.append(("controllers", cid)) or [FakePrincipal("aaaaa-aa")],
         )
+        # module_hash goes through read_state + lookup so that "absent" (None) is distinct from "failed".
         monkeypatch.setattr(
-            "ic.system_state.canister_module_hash",
-            lambda agent, cid: calls.append(("hash", cid)) or "abc123",
+            ic, "_agent_client",
+            lambda: type("A", (), {"read_state_raw": lambda self, cid, paths: calls.append(("hash", cid)) or {}})(),
         )
-        assert ic.read_controllers("cccc-cc") == ["aaaaa-aa"]
-        assert ic.read_module_hash("cccc-cc") == "abc123"
-        assert calls == [("controllers", "cccc-cc"), ("hash", "cccc-cc")]
+        monkeypatch.setattr("ic.certificate.lookup", lambda path, cert: bytes.fromhex("abc123"))
+        assert ic.read_controllers("aaaaa-aa") == ["aaaaa-aa"]
+        assert ic.read_module_hash("aaaaa-aa") == "abc123"
+        assert calls == [("controllers", "aaaaa-aa"), ("hash", "aaaaa-aa")]
 
 
 # ── up sequencing + idempotency ─────────────────────────────────────────────
@@ -435,7 +437,6 @@ class TestShowGraph:
     def test_mermaid_edge_types(self):
         view = {
             "tree": {"sections": [{"stands": [{"name": "Hello", "commanders": [{"principal": "op-p"}]}]}]},
-            "orchestration_status": {"batons": []},
             "canisters": [{
                 "name": "hello-backend",
                 "canister_id": "aaaa-aa",

@@ -30,14 +30,6 @@ on:
           - upgrade
           - reinstall
         default: upgrade
-      seed:
-        description: "Seed the template catalog (upload + authorize WASMs) after deploy"
-        type: boolean
-        default: false
-      deploy_sheet:
-        description: "Also deploy the live sheet (stand up the orchestra; creates/reuses canisters)"
-        type: boolean
-        default: false
 
 # Never run two mainnet deploys at once.
 concurrency:
@@ -115,12 +107,6 @@ jobs:
             --add-controller "$CONDUCTOR" \
             -e ic --identity casals -f
           echo "Conductor added successfully"
-
-      - name: Seed catalog (upload + authorize template WASMs)
-        if: ${{ inputs.seed || inputs.deploy_sheet }}
-        run: |
-          python3 scripts/seed.py -e ic --identity casals \
-            ${{ inputs.deploy_sheet && '--deploy' || '' }}
 
       - name: Report deployed canisters
         if: always()

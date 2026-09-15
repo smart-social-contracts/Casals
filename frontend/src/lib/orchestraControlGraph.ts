@@ -1,12 +1,12 @@
-/** Build a control-authority graph from orchestra tree + orchestration status. */
+/** Build a control-authority graph from the orchestra tree (IC controllers, commanders, batons). */
 
-import type { Canister, CommanderGrant, OrchestrationStatus, Section, Stand, Tree } from './api';
+import type { Canister, CommanderGrant, Section, Stand, Tree } from './api';
+import type { BatonRef } from './orchestraGovernance';
 
 export type ControlEdgeType =
   | 'ic_controller'
   | 'casals_commander'
   | 'baton_top_commander'
-  | 'baton_commander'
   | 'baton_manages';
 
 export interface ControlGraphLayers {
@@ -53,15 +53,6 @@ export interface ControlGraphOptions {
   principalLabel?: (principal: string) => string;
 }
 
-export interface BatonRef {
-  name: string;
-  canister_id: string;
-  section?: string;
-  stand?: string;
-  managed_canisters?: string[];
-  casals_is_commander?: boolean;
-}
-
 const BATON_WASM_PREFIX = 'orchestration-baton';
 const MULTISIG_WASM_PREFIX = 'orchestration-multisig';
 
@@ -87,7 +78,7 @@ function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {
   return c.name === 'casals-backend' || c.name === 'casals-frontend';
 }
 
-/** When orchestration_status omits managed_canisters, infer from cached IC controllers. */
+/** Canisters whose cached IC controllers include the baton. */
 export function inferManagedCanistersFromTree(
   tree: Tree,
   batonCanisterId: string,
@@ -112,7 +103,7 @@ export function inferManagedCanistersFromTree(
   return out;
 }
 
-/** Same-stand realm canisters when status/cache are empty (sheet topology). */
+/** Same-stand realm canisters when the controller cache is empty (sheet topology). */
 export function inferManagedCanistersFromStand(
   tree: Tree,
   batonCanisterId: string,
@@ -137,10 +128,9 @@ export function inferManagedCanistersFromStand(
 
 function resolveManagedCanisterIds(tree: Tree, baton: BatonRef): string[] {
   const hint = { section: baton.section, stand: baton.stand };
-  const fromStatus = baton.managed_canisters ?? [];
   const fromTree = inferManagedCanistersFromTree(tree, baton.canister_id, hint);
   const fromStand = inferManagedCanistersFromStand(tree, baton.canister_id, hint);
-  return [...new Set([...fromStatus, ...fromTree, ...fromStand])];
+  return [...new Set([...fromTree, ...fromStand])];
 }
 
 export interface NodePosition {
@@ -174,15 +164,6 @@ export const CONTROL_EDGE_META: Record<
     tooltip:
       'Baton config commander — owns baton settings: commanders, upgrade policy, and managed canister set.',
     stroke: '#ea580c',
-    dash: '2 4',
-    width: 1.5,
-  },
-  baton_commander: {
-    label: 'Commander',
-    legendScope: 'baton upgrades',
-    tooltip:
-      'Baton upgrade commander — can propose managed upgrades; quorum (e.g. Casals + realm backend 2-of-2) must approve.',
-    stroke: '#f97316',
     dash: '2 4',
     width: 1.5,
   },
@@ -226,7 +207,10 @@ function computeCanisterRank(c: Canister): number {
  * may appear on multisig's controllers. For the governance graph, only show downhill
  * edges along multisig → casals → baton → realm canisters.
  */
-export function isUphillOrchestraIcEdge(from: ControlNode, to: ControlNode): boolean {
+export function isUphillOrchestraIcEdge(
+  from: Pick<ControlNode, 'kind' | 'rank'>,
+  to: Pick<ControlNode, 'kind' | 'rank'>,
+): boolean {
   if (from.kind !== 'canister' || to.kind !== 'canister') return false;
   return from.rank > to.rank;
 }
@@ -262,7 +246,6 @@ function findCanisterByPrincipal(
 
 export function buildControlGraph(
   tree: Tree | null | undefined,
-  orchestrationStatus: OrchestrationStatus | null | undefined,
   batons: BatonRef[],
   options: ControlGraphOptions = {},
 ): ControlGraph {
@@ -378,56 +361,15 @@ export function buildControlGraph(
   }
 
   if (layers.baton) {
-    const statusBatons = orchestrationStatus?.batons ?? [];
-    const byId = new Map<string, BatonRef>();
     for (const b of batons) {
-      if (b.canister_id) byId.set(b.canister_id, b);
-    }
-    for (const b of statusBatons) {
-      if (!b.canister_id) continue;
-      const existing = byId.get(b.canister_id);
-      byId.set(b.canister_id, {
-        name: b.name,
-        canister_id: b.canister_id,
-        section: b.section ?? existing?.section,
-        stand: b.stand ?? existing?.stand,
-        managed_canisters: b.managed_canisters ?? existing?.managed_canisters,
-        casals_is_commander: b.casals_is_commander ?? existing?.casals_is_commander,
-      });
-    }
-
-    for (const b of byId.values()) {
       if (!b.canister_id) continue;
       const batonId = canisterNodeId(b.canister_id);
-      const statusEntry = statusBatons.find((x) => x.canister_id === b.canister_id);
-      const config = statusEntry?.config ?? {};
-      const topCommander =
-        (typeof config.top_commander === 'string' && config.top_commander) ||
-        options.casalsBackendId ||
-        '';
-      if (topCommander) {
-        addEdge('baton_top_commander', resolveNodeId(topCommander), batonId);
+      if (options.casalsBackendId) {
+        addEdge('baton_top_commander', resolveNodeId(options.casalsBackendId), batonId);
       }
-
-      const commanders =
-        statusEntry?.commanders ??
-        orchestrationStatus?.commanders ??
-        [];
-      for (const cmd of commanders) {
-        if (!cmd.principal) continue;
-        addEdge('baton_commander', resolveNodeId(cmd.principal), batonId);
+      for (const mid of resolveManagedCanisterIds(tree, b)) {
+        if (mid) addEdge('baton_manages', batonId, canisterNodeId(mid));
       }
-
-      const managed = resolveManagedCanisterIds(tree, b);
-      for (const mid of managed) {
-        if (!mid) continue;
-        const managedId = canisterNodeId(mid);
-        addEdge('baton_manages', batonId, managedId);
-      }
-    }
-
-    if (!byId.size && tree.sections.some((s) => s.stands.some((d) => d.canisters.some(isBatonCanister)))) {
-      warnings.push('Baton canisters exist but orchestration_status returned no baton detail.');
     }
   }
 
@@ -705,7 +647,7 @@ export function parseControlGraphView(raw: string): ControlGraphView {
 export const CONTROL_EDGE_TYPE_GROUPS: Record<keyof ControlGraphLayers, ControlEdgeType[]> = {
   icControllers: ['ic_controller'],
   commanders: ['casals_commander'],
-  baton: ['baton_top_commander', 'baton_commander', 'baton_manages'],
+  baton: ['baton_top_commander', 'baton_manages'],
 };
 
 export type ControlEdgeTypeVisibility = Record<ControlEdgeType, boolean>;
@@ -714,7 +656,6 @@ export const DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY: ControlEdgeTypeVisibility = {
   ic_controller: true,
   casals_commander: true,
   baton_top_commander: true,
-  baton_commander: true,
   baton_manages: true,
 };
 

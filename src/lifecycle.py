@@ -15,6 +15,7 @@ from basilisk.canisters.management import management_canister
 from ic_python_logging import get_logger
 from models import Canister, CanisterKind, CanisterStatus, PooledCanister, Section, Stand
 from services import AssetCanisterService
+from ic_assets import POLICY_FILE, any_properties, properties_for, rules_from
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
 from commanders import commander_principals
@@ -49,12 +50,14 @@ MAX_CONTROLLERS = 10
 
 # Per-chunk read size when pulling a WASM from the file-registry (matches the
 # registry's get_file_chunk cap).
-PULL_CHUNK_BYTES = 128 * 1024
+PULL_CHUNK_BYTES = 1024 * 1024  # chunk store: 100 entries max, so 1 MiB chunks reach the 100 MiB wasm limit
+REGISTRY_READ_BYTES = 128 * 1024  # file-registry get_file_chunk_icc cap
 
 # Candid encoding of ``(null)`` — a single null-typed argument.  Used as the
 # install arg for the certified-assets canister, whose init is
 # ``(opt AssetCanisterArgs)`` (null <: opt T, so this means "no config").
 CANDID_NULL_ARG = bytes([0x44, 0x49, 0x44, 0x4C, 0x00, 0x01, 0x7F])
+CANDID_EMPTY_ARG = b"DIDL\x00\x00"  # `()`
 
 # The management canister's principal (used for hand-encoded calls below).
 MANAGEMENT_CANISTER_ID = "aaaaa-aa"
@@ -120,10 +123,11 @@ def _resolve_authorized_wasm(wasm_key: str, section):
 def _install_arg_for(w) -> bytes:
     """The install/init argument for a WASM. The certified-assets canister
     needs ``(null)`` (its init is ``opt AssetCanisterArgs``); everything else
-    takes ``()``."""
+    takes an encoded ``()`` (an empty byte string is not Candid and Basilisk
+    canisters trap decoding it)."""
     if w.kind == CanisterKind.FRONTEND or (w.asset_path or "").strip():
         return CANDID_NULL_ARG
-    return b""
+    return CANDID_EMPTY_ARG
 
 
 def _resolve_install_arg(install_arg_spec, w) -> bytes:
@@ -232,26 +236,43 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
     _append_event("wasm_download_start", target_id, {"path": path, "size_bytes": total})
 
     target = Principal.from_str(target_id)
+    try:  # an interrupted earlier attempt leaves the store full (100 entries max)
+        yield management_canister.clear_chunk_store({"canister_id": target})
+    except Exception:
+        pass
     chunk_hashes = []
     offset = 0
     chunk_num = 0
+    buf = b""
+
+    def _upload(data):
+        up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": data})
+        up = unwrap_call_result(up_res)
+        chunk_hashes.append({"hash": up.get("hash") if isinstance(up, dict) else getattr(up, "hash", up)})
+        _append_event("wasm_chunk_uploaded", target_id,
+                      {"chunk": len(chunk_hashes), "bytes_so_far": offset, "total_bytes": total,
+                       "pct": int(offset * 100 // total)})
+
+    # The registry serves at most REGISTRY_READ_BYTES per call; the chunk store
+    # takes 100 entries, so reads are batched into PULL_CHUNK_BYTES uploads.
     while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
+        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(REGISTRY_READ_BYTES))
         chunk_json = json.loads(unwrap_call_result(chunk_res))
         if "error" in chunk_json:
             raise Exception(f"file-registry: {chunk_json['error']}")
         data = base64.b64decode(chunk_json["content_b64"])
-        up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": data})
-        up = unwrap_call_result(up_res)
-        chunk_hash = up.get("hash") if isinstance(up, dict) else getattr(up, "hash", up)
-        chunk_hashes.append({"hash": chunk_hash})
-        chunk_num += 1
+        if not data:
+            break
+        buf += data
         offset += len(data)
-        _append_event("wasm_chunk_uploaded", target_id,
-                      {"chunk": chunk_num, "bytes_so_far": offset, "total_bytes": total,
-                       "pct": int(offset * 100 // total)})
+        chunk_num += 1
+        if len(buf) >= PULL_CHUNK_BYTES or offset >= total or chunk_json.get("eof"):
+            yield from _upload(buf)
+            buf = b""
         if chunk_json.get("eof"):
             break
+    if buf:
+        yield from _upload(buf)
 
     if not chunk_hashes:
         raise Exception(
@@ -554,6 +575,102 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
     return (count, total)
 
 
+SYNC_MAX_FILES = 10
+SYNC_MAX_BYTES = 4_000_000
+_TEXT_TYPES = {".js": "application/javascript", ".json": "application/json",
+               ".html": "text/html", ".css": "text/css", ".txt": "text/plain"}
+
+
+def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, all_keys: list | None = None):
+    """Generator: store a bounded slice of ``keys`` into an asset canister —
+    rendered sheet ``files`` as-is, everything else pulled from the registry
+    ``namespace`` — then apply the dist's `.ic-assets.json5` (headers, cache,
+    raw access, aliasing) to each stored key, exactly as dfx would. When the
+    policy file itself is among ``keys`` every key in ``all_keys`` is
+    re-propertied. The planner lists whatever is still missing next round."""
+    asset = AssetCanisterService(Principal.from_str(canister_id))
+    grant_res = yield asset.grant_permission({"to_principal": ic.id(), "permission": {"Commit": None}})
+    unwrap_call_result(grant_res)
+    listing: dict = {}
+    if namespace and any(k not in files for k in keys):
+        registry_files = yield from _list_registry_files(namespace)
+        listing = {"/" + f["path"].lstrip("/"): f for f in registry_files if f.get("path")}
+    rules: list = []
+    if POLICY_FILE in files:
+        rules = rules_from(files[POLICY_FILE])
+    elif POLICY_FILE in listing:
+        policy = yield from _pull_registry_bytes(namespace, listing[POLICY_FILE]["path"])
+        rules = rules_from(policy.decode("utf-8"))
+    sent = 0
+    stored: list = []
+    for key in keys[:SYNC_MAX_FILES]:
+        if key in files:
+            content = files[key].encode("utf-8")
+            content_type = _TEXT_TYPES.get("." + key.rsplit(".", 1)[-1], "text/plain")
+        else:
+            meta = listing.get(key)
+            if not meta:
+                raise Exception(f"file-registry {namespace}: no file for {key}")
+            content = yield from _pull_registry_bytes(namespace, meta["path"])
+            content_type = (meta.get("content_type") or "application/octet-stream").strip()
+        store_res = yield asset.store({
+            "key": key, "content_type": content_type, "content_encoding": "identity",
+            "content": content, "sha256": None,
+        })
+        unwrap_call_result(store_res)
+        stored.append(key)
+        sent += len(content)
+        if sent >= SYNC_MAX_BYTES:
+            break
+    propertied = 0
+    if rules:
+        # A changed policy file re-properties every asset that exists; keys the
+        # planner still lists as missing get theirs when they are stored.
+        pending = set(keys) - set(stored)
+        targets = [k for k in (all_keys or keys) if k not in pending] if POLICY_FILE in stored else stored
+        ops = [_set_properties_op(key, properties_for(key, rules)) for key in targets
+               if any_properties(properties_for(key, rules))]
+        # One `commit_batch` per slice: the asset canister certifies the whole
+        # tree on commit (a bare `set_asset_properties` leaves it uncertified).
+        for start in range(0, len(ops), 50):
+            res = yield ic.call_raw(Principal.from_str(canister_id), "create_batch", ic.candid_encode("(record {})"), 0)
+            batch_id = _batch_id(ic.candid_decode(unwrap_call_result(res)))
+            arg = "(record { batch_id = " + batch_id + " : nat; operations = vec { " + "; ".join(ops[start:start + 50]) + " } })"
+            res = yield ic.call_raw(Principal.from_str(canister_id), "commit_batch", ic.candid_encode(arg), 0)
+            unwrap_call_result(res)
+            propertied += len(ops[start:start + 50])
+    _append_event("assets_synced", canister_id,
+                  {"namespace": namespace, "keys": stored, "rules": len(rules), "propertied": propertied})
+
+
+def _batch_id(reply_text: str) -> str:
+    """`(record { batch_id = 1_234 : nat })` → `"1234"`."""
+    tail = reply_text.split("batch_id", 1)[1] if "batch_id" in reply_text else reply_text
+    digits = "".join(ch for ch in tail.split(":", 1)[0] if ch.isdigit())
+    if not digits:
+        raise Exception(f"create_batch: no batch_id in {reply_text[:120]!r}")
+    return digits
+
+
+def _candid_str(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
+
+
+def _set_properties_op(key: str, props: dict) -> str:
+    """A `SetAssetProperties` batch operation as Candid text (`opt opt` = set)."""
+    fields = [f"key = {_candid_str(key)}"]
+    if props.get("headers") is not None:
+        pairs = "; ".join(f"record {{ {_candid_str(k)}; {_candid_str(v)} }}" for k, v in sorted(props["headers"].items()))
+        fields.append(f"headers = opt opt vec {{ {pairs} }}")
+    if props.get("max_age") is not None:
+        fields.append(f"max_age = opt opt ({int(props['max_age'])} : nat64)")
+    if props.get("allow_raw_access") is not None:
+        fields.append(f"allow_raw_access = opt opt {str(bool(props['allow_raw_access'])).lower()}")
+    if props.get("enable_aliasing") is not None:
+        fields.append(f"is_aliased = opt opt {str(bool(props['enable_aliasing'])).lower()}")
+    return "variant { SetAssetProperties = record { " + "; ".join(fields) + " } }"
+
+
 # ── Management canister helpers ───────────────────────────────────────────────
 
 def _verify_module_hash(canister_id: str, expected_hash_hex: str):
@@ -831,7 +948,7 @@ def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
     """IC controller set after Casals finishes provisioning a canister.
 
     Realm canisters (backend, frontend, other stand members) keep Casals as a
-    controller until ``orchestration_hand_to_baton`` tightens the set to
+    controller until the sheet's baton hand-off tightens the set to
     ``[baton] + extras``. The governance multisig is a co-controller when
     present, plus ``extra_controller_principals``. When the caller is a
     canister (e.g. the realm installer invoking ``create_stand``), that caller
@@ -948,7 +1065,7 @@ def _create_time_controllers() -> list:
 
     Casals must be present so install/provision can run; the governance
     multisig is included when known. After provision, realm canisters keep
-    Casals until ``orchestration_hand_to_baton``; baton/multisig drop it.
+    Casals until the sheet's baton hand-off; baton/multisig drop it.
     """
     self_id = ic.id().to_str()
     mid = _governance_multisig_id()
@@ -1092,7 +1209,7 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     yield from _maybe_provision_assets(cid, w, dk)
 
     # Apply the provision controller set last (after install + assets).
-    # Realm canisters keep Casals until orchestration_hand_to_baton;
+    # Realm canisters keep Casals until the sheet's baton hand-off;
     # baton/multisig drop Casals here.
     try:
         controllers = _resolve_provision_controllers(dk, w, canister_id=cid)

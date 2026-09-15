@@ -296,7 +296,6 @@
           Candid UI
         </a>
       {/if}
-      <a href="/orchestration" class="btn-ghost btn-sm">Orchestration</a>
     </div>
   </header>
 

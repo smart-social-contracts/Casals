@@ -1,10 +1,8 @@
 <script lang="ts">
-  import type { Tree, OrchestrationStatus } from '$lib/api';
+  import type { Tree } from '$lib/api';
   import { shortPrincipal } from '$lib/api';
   import {
-    mergeBatonStatus,
     findBatonsInTree,
-    resolveBatons,
     isBatonCanister,
     isMultisigCanister,
     isCasalsCanister,
@@ -40,7 +38,6 @@
 
   interface Props {
     tree: Tree;
-    orchestrationStatus?: OrchestrationStatus | null;
     casalsBackendId?: string;
     principalLabel?: (principal: string) => string;
     onRefreshControllers?: () => Promise<void>;
@@ -49,7 +46,6 @@
 
   let {
     tree,
-    orchestrationStatus = null,
     casalsBackendId = '',
     principalLabel,
     onRefreshControllers,
@@ -88,12 +84,10 @@
   const VISIBILITY_SIDEBAR_WIDTH = 288;
   const VIEWS_STORAGE_KEY = 'casals.controlGraph.views';
 
-  const batons = $derived(
-    mergeBatonStatus(findBatonsInTree(tree), resolveBatons(orchestrationStatus, tree)),
-  );
+  const batons = $derived(findBatonsInTree(tree));
 
   const fullGraph = $derived(
-    buildControlGraph(tree, orchestrationStatus, batons, {
+    buildControlGraph(tree, batons, {
       layers: DEFAULT_CONTROL_GRAPH_LAYERS,
       casalsBackendId,
       principalLabel,
@@ -124,7 +118,7 @@
 
   // Dragged positions are only discarded by Reset layout or loading a view.
   // In particular a browser zoom changes layoutWidth, and re-laying out there
-  // would throw away the arrangement the operator just built.
+  // would throw away the layout the operator just built.
   $effect(() => {
     frozenViewport = frozenGraphViewport(autoPositions, layoutWidth);
   });
@@ -489,7 +483,7 @@
 >
   {#if graph.nodes.length === 0 && fullGraph.nodes.length === 0}
     <div class="flex items-center justify-center text-sm text-primary-400 py-16">
-      No control relationships to graph — enable a layer or refresh orchestration status.
+      No control relationships to graph — enable a layer or refresh controllers.
     </div>
   {:else}
     <div class="mb-4 rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5 space-y-2 shrink-0">
@@ -696,7 +690,7 @@
     {#if graph.nodes.length === 0}
       <div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
         {#if fullGraph.nodes.length === 0}
-          No control relationships to graph — enable an edge type or refresh orchestration status.
+          No control relationships to graph — enable an edge type or refresh controllers.
         {:else}
           Nothing visible — turn on edge types above and/or use Show all for sections, stands, canisters, and principals.
         {/if}

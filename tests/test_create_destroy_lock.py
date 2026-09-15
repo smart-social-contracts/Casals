@@ -3,7 +3,7 @@
 Product lock (#36 / create-path restore; #32 destroy path unchanged):
 
 - Newly provisioned **realm** canisters keep Casals as an IC controller
-  (multisig may be a co-controller) until ``orchestration_hand_to_baton``.
+  (multisig may be a co-controller) until the sheet's baton hand-off.
 - Baton and multisig canisters do **not** keep Casals after provision
   (multisig is self-controlled; baton is ``[multisig] + extras``).
 - Approved destroy is ONE ``DestroyCanisters`` proposal with N ids,

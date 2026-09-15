@@ -21,6 +21,7 @@ from lifecycle import (
     _resolve_install_arg,
     _retire_canister,
     _set_controllers,
+    _sync_assets_gen,
     _target_subnet,
     _verify_module_hash,
 )
@@ -233,7 +234,14 @@ def _execute_item(item: dict, sheet: dict):
         desired = item.get("desired") or {}
         method = (desired.get("method") or "").strip()
         arg = config_text_arg(desired.get("args"))
-        yield from call_text_method_gen(cid, method, arg)
+        reply = yield from call_text_method_gen(cid, method, arg)
+        _raise_on_config_error(method, reply)
+        return
+    if kind == "sync_assets":
+        desired = item.get("desired") or {}
+        files = _find_canister_spec(sheet, name).get("files") or {}
+        yield from _sync_assets_gen(cid, desired.get("content") or "", desired.get("keys") or [], files,
+                                    desired.get("all_keys") or [])
         return
     if kind == "top_up":
         min_tc = float((item.get("desired") or {}).get("min_balance_tc") or 0)
@@ -258,6 +266,20 @@ def _execute_item(item: dict, sheet: dict):
             yield from _retire_canister(st)
         return
     raise Exception(f"unknown plan item kind '{kind}'")
+
+
+def _raise_on_config_error(method: str, reply: str) -> None:
+    """A config method reports failure as `variant { Err = … }` or a JSON object
+    with `ok`/`success` false or an `error` key; anything else is success."""
+    text = (reply or "").strip()
+    if text.startswith("(variant { Err"):
+        raise Exception(f"{method}: {text}")
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if isinstance(parsed, dict) and (parsed.get("ok") is False or parsed.get("success") is False or parsed.get("error")):
+        raise Exception(f"{method}: {parsed.get('error') or parsed}")
 
 
 def _find_canister_spec(sheet: dict, name: str) -> dict:

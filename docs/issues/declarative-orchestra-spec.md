@@ -178,10 +178,14 @@ Anywhere a principal is expected:
 | `$self` | the Casals backend (conductor) |
 | `$multisig` | `governance.multisig` canister |
 | `$canister:<name>` | any canister in the sheet, by name (already supported in install args) |
-| `$stand.<name>` | a canister in the same stand (`$stand.backend`, `$stand.baton`) |
+| `$stand.<role>` | the stand member named `<name>-<role>` (`$stand.backend`, `$stand.baton`, `$stand.token`); for `backend`/`frontend` the `kind` also matches |
 | `$principal:<alias>` | `principals.<alias>` → `environments.<env>.principals.<alias>` |
 | `$deployer` | the principal running `casals up` (local / bootstrap only; **rejected** in `production` sheets after bootstrap) |
-| `$env.<key>` | any scalar under `environments.<env>` (used in `config` args and `install_arg`) |
+| `$env.<key>` | any value under `environments.<env>` (used in `config` args and `install_arg`); the value may itself hold placeholders |
+
+Placeholders may sit inside longer strings (`install_arg` candid text, `files`
+content, URLs). Where the token would run into following characters, delimit
+it with braces: `"http://${canister:portal-frontend}.localhost:8000"`.
 
 Raw principals in `sections` are a validation error; they belong in
 `environments.<env>.principals`.
@@ -194,7 +198,8 @@ Raw principals in `sections` are a validation error; they belong in
   "mode": "managed",                       // managed | adopted
   "kind": "backend",                       // backend | frontend
   "wasm": "realms-marketplace@1.8.2",      // family@version from registry; bare family = latest authorized
-  "install_arg": { … },                    // candid-compatible JSON; placeholders allowed
+  "install_arg": "(record { … })",         // candid text (or {"top_commander": …} for batons); placeholders allowed; absent = `()`
+                                           // install waits (deferred) until every placeholder in it is bound
   "upgrade": "upgrade",                    // upgrade | reinstall  (reinstall requires allow_destructive)
   "allow_destructive": false,              // gates reinstall / retire / stop
   "controllers": ["$self", "$multisig"],   // full desired set, order irrelevant
@@ -205,9 +210,11 @@ Raw principals in `sections` are a validation error; they belong in
     { "method": "set_canister_config_json",
       "args": { "file_registry_canister_id": "$canister:file_registry", "test_flags": "$env.flags" },
       "converged_when": { "query": "get_canister_config_json", "equals_args": true } }
-  ],                                       // the no-arg query's JSON reply must contain every declared key with the same value
-  "health": [                              // liveness for smoke checks + verify
-    { "query": "health", "expect": { "status": "ok" } },
+  ],                                       // converged_when: the no-arg query's JSON reply must contain every declared key with the same
+                                           // value — `equals_args: true` (the args), `contains: {…}` (when the reply uses other key names),
+                                           // or `equals: <value>` (the whole reply, e.g. a bare id from a `get_x_q` query)
+  "health": [                              // liveness for smoke checks + verify (oracle)
+    { "query": "health", "expect": { "status": "ok" } },  // a no-arg query returning JSON text; expect ⊆ reply
     { "http": "/", "status": 200 }         // frontends
   ],
   "cycles": { "min_balance_tc": 1.0 },     // overrides sheet-level policy
@@ -261,6 +268,27 @@ adopted canisters may appear there; `set_sheet` binds them).
 Replaces `seed/templates.json`, `add_authorized_wasm` calls in the CLIs, and
 the realms `catalog_publish` phase. Reconciled by sha256: present with the same
 hash → no-op.
+
+A `publish` entry whose `source` is a `local:` **directory** uploads every file
+under it to `<path>/<relative file path>` (content type from the extension). A
+`kind: frontend` canister then declares what it serves:
+
+```jsonc
+{ "name": "marketplace-frontend", "kind": "frontend", "wasm": "assets@…",
+  "controllers": ["$self"],                                   // Casals writes the assets, so it must stay a controller
+  "content": "frontend/marketplace-assets/1.0.0",             // a registry.publish path
+  "files": { "/canister_ids.js": "globalThis.__CANISTER_IDS = {\"backend\": \"$stand.backend\"};" } }
+```
+
+`content` (every file of the namespace) plus `files` (text rendered with the
+usual placeholders — how a frontend learns its backend id) is the desired asset
+set. Planner compares `(key, sha256)` against the asset canister's `list` and
+emits `sync_assets` for the keys that differ; the applier copies a bounded
+slice per `apply` (the next plan lists what is still missing). Keys the canister
+serves beyond the declared set are left alone (a realm frontend gets branding at
+runtime). A new build is a new `publish` path and a new `content` value — the
+same "new desired state" rule as a wasm hash. The oracle grades assets by
+fetching every key over HTTP and hashing the body.
 
 **DECISION (recommended):** `sha256` is mandatory for anything a `production`
 environment installs. `version: main` without a hash is allowed for
@@ -623,7 +651,7 @@ to the deployer.
 
 ## 9. Acceptance criteria
 
-- [ ] `casals up realms/casals.json -e local` and `casals up gos-as-a-service/casals.json -e local` build both environments from an empty replica, in one command each, with no other input.
+- [x] `casals up realms/casals.json -e local` and `casals up gos-as-a-service/casals.json -e local` build both environments from an empty replica, in one command each, with no other input. *(e2e `fresh` + `idempotent` on both product sheets, 2026-09-15; a realm is then born through the portal path with `gos-as-a-service/tests/e2e/deploy_realm.py`)*
 - [ ] Immediately re-running `casals up` makes **zero** management-canister calls (asserted from the replica log / call counter).
 - [x] `casals plan -e local` is empty after `up`; after `dfx canister update-settings --add-controller <x>` on any canister it shows exactly one `set_controllers` item; `apply` heals it; `plan` is empty again. *(corpus: `drift_controller`, `drift_stopped`, `stale_plan`)*
 - [x] Removing a canister from the sheet produces an `unmanaged` entry and **no** item; adding `retire: true` produces one `retire` item marked destructive; `apply` without `confirm_destructive` is rejected. *(corpus: `retire_and_pool`; unmanaged: unit test)*
@@ -794,7 +822,158 @@ Those are neither in the sheet nor drift. v2 adds to a section:
 ```
 
 Stands matching the template are reconciled *against the template*; stands
-matching nothing are `unmanaged`. Orchestra 7 exists to prove this.
+matching nothing are `unmanaged`. Orchestra 7 exists to prove this. `{stand}`
+is substituted in every string of the template (names, `install_arg`,
+`files`), so a template token can be minted as
+`(record { name = "{stand} Token"; … initial_owner = opt principal "$stand.backend" })`.
+`create_stand` is open to IC controllers, to the section commander holding
+`stand.create` (the template's `created_by`) and to conductor commanders.
+
+**DECISIONS (2026-09-15, for M7):**
+
+- The installer's whole contract with Casals is `create_stand({section, name,
+  members?})`. It returns at once; the conductor builds the stand on its next
+  `plan`/`apply` — normally its own reconcile timer (§11.8), else the
+  deployer's `casals up` or an `apply` by a commander holding `sheet.apply`.
+  The installer **polls** `get_tree` until the stand's canisters are bound and
+  `installed`. `orchestration_release_stand`, installer-side
+  `create_canister`, `set_commander`, `/canister_ids.js` and `.ic-assets.json5`
+  writes and topology code are deleted, not adapted: the template declares
+  them (`files`, controllers, baton, token install arg).
+- Template canisters may be `"optional": true`; `create_stand.members` names
+  the optional ones a stand gets (a realm without a token has no
+  `{stand}-token`). Omitted → required members only.
+- Product repos build their own artifacts (`make build` in gaas / realms);
+  sheets reference them as `local:` (with `sha256` on production) or
+  `release:`. `build:` stays reserved for the conductor's own wasms.
+
+**STATUS (2026-09-15):** `gos-as-a-service/casals.json` and
+`realms/casals.json` are v2 sheets; both converge from an empty replica with
+`casals up <sheet> --yes`, pass `casals oracle`, and are idempotent. gaas
+mints a realm stand (baton + realm backend + realm frontend + optional token)
+from its `Deployments` template via `create_stand`. Product frontends read
+`/canister_ids.js` (written by Casals from `files`) so one dist serves every
+environment; the portal's build-time `__GAAS_ENV__` / `.ic-assets.json5`
+cookie injection is no longer needed for canister discovery. Casals core
+changes this needed were all generic: `converged_when.contains`, `${…}`
+placeholders, `{stand}` in every template string, roles by name suffix,
+optional members, batched chunk-store uploads (100-entry limit), paged asset
+listing, a proper Candid text unescape. Still open in the product repos:
+delete the installer's v1 Casals calls (`create_canister`,
+`orchestration_release_stand`, `set_commander`, `upgrade_to`,
+`destroy_stand`), and slim `gaas` / `realms` CLIs to `casals up` — see §13.
+
+**STATUS (2026-09-15, later):** auto-scaling and asset-canister policy landed
+(§11.6, §11.7). Casals: numbered optional template members (`{n}`),
+`create_stand` member union with stand-commander authorisation,
+`stand_members` for `baton.manages`, `.ic-assets.json5` applied through
+`commit_batch`/`SetAssetProperties` (a bare `set_asset_properties` leaves the
+icp-cli asset canister's certification tree stale → HTTP 503), oracle checks
+served headers. Products: the realm backend's scaling driver now does
+`create_stand` → `get_bindings` → `bootstrap_as_quarter` (no `create_canister`,
+no `hand_to_baton`, no `backend_wasm_key`); the gaas template has
+`{stand}-quarter-{n}` with `$stand.backend` as a controller and as stand
+commander holding `stand.create`. Corpus: `dynamic-stands` grows a stand by
+one numbered member; `baton-stand` ships a policy file.
+
+**STATUS (2026-09-15, evening) — M7 closed except the CLIs.** The realm
+installer's Casals contract is now exactly the decision above
+(`create_stand` → poll `get_tree`; −968/+196 lines, `stand_readiness.py` is
+the only new code). Verified end to end on local with
+`gos-as-a-service/tests/e2e/deploy_realm.py`: a portal-style
+`request_deployment` for a new realm is built by the conductor's timer
+(~5 min on the VM), bootstrapped, registered, and served with the
+template-written `/canister_ids.js`; re-deploying the same name completes in
+one second. Two things found on the way and fixed in core: the canister's
+`json.loads` is lenient and read a canister id like `6y4zs-…` as the number
+6, so `converged_when.equals` against a bare principal never converged
+(planner compares text first, decodes only real JSON); the installer's cycles
+preflight took a cold `get_cycles_cached` (no snapshot yet) for "0 cycles".
+Remaining under M7: delete the `gaas`/`realms` deploy CLIs in favour of
+`casals up` (scope decision pending with the owner).
+
+### 11.6 Stands that grow at runtime (auto-scaling)
+
+A realm adds `quarter` backends as it fills up. In v2 a stand's shape still
+comes from the template — the template just allows **numbered optional
+members**, and a stand asks for them with the call it was born with:
+
+```jsonc
+"stand_template": {
+  "canisters": [
+    { "name": "{stand}-backend", … },
+    { "name": "{stand}-token",       "optional": true, … },
+    { "name": "{stand}-quarter-{n}", "optional": true, "wasm": "quarter-backend@…",
+      "install_arg": "(record { realm = principal \"$stand.backend\"; index = {n} : nat })" }
+  ],
+  "commanders": [ { "principal": "$stand.backend", "permissions": "stand.create" } ]
+}
+```
+
+- `{n}` (an integer) is substituted like `{stand}` in every string of that
+  canister. It is only allowed in `optional` members.
+- `create_stand({section, name, members})` on an **existing** stand adds
+  members (idempotent union; `created: false`). `members` name template
+  canisters — `{stand}-quarter-3`, or already substituted `alpha-quarter-3`.
+  Anything that is not an optional template member is rejected.
+- Who may grow a stand: whoever may create one, plus the stand's own
+  commanders holding `stand.create` — the template grants that to
+  `$stand.backend`, so the realm backend scales itself with one call and
+  then polls `get_bindings` for `<stand>-quarter-3`, the same protocol the
+  installer uses for the initial mint.
+- The conductor materialises the new member from the template on its next
+  plan/apply; `plan`, `show`, the oracle and the frontend all see it as a
+  declared canister. Nothing is created outside the sheet's shape.
+
+### 11.7 Asset-canister policy (`.ic-assets.json5`)
+
+`dfx deploy` is what used to apply a frontend's `.ic-assets.json5` (CSP and
+other headers, cache, raw access, aliasing) by calling
+`set_asset_properties`. Casals syncs product frontends itself, so it applies
+the same file the same way — `src/ic_assets.py`, shared by conductor and
+CLI:
+
+- rules whose `match` glob fits the asset path contribute, later rules win
+  per header key; `security_policy: standard | hardened` adds dfx's default
+  header set; `cache.max_age`, `allow_raw_access`, `enable_aliasing` map to
+  the matching asset properties. `ignore` is not applied (Casals publishes
+  the whole dist); only the dist root's policy file is read.
+- The policy file is itself a published asset, so when it changes the
+  planner's `sync_assets` item re-applies properties to every asset; when a
+  single asset changes only that asset is re-propertied.
+- The oracle fetches every asset over HTTP and fails on any prescribed
+  header that is not served — an independent check that the browser gets
+  the CSP.
+
+Products ship `.ic-assets.json5` in their dist exactly as before; no sheet
+field, no product change. (The realm dist's `frame-ancestors` lists every
+portal origin statically — `gos.earth`, `*.gos.earth`, `*.localhost:*` — so
+the installer no longer patches the file per realm.)
+
+### 11.8 The conductor converges on its own (`reconcile_interval_secs`)
+
+A stand minted at runtime must get built without an operator at a keyboard.
+`conductor.settings.reconcile_interval_secs` (0 / absent = off) arms a timer
+in the conductor that runs one **reconcile tick**: `plan`, then `apply` of
+the items that are `requires: self` and not destructive, re-planning between
+rounds (a create needs a round before its install), at most three rounds per
+tick. It never touches deployer/multisig items, never destroys, and does
+nothing at all on an environment where `apply_requires_proposal` holds —
+there every apply is still a human decision through the multisig.
+
+One apply runs at a time: the `apply` endpoint and the timer share a lock, so
+`casals up` racing the timer gets `busy` or `stale plan` and simply re-plans
+(the CLI does this itself). The timer is re-armed on `set_sheet` and after
+upgrades. Ticks that change something append a `sheet_reconcile` event.
+
+With the timer on, the product protocol is just: `create_stand(...)` → poll
+`get_tree` until the members are `installed` → configure. The e2e
+`runtime_stand` scenario exercises exactly that when the corpus sheet sets the
+interval: it waits, nobody runs `up`.
+
+Placeholders spliced into strings render non-text values as JSON (`true`,
+`3`, `null`) so `test_mode_ii_bypass:$env.test_flags.ii_bypass` is valid JS
+and `test = opt $env.can_test_mode` valid Candid.
 
 ---
 
@@ -843,6 +1022,10 @@ id outside Casals' runtime bindings is in test fixtures.
 5. Management-call counter for the **idempotent** scenario: a test-only build
    flag in Casals, or infer from the conductor audit log alone? Recommended:
    audit log + `icp` replica log; no test-only code paths in the canister.
+6. ~~Realm quarters~~ **Decided (2026-09-15): auto-scaling is a Casals
+   feature.** See §11.6.
+7. ~~Asset canister headers~~ **Decided (2026-09-15): Casals honours
+   `.ic-assets.json5` exactly as dfx does.** See §11.7.
 
 ---
 

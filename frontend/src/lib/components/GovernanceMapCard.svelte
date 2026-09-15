@@ -12,7 +12,7 @@
   <div>
     <h2 class="text-sm font-semibold text-primary-900">Governance map</h2>
     <p class="text-xs text-primary-500 mt-1">
-      Five layers — access, Casals approvals, arrangement runners, platform committee, Baton.
+      Three layers — operator access, platform committee, Baton.
     </p>
   </div>
   <ol class="space-y-2 text-xs text-primary-600 list-decimal list-inside">

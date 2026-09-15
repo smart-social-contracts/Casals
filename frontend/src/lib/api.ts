@@ -53,33 +53,9 @@ export interface Section {
   commander_principal: string;
   permissions?: string[];
   all_permissions?: boolean;
-  orchestration_policies?: Record<string, ApprovalPolicy>;
   subnet?: string;
   subnet_type?: string;
   stands: Stand[];
-}
-
-export interface ApprovalPolicy {
-  threshold: number;
-  eligible: string[];
-  required: string[];
-}
-
-export interface GovernanceRequest {
-  request_id: string;
-  section_name: string;
-  action: string;
-  action_label?: string;
-  status: string;
-  payload: Record<string, unknown>;
-  proposed_by: string;
-  proposed_at: number;
-  approvals: string[];
-  approval_count?: number;
-  threshold?: number;
-  missing_required?: string[];
-  quorum_met?: boolean;
-  ready_to_execute?: boolean;
 }
 
 export interface Permission {
@@ -464,17 +440,6 @@ export interface Sheet {
   [key: string]: unknown;
 }
 
-export interface DeployResult extends UpdateResult {
-  created_sections?: string[];
-  created_stands?: string[];
-  created_canisters?: string[];
-  reused_canisters?: string[];
-  reinstalled_canisters?: string[];
-  retired_canisters?: string[];
-  skipped_canisters?: string[];
-  errors?: string[];
-}
-
 export interface PooledCanister {
   canister_id: string;
   status: 'free' | 'in_use';
@@ -490,23 +455,42 @@ export interface PoolReport {
   canisters: PooledCanister[];
 }
 
-export interface DeployEstimate {
-  ok: boolean;
-  desired_canisters: number;
-  matching_canisters: number;
-  reinstall_canisters: number;
-  unresolved_canisters: number;
-  missing_canisters: number;
-  free_pool: number;
-  reused_from_pool: number;
-  new_canisters: number;
-  per_canister_cycles: number;
-  create_cost_cycles: number;
-  balance_cycles: number;
-  reserve_cycles: number;
-  available_cycles: number;
-  shortfall_cycles: number;
-  ready: boolean;
+// ---------------------------------------------------------------------------
+// Plan / apply (declarative orchestrator — mirrors `casals plan` / `casals verify`)
+// ---------------------------------------------------------------------------
+
+export type PlanRequires = 'self' | 'multisig' | 'operator';
+
+export interface PlanItem {
+  seq: number;
+  kind: string;
+  target: { name?: string; canister_id?: string; section?: string; stand?: string };
+  reason: string;
+  destructive: boolean;
+  requires: PlanRequires;
+  current: Record<string, unknown>;
+  desired: Record<string, unknown>;
+  call: Record<string, unknown>;
+}
+
+export interface Plan {
+  hash: string;
+  sheet_hash: string;
+  env: string;
+  created_at_ns: number;
+  items: PlanItem[];
+  drift: PlanItem[];
+  unmanaged: { canister_id: string; name: string; reason: string }[];
+  unverifiable: { target: string; field: string; reason: string }[];
+  info: { target: string; note: string }[];
+}
+
+export interface ApplyResult {
+  plan_hash: string;
+  applied: PlanItem[];
+  failed: (PlanItem & { error?: string }) | null;
+  skipped: PlanItem[];
+  remaining: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -618,8 +602,8 @@ function _parseQuery<T>(raw: string): T {
   return result as T;
 }
 
-function _parseUpdate(raw: string): UpdateResult {
-  const result = JSON.parse(raw) as UpdateResult;
+function _parseUpdate<T extends object = UpdateResult>(raw: string): UpdateResult & T {
+  const result = JSON.parse(raw) as UpdateResult & T;
   if (result && result.ok === false) {
     throw new Error(result.error || 'Operation failed');
   }
@@ -860,165 +844,11 @@ export async function getCanisterDeployment(canisterId: string): Promise<Caniste
 }
 
 // ---------------------------------------------------------------------------
-// Arrangements (post-deploy environment config)
-// ---------------------------------------------------------------------------
-
-export interface ArrangementParameterSpec {
-  type: 'text' | 'principal' | 'bool' | 'number' | 'sha256';
-  label: string;
-  description?: string;
-  required?: boolean;
-}
-
-export interface ArrangementSummary {
-  name: string;
-  description: string;
-  active: boolean;
-  parameter_count: number;
-  step_count: number;
-  execute_principal_count?: number;
-  parameter_schema_count?: number;
-}
-
-export interface ArrangementStep {
-  target: string;
-  method: string;
-  args?: unknown;
-}
-
-export interface Arrangement {
-  name: string;
-  description: string;
-  active: boolean;
-  parameters: Record<string, unknown>;
-  steps: ArrangementStep[];
-  execute_principals?: string[];
-  parameter_schema?: Record<string, ArrangementParameterSpec>;
-}
-
-export interface ArrangementApplyResult extends UpdateResult {
-  arrangement?: string;
-  steps_total?: number;
-  offset?: number;
-  next_offset?: number;
-  done?: boolean;
-  applied?: number;
-  failed?: number;
-  results?: Array<{
-    step: number;
-    target: string;
-    method: string;
-    ok: boolean;
-    canister_id?: string;
-    error?: string;
-    reply?: string;
-  }>;
-}
-
-export interface ArrangementApplyProgress {
-  offset: number;
-  stepsTotal: number;
-  applied: number;
-  failed: number;
-}
-
-const ARRANGEMENT_APPLY_BATCH = 4;
-
-export async function listArrangements(): Promise<ArrangementSummary[]> {
-  return _parseQuery<ArrangementSummary[]>(await (await _actor()).list_arrangements());
-}
-
-export async function getArrangement(name?: string): Promise<Arrangement> {
-  const raw = _parseQuery<Arrangement & { ok?: boolean }>(
-    await (await _actor()).get_arrangement(JSON.stringify(name ? { name } : {})),
-  );
-  return {
-    name: raw.name,
-    description: raw.description ?? '',
-    active: !!raw.active,
-    parameters: raw.parameters ?? {},
-    steps: raw.steps ?? [],
-    execute_principals: raw.execute_principals ?? [],
-    parameter_schema: raw.parameter_schema ?? {},
-  };
-}
-
-export async function setArrangement(arr: {
-  name: string;
-  description?: string;
-  parameters?: Record<string, unknown>;
-  parameter_schema?: Record<string, ArrangementParameterSpec>;
-  steps?: ArrangementStep[];
-  execute_principals?: string[];
-  active?: boolean;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_arrangement(JSON.stringify(arr)));
-}
-
-export async function setActiveArrangement(name: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_active_arrangement(JSON.stringify({ name })));
-}
-
-export async function deleteArrangement(name: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).delete_arrangement(JSON.stringify({ name })));
-}
-
-export async function applyArrangement(opts: {
-  name?: string;
-  parameters?: Record<string, unknown>;
-  offset?: number;
-  limit?: number;
-} = {}): Promise<ArrangementApplyResult> {
-  return _parseUpdate(
-    await (await _actor(true)).apply_arrangement(JSON.stringify(opts)),
-  ) as ArrangementApplyResult;
-}
-
-/** Walk apply_arrangement in batches until done (long arrangements exceed one message budget). */
-export async function applyArrangementAll(
-  opts: {
-    name?: string;
-    parameters?: Record<string, unknown>;
-    batch?: number;
-    onProgress?: (info: ArrangementApplyProgress) => void;
-  } = {},
-): Promise<{ arrangement: string; steps_total: number | null; applied: number; failed: number }> {
-  const batch = opts.batch ?? ARRANGEMENT_APPLY_BATCH;
-  let offset = 0;
-  let applied = 0;
-  let failed = 0;
-  let stepsTotal: number | null = null;
-  let arrangement = '';
-  for (let i = 0; i < 1000; i++) {
-    const res = await applyArrangement({
-      name: opts.name,
-      parameters: opts.parameters,
-      offset,
-      limit: batch,
-    });
-    arrangement = String(res.arrangement ?? arrangement);
-    applied += Number(res.applied ?? 0);
-    failed += Number(res.failed ?? 0);
-    if (res.steps_total != null) stepsTotal = Number(res.steps_total);
-    opts.onProgress?.({
-      offset: Number(res.offset ?? offset),
-      stepsTotal: stepsTotal ?? 0,
-      applied,
-      failed,
-    });
-    const nextOffset = Number(res.next_offset ?? offset);
-    if (res.done || batch <= 0 || nextOffset <= offset) break;
-    offset = nextOffset;
-  }
-  return { arrangement, steps_total: stepsTotal, applied, failed };
-}
-
-// ---------------------------------------------------------------------------
 // Sheet (persistent desired-orchestra) + canister pool
 // ---------------------------------------------------------------------------
 
-// The live sheet is public to read (it's just the desired layout); editing and
-// deploying require authentication.
+// The live sheet is public to read (it's just the desired layout); editing,
+// planning and applying require authentication.
 export async function getSheet(): Promise<Sheet> {
   return _parseQuery<Sheet>(await (await _actor()).get_sheet());
 }
@@ -1027,19 +857,8 @@ export async function listPool(): Promise<PoolReport> {
   return _parseQuery<PoolReport>(await (await _actor()).list_pool());
 }
 
-// Idempotent-aware estimate of the cycles needed to deploy the given (or live)
-// sheet, accounting for the conductor's balance and reusable free canisters.
-export async function estimateDeploy(sheet?: Sheet): Promise<DeployEstimate> {
-  const arg = sheet ? JSON.stringify({ sheet }) : '';
-  return _parseQuery<DeployEstimate>(await (await _actor()).estimate_deploy(arg));
-}
-
 export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify(sheet)));
-}
-
-export async function resetSheet(): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).reset_sheet());
 }
 
 // Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
@@ -1058,11 +877,31 @@ export async function listSubnets(): Promise<string[]> {
   return r.subnets ?? [];
 }
 
-// Idempotently stand up the whole orchestra described by the live sheet. If a
-// sheet is passed it is set live first, then deployed. Long-running.
-export async function deploySheet(sheet?: Sheet): Promise<DeployResult> {
-  const args = sheet ? { sheet } : {};
-  return _parseUpdate(await (await _actor(true)).deploy_sheet(JSON.stringify(args))) as DeployResult;
+// Compute the plan (update call: reads live IC state; 10–60 s on a big orchestra).
+export async function planOrchestra(): Promise<Plan> {
+  return _parseUpdate<{ plan: Plan }>(await (await _actor(true)).plan('{}')).plan;
+}
+
+export async function verifyOrchestra(): Promise<{ converged: boolean; plan: Plan }> {
+  return _parseUpdate<{ converged: boolean; plan: Plan }>(await (await _actor(true)).verify());
+}
+
+export async function applyPlan(args: {
+  plan_hash: string;
+  max_items?: number;
+  confirm_destructive?: boolean;
+}): Promise<ApplyResult> {
+  return _parseUpdate<ApplyResult>(await (await _actor(true)).apply(JSON.stringify(args)));
+}
+
+/** Last stored plan (or the one with `hash`); `null` when none has been computed yet. */
+export async function getPlan(hash?: string): Promise<Plan | null> {
+  const args = hash ? { plan_hash: hash } : {};
+  return _parseQuery<{ plan: Plan | null }>(await (await _actor()).get_plan(JSON.stringify(args))).plan;
+}
+
+export async function lastApply(): Promise<ApplyResult | null> {
+  return _parseQuery<{ apply: ApplyResult | null }>(await (await _actor()).last_apply()).apply;
 }
 
 // ---------------------------------------------------------------------------
@@ -1562,40 +1401,6 @@ export async function listBackendControllers(): Promise<string[]> {
   return res.controllers ?? [];
 }
 
-export async function listOrchestrationActions(): Promise<Permission[]> {
-  return _parseQuery<Permission[]>(await (await _actor()).list_orchestration_actions());
-}
-
-export async function getOrchestrationPolicies(section: string): Promise<{
-  section: string;
-  policies: Record<string, ApprovalPolicy>;
-  labels: Record<string, string>;
-}> {
-  return _parseQuery(await (await _actor()).get_orchestration_policies(JSON.stringify({ section })));
-}
-
-export async function setOrchestrationPolicies(args: {
-  section: string;
-  policies: Record<string, ApprovalPolicy>;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_orchestration_policies(JSON.stringify(args)));
-}
-
-export async function listGovernanceRequests(args?: {
-  section?: string;
-  status?: string;
-}): Promise<{ requests: GovernanceRequest[] }> {
-  return _parseQuery(await (await _actor()).list_governance_requests(JSON.stringify(args ?? {})));
-}
-
-export async function approveGovernanceRequest(requestId: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).approve_governance_request(JSON.stringify({ request_id: requestId })));
-}
-
-export async function rejectGovernanceRequest(requestId: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).reject_governance_request(JSON.stringify({ request_id: requestId })));
-}
-
 export async function registerCanister(args: {
   stand: string;
   name: string;
@@ -1724,119 +1529,6 @@ export async function canisterExec(
   const args: Record<string, unknown> = { canister, code };
   if (canisterId) args.canister_id = canisterId;
   return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify(args))) as ExecResult;
-}
-
-// ---------------------------------------------------------------------------
-// Baton managed upgrade (orchestration bridge)
-// ---------------------------------------------------------------------------
-
-export interface OrchestrationCanisterRef {
-  name: string;
-  canister_id: string;
-}
-
-export interface BatonAction {
-  action_id: string;
-  status?: string;
-  proposed_by?: string;
-  affected_canisters?: string[];
-  payload?: unknown;
-}
-
-export interface BatonStatus {
-  name: string;
-  canister_id: string;
-  stand?: string;
-  section?: string;
-  config?: Record<string, unknown>;
-  commanders?: Array<{ principal: string; capabilities?: string[] }>;
-  managed_canisters?: string[];
-  actions?: BatonAction[];
-  casals_is_commander?: boolean;
-}
-
-export interface OrchestrationStatus extends UpdateResult {
-  baton?: OrchestrationCanisterRef;
-  batons?: BatonStatus[];
-  multisig?: OrchestrationCanisterRef;
-  config?: Record<string, unknown>;
-  commanders?: Array<{ principal: string; capabilities?: string[] }>;
-  managed_canisters?: string[];
-  actions?: BatonAction[];
-  casals_is_commander?: boolean;
-  note?: string;
-}
-
-export interface PrepareManagedUpgradeResult extends UpdateResult {
-  action_id?: string;
-  target?: string;
-  baton?: string;
-  canister_id?: string;
-  wasm_key?: string;
-  pre_hash?: string;
-  post_hash?: string;
-  status?: string;
-}
-
-export interface ExecuteBatonActionResult extends UpdateResult {
-  action_id?: string;
-  status?: string;
-  done?: boolean;
-  upgrade_index?: number;
-}
-
-export async function orchestrationStatus(): Promise<OrchestrationStatus> {
-  return _parseQuery<OrchestrationStatus>(await (await _actor()).orchestration_status('{}'));
-}
-
-export async function orchestrationRefresh(): Promise<OrchestrationStatus> {
-  return _parseUpdate(await (await _actor()).orchestration_refresh('{}')) as OrchestrationStatus;
-}
-
-export async function orchestrationHandToBaton(target: string, baton?: string): Promise<UpdateResult> {
-  const payload: Record<string, string> = { target };
-  if (baton) payload.baton = baton;
-  return _parseUpdate(await (await _actor(true)).orchestration_hand_to_baton(JSON.stringify(payload)));
-}
-
-export async function orchestrationPrepareManagedUpgrade(
-  target: string,
-  wasmKey: string,
-  baton?: string,
-): Promise<PrepareManagedUpgradeResult> {
-  const payload: Record<string, string> = { target, wasm_key: wasmKey };
-  if (baton) payload.baton = baton;
-  return _parseUpdate(
-    await (await _actor(true)).orchestration_prepare_managed_upgrade(JSON.stringify(payload)),
-  ) as PrepareManagedUpgradeResult;
-}
-
-export async function orchestrationExecuteAction(
-  actionId: string,
-  baton: string,
-): Promise<ExecuteBatonActionResult> {
-  return _parseUpdate(
-    await (await _actor(true)).orchestration_execute_action(
-      JSON.stringify({ action_id: actionId, baton }),
-    ),
-  ) as ExecuteBatonActionResult;
-}
-
-/** Run execute_action until the pipeline completes or errors. */
-export async function orchestrationRunUpgradePipeline(
-  actionId: string,
-  baton: string,
-  onStep?: (result: ExecuteBatonActionResult) => void,
-  maxSteps = 30,
-): Promise<ExecuteBatonActionResult> {
-  let last: ExecuteBatonActionResult = { ok: true };
-  for (let i = 0; i < maxSteps; i++) {
-    last = await orchestrationExecuteAction(actionId, baton);
-    onStep?.(last);
-    if (last.done || last.ok === false) break;
-    await new Promise((r) => setTimeout(r, 400));
-  }
-  return last;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import os
 import sys
 from typing import Any
@@ -76,6 +77,19 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
     ic.top_up(backend_id, budget - have)
 
 
+def fund_file_registry(ic, sheet: dict, registry_id: str) -> None:
+    """The registry stores every wasm and published dist before the conductor
+    can plan a top-up for it: keep it at its declared `cycles.min_balance_tc`
+    floor (falling back to the sheet-wide one) from the deployer."""
+    block = (sheet.get("conductor") or {}).get("file_registry") or {}
+    floor_tc = float((block.get("cycles") or {}).get("min_balance_tc") or (sheet.get("cycles") or {}).get("min_balance_tc") or 0)
+    have = ic.canister_cycles(registry_id)
+    if not floor_tc or have is None or have >= tc_to_cycles(floor_tc):
+        return
+    _progress(f"  funding file-registry: +{floor_tc - cycles_to_tc(have):.2f} TC (below {floor_tc:.1f} TC floor)")
+    ic.top_up(registry_id, tc_to_cycles(floor_tc) - have)
+
+
 def deployer_items(ic, plan: dict, deployer: str, multisig_id: str) -> None:
     """Controller changes the conductor cannot make itself (its own controllers,
     the multisig's): the CLI does them as deployer while it is a controller, or
@@ -96,6 +110,8 @@ def deployer_items(ic, plan: dict, deployer: str, multisig_id: str) -> None:
 
 
 def multisig_id(ic, backend_id: str) -> str:
+    if not backend_id or not ic.read_module_hash(backend_id):
+        return ""  # created but never installed (an earlier `up` failed mid-way)
     res = ic.query(backend_id, "get_bindings")
     return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
 
@@ -123,12 +139,19 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
             apply_res = ic.call_update(
                 backend_id, "apply",
                 json.dumps({"plan_hash": plan.get("hash"), "max_items": max_items, "confirm_destructive": yes}),
-                timeout=1800,
+                timeout=3600,  # up to `max_items` chunked wasm installs in one call
             )
-            if isinstance(apply_res, dict) and str(apply_res.get("error") or "").startswith("apply requires proposal"):
+            err = str((apply_res or {}).get("error") or "") if isinstance(apply_res, dict) else ""
+            if err.startswith("apply requires proposal"):
                 _progress("  apply requires proposal: proposing ApplySheet on the multisig")
                 apply_via_multisig(ic, multisig_id, deployer, backend_id, plan.get("hash"),
                                    confirm_destructive=yes, max_items=max_items)
+                continue
+            if err.startswith("stale plan") or err.startswith("busy"):
+                # The conductor's own reconcile timer moved the world; re-plan.
+                _progress(f"  {err}: re-planning")
+                last_hash = None
+                time.sleep(15 if err.startswith("busy") else 3)
                 continue
             if not (isinstance(apply_res, dict) and apply_res.get("ok")):
                 raise RuntimeError(f"apply failed: {apply_res}")
@@ -200,7 +223,7 @@ def run_up(
             sheet_path=sheet_path,
             project_root=project_root,
             deployer=deployer,
-            multisig_id=multisig_id(ic, bindings.casals_backend_id) if bindings.casals_backend_id else "",
+            multisig_id=multisig_id(ic, bindings.casals_backend_id),
             progress=_progress,
         )
     backend_id = conductor_override or bindings.casals_backend_id
@@ -215,6 +238,8 @@ def run_up(
     # 4. registry upload (CLI uploads bytes; authorize via apply)
     _progress("step 4: registry upload")
     if registry_id:
+        if not dry_run:
+            fund_file_registry(ic, sheet, registry_id)
         ensure_registry_uploads(
             ic, sheet,
             sheet_path=sheet_path,

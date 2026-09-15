@@ -108,6 +108,12 @@
         "version": "1.0.0",
         "source": "local:seed/templates/hello-world-frontend.wasm.gz"
       }
+    ],
+    "publish": [
+      {
+        "path": "frontend/rust-frontend/1.0.0",
+        "source": "local:dist"
+      }
     ]
   },
   "sections": [
@@ -160,6 +166,16 @@
               "controllers": [
                 "$self",
                 "$multisig"
+              ],
+              "content": "frontend/rust-frontend/1.0.0",
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS = {\"backend\": \"$stand.backend\"};\n"
+              },
+              "health": [
+                {
+                  "http": "/index.html",
+                  "status": 200
+                }
               ]
             }
           ]

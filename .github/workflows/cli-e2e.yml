@@ -1,30 +1,13 @@
-# CLI end-to-end integration tests for scripts/casals.py.
+# Declarative e2e: the orchestra corpus on a local replica.
 #
-# Spins up a local IC replica with icp-cli, builds + deploys the Casals
-# backend and the file-registry, then exercises the full CLI surface:
-#
-#   Part 1 — infrastructure tests (synthetic EMPTY_WASM, fast)
-#     • status / tree / events / wasms / pool / cycles — field-by-field shape
-#     • cross-command consistency (status counts == tree traversal)
-#     • output format (pretty JSON, 2-space indent, empty stderr on success)
-#     • exhaustive error paths (bad file, wrong CWD, argparse, abort mid-deploy)
-#     • flag threading (-e / --env / --identity)
-#
-#   Part 2 — real template orchestra (seed/templates/)
-#     • seed Basilisk / Rust / Motoko hello-world WASMs into the file-registry
-#     • deploy a 3-backend orchestra via `casals sheet deploy`
-#     • verify on-chain module hashes per the management canister
-#     • lifecycle: idempotency, upgrade, add/retire/reuse, pool arithmetic
-#     • events hash-chain integrity after all mutations
-#
-#   Part 3 — full demo orchestra (seed/sheets/demo.json)
-#     • seed ALL templates including the certified-assets frontend
-#     • deploy the demo sheet (6 canisters: 3 backends + 3 frontends)
-#     • verify on-chain hashes for every canister
-#     • verify assets_uploaded events and /index.html served for each frontend
-#     • idempotency of the full demo deploy
+# tests/e2e/run_e2e.py starts the replica, funds the test identity, and for
+# every orchestra under tests/e2e/orchestras/ runs the scenario matrix
+# (fresh, idempotent, content_change, runtime_stand, retire_and_pool, drift_*,
+# proposal_only, stale_plan, export_roundtrip …), grading each with
+# `casals oracle`. The two product sheets (gaas, realms) run in their repos'
+# own workflows because they need the product artifacts built first.
 
-name: CLI end-to-end
+name: Orchestra corpus e2e
 
 on:
   push:
@@ -32,21 +15,20 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      verbose:
-        description: "Pass -v to pytest"
-        type: boolean
-        default: true
+      orchestras:
+        description: "Space-separated orchestra names (default: all)"
+        type: string
+        default: ""
 
 jobs:
-  cli-e2e:
-    name: CLI e2e (local replica)
+  corpus-e2e:
+    name: corpus e2e (local replica)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v5
         with:
-          # file_registry/ is a (public) submodule; conftest builds + deploys it.
           submodules: recursive
 
       - uses: actions/setup-python@v6
@@ -63,27 +45,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Show toolchain versions
-        run: |
-          icp --version   || true
-          python3 -m basilisk --version || true
-          pytest --version
+      - name: Create the test identity
+        run: icp identity new local-dev --storage plaintext || true
 
-      # conftest.py starts the local replica, builds the Basilisk backend WASM
-      # (casals_backend + ic_file_registry) and deploys them.  The replica is
-      # stopped during teardown.  Part 2 / Part 3 of the test suite top up the
-      # treasury and upload real template WASMs from seed/templates/.
-      - name: Run CLI e2e tests
+      - name: Run the corpus
         env:
-          # The registry fixture tops up with this amount; the cli-e2e fixtures
-          # add extra top-ups on top of this for the larger orchestras.
-          CASALS_TOPUP: "50t"
-        run: |
-          pytest tests/test_cli_e2e.py \
-            ${{ inputs.verbose == true && '-v' || '' }} \
-            --tb=short \
-            -p no:randomly
+          CASALS_HOME: ${{ runner.temp }}/casals
+        run: python3 -u tests/e2e/run_e2e.py ${{ inputs.orchestras }}
 
       - name: Stop local replica (safety net)
         if: always()
-        run: icp network stop || true
+        run: icp network stop -e local || true

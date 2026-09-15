@@ -52,8 +52,8 @@ emit() { # <name> <wasm-path>
 # Basilisk hello-world is versioned: the artifact is named
 # hello-world-basilisk@<version>.wasm.gz where <version> is `__version__` in
 # main.py (defaults to 1.0.0). Older versions are kept as committed artifacts —
-# rebuild only bumps/refreshes the current one. List all versions in
-# seed/templates.json.
+# rebuild only bumps/refreshes the current one. Sheets reference them as
+# `local:seed/templates/<name>.wasm.gz`.
 BASILISK_VERSION="$(sed -n 's/^__version__ *= *["'\'']\([^"'\'']*\)["'\''].*/\1/p' "$REPO_ROOT/templates/hello-world-basilisk/main.py")"
 BASILISK_VERSION="${BASILISK_VERSION:-1.0.0}"
 echo "==> Basilisk hello-world (v$BASILISK_VERSION)"

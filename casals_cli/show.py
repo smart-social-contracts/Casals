@@ -25,7 +25,6 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
     tree = ic.query(backend_id, "get_tree")
     sheet_res = ic.query(backend_id, "get_sheet")
     plan_res = ic.call_update(backend_id, "plan", "{}")
-    orch = ic.query(backend_id, "orchestration_status", "{}")
     last_apply = ic.query(backend_id, "last_apply")
 
     id_to_name = {v: k for k, v in bindings.items()}
@@ -75,7 +74,6 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
         "sheet": sheet_res,
         "bindings": bindings,
         "tree": tree,
-        "orchestration_status": orch,
         "last_apply": last_apply,
         "canisters": canisters_out,
         "plan_summary": {
@@ -93,16 +91,16 @@ def render_show_text(view: dict) -> str:
         f"plan: {view.get('plan_summary', {}).get('items', 0)} items, "
         f"{view.get('plan_summary', {}).get('unmanaged', 0)} unmanaged",
         "",
-        f"{'SECTION':<12} {'STAND':<14} {'CANISTER':<22} {'ID':<14} {'MODE':<8} {'CYCLES':>8}",
-        "-" * 90,
+        f"{'SECTION':<12} {'STAND':<14} {'CANISTER':<28} {'ID':<27} {'MODE':<8} {'CYCLES':>8}",
+        "-" * 102,
     ]
     for row in view.get("canisters") or []:
-        cid = (row.get("canister_id") or "")[:13]
+        cid = row.get("canister_id") or ""
         cyc = row.get("cycles_tc")
         cyc_s = f"{cyc:.2f}" if isinstance(cyc, (int, float)) else str(cyc)
         lines.append(
             f"{(row.get('section') or ''):<12} {(row.get('stand') or ''):<14} "
-            f"{(row.get('name') or ''):<22} {cid:<14} {(row.get('mode') or ''):<8} {cyc_s:>8}"
+            f"{(row.get('name') or ''):<28} {cid:<27} {(row.get('mode') or ''):<8} {cyc_s:>8}"
         )
         ctrls = row.get("ic_controllers_named") or row.get("ic_controllers") or []
         if ctrls:
@@ -111,7 +109,7 @@ def render_show_text(view: dict) -> str:
 
 
 def mermaid_graph(view: dict, sheet: dict, bindings: dict[str, str]) -> str:
-    """Emit Mermaid flowchart with three edge types per orchestra-control-graph-spec."""
+    """Emit Mermaid flowchart with IC-controller and Casals-commander edges."""
     lines = ["flowchart LR"]
     id_to_name = {v: k for k, v in bindings.items()}
     tree = view.get("tree") or {}
@@ -143,19 +141,6 @@ def mermaid_graph(view: dict, sheet: dict, bindings: dict[str, str]) -> str:
                     plabel = _name_for_principal(pr, id_to_name)
                     lines.append(f'  {nid(plabel)}["{plabel}"]')
                     lines.append(f"  {nid(plabel)} -.->|casals_commander| {nid(st_name)}")
-
-    orch = view.get("orchestration_status") or {}
-    for baton in orch.get("batons") or []:
-        bid = baton.get("canister_id") or ""
-        bname = baton.get("name") or bid[:12]
-        lines.append(f'  {nid(bname)}["{bname} baton"]')
-        top = (baton.get("config") or {}).get("top_commander") or ""
-        if top:
-            tlabel = _name_for_principal(top, id_to_name)
-            lines.append(f"  {nid(tlabel)} -.->|baton| {nid(bname)}")
-        for mid in baton.get("managed_canisters") or []:
-            mlabel = _name_for_principal(mid, id_to_name) if mid in id_to_name else mid[:12]
-            lines.append(f"  {nid(bname)} -.->|baton_manages| {nid(mlabel)}")
 
     return "\n".join(lines)
 

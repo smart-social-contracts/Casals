@@ -150,8 +150,8 @@ def find_bindings_for_env(env: str, conductor: str | None = None) -> Bindings | 
     )
 
 
-def live_stands(tree: dict) -> dict[str, str]:
-    """stand name → section name from the conductor's `get_tree`."""
-    return {st.get("name", ""): sec.get("name", "")
+def live_stands(tree: dict) -> dict[str, dict]:
+    """stand name → {section, members} from the conductor's `get_tree`."""
+    return {st.get("name", ""): {"section": sec.get("name", ""), "members": st.get("members") or []}
             for sec in (tree.get("sections") or []) if isinstance(sec, dict)
             for st in sec.get("stands") or [] if isinstance(st, dict)}

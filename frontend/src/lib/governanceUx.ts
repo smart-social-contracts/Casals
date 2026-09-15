@@ -14,7 +14,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { href: '/', label: 'Orchestra' },
       { href: '/wasms', label: 'WASMs' },
       { href: '/sheet', label: 'Sheet' },
-      { href: '/arrangements', label: 'Arrangements' },
+      { href: '/plan', label: 'Plan / Drift', description: 'What `casals plan` would change; apply it' },
       { href: '/cycles', label: 'Cycles' },
       { href: '/activity', label: 'Activity' },
       { href: '/aliases', label: 'Aliases' },
@@ -34,11 +34,6 @@ export const NAV_SECTIONS: NavSection[] = [
         label: 'Platform committee',
         description: 'On-chain multisig for IC controller actions',
       },
-      {
-        href: '/orchestration',
-        label: 'Managed upgrades',
-        description: 'Baton upgrade pipelines',
-      },
     ],
   },
   {
@@ -48,12 +43,10 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-export type OperatorAccessTab = 'roles' | 'pending' | 'rules' | 'reference';
+export type OperatorAccessTab = 'roles' | 'reference';
 
 export const OPERATOR_ACCESS_TABS: { id: OperatorAccessTab; label: string; hint: string }[] = [
   { id: 'roles', label: 'Roles & permissions', hint: 'Can you start this?' },
-  { id: 'pending', label: 'Pending Casals approvals', hint: 'Waiting for signatures' },
-  { id: 'rules', label: 'Approval rules', hint: 'How many signatures Casals requires' },
   { id: 'reference', label: 'Permission reference', hint: 'All Casals commander permissions' },
 ];
 
@@ -191,15 +184,7 @@ export const BATON_CAPABILITY_REFERENCE: ReferenceEntry[] = [
 export const GOVERNANCE_MAP_LAYERS = [
   {
     title: 'Casals operator roles',
-    body: 'Grants permission to call Casals APIs (deploy, arrangements, orchestration APIs).',
-  },
-  {
-    title: 'Casals action approvals',
-    body: 'Optional N-of-M before Casals runs sensitive orchestration.* APIs.',
-  },
-  {
-    title: 'Arrangement runners',
-    body: 'execute_principals on an arrangement — who may apply that arrangement only.',
+    body: 'Grants permission to call Casals APIs (plan / apply, lifecycle, orchestration APIs).',
   },
   {
     title: 'Platform committee (multisig)',

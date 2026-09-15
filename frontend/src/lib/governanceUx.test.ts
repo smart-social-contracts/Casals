@@ -13,10 +13,10 @@ test('NAV_SECTIONS groups governance links separately from operate', () => {
   assert.ok(governance);
   assert.deepEqual(
     governance!.links.map((l) => l.href),
-    ['/commanders', '/multisig', '/orchestration'],
+    ['/commanders', '/multisig'],
   );
   const operate = NAV_SECTIONS.find((s) => s.id === 'operate');
-  assert.ok(operate?.links.some((l) => l.href === '/arrangements'));
+  assert.ok(operate?.links.some((l) => l.href === '/plan'));
   assert.equal(operate?.links.some((l) => l.href === '/multisig'), false);
 });
 

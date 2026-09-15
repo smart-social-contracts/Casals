@@ -2,15 +2,12 @@
   import { onMount } from 'svelte';
   import {
     getTree, setCommander, removeCommander, setPermissions, listPermissions, listBackendControllers,
-    getOrchestrationPolicies, setOrchestrationPolicies,
-    approveGovernanceRequest, rejectGovernanceRequest, listOrchestrationActions,
-    type Tree, type Permission, type ApprovalPolicy,
+    type Tree, type Permission,
   } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { entityCommanders } from '$lib/commanderAccess';
   import { identity, isAuthenticated, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
-  import { refreshGovernancePending, pendingGovernanceRequests } from '$lib/stores/governancePending';
   import { copyText } from '$lib/clipboard';
   import {
     OPERATOR_ACCESS_TABS,
@@ -58,10 +55,7 @@
     }
   }
 
-  onMount(() => {
-    void load();
-    void refreshGovernancePending(false);
-  });
+  onMount(load);
 
   // Catalog grouped by group, in declaration order.
   const groupedCatalog = $derived.by(() => groupPermissions(catalog));
@@ -243,100 +237,6 @@
     }
   }
 
-  // ── Orchestration approval policies (per section) ─────────────────────────
-  let policiesOpen = $state(false);
-  let policiesSection = $state('');
-  let policiesLabels = $state<Record<string, string>>({});
-  let policiesDraft = $state<Record<string, ApprovalPolicy>>({});
-  let orchestrationActions = $state<Permission[]>([]);
-
-  async function openPolicies(sectionName: string) {
-    policiesSection = sectionName;
-    busy = true;
-    try {
-      if (!orchestrationActions.length) {
-        orchestrationActions = await listOrchestrationActions().catch(() => []);
-      }
-      const snap = await getOrchestrationPolicies(sectionName);
-      policiesLabels = snap.labels ?? {};
-      policiesDraft = { ...(snap.policies ?? {}) };
-      for (const a of orchestrationActions) {
-        policiesDraft[a.key] ??= { threshold: 1, eligible: [], required: [] };
-      }
-      policiesOpen = true;
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed to load policies');
-    } finally {
-      busy = false;
-    }
-  }
-
-  function policyEligibleText(action: string): string {
-    return (policiesDraft[action]?.eligible ?? []).join('\n');
-  }
-
-  function policyRequiredText(action: string): string {
-    return (policiesDraft[action]?.required ?? []).join('\n');
-  }
-
-  function setPolicyEligible(action: string, text: string) {
-    const eligible = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-    policiesDraft = {
-      ...policiesDraft,
-      [action]: { ...policiesDraft[action], eligible },
-    };
-  }
-
-  function setPolicyRequired(action: string, text: string) {
-    const required = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-    policiesDraft = {
-      ...policiesDraft,
-      [action]: { ...policiesDraft[action], required },
-    };
-  }
-
-  async function submitPolicies() {
-    if (!policiesSection) return;
-    busy = true;
-    try {
-      await setOrchestrationPolicies({ section: policiesSection, policies: policiesDraft });
-      toasts.success('Casals action approval rules saved');
-      policiesOpen = false;
-      await load();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed');
-    } finally {
-      busy = false;
-    }
-  }
-
-  // ── Pending governance requests (shared store, polled in layout) ────────────
-
-  async function approveRequest(requestId: string) {
-    busy = true;
-    try {
-      await approveGovernanceRequest(requestId);
-      toasts.success('Approved');
-      await refreshGovernancePending(false);
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed');
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function rejectRequest(requestId: string) {
-    busy = true;
-    try {
-      await rejectGovernanceRequest(requestId);
-      toasts.success('Rejected');
-      await refreshGovernancePending(false);
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed');
-    } finally {
-      busy = false;
-    }
-  }
 </script>
 
 <svelte:head><title>Casals · Operator access</title></svelte:head>
@@ -349,7 +249,7 @@
       <p class="text-sm text-primary-500 max-w-2xl">
         Casals commander roles — who may call Casals APIs on each section or stand.
         This is separate from the <a href="/multisig" class="text-primary-700 underline">platform committee</a>
-        (on-chain multisig) and from <a href="/arrangements" class="text-primary-700 underline">arrangement runners</a>.
+        (on-chain multisig).
       </p>
       {#if $isAuthenticated}
         <p class="text-xs text-primary-600 border border-primary-100 bg-primary-50 rounded-lg px-3 py-2 max-w-2xl">
@@ -386,9 +286,6 @@
         onclick={() => (activeTab = tab.id)}
       >
         {tab.label}
-        {#if tab.id === 'pending' && $pendingGovernanceRequests.length > 0}
-          <span class="ml-1.5 text-[10px] font-bold text-red-600">({$pendingGovernanceRequests.length})</span>
-        {/if}
       </button>
     {/each}
   </div>
@@ -526,69 +423,6 @@
   {/if}
   {/if}
 
-  {#if activeTab === 'pending'}
-  <div class="card p-4 space-y-3">
-    <h2 class="text-sm font-semibold text-primary-900">Pending Casals action approvals</h2>
-    <p class="text-xs text-primary-500">
-      Extra signatures Casals requires before running sensitive orchestration APIs — not the same as
-      <a href="/multisig" class="underline">platform committee</a> proposals.
-    </p>
-    {#if $pendingGovernanceRequests.length === 0}
-      <p class="text-sm text-primary-400">No pending requests.</p>
-    {:else}
-      <div class="space-y-2">
-        {#each $pendingGovernanceRequests as req (req.request_id)}
-          <div class="border border-primary-100 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center gap-3">
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium text-primary-900">{req.action_label ?? req.action}</div>
-              <div class="text-xs text-primary-500 mt-0.5">
-                {req.section_name} · {req.approval_count ?? req.approvals.length}/{req.threshold ?? 1} approvals
-                {#if req.missing_required?.length}
-                  · required: {req.missing_required.length} missing
-                {/if}
-              </div>
-              <details class="mt-1 text-[10px] text-primary-400">
-                <summary class="cursor-pointer">Technical action id</summary>
-                <code class="font-mono">{req.action}</code>
-              </details>
-            </div>
-            {#if $isAuthenticated}
-              <div class="flex gap-2 shrink-0">
-                <button class="btn-primary btn-sm" disabled={busy} onclick={() => approveRequest(req.request_id)}>Approve</button>
-                <button class="btn-ghost btn-sm" disabled={busy} onclick={() => rejectRequest(req.request_id)}>Reject</button>
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </div>
-  {/if}
-
-  {#if activeTab === 'rules'}
-  {#if tree?.sections?.length}
-    <div class="card p-4 space-y-3">
-      <h2 class="text-sm font-semibold text-primary-900">Casals action approval rules</h2>
-      <p class="text-xs text-primary-500">
-        N-of-M rules per sensitive Casals orchestration API (create/upgrade Baton, multisig, hand-off, pipeline).
-        Not the platform committee multisig — configure those signers on
-        <a href="/multisig" class="underline">Platform committee</a>.
-      </p>
-      <div class="flex flex-wrap gap-2">
-        {#each tree.sections as sec (sec.name)}
-          {#if $isAuthenticated}
-            <button class="btn-secondary btn-sm" disabled={busy} onclick={() => openPolicies(sec.name)}>
-              {sec.name} rules
-            </button>
-          {/if}
-        {/each}
-      </div>
-    </div>
-  {:else}
-    <p class="text-sm text-primary-400">Load the orchestra tree to configure approval rules per section.</p>
-  {/if}
-  {/if}
-
   {#if activeTab === 'reference'}
     <GovernanceMapCard />
     <div class="card p-4">
@@ -712,52 +546,3 @@
   </div>
 {/if}
 
-<!-- Orchestration policies modal -->
-{#if policiesOpen}
-  <div class="fixed inset-0 z-40 flex items-center justify-center">
-    <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (policiesOpen = false)}></button>
-    <div class="relative bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-      <div>
-        <h3 class="text-lg font-semibold text-primary-900">Casals action approval rules</h3>
-        <p class="text-sm text-primary-500 mt-0.5">
-          Section <strong>{policiesSection}</strong> · how many operator approvals Casals requires before running each orchestration API
-        </p>
-      </div>
-      {#each orchestrationActions as action (action.key)}
-        {@const pol = policiesDraft[action.key] ?? { threshold: 1, eligible: [], required: [] }}
-        <div class="border border-primary-100 rounded-lg p-3 space-y-2">
-          <div class="text-sm font-medium text-primary-900">{action.label}</div>
-          <details class="text-[10px] text-primary-400">
-            <summary class="cursor-pointer">Technical action id</summary>
-            <code class="font-mono">{action.key}</code>
-          </details>
-          <label class="block text-xs text-primary-500">
-            Threshold (M of N)
-            <input
-              type="number"
-              min="1"
-              class="input mt-1"
-              value={pol.threshold}
-              oninput={(e) => {
-                const threshold = Math.max(1, parseInt(e.currentTarget.value, 10) || 1);
-                policiesDraft = { ...policiesDraft, [action.key]: { ...pol, threshold } };
-              }}
-            />
-          </label>
-          <label class="block text-xs text-primary-500">
-            Eligible approvers (one principal per line; empty = any commander with permission)
-            <textarea class="input mt-1 font-mono text-xs min-h-[4rem]" value={policyEligibleText(action.key)} oninput={(e) => setPolicyEligible(action.key, e.currentTarget.value)}></textarea>
-          </label>
-          <label class="block text-xs text-primary-500">
-            Required signers (must approve)
-            <textarea class="input mt-1 font-mono text-xs min-h-[3rem]" value={policyRequiredText(action.key)} oninput={(e) => setPolicyRequired(action.key, e.currentTarget.value)}></textarea>
-          </label>
-        </div>
-      {/each}
-      <div class="flex justify-end gap-3 pt-2 border-t border-primary-100">
-        <button class="btn-secondary btn-sm" onclick={() => (policiesOpen = false)} disabled={busy}>Cancel</button>
-        <button class="btn-primary btn-sm" disabled={busy} onclick={submitPolicies}>{busy ? 'Saving…' : 'Save policies'}</button>
-      </div>
-    </div>
-  </div>
-{/if}

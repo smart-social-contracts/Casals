@@ -1,6 +1,4 @@
-<script lang="ts">
-  import { fade, scale } from 'svelte/transition';
-
+<script module lang="ts">
   export interface FieldOption {
     value: string;
     label: string;
@@ -16,6 +14,10 @@
     value?: string | boolean;
     help?: string;
   }
+</script>
+
+<script lang="ts">
+  import { fade, scale } from 'svelte/transition';
 
   type Values = Record<string, string | boolean>;
 

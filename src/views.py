@@ -6,8 +6,6 @@ import json
 from auth import _normalize_permissions, _parse_permissions
 from commanders import commanders_view, legacy_commander_principal, legacy_permissions
 from models import CanisterStatus
-from orchestration_governance import parse_orchestration_policies
-from stand_template import parse_stand_template
 from util import canister_url
 from wasm_types import infer_wasm_type, wasm_type_tags
 
@@ -77,8 +75,15 @@ def _stand_view(dk) -> dict:
         "topup_cycles": int(dk.topup_cycles or 0),
         "subnet": dk.subnet or "",
         "subnet_type": dk.subnet_type or "",
+        "members": stand_members(dk),
         "canisters": [_canister_view(s) for s in (dk.canisters or [])],
     }
+
+
+def stand_members(dk) -> list:
+    """The optional template members a stand was created with."""
+    raw = getattr(dk, "members_json", "") or ""
+    return json.loads(raw) if raw else []
 
 
 def _section_view(sec) -> dict:
@@ -95,11 +100,5 @@ def _section_view(sec) -> dict:
         "topup_cycles": int(sec.topup_cycles or 0),
         "subnet": sec.subnet or "",
         "subnet_type": sec.subnet_type or "",
-        "orchestration_policies": parse_orchestration_policies(
-            getattr(sec, "orchestration_policies_json", "") or ""
-        ),
-        "stand_template": parse_stand_template(
-            getattr(sec, "stand_template_json", "") or ""
-        ),
         "stands": [_stand_view(d) for d in (sec.stands or [])],
     }

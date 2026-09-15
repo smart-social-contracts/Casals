@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
 
 from auth import _normalize_permissions, _parse_permissions
+from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
     CONDUCTOR_NAMES,
     MULTISIG_NAME,
@@ -19,6 +22,7 @@ from sheetv2 import (
     materialize,
     resolve,
     stand_member,
+    stand_members,
     wasm_ref,
 )
 from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on conductor dicts
@@ -59,6 +63,53 @@ def _resolve_controllers(cname: str, ctx: ResolveContext, resolved: dict) -> set
                 ctrls.add(ctx.canister_ids.get(stand_member(stand, "baton")["name"], "$stand.baton"))
             return ctrls
     return set()
+
+
+def _grade_assets(report: OracleReport, ic, registry_id: str, cname: str, cid: str, canister: dict, env: str) -> None:
+    """Fetch every declared asset over HTTP (what a browser sees) and compare its
+    sha256 with the registry / rendered text; when the dist ships
+    `.ic-assets.json5`, every header it prescribes must be served too."""
+    if env != "local":
+        report.add(cname, "assets", "SKIP", "http probe is local only")
+        return
+    ns = canister.get("content") or ""
+    published = {"/" + p.lstrip("/"): sha for p, sha in registry_file_hashes(ic, registry_id, ns).items()} if ns else {}
+    if ns and not published:
+        report.add(cname, "assets", "FAIL", f"registry namespace {ns} is empty")
+        return
+    want = dict(published)
+    files = canister.get("files") or {}
+    for key, text in files.items():
+        want[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    bad = []
+
+    def fetch(key: str) -> tuple[bytes, dict]:
+        req = urllib.request.Request(f"http://{cid}.localhost:8000{urllib.parse.quote(key)}", headers={"Accept-Encoding": "identity"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read(), {k.lower(): v for k, v in resp.headers.items()}
+
+    rules: list = []
+    if POLICY_FILE in want:
+        try:
+            rules = rules_from(files.get(POLICY_FILE) or fetch(POLICY_FILE)[0].decode("utf-8", "replace"))
+        except Exception as exc:
+            bad.append(f"{POLICY_FILE}: {exc}")
+    for key, sha in sorted(want.items()):
+        try:
+            body, got_headers = fetch(key)
+        except Exception as exc:
+            bad.append(f"{key}: {exc}")
+            continue
+        if hashlib.sha256(body).hexdigest() != sha:
+            bad.append(f"{key}: sha mismatch")
+        want_headers = {k.lower(): v for k, v in (properties_for(key, rules)["headers"] or {}).items()} if rules else {}
+        for h, v in want_headers.items():
+            if got_headers.get(h) != v:
+                bad.append(f"{key}: header {h} = {got_headers.get(h)!r}, want {v!r}")
+    if bad:
+        report.add(cname, "assets", "FAIL", "; ".join(bad[:5]) + (f" (+{len(bad) - 5})" if len(bad) > 5 else ""))
+    else:
+        report.add(cname, "assets", "PASS", f"{len(want)} files served")
 
 
 def _grade_commanders(report: OracleReport, name: str, declared, live_entity: dict | None) -> None:
@@ -162,7 +213,13 @@ def run_oracle(
             if "query" in hc:
                 method = hc["query"]
                 try:
-                    res = ic.query(cid, method, "{}")
+                    args = hc.get("args")  # absent → the query takes `()`
+                    res = ic.query(cid, method, None if args is None else (args if isinstance(args, str) else json.dumps(args)))
+                    if isinstance(res, str):
+                        try:
+                            res = json.loads(res)
+                        except json.JSONDecodeError:
+                            pass
                     expect = hc.get("expect") or {}
                     if isinstance(res, dict) and expect.items() <= res.items():
                         report.add(cname, f"health[{i}]", "PASS", method)
@@ -179,15 +236,26 @@ def run_oracle(
                 except Exception as exc:
                     report.add(cname, f"health[{i}]", "FAIL", str(exc))
 
+        if canister.get("content") or canister.get("files"):
+            _grade_assets(report, ic, registry_id, cname, cid, canister, env)
+
         for i, cfg in enumerate(canister.get("config") or []):
             cw = cfg.get("converged_when")
             if not cw or "query" not in cw:
                 continue
             method = cw["query"]
             try:
-                res = ic.query(cid, method, json.dumps(cfg.get("args") or {}))
-                if cw.get("equals_args"):
-                    ok = res == cfg.get("args") or (isinstance(res, str) and json.loads(res) == cfg.get("args"))
+                res = ic.query(cid, method)
+                if isinstance(res, str):
+                    try:
+                        res = json.loads(res)
+                    except json.JSONDecodeError:
+                        pass
+                want = cfg.get("args") if cw.get("equals_args") else cw.get("contains")
+                if isinstance(want, dict):
+                    ok = isinstance(res, dict) and all(res.get(k) == v for k, v in want.items())
+                elif "equals" in cw:
+                    ok = res == cw["equals"]
                 else:
                     ok = res is not None
                 report.add(cname, f"config[{i}]", "PASS" if ok else "FAIL", method)
@@ -239,7 +307,7 @@ def run_oracle(
             have_t = int(((cfg or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
             report.add(bname, "baton.threshold", "PASS" if have_t == int(baton.get("threshold") or 0) else "FAIL", str(have_t))
             if baton.get("hand_off"):
-                want_managed = {bindings.get(stand_member(stand, r)["name"], "") for r in baton.get("manages") or [] if stand_member(stand, r)}
+                want_managed = {bindings.get(m["name"], "") for r in baton.get("manages") or [] for m in stand_members(stand, r)}
                 report.add(bname, "baton.managed", "PASS" if want_managed <= managed else "FAIL",
                            f"{len(managed)} managed" if want_managed <= managed else f"missing={sorted(want_managed - managed)}")
 

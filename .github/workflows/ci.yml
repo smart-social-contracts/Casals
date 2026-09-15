@@ -48,7 +48,15 @@ jobs:
       # _load_sheet_file, call() subprocess wiring (mocked), error exit codes,
       # and a full subprocess suite using a pure-Python fake icp binary.
       - name: Run CLI unit tests
-        run: pytest tests/test_cli_unit.py -v
+        run: pytest tests/test_cli_unit.py -v tests/test_cli_v2.py
+
+      - name: CLI carries no principal / controller / commander tables
+        # Every id and every controller/commander set comes from the sheet the
+        # operator passes in (§9 of docs/issues/declarative-orchestra-spec.md).
+        run: |
+          if grep -rnoE '\b[a-z0-9]{5}(-[a-z0-9]{5}){3,10}-[a-z0-9]{3}\b' casals_cli scripts --exclude-dir=examples | grep -v 'aaaaa-aa\b'; then
+            echo "::error::canister/principal ids belong in a casals.json, not in the CLI"; exit 1
+          fi
 
   frontend-build:
     name: Frontend build

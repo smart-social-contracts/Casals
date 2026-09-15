@@ -1,13 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getSheet, setSheet, resetSheet, deploySheet, listPool, estimateDeploy, formatCycles, getTree, orchestraCanisterIds, isPoolUnassigned } from '$lib/api';
-  import type { Sheet, DeployResult, PoolReport, DeployEstimate, Tree } from '$lib/api';
+  import { getSheet, setSheet, listPool, getTree, orchestraCanisterIds, isPoolUnassigned } from '$lib/api';
+  import type { Sheet, PoolReport, Tree } from '$lib/api';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
-  import { copyText } from '$lib/clipboard';
-
   let text = $state('');
   let loading = $state(true);
   let error = $state('');
@@ -15,37 +13,6 @@
   let pool = $state<PoolReport | null>(null);
   let tree = $state<Tree | null>(null);
   let assignPoolTarget = $state<string | null>(null);
-  let lastDeploy = $state<DeployResult | null>(null);
-  let estimate = $state<DeployEstimate | null>(null);
-  let estimateErr = $state('');
-  let estTimer: ReturnType<typeof setTimeout> | undefined;
-
-  async function runEstimate(sheet: Sheet) {
-    estimateErr = '';
-    try {
-      estimate = await estimateDeploy(sheet);
-    } catch (e: any) {
-      estimateErr = e?.message ?? String(e);
-      estimate = null;
-    }
-  }
-
-  // Re-estimate the deploy cost whenever the (valid) sheet changes, debounced so
-  // we don't query the conductor on every keystroke.
-  $effect(() => {
-    const sheet = parsed.sheet;
-    clearTimeout(estTimer);
-    if (!sheet) {
-      estimate = null;
-      return;
-    }
-    estTimer = setTimeout(() => runEstimate(sheet), 400);
-    return () => clearTimeout(estTimer);
-  });
-
-  async function copy(s: string) {
-    if (await copyText(s)) toasts.info('Copied');
-  }
 
   // Parse the editor text into a Sheet, surfacing JSON errors inline.
   let parsed = $derived.by<{ sheet: Sheet | null; err: string }>(() => {
@@ -118,52 +85,6 @@
     }
   }
 
-  async function reset() {
-    busy = true;
-    try {
-      await resetSheet();
-      await load();
-      toasts.success('Sheet reset to default');
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed to reset sheet');
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function deploy() {
-    if (!parsed.sheet) {
-      toasts.error(parsed.err);
-      return;
-    }
-    busy = true;
-    lastDeploy = null;
-    try {
-      // Set + deploy in one call so the deployed orchestra matches the editor.
-      lastDeploy = await deploySheet(parsed.sheet);
-      pool = await listPool();
-      if (parsed.sheet) await runEstimate(parsed.sheet);
-      if (lastDeploy.errors && lastDeploy.errors.length > 0) {
-        toasts.error(`Deployed with ${lastDeploy.errors.length} error(s)`);
-      } else {
-        toasts.success('Orchestra deployed');
-      }
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Deploy failed');
-    } finally {
-      busy = false;
-    }
-  }
-
-  const deployBuckets: { key: keyof DeployResult; label: string }[] = [
-    { key: 'created_sections', label: 'Sections created' },
-    { key: 'created_stands', label: 'Stands created' },
-    { key: 'created_canisters', label: 'Canisters created' },
-    { key: 'reused_canisters', label: 'Canisters reused' },
-    { key: 'reinstalled_canisters', label: 'Canisters reinstalled' },
-    { key: 'retired_canisters', label: 'Canisters retired' },
-    { key: 'skipped_canisters', label: 'Canisters unchanged' },
-  ];
 </script>
 
 <svelte:head><title>Casals · Sheet</title></svelte:head>
@@ -173,11 +94,10 @@
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Sheet</h1>
       <p class="text-sm text-primary-500 mt-1 max-w-2xl">
-        The desired orchestra as a single editable document, persisted in the conductor
-        (the bundled default only seeds the first boot). Saving keeps your edits across
-        restarts; nothing changes on-chain until you <strong>Deploy</strong>, which
-        idempotently reconciles real canisters to the sheet — reusing pooled canisters
-        before creating new ones.
+        The desired orchestra as a single editable document (<code class="font-mono">casals.json</code>),
+        persisted in the conductor. Saving changes nothing on-chain — apply the sheet from
+        <a href="/plan" class="text-primary-700 underline font-medium">Plan / Drift</a>, which shows
+        exactly what <code class="font-mono">casals plan</code> would change before you apply it.
       </p>
       <p class="text-xs text-primary-400 mt-1 max-w-2xl">
         Subnet placement is configured in <strong>Settings → Subnet whitelist</strong>.
@@ -187,22 +107,11 @@
       </p>
     </div>
     <div class="flex items-center gap-2 self-start shrink-0">
+      <button class="btn-secondary btn-sm" onclick={load} disabled={loading || busy}>Refresh</button>
       {#if $isAuthenticated}
-        <button class="btn-secondary btn-sm" onclick={reset} disabled={busy}>Reset to default</button>
-        <button class="btn-secondary btn-sm" onclick={save} disabled={busy || !parsed.sheet}>Save</button>
-        <button class="btn-primary btn-sm" onclick={deploy} disabled={busy || !parsed.sheet || (estimate?.unresolved_canisters ?? 0) > 0}>
-          {#if busy}
-            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
-            </svg>
-            Deploying…
-          {:else}
-            Deploy orchestra
-          {/if}
-        </button>
-      {:else}
-        <button class="btn-secondary btn-sm" onclick={load} disabled={loading}>Refresh</button>
+        <button class="btn-primary btn-sm" onclick={save} disabled={busy || !parsed.sheet}>{busy ? 'Saving…' : 'Save'}</button>
       {/if}
+      <a href="/plan" class="btn-secondary btn-sm">Plan / Drift →</a>
     </div>
   </div>
 
@@ -243,67 +152,8 @@
       {/if}
     </div>
 
-    <!-- Pool + deploy result -->
+    <!-- Pool -->
     <div class="space-y-6">
-      <!-- Deploy cost estimate -->
-      <div class="card p-4">
-        <h2 class="text-sm font-semibold text-primary-900 mb-1">Deploy estimate</h2>
-        <p class="text-xs text-primary-400 mb-3">
-          Idempotent: only missing canisters need a canister, and free pooled canisters are reused first.
-        </p>
-        {#if estimateErr}
-          <p class="text-xs text-red-600">⚠ {estimateErr}</p>
-        {:else if !estimate}
-          <div class="skeleton h-12 w-full"></div>
-        {:else if estimate.unresolved_canisters > 0}
-          <div class="rounded-lg bg-red-50 border border-red-200 px-3 py-2.5">
-            <p class="text-sm font-semibold text-red-700">Cannot deploy — unknown WASM</p>
-            <p class="text-xs text-red-600 mt-0.5">
-              {estimate.unresolved_canisters} canister(s) reference WASMs that are not authorized.
-              Seed the template catalog first (e.g. <code class="font-mono">make seed</code>).
-            </p>
-          </div>
-        {:else if estimate.ready}
-          <div class="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2.5">
-            <p class="text-sm font-semibold text-emerald-700">✓ Ready to deploy</p>
-            <p class="text-xs text-emerald-600 mt-0.5">
-              {#if estimate.new_canisters > 0}
-                The conductor has enough cycles to create {estimate.new_canisters} new canister(s).
-              {:else}
-                No new canisters needed — nothing to fund.
-              {/if}
-            </p>
-          </div>
-        {:else}
-          <div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
-            <p class="text-sm font-semibold text-amber-700">Top up ~{formatCycles(estimate.shortfall_cycles)}</p>
-            <p class="text-xs text-amber-600 mt-0.5">
-              Needed to create {estimate.new_canisters} new canister(s) and keep the reserve.
-            </p>
-          </div>
-        {/if}
-
-        {#if estimate}
-          <dl class="mt-3 space-y-1.5 text-xs">
-            <div class="flex justify-between"><dt class="text-primary-500">New canisters to create</dt><dd class="font-mono text-primary-800">{estimate.new_canisters}</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-400">· reused from pool</dt><dd class="font-mono text-primary-500">{estimate.reused_from_pool} / {estimate.free_pool} free</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-400">· already matching</dt><dd class="font-mono text-primary-500">{estimate.matching_canisters}</dd></div>
-            {#if estimate.reinstall_canisters > 0}
-              <div class="flex justify-between"><dt class="text-primary-400">· reinstalled in place</dt><dd class="font-mono text-primary-500">{estimate.reinstall_canisters}</dd></div>
-            {/if}
-            {#if estimate.unresolved_canisters > 0}
-              <div class="flex justify-between"><dt class="text-red-500">· unknown WASM (will error)</dt><dd class="font-mono text-red-500">{estimate.unresolved_canisters}</dd></div>
-            {/if}
-            <div class="border-t border-[var(--color-border-primary)] my-1"></div>
-            <div class="flex justify-between"><dt class="text-primary-500">Endowment / canister</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.per_canister_cycles)}</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-500">Total creation cost</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.create_cost_cycles)}</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-500">Conductor balance</dt><dd class="font-mono text-primary-800">{formatCycles(estimate.balance_cycles)}</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-400">· reserve kept</dt><dd class="font-mono text-primary-500">{formatCycles(estimate.reserve_cycles)}</dd></div>
-            <div class="flex justify-between"><dt class="text-primary-400">· available to spend</dt><dd class="font-mono text-primary-500">{formatCycles(estimate.available_cycles)}</dd></div>
-          </dl>
-        {/if}
-      </div>
-
       <div class="card p-4">
         <h2 class="text-sm font-semibold text-primary-900 mb-3">Canister pool</h2>
         {#if pool}
@@ -350,29 +200,6 @@
         {/if}
       </div>
 
-      {#if lastDeploy}
-        <div class="card p-4">
-          <h2 class="text-sm font-semibold text-primary-900 mb-3">Last deploy</h2>
-          <ul class="space-y-1.5 text-sm">
-            {#each deployBuckets as b (b.key)}
-              {@const items = (lastDeploy[b.key] as string[] | undefined) ?? []}
-              {#if items.length > 0}
-                <li class="flex items-start justify-between gap-3">
-                  <span class="text-primary-500">{b.label}</span>
-                  <span class="font-mono text-xs text-primary-800 text-right">{items.join(', ')}</span>
-                </li>
-              {/if}
-            {/each}
-          </ul>
-          {#if lastDeploy.errors && lastDeploy.errors.length > 0}
-            <div class="mt-3 border-t border-[var(--color-border-primary)] pt-3 space-y-1">
-              {#each lastDeploy.errors as err (err)}
-                <p class="text-xs text-red-600">⚠ {err}</p>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
     </div>
   </div>
 </div>

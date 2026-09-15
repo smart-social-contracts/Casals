@@ -2,7 +2,7 @@
 
 ``kind`` stays ``frontend`` | ``backend`` (stack role). ``wasm_type`` is the
 implementation family (motoko, rust, basilisk, baton, multisig, assets, …)
-declared in ``seed/templates.json`` when a WASM is authorized.
+declared in the sheet's ``registry`` entry when a WASM is authorized.
 """
 
 from __future__ import annotations

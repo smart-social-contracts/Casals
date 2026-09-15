@@ -192,25 +192,3 @@ export function buildCreateCanisterPayload(
 
   return payload;
 }
-
-/** Draft sheet for estimate_deploy when provisioning one new canister. */
-export function buildCreateEstimateSheet(
-  sectionName: string,
-  stand: Stand,
-  canisterName: string,
-  wasmKey: string,
-): Sheet {
-  return {
-    sections: [{
-      name: sectionName,
-      subnet: stand.subnet,
-      subnet_type: stand.subnet_type,
-      stands: [{
-        name: stand.name,
-        subnet: stand.subnet,
-        subnet_type: stand.subnet_type,
-        canisters: [{ name: canisterName, wasm_key: wasmKey }],
-      }],
-    }],
-  };
-}

@@ -7,8 +7,19 @@ Canister** (a Canister is one deployed canister). Approval is delegated — each
 Section or Stand registers a *commander* principal (the project's own governance
 canister) whose decisions Casals executes. Casals never embeds voting logic.
 Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/realms))
-deploy their own conductor instances and supply sheets, arrangements, and fleet
-config from their own repos.
+deploy their own conductor instances and supply sheets from their own repos.
+
+## Declarative model
+
+One `casals.json` sheet describes an environment; `python -m casals_cli.main -e <env> up <sheet> --yes`
+makes the IC match it. `up` bootstraps the conductor (backend, frontend, file
+registry, registry frontend) if it is not bound yet, publishes the wasms the
+`registry` block names, stores the sheet (`set_sheet`), then runs the conductor's
+`plan` → `apply` until the plan is empty. With
+`conductor.settings.reconcile_interval_secs` set, the conductor re-plans and
+applies on its own timer. Products mint stands at runtime from a section's
+`stand_template` via `create_stand`. Runbook: `docs/OPERATIONS.md`; design:
+`docs/issues/declarative-orchestra-spec.md`.
 
 ## Toolchain: icp-cli only
 
@@ -31,29 +42,27 @@ src/models.py        — ic_python_db entities (Section, Stand, Canister, Pooled
 src/lifecycle.py     — create/install/upgrade/snapshot + asset provisioning + pool assign
 src/pool.py          — canister pool (reuse before create)
 src/subnets.py       — subnet whitelist parse/enforce
-src/sheet.py         — live sheet load/save
+src/sheetv2.py       — sheet validation; src/planner.py / src/applier.py — plan / apply
 src/views.py         — pure tree serialization helpers
 src/auth.py          — commander permission checks
 src/cycles.py        — native cycles management (sampler + autopilot reconcile)
-src/arrangement.py   — apply an arrangement's post-deploy steps (text-in/text-out calls)
-src/default_sheet.py — the bundled default sheet (loaded into the live sheet at start)
 src/util.py          — pure helpers (audit hash, canister URL, cycle policy)
-casals_cli.py        — CLI module (pip install ic-casals → `casals` command)
+casals_cli/          — CLI package (`python -m casals_cli.main`)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
-pyproject.toml       — package metadata; entry point casals = casals_cli:main
-icp.yaml             — icp-cli deploy config (backend + registry + asset frontend)
-Makefile             — build / deploy / seed / test / cli targets
+pyproject.toml       — package metadata; entry point casals = casals_cli.main:main
+icp.yaml             — icp-cli deploy config (backend + registry + asset frontends)
+Makefile             — build / test / cli targets
 frontend/            — SvelteKit UI (see Frontend pages below)
 file_registry/       — git submodule: the file-registry canister (WASM store)
 templates/           — hello-world template sources (basilisk / rust / motoko)
-seed/templates.json  — default template catalog (what to upload + authorize)
-seed/templates/      — committed, gzipped template WASMs
+seed/templates/      — committed, gzipped template WASMs; sheets reference them as
+                       local:seed/templates/<file>; rebuild with `make build-templates`
 seed/sheets/         — sheets (desired orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
-scripts/             — build_templates.sh, seed.py, casals.py (thin CLI wrapper);
+scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
                        examples/wire_monitor.py (off-chain monitor wiring example)
-tests/               — pytest unit + integration + e2e suites (incl. test_cli_unit.py)
-.icp/data/           — committed canister-ID mappings for the demo deployment (do NOT delete)
+tests/               — pytest unit + integration suites (incl. test_cli_unit.py); tests/e2e/ corpus
+.icp/data/           — committed icp-cli canister-ID mappings (do NOT delete)
 dist/                  — SvelteKit static build output (repo root; consumed by icp.yaml)
 ```
 
@@ -68,37 +77,25 @@ git clone --recurse-submodules <casals-url>
 git submodule update --init
 ```
 
-## Demo deployment
-
-These are smart-social-contracts' own instance of Casals, deployed on IC mainnet
-for development and demonstration purposes. They are **not a production service**
-— consumer projects deploy their own separate instances.
-
-| Canister          | ID                              | URL |
-|-------------------|---------------------------------|-----|
-| casals_backend    | `ip2wh-iyaaa-aaaao-bbaoq-cai`  | [Candid UI](https://a4gq6-oaaaa-aaaab-qaa4q-cai.icp0.io/?id=ip2wh-iyaaa-aaaao-bbaoq-cai) |
-| casals_frontend   | `igz53-6qaaa-aaaao-bbapa-cai`  | https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io/ |
-| ic_file_registry  | `iby3p-tiaaa-aaaao-bbapq-cai`  | https://iby3p-tiaaa-aaaao-bbapq-cai.icp0.io/ |
-
-| Identity | Principal | Role |
-|----------|-----------|------|
-| Deploy (`casals`) | `kem77-gtkmj-ucmh3-n65rw-6aynu-b36f6-c3ux7-ttxzc-nb2wn-uhjcc-xqe` | Owns/deploys canisters; controller of backend + registry |
-| Conductor | `nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae` | Added as controller of backend + frontend after deploy so the UI can run admin endpoints without the deploy PEM |
-
 ## Frontend pages
 
-SvelteKit app; nav in `frontend/src/routes/+layout.svelte`:
+SvelteKit app; nav in `frontend/src/lib/governanceUx.ts` (`NAV_SECTIONS`),
+rendered by `frontend/src/routes/+layout.svelte`:
 
 | Route | Purpose |
 |-------|---------|
 | `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
 | `/wasms` | Authorized WASM catalog |
-| `/commanders` | Section/stand commanders and granular permissions |
+| `/sheet` | Live sheet JSON editor (Save); pool list + **Assign** |
+| `/plan` | Plan / Drift — what `casals plan` would change; apply it |
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, reconcile |
 | `/activity` | Hash-chained audit log |
-| `/sheet` | Live sheet JSON editor; Save / Reset / Deploy; pool list + **Assign** |
-| `/arrangements` | Post-deploy step sets |
+| `/aliases` | Principal aliases |
+| `/commanders` | Operator access: section/stand commanders and granular permissions |
+| `/multisig` | Platform committee: on-chain multisig for IC controller actions |
 | `/settings` | Instance settings; **subnet whitelist** matrix |
+
+`/baton` (Baton upgrade pipeline view) exists as a route but is not linked from the nav.
 
 Login uses Internet Identity. Only principals listed as commanders (or canister
 controllers) may authenticate.
@@ -115,24 +112,13 @@ npm --prefix frontend install        # frontend deps (one-time)
 # Terminal 1 — keep the replica running
 icp network start -e local
 
-# Terminal 2 — build, deploy, seed
-make deploy                          # builds + deploys canisters; wires file-registry into Casals (--wire-registry-only)
-icp canister top-up --amount 100t casals_backend -e local   # fund the treasury (see note)
-python3 scripts/seed.py -e local --deploy   # upload catalog + bootstrap Casals/System
+# Terminal 2 — build, deploy and reconcile an orchestra from its sheet
+python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
 ```
 
-Open **http://casals_frontend.local.localhost:8000/** to see the app.
-
-**Default bootstrap.** After `make deploy` + `seed.py --deploy`, the orchestra tree is **Casals → System** with `file_registry` and `file_registry_frontend` (registered from the `icp.yaml` deploy) and `multisig` (created from the authorized catalog). The file-registry is deployed via `icp.yaml` first — Casals needs it to store WASMs before it can create catalog-based canisters.
-
-**Hello-world demo (opt-in).** `seed/sheets/demo.json` is not loaded by default. To stand up the multi-language demo orchestra:
-
-```bash
-python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json --arrangement demo
-# or: make seed-demo
-```
-
-Re-deploy after code changes: `make deploy && python3 scripts/seed.py -e local --deploy`
+`casals up <sheet>` is the only deploy path (builds the conductor + file-registry
+WASMs, publishes referenced WASMs, then `set_sheet` → `plan` → `apply`).
+Re-run it after code changes.
 
 ### Known quirks
 
@@ -142,11 +128,11 @@ The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths lik
 (`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), and `icp.yaml`
 uses `dir: dist`. Do not change `dir` to `frontend/dist`.
 
-**`deploy_sheet` needs a well-funded treasury.**
+**`apply` needs a well-funded treasury.**
 `casals_backend` acts as the cycles treasury — it creates canisters and sends
 them cycles. A fresh local replica seeds each canister with ~1.4T cycles, which is not
-enough to create 6 canisters. Before calling `deploy_sheet` (or
-`seed.py --deploy`) top up the backend with at least 100T:
+enough to create 6 canisters. Before applying a plan that creates canisters, top
+up the backend with at least 100T:
 
 ```bash
 icp canister top-up --amount 100t casals_backend -e local
@@ -168,11 +154,6 @@ provisioning. This is safe for frontend canisters because their entire state is 
 asset bundle, which Casals re-uploads from the file-registry immediately after the
 wipe.
 
-**"Out of cycles" ≠ the demo deployment.**
-If you see `Canister a5dhi-k7777-77775-aaabq-cai is out of cycles`, the canister ID
-prefix (`...77775-`) confirms it is the **local** canister, not the demo deployment
-(`ip2wh-iyaaa-aaaao-bbaoq-cai`). Just top up as above.
-
 **Frontend shows local data, not the demo deployment.**
 The `ic_env` cookie served by the asset canister contains the local canister IDs.
 The frontend reads from it, so it always talks to the local backend. Symptoms that
@@ -183,132 +164,21 @@ confirm you are on local: **Canisters: 0** (fresh deploy), treasury ~1–3T cycl
 The conductor serves only `GET /version` over HTTP (`http_request` upgrades
 to `http_request_update`). Opening `http://localhost:8000/?canisterId=…`
 still 404s. On local, links must go through the replica's Candid UI:
-`http://<candid-ui>.localhost:8000/?id=<target>`. `make deploy` writes
-`frontend/static/local-network.json` (from `icp network status`) and the frontend loads
-it on startup. Do not skip `make local-network-json` before deploy.
+`http://<candid-ui>.localhost:8000/?id=<target>`.
 
 ### Run tests
 
 ```bash
-pytest tests/ -v    # spins up its own replica and tears it down automatically
+python -m pytest -q tests --ignore=tests/e2e   # unit tests, no replica
+python tests/e2e/run_e2e.py                    # the corpus: every orchestra, every scenario (starts the replica if needed)
 ```
 
 ## Deploy to IC mainnet
 
-> This section covers deploying Casals' own **demo instance** (the canisters
-> listed above). If you are a project deploying your own Casals instance, the
-> same steps apply — substitute your own canister IDs and identity.
-
-### Prerequisites
-
-1. **`icp-cli` ≥ 1.3.0** installed and configured for IC mainnet (`icp --version`;
-   `npm i -g @icp-sdk/icp-cli` to install or upgrade).
-2. **`casals` deploy identity** — PEM at `~/.local/share/icp-cli/identity/keys/casals.pem`
-   (also stored as the `CASALS_IDENTITY_PEM` GitHub secret).
-3. Deploy identity must hold **cycles** (and usually some ICP for topping up):
-   ```bash
-   icp token balance --identity casals -e ic
-   icp cycles balance --identity casals -e ic
-   icp cycles mint --icp <amount> --identity casals -e ic   # if needed
-   ```
-4. **`.icp/data/`** committed in the repo — maps canister names to existing mainnet
-   IDs so `icp deploy` upgrades in place instead of creating new canisters.
-
-### Standard deploy (all three canisters)
-
-`icp.yaml` defines three canisters: `casals_backend`, `ic_file_registry`,
-`casals_frontend`. The frontend recipe runs `npm --prefix frontend ci` and
-`npm run build` during deploy, writing to repo-root `dist/`.
-
-```bash
-make build                                    # build backend + registry WASMs into .basilisk/
-
-# Stopped canisters block asset sync — start them first (safe no-op if running)
-for c in casals_backend casals_frontend ic_file_registry; do
-  icp canister start "$c" -e ic --identity casals -f || true
-done
-
-icp deploy -e ic --identity casals --mode upgrade -y
-```
-
-Or via Makefile (uses default icp identity — pass `--identity casals` if needed):
-
-```bash
-make deploy-ic    # equivalent to: make build && icp deploy -e ic
-```
-
-**After every mainnet deploy**, add the conductor as a controller so the UI can
-call admin endpoints without the deploy PEM (CI does this automatically):
-
-```bash
-CONDUCTOR=nxz44-phem5-dkqap-2tvim-krdel-r2grb-losd6-6suw2-pu6sc-25jte-aae
-icp canister settings update casals_backend  --add-controller "$CONDUCTOR" -e ic --identity casals -f
-icp canister settings update casals_frontend --add-controller "$CONDUCTOR" -e ic --identity casals -f
-```
-
-### Partial deploy (backend and/or frontend only)
-
-When the file-registry WASM did not change, skip it to save time/cycles:
-
-```bash
-make build-backend                            # backend only
-icp deploy -e ic --identity casals --mode upgrade -y casals_backend casals_frontend
-```
-
-Frontend-only (after validating the build locally):
-
-```bash
-npm --prefix frontend ci && npm --prefix frontend run build   # optional pre-check
-icp deploy -e ic --identity casals --mode upgrade -y casals_frontend
-icp canister start casals_frontend -e ic --identity casals -f   # if sync left it stopped
-```
-
-Backend-only:
-
-```bash
-make build-backend
-icp deploy -e ic --identity casals --mode upgrade -y casals_backend
-```
-
-### Install modes
-
-| Mode | Effect |
-|------|--------|
-| `upgrade` | **Default.** Preserves stable state (orchestra, sheet, pool, settings). |
-| `reinstall` | **Wipes** backend + registry stable state. Use only when intentional. Frontend asset canister is re-synced from `dist/`. |
-
-Use `--mode reinstall` only if you intend to **wipe all backend state**.
-
-### Post-deploy seeding
-
-Upload + authorize catalog WASMs and optionally deploy a sheet:
-
-```bash
-python3 scripts/seed.py -e ic --identity casals                        # catalog only
-python3 scripts/seed.py -e ic --identity casals --deploy               # catalog + bootstrap Casals/System
-python3 scripts/seed.py -e ic --identity casals --deploy \
-  --sheet seed/sheets/demo.json --arrangement demo                     # opt-in hello-world demo
-```
-
-Makefile: `make seed-ic` (catalog only), `make seed-demo-ic` (demo sheet).
-
-### Via GitHub Actions (recommended)
-
-Trigger **"Deploy to IC mainnet"** (`.github/workflows/deploy-ic.yml`):
-
-| Input | Purpose |
-|-------|---------|
-| `commit_sha` | Commit to deploy (blank = latest `main`) |
-| `mode` | `upgrade` (default) or `reinstall` |
-| `seed` | Upload + authorize template catalog after deploy |
-| `deploy_sheet` | Also run `deploy_sheet` (implies seed) |
-
-The workflow: checkout + submodules → `make build` → start canisters →
-`icp deploy -e ic --identity casals` → add conductor controller → optional seed.
-
-```bash
-gh workflow run deploy-ic.yml -f mode=upgrade -f seed=true -f deploy_sheet=true
-```
+Follow `docs/OPERATIONS.md`: the same `casals up <sheet>` with `-e ic` and the
+environment's deployer identity. The conductor itself (backend, frontend, file
+registry, registry frontend) is created by `up`'s bootstrap when the sheet is not
+bound yet.
 
 ## Open access
 
@@ -328,69 +198,23 @@ icp canister call casals_backend set_settings '("{\"open_access\":false}")' \
 
 ## CLI (`casals`)
 
-A thin wrapper over the backend's JSON API for scripting and CI/CD. No new
-dependencies beyond the standard library. All output is JSON on stdout; errors
-go to stderr as `{"ok": false, "error": "..."}` with exit code 1.
-
-### Install (recommended)
+`casals_cli/` (entry `casals_cli/main.py`) drives a conductor from a sheet.
+Output is JSON with `--json`; errors go to stderr as `{"ok": false, "error": "..."}`
+with exit code 1. Run it from the repo checkout:
 
 ```bash
-pip install ic-casals   # installs the `casals` console command
-```
-
-Run from your project directory (where `icp.yaml` lives — required so `icp`
-can resolve canister names):
-
-```bash
-casals [-e ENV] [--identity ID] <command>
-```
-
-### Run without installing (repo checkout)
-
-```bash
-python3 scripts/casals.py [-e ENV] [--identity ID] <command>
-# or via make:
+python3 -m casals_cli.main [-e ENV] [--identity ID] [--conductor ID] [--json] <command>
+# or:
+python3 scripts/casals.py <command>
 make cli ARGS="<command>"
 ```
 
-### Commands
-
-| Command | Backend method |
-|---|---|
-| `status` | `get_status` |
-| `tree` | `get_tree` |
-| `events` | `get_events` |
-| `wasms` | `list_authorized_wasms` |
-| `cycles` | `get_cycles` |
-| `pool` | `list_pool` |
-| `sheet get` | `get_sheet` |
-| `sheet set FILE` | `set_sheet` |
-| `sheet deploy [FILE]` | `set_sheet` (if FILE given) then `deploy_sheet` |
-| `arrangement list/get/set/activate/apply/delete` | arrangement endpoints |
-| `orchestra destroy --preserve …` | batched orchestra teardown (see below) |
-| `new [IDS.json]` | `make build` + `icp deploy` + optional `seed.py`; writes `.icp/*/mappings/{env}.ids.json` |
-
-Common flags on every command: `-e local|ic` (default `local`), `--identity <id>`.
-
-`new` additionally accepts `-y`/`--yes` (skip fresh-create confirmation; required when stdin is not a TTY) and `--no-seed` (skip seeding after deploy). Pass an optional `IDS.json` with icp canister IDs (and optionally `multisig`) to upgrade an existing deployment; omit it to create fresh canisters.
-
-There is no CLI wrapper yet for `assign_pool_canister` — use the UI or a direct
-canister call.
-
-### `orchestra destroy`
-
-Tears down a whole Casals orchestra while keeping one or more `--preserve`
-canisters (typically `realm_registry_frontend` / the DNS host). Dry-run lists
-what would be destroyed; live mode batches `destroy_orchestra` calls, converts
-ledger ICP, evacuates treasury cycles onto the first preserved canister, then
-deletes the conductor via `icp canister delete casals_backend`. Canisters whose
-drain fails are left intact; the CLI aborts before evacuation or conductor delete.
-Use `--dry-run` first; pass `-y`/`--yes` when stdin is not a TTY.
-
-```bash
-casals orchestra destroy --preserve realm_registry_frontend --dry-run
-casals -e ic orchestra destroy --preserve realm_registry_frontend -y --batch 2
-```
+Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`, `verify`,
+`export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
+`graph`, `oracle`, `destroy`, `register`, and the legacy `orchestra destroy
+--preserve <name>` (batched conductor `destroy_orchestra`). Every command reads
+the sheet's bindings (`$CASALS_HOME`, default `~/.casals`) or `--conductor <id>`.
+Day-to-day usage is in `docs/OPERATIONS.md`.
 
 ## Backend API (JSON-in / JSON-out)
 
@@ -410,12 +234,19 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `list_permissions` | assignable commander permission keys |
 | `get_sheet` | the live (persisted) sheet |
 | `list_pool` | every canister Casals ever created + pool status |
-| `list_arrangements` / `get_arrangement` | stored arrangements |
-| `estimate_deploy` | idempotent-aware cycles cost estimate for a deploy |
 | `get_cycles_cached` | last `get_cycles` snapshot (instant; may be stale) |
 | `get_cycle_history` | per-canister balance samples (Cycles charts) |
 | `get_treasury_flow` | aggregated treasury deposit/convert/consume buckets |
 | `icrc10_supported_standards` | ICRC-120 / ICRC-121 |
+
+### Declarative sheet
+
+| Method | Purpose |
+|--------|---------|
+| `set_sheet` | store the desired sheet (persisted) |
+| `plan` / `get_plan` / `verify` | compute the reconciliation plan / read a stored plan / assert it is empty |
+| `apply` / `last_apply` | execute plan items / last apply result |
+| `export_sheet` / `get_bindings` / `bind_conductor` | live sheet + bindings (name → canister id) |
 
 ### Orchestra structure & governance
 
@@ -429,7 +260,7 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `set_commander` / `set_permissions` | commander principal + permission keys |
 | `set_settings` | instance settings |
 
-### Lifecycle & sheet
+### Lifecycle
 
 | Method | Purpose |
 |--------|---------|
@@ -443,10 +274,6 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `canister_browse` / `canister_exec` | inspect / call target canisters |
 | `provision_assets` | (re)upload frontend bundle from registry (batched) |
 | `grant_stand_backend_commit` | repair: grant `Commit` on a frontend to the paired stand backend (idempotent; commander + `canister.deploy`) |
-| `set_sheet` / `reset_sheet` | edit persisted desired orchestra |
-| `deploy_sheet` | idempotently reconcile orchestra to live sheet |
-| `apply_arrangement` | run arrangement steps (batched) |
-| `set_arrangement` / `set_active_arrangement` / `delete_arrangement` | manage arrangements |
 
 ### Subnets & pool admin
 
@@ -475,25 +302,12 @@ placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
 ## Sheets & the canister pool
 
 A **sheet** is a single declarative document describing the desired orchestra —
-`Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM by
-`wasm_key`. Sheets hold **no** template/WASM definitions; those are the catalog
-(see below). The default sheet is bundled in `src/default_sheet.py`: a
-**Casals → System** stand with `file_registry`, `file_registry_frontend` (registered), and `multisig`.
-The hello-world demo is `seed/sheets/demo.json` (opt-in via `seed.py --deploy --sheet`).
+`Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM.
+The hello-world demo is `seed/sheets/demo.json` (`casals up seed/sheets/demo.json`).
 
-The live sheet is **persistent**: it is stored in stable storage (the bundled
-default only seeds the first boot) and survives restarts/upgrades. `set_sheet`
-edits + persists it; nothing changes on-chain until `deploy_sheet`, which
-**idempotently** reconciles real canisters to the sheet:
-
-- create any missing section / stand;
-- create any missing canister — **reusing a free pooled canister** before paying to
-  create a new one;
-- reinstall a canister whose authorized WASM no longer matches the sheet;
-- **retire** any canister not in the sheet: its canister is stopped and returned to
-  the pool (never deleted), ready to be reused;
-- **self-heal orphans**: pool entries marked `in_use` with no live Canister record
-  are freed before provisioning.
+The live sheet is **persistent**: it is stored in stable storage and survives
+restarts/upgrades. `set_sheet` edits + persists it; nothing changes on-chain
+until a plan is applied.
 
 The pool (`PooledCanister` entity, stable memory) is the list of every canister
 Casals has ever created. Because creation is expensive, canisters are recycled,
@@ -530,54 +344,6 @@ creatable subnets filtered by the active whitelist.
 
 Section / stand / sheet JSON may also specify `subnet` (explicit principal) or
 `subnet_type` (e.g. `fiduciary`) as desired placement for new canisters.
-
-## Arrangements (declarative post-deploy config)
-
-A **sheet** stands up canisters (code); an **arrangement** configures them
-afterwards (state). An `Arrangement` (entity in `models.py`, stored in stable
-memory) is a named, ordered list of steps:
-
-```json
-{ "target": "<canister name or raw id>", "method": "<method>", "args": <json|null> }
-```
-
-Each step is executed as a **single-text-in / text-out** call: `args` is
-serialized to one JSON string and passed as the method's only `text` argument
-(so target methods must have the shape `(text) -> (text)`). `target` resolves to
-a registered canister name when possible, otherwise it is treated as a raw
-canister id — letting an arrangement address canisters Casals does not manage in
-its tree (e.g. a consumer's backends).
-
-- **Best-effort & idempotent.** A failing step is recorded as an
-  `arrangement_step_failed` event and the remaining steps still run; re-applying
-  converges because steps set desired state. Design target methods to be
-  idempotent (upsert).
-- **Batched.** `apply_arrangement` runs only `steps[offset : offset+limit]` per
-  call (to stay within one message's instruction budget) and returns
-  `next_offset` / `done`; the caller advances `offset` until `done`.
-- **One active at a time.** `set_active_arrangement` is exclusive — activating one
-  deactivates the others.
-
-This is how a consumer drives post-deploy configuration after a sheet reinstall
-— e.g. calling `greet` on each hello-world backend in the demo orchestra:
-
-```json
-{
-  "name": "demo-post-deploy",
-  "steps": [
-    { "target": "motoko-backend", "method": "greet", "args": { "name": "Motoko" } },
-    { "target": "rust-backend", "method": "greet", "args": { "name": "Rust" } },
-    { "target": "python-backend", "method": "greet", "args": { "name": "Python" } }
-  ]
-}
-```
-
-Consumer-specific steps (extensions, branding, registry hooks, etc.) live in the
-consumer's own arrangement files, not in Casals lifecycle code. Casals does **not**
-embed consumer-specific post-provision hooks (e.g. resyncing extension frontends after
-a bundle upload). Those steps belong as explicit arrangement entries and are applied
-via `apply_arrangement` (or `deploy_sheet` with `apply_arrangement: true`) after the
-sheet is reconciled.
 
 ## Asset provisioning & the paired-backend Commit grant
 
@@ -657,55 +423,3 @@ funding instructions (ledger account ID + `deposit-cycles` CLI).
 > funds — it does **not restart** a canister that already stopped from cycle
 > starvation. If a canister drains to a stop, top it up *and* call `start_canister`;
 > a `reinstall` will not auto-start a stopped canister.
-
-## Catalog templates & seeding
-
-`scripts/seed.py` wires Casals to the deployed file-registry, uploads catalog
-WASMs, and authorizes them. With `--deploy` it also runs `deploy_sheet` on the
-bundled bootstrap sheet (Casals/System). Sources live in `templates/`, prebuilt
-(gzipped) WASMs in `seed/templates/`:
-
-| Key | Runtime | Source |
-|-----|---------|--------|
-| `hello-world-rust` | Rust (ic-cdk) | `templates/hello-world-rust/` |
-| `hello-world-motoko` | Motoko | `templates/hello-world-motoko/` |
-| `hello-world-basilisk` | Basilisk (Python) | `templates/hello-world-basilisk/` |
-| `hello-world-frontend` | DFINITY certified-assets canister (kind `frontend`) | committed wasm + `seed/assets/index.html` |
-
-A `frontend` template carries an `asset` in `templates.json` (a file under
-`seed/assets/`). `seed.py` uploads both the WASM and the asset to the registry
-and records the asset's location on the authorized WASM; when Casals provisions a
-canister from it, it installs the assets canister with `(null)`, grants itself
-`Commit`, and `store`s the asset at `/index.html` so the canister serves a page.
-
-The WASMs are **committed** so the seed step needs no Rust/Motoko toolchains.
-The build embeds each template's Candid as public `candid:service` metadata
-(via `ic-wasm`) so the Candid UI can introspect a deployed canister. Rebuild only
-when changing a template (needs cargo + `wasm32-unknown-unknown`, `ic-mops` for
-Motoko, and `ic-wasm`):
-
-```bash
-make build-templates    # regenerates seed/templates/*.wasm.gz
-git add seed/templates && git commit -m "chore: rebuild templates"
-```
-
-`seed/templates.json` is the **catalog**: which committed WASMs to upload to the
-file-registry and authorize on Casals. Re-running is idempotent.
-
-```bash
-make seed                              # catalog only, local
-make seed-ic                           # catalog only, IC mainnet
-python3 scripts/seed.py -e local --deploy                  # catalog + bootstrap Casals/System
-python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json   # opt-in demo orchestra
-make seed-demo                         # demo sheet + arrangement + orchestration wiring
-```
-
-**`seed.py` flags:** `--deploy` (run `deploy_sheet`), `--sheet PATH` (sheet file;
-default: bundled bootstrap), `--wire-registry-only` (registry settings only;
-`make deploy` uses this), `--arrangement NAME`, `--arrangement-only`,
-`--apply-arrangement`, `--config-dir`.
-
-> The file-registry does **not** compute a SHA-256 on chain (hashing multi-MB
-> WASMs exceeds the IC single-message instruction limit under WASI CPython).
-> The uploader supplies the hash for metadata; integrity is enforced when Casals
-> installs the WASM and checks the IC `module_hash` against the authorized hash.

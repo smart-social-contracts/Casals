@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build Baton + Multisig WASMs and write gzipped artifacts into seed/templates/.
-# Committed artifacts let seed.py authorize them without rebuilding on every deploy.
+# Committed artifacts let sheets reference them without rebuilding on every deploy.
 #
 # Usage:  scripts/build_orchestration_templates.sh
 set -euo pipefail

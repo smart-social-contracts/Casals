@@ -10,8 +10,10 @@ from commanders import list_commanders
 from config_call import call_text_method_gen
 from cycles import _status_cycles, _ic_run_status
 from helpers import unwrap_call_result
-from lifecycle import _canister_info_gen
+from lifecycle import _canister_info_gen, _list_registry_files
+from services import AssetCanisterService
 from models import AuthorizedWasm, Canister, PooledCanister, Section, Stand
+from views import stand_members
 from orchestration_bridge import _baton_status_gen, _multisig_list_signers_gen
 from sheetv2 import (
     MULTISIG_NAME,
@@ -91,14 +93,15 @@ def _stand_views() -> dict[str, dict]:
         out[name] = {
             "exists": True,
             "section": sec.name if sec else "",
+            "members": stand_members(stand),
             "commanders": list_commanders(stand),
         }
     return out
 
 
-def stand_sections() -> dict[str, str]:
-    """stand name → section name, for `materialize`."""
-    return {n: v["section"] for n, v in _stand_views().items()}
+def live_stands() -> dict[str, dict]:
+    """stand name → {section, members}, for `materialize`."""
+    return {n: {"section": v["section"], "members": v["members"]} for n, v in _stand_views().items()}
 
 
 def _conductor_commanders() -> list:
@@ -147,6 +150,8 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
         "multisig": {},
         "batons": {},
         "config_queries": {},
+        "assets": {},
+        "published": {},
         "known_ids": _known_canister_ids(),
         "bindings": dict(bindings or {}),
     }
@@ -201,5 +206,36 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
                 state["config_queries"][qkey] = yield from call_text_method_gen(cid, query, None)
             except Exception as e:
                 state["config_queries"][qkey] = {"error": str(e)}
+        if (canister.get("content") or canister.get("files")) and state["canisters"][cname].get("module_hash"):
+            try:
+                state["assets"][cname] = yield from _asset_hashes_gen(cid)
+            except Exception as e:
+                state["assets"][cname] = {"error": str(e)}
+        ns = canister.get("content")
+        if ns and ns not in state["published"]:
+            try:
+                files = yield from _list_registry_files(ns)
+                state["published"][ns] = {f["path"]: {"sha256": f.get("sha256", ""), "content_type": f.get("content_type", "")}
+                                          for f in files if f.get("path")}
+            except Exception as e:
+                state["published"][ns] = {"error": str(e)}
 
     return state
+
+
+def _asset_hashes_gen(cid: str) -> dict[str, str]:
+    """Generator: `{"/key": sha256hex}` of the identity encoding of every asset
+    (`list` is paged: 100 entries per call by default)."""
+    asset = AssetCanisterService(Principal.from_str(cid))
+    out = {}
+    start, page = 0, 100
+    while True:
+        res = yield asset.list({"start": start, "length": page})
+        entries = unwrap_call_result(res) or []
+        for entry in entries:
+            for enc in entry.get("encodings") or []:
+                if enc.get("content_encoding") == "identity" and enc.get("sha256"):
+                    out[entry["key"]] = bytes(enc["sha256"]).hex()
+        if len(entries) < page:
+            return out
+        start += page

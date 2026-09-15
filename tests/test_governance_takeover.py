@@ -238,12 +238,6 @@ def _refresh_controllers_cache() -> None:
     assert isinstance(res, dict) and res.get("ok") is True, res
 
 
-def _orchestration_status(multisig_name: str = "multisig") -> dict:
-    res = call_canister("orchestration_status", json.dumps({"multisig": multisig_name}))
-    assert isinstance(res, dict) and res.get("ok") is True, res
-    return res
-
-
 def _propose(multisig_id: str, candid: str) -> int:
     if len(candid) > 100_000:
         raw = _call_raw_args_file(multisig_id, "propose", candid)
@@ -447,11 +441,9 @@ class TestGovernanceTakeover:
     """Multisig can recover from production-style controller lockout."""
 
     def test_01_baseline_topology(self, gov_env):
-        status = _orchestration_status("multisig")
-        linked = (status.get("multisig") or {}).get("canister_id", "").strip()
+        linked = _tree_canister(call_canister("get_tree"), "multisig").get("canister_id", "").strip()
         assert linked == gov_env["multisig_id"], (
-            f"orchestration_status multisig link mismatch: status={status!r} "
-            f"expected {gov_env['multisig_id']}"
+            f"get_tree multisig link mismatch: {linked!r} expected {gov_env['multisig_id']}"
         )
 
         signers_text = _call_raw(gov_env["multisig_id"], "list_signers", "()")

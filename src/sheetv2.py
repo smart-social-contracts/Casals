@@ -15,7 +15,6 @@ SCHEMA_VERSION = 2
 MODES = frozenset({"managed", "adopted"})
 KINDS = frozenset({"backend", "frontend"})
 UPGRADES = frozenset({"upgrade", "reinstall"})
-STAND_ROLES = frozenset({"backend", "frontend", "baton"})
 CONDUCTOR_KEYS = ("backend", "frontend", "file_registry", "file_registry_frontend")
 CONDUCTOR_NAMES = {
     "backend": "casals-backend",
@@ -24,6 +23,7 @@ CONDUCTOR_NAMES = {
     "file_registry_frontend": "file-registry-frontend",
 }
 SYNTHETIC_SECTION_CONDUCTOR = "Casals"
+TEMPLATE_STAND: dict = {"__template__": True}  # stand context marker: `$stand.*` stays a token
 SYNTHETIC_STAND_CONDUCTOR = "conductor"
 SYNTHETIC_SECTION_GOVERNANCE = "System"
 SYNTHETIC_STAND_GOVERNANCE = "governance"
@@ -55,10 +55,16 @@ def find_placeholder_tokens(text: str) -> list[str]:
             return tokens
         rest = text[i:]
         token = None
-        for bare in _BARE_PLACEHOLDERS:
-            if rest.startswith(bare) and not (len(rest) > len(bare) and rest[len(bare)] in _NAME_CHARS):
-                token = bare
-                break
+        if rest.startswith("${"):  # `${canister:x}` delimits a placeholder inside a word (URLs)
+            end = rest.find("}")
+            inner = "$" + rest[2:end]
+            if end > 2 and find_placeholder_tokens(inner) == [inner]:
+                token = rest[:end + 1]
+        if token is None:
+            for bare in _BARE_PLACEHOLDERS:
+                if rest.startswith(bare) and not (len(rest) > len(bare) and rest[len(bare)] in _NAME_CHARS):
+                    token = bare
+                    break
         if token is None:
             for prefix in _PREFIXED_PLACEHOLDERS:
                 if rest.startswith(prefix):
@@ -74,6 +80,16 @@ def find_placeholder_tokens(text: str) -> list[str]:
             continue
         tokens.append(token)
         i += len(token)
+
+
+def _as_text(value: Any) -> str:
+    """A resolved value spliced into a string: text as is, anything else as
+    JSON (`true`, `3`, `null`) so it reads the same in JS, JSON and Candid."""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _unbrace(token: str) -> str:
+    return "$" + token[2:-1] if token.startswith("${") else token
 
 
 class UnresolvedPlaceholder(Exception):
@@ -99,7 +115,7 @@ def find_placeholders(value: Any) -> set[str]:
     """Return every placeholder token found in nested dict/list/str values."""
     found: set[str] = set()
     if isinstance(value, str):
-        found.update(find_placeholder_tokens(value))
+        found.update(_unbrace(t) for t in find_placeholder_tokens(value))
     elif isinstance(value, dict):
         for v in value.values():
             found.update(find_placeholders(v))
@@ -179,33 +195,42 @@ def baton_managed_members(stand: dict) -> list[dict]:
     baton = stand.get("baton")
     if not isinstance(baton, dict) or not baton.get("hand_off") or stand_member(stand, "baton") is None:
         return []
-    members = (stand_member(stand, role) for role in baton.get("manages") or [])
-    return [m for m in members if m]
+    return [m for role in baton.get("manages") or [] for m in stand_members(stand, role)]
 
 
 def stand_member(stand: dict, role: str) -> dict | None:
-    """Return the canister in ``stand`` whose kind or name suffix matches ``role``."""
+    """The canister in ``stand`` playing ``role``: name suffix `-<role>`
+    (`-baton`, `-token`, …); for `backend`/`frontend` the `kind` also counts,
+    batons excluded."""
     role = (role or "").strip().lower()
-    if role not in STAND_ROLES:
+    if not role:
         return None
     canisters = [c for c in (stand.get("canisters") or []) if isinstance(c, dict)]
-    if role == "baton":
-        for canister in canisters:
-            if canister.get("name", "").endswith("-baton"):
-                return canister
-        return None
-    matches: list[dict] = []
     for canister in canisters:
-        cname = canister.get("name", "")
-        if cname.endswith("-baton"):
+        if canister.get("name", "").endswith("-" + role):
+            return canister
+    if role in ("backend", "frontend"):
+        for canister in canisters:
+            if canister.get("kind") == role and not canister.get("name", "").endswith("-baton"):
+                return canister
+    return None
+
+
+def stand_members(stand: dict, role: str) -> list[dict]:
+    """Every canister in ``stand`` playing ``role``, numbered ones included
+    (`-quarter` matches `alpha-quarter-1`, `alpha-quarter-2`)."""
+    role = (role or "").strip().lower()
+    if not role:
+        return []
+    one = stand_member(stand, role)
+    out = [one] if one else []
+    for c in stand.get("canisters") or []:
+        if not isinstance(c, dict) or c is one:
             continue
-        if canister.get("kind") == role:
-            matches.append(canister)
-        elif role == "backend" and cname.endswith("-backend"):
-            matches.append(canister)
-        elif role == "frontend" and cname.endswith("-frontend"):
-            matches.append(canister)
-    return matches[0] if matches else None
+        head, _, tail = c.get("name", "").rpartition("-")
+        if tail.isdigit() and head.endswith("-" + role):
+            out.append(c)
+    return out
 
 
 def iter_canisters(sheet: dict) -> Iterator[tuple[dict, dict, str, dict]]:
@@ -253,7 +278,7 @@ def resolve_partial(
                     return value
                 raise
         out = value
-        for token in tokens:
+        for token in sorted(set(tokens), key=len, reverse=True):  # `$env.a.bc` before its prefix `$env.a.b`
             try:
                 replacement = _resolve_token(token, path, stand, env_data, ctx)
             except UnresolvedPlaceholder as exc:
@@ -263,7 +288,7 @@ def resolve_partial(
                 raise
             if not isinstance(replacement, (str, int, float, bool)) and replacement is not None:
                 raise UnresolvedPlaceholder(token, path)
-            out = out.replace(token, str(replacement))
+            out = out.replace(token, _as_text(replacement))
         return out
 
     copied = json.loads(json.dumps(sheet))
@@ -300,15 +325,15 @@ def resolve_partial(
             for j, canister in enumerate(tmpl.get("canisters") or []):
                 if isinstance(canister, dict):
                     _resolve_canister_tree(
-                        canister, f"{spath}.stand_template.canisters[{j}]", None, resolve_value
+                        canister, f"{spath}.stand_template.canisters[{j}]", TEMPLATE_STAND, resolve_value
                     )
             if "controllers" in tmpl:
                 tmpl["controllers"] = resolve_value(
-                    tmpl["controllers"], f"{spath}.stand_template.controllers", None
+                    tmpl["controllers"], f"{spath}.stand_template.controllers", TEMPLATE_STAND
                 )
             if "commanders" in tmpl:
                 tmpl["commanders"] = resolve_value(
-                    tmpl["commanders"], f"{spath}.stand_template.commanders", None
+                    tmpl["commanders"], f"{spath}.stand_template.commanders", TEMPLATE_STAND
                 )
             if "created_by" in tmpl:
                 tmpl["created_by"] = resolve_value(
@@ -319,7 +344,7 @@ def resolve_partial(
                 continue
             stpath = f"{spath}.stands[{j}]"
             if "commanders" in stand:
-                stand["commanders"] = resolve_value(stand["commanders"], f"{stpath}.commanders", None)
+                stand["commanders"] = resolve_value(stand["commanders"], f"{stpath}.commanders", stand)
             if isinstance(stand.get("baton"), dict):
                 stand["baton"] = resolve_value(stand["baton"], f"{stpath}.baton", stand)
             for k, canister in enumerate(stand.get("canisters") or []):
@@ -511,6 +536,23 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
         _validate_cycles_block(canister["cycles"], f"{path}.cycles", errors)
     if in_sections and not canister.get("name"):
         errors.append(f"{path}.name is required")
+    if "content" in canister and not (isinstance(canister["content"], str) and canister["content"].strip()):
+        errors.append(f"{path}.content must be a registry.publish path")
+    files = canister.get("files")
+    if files is not None and not (
+        isinstance(files, dict)
+        and all(isinstance(k, str) and k.startswith("/") and isinstance(v, str) for k, v in files.items())
+    ):
+        errors.append(f"{path}.files must map '/key' to text")
+    if "content" in canister or files:
+        if kind != "frontend":
+            errors.append(f"{path}: content/files are for kind frontend")
+        if isinstance(controllers, list) and "$self" not in controllers:
+            errors.append(f"{path}: content/files need $self among controllers (Casals writes the assets)")
+    if "optional" in canister and not isinstance(canister["optional"], bool):
+        errors.append(f"{path}.optional must be a boolean")
+    if "{n}" in (canister.get("name") or "") and not canister.get("optional"):
+        errors.append(f"{path}.name: numbered members ({{n}}) must be optional")
 
 
 def _validate_config_entry(entry: Any, path: str, errors: list[str]) -> None:
@@ -533,6 +575,10 @@ def _validate_converged_when(value: Any, path: str, errors: list[str]) -> None:
         errors.append(f"{path}.query must be a string")
     if "equals_args" in value and not isinstance(value["equals_args"], bool):
         errors.append(f"{path}.equals_args must be a boolean")
+    if "contains" in value and not isinstance(value["contains"], dict):
+        errors.append(f"{path}.contains must be an object")
+    if sum(k in value for k in ("equals_args", "contains", "equals")) > 1:
+        errors.append(f"{path}: use one of equals_args, contains, equals")
 
 
 def _validate_health(value: Any, path: str, errors: list[str]) -> None:
@@ -670,6 +716,26 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
                 errors.append(f"{path}.{field} is required")
         if env == "production" and not entry.get("sha256"):
             errors.append(f"{path}.sha256 is required for production")
+    publish = registry.get("publish", [])
+    if not isinstance(publish, list):
+        errors.append("registry.publish must be a list")
+        return
+    published = set()
+    for i, entry in enumerate(publish):
+        path = f"registry.publish[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{path} must be an object")
+            continue
+        for field in ("path", "source"):
+            if not isinstance(entry.get(field), str) or not entry[field].strip():
+                errors.append(f"{path}.{field} is required")
+        if entry.get("path", "").startswith(WASM_NAMESPACE + "/"):
+            errors.append(f"{path}.path may not start with '{WASM_NAMESPACE}/'")
+        published.add(entry.get("path"))
+    for _s, _st, name, canister in iter_canisters(sheet):
+        content = canister.get("content")
+        if content and content not in published:
+            errors.append(f"canister {name}: content '{content}' has no registry.publish entry")
 
 
 def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
@@ -720,18 +786,15 @@ def _check_raw_principals(value: Any, path: str, errors: list[str]) -> None:
 
 
 def _looks_like_raw_principal(value: str) -> bool:
-    """True when ``value`` looks like a literal IC principal/canister id."""
-    text = value.strip()
-    if not text or text.startswith("$") or "@" in text:
+    """True when ``value`` is in IC principal text form: dash-separated groups of
+    five base32 chars and a 2–3 char tail (`rrkah-fqaaa-aaaaa-aaaaq-cai`, `aaaaa-aa`)."""
+    segments = value.strip().lower().split("-")
+    if len(segments) < 2:
         return False
-    segments = text.split("-")
-    if len(segments) < 2 or not all(seg.isalnum() for seg in segments):
-        return False
-    if len(segments) >= 5:
-        return True
-    if len(segments) <= 3 and len(text) < 30:
-        return False
-    return len(text) >= 27
+    body, last = segments[:-1], segments[-1]
+    alphabet = set("abcdefghijklmnopqrstuvwxyz234567")
+    return (all(len(seg) == 5 and set(seg) <= alphabet for seg in body)
+            and 2 <= len(last) <= 3 and set(last) <= alphabet)
 
 
 def _validate_lockout_conductor(controllers: Any, commanders: Any, errors: list[str]) -> None:
@@ -813,19 +876,25 @@ def _validate_placeholders_for_env(
                 continue
             stpath = f"sections[{si}].stands[{sj}]"
             if "commanders" in stand:
-                check(stand["commanders"], f"{stpath}.commanders", None)
+                check(stand["commanders"], f"{stpath}.commanders", stand)
             if isinstance(stand.get("baton"), dict):
                 check(stand["baton"], f"{stpath}.baton", stand)
         if isinstance(section.get("stand_template"), dict):
             tmpl = section["stand_template"]
+            # `$stand.<role>` inside the template refers to the rendered stand, with every member present.
+            sample = instantiate_template_stand(tmpl, "stand", [c.get("name", "").replace("{n}", "1") for c in tmpl.get("canisters") or [] if isinstance(c, dict)])
             for i, canister in enumerate(tmpl.get("canisters") or []):
                 if isinstance(canister, dict):
                     _walk_for_placeholders(
-                        canister, f"sections[{si}].stand_template.canisters[{i}]", None, check
+                        canister, f"sections[{si}].stand_template.canisters[{i}]", sample, check
                     )
-            for field in ("created_by", "controllers", "commanders"):
+            if isinstance(tmpl.get("baton"), dict):
+                check(tmpl["baton"], f"sections[{si}].stand_template.baton", sample)
+            for field in ("created_by", "controllers"):
                 if field in tmpl:
                     check(tmpl[field], f"sections[{si}].stand_template.{field}", None)
+            if "commanders" in tmpl:
+                check(tmpl["commanders"], f"sections[{si}].stand_template.commanders", sample)
 
 
 def _walk_for_placeholders(obj: Any, path: str, stand: dict | None, check) -> None:
@@ -872,8 +941,6 @@ def _check_placeholder(
         role = token.split(".", 1)[1]
         if stand is None:
             errors.append(f"{path}: {token} requires a stand context")
-        elif role not in STAND_ROLES:
-            errors.append(f"{path}: {token} has unsupported stand role")
         elif stand_member(stand, role) is None:
             errors.append(f"{path}: {token} has no matching canister in stand")
         return
@@ -918,6 +985,7 @@ def _resolve_token(
     env_data: dict,
     ctx: ResolveContext,
 ) -> Any:
+    token = _unbrace(token)
     if token == "$multisig":
         cid = ctx.canister_ids.get(MULTISIG_NAME)
         if not cid:
@@ -938,6 +1006,8 @@ def _resolve_token(
             raise UnresolvedPlaceholder(token, path)
         return cid
     if token.startswith("$stand."):
+        if stand is TEMPLATE_STAND:
+            return token  # a template is rendered per stand later; keep the token
         if stand is None:
             raise UnresolvedPlaceholder(token, path)
         role = token.split(".", 1)[1]
@@ -962,6 +1032,9 @@ def _resolve_token(
         val = _env_get(env_data, key)
         if val is _MISSING:
             raise UnresolvedPlaceholder(token, path)
+        if isinstance(val, str):  # an env value may itself hold placeholders (a portal URL with a canister id)
+            for inner in find_placeholder_tokens(val):
+                val = val.replace(inner, _as_text(_resolve_token(inner, path, stand, env_data, ctx)))
         return val
     raise UnresolvedPlaceholder(token, path)
 
@@ -995,21 +1068,71 @@ def glob_match(name: str, pattern: str) -> bool:
     return pos <= len(name) - len(parts[-1])
 
 
-def instantiate_template_stand(template: dict, stand_name: str) -> dict:
-    """A `stand_template` rendered for one stand: `{stand}` in canister names."""
-    spec = json.loads(json.dumps({k: v for k, v in template.items() if k in ("canisters", "commanders", "baton")}))
+def template_member_match(template_name: str, member: str, stand_name: str) -> dict | None:
+    """Does `member` (given as `{stand}-token`, `e2e-token`, `{stand}-quarter-3`, …)
+    name the template canister `template_name`? Returns the substitutions
+    (`{"n": "3"}` for numbered members) or None."""
+    pattern = template_name.replace("{stand}", stand_name)
+    member = member.replace("{stand}", stand_name)
+    if "{n}" not in pattern:
+        return {} if member == pattern else None
+    prefix, suffix = pattern.split("{n}", 1)
+    middle = member[len(prefix):len(member) - len(suffix)] if suffix else member[len(prefix):]
+    if member.startswith(prefix) and member.endswith(suffix) and middle.isdigit():
+        return {"n": middle}
+    return None
+
+
+def template_members(template: dict, stand_name: str, members: list[str] | None) -> list[tuple[dict, dict]]:
+    """The template canisters a stand gets, as `(canister, substitutions)`:
+    every required one, plus each `optional: true` one named in `members`
+    (numbered members — `{n}` in the template name — once per number)."""
+    out: list[tuple[dict, dict]] = []
+    for c in template.get("canisters") or []:
+        if not isinstance(c, dict):
+            continue
+        if not c.get("optional"):
+            out.append((c, {}))
+            continue
+        chosen: dict[str, dict] = {}
+        for m in members or []:
+            subs = template_member_match(c.get("name", ""), m, stand_name)
+            if subs is not None:
+                chosen[subs.get("n", "")] = subs
+        out.extend((c, chosen[n]) for n in sorted(chosen, key=lambda n: int(n or 0)))
+    return out
+
+
+def unknown_members(template: dict, stand_name: str, members: list[str]) -> list[str]:
+    """Members that name no `optional: true` template canister."""
+    optional = [c for c in template.get("canisters") or [] if isinstance(c, dict) and c.get("optional")]
+    return [m for m in members
+            if not any(template_member_match(c.get("name", ""), m, stand_name) is not None for c in optional)]
+
+
+def instantiate_template_stand(template: dict, stand_name: str, members: list[str] | None = None) -> dict:
+    """A `stand_template` rendered for one stand: `{stand}` (and `{n}` for
+    numbered members) substituted in every string of each canister — names,
+    install args, files. `optional: true` canisters are kept only when named
+    in `members`."""
+    canisters = []
+    for c, subs in template_members(template, stand_name, members):
+        text = json.dumps({k: v for k, v in c.items() if k != "optional"})
+        for key, val in subs.items():
+            text = text.replace("{" + key + "}", val)
+        canisters.append(json.loads(text))
+    spec = {k: v for k, v in template.items() if k in ("commanders", "baton")}
+    spec = json.loads(json.dumps(spec).replace("{stand}", stand_name))
+    spec["canisters"] = [json.loads(json.dumps(c).replace("{stand}", stand_name)) for c in canisters]
     spec["name"] = stand_name
-    for c in spec.get("canisters") or []:
-        if isinstance(c.get("name"), str):
-            c["name"] = c["name"].replace("{stand}", stand_name)
     return spec
 
 
-def materialize(sheet: dict, live_stands: dict[str, str]) -> dict:
-    """Copy of the sheet where every live stand (name → section) matching a
-    section's `stand_template` is a declared stand, and the template's
-    `created_by` holds `stand.create` on the section. Planner, oracle and
-    `show` all reason about this one declared world."""
+def materialize(sheet: dict, live_stands: dict[str, dict]) -> dict:
+    """Copy of the sheet where every live stand (name → {section, members})
+    matching a section's `stand_template` is a declared stand, and the
+    template's `created_by` holds `stand.create` on the section. Planner,
+    oracle and `show` all reason about this one declared world."""
     out = json.loads(json.dumps(sheet))
     for section in out.get("sections") or []:
         tmpl = section.get("stand_template")
@@ -1020,7 +1143,8 @@ def materialize(sheet: dict, live_stands: dict[str, str]) -> dict:
                                      {"principal": tmpl["created_by"], "permissions": ["stand.create"]}]
         stands = section.setdefault("stands", [])
         declared = {st.get("name") for st in stands}
-        for name, sec_name in sorted(live_stands.items()):
-            if sec_name == section.get("name") and name not in declared and glob_match(name, tmpl.get("name_pattern") or ""):
-                stands.append(instantiate_template_stand(tmpl, name))
+        for name, live in sorted(live_stands.items()):
+            if live.get("section") == section.get("name") and name not in declared \
+                    and glob_match(name, tmpl.get("name_pattern") or ""):
+                stands.append(instantiate_template_stand(tmpl, name, live.get("members")))
     return out

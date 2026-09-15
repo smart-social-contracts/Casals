@@ -310,6 +310,17 @@ def test_env_scalar_in_string():
         sv2.resolve(sheet, "local", ctx)
 
 
+def test_non_text_values_spliced_into_strings_render_as_json():
+    """`test_mode:$env.flags.ii_bypass` must read `true`, not Python's `True`."""
+    sheet = _load_corpus("minimal")
+    sheet["environments"]["local"]["flags"] = {"ii_bypass": True, "n": 3, "none": None}
+    sheet["sections"][0]["stands"][0]["canisters"][0]["install_arg"] = {
+        "msg": "ii=$env.flags.ii_bypass n=$env.flags.n x=$env.flags.none"
+    }
+    resolved = sv2.resolve(sheet, "local", _ctx(sheet))
+    assert resolved["sections"][0]["stands"][0]["canisters"][0]["install_arg"]["msg"] == "ii=true n=3 x=null"
+
+
 def test_environments_and_env_block():
     sheet = _load_corpus("minimal")
     assert sv2.environments(sheet) == ["local"]
@@ -322,3 +333,44 @@ def test_apply_requires_proposal_lookup():
     assert sv2.apply_requires_proposal(gov, "production")
     assert not sv2.apply_requires_proposal(gov, "local")
     assert sv2.apply_requires_proposal({"governance": {"apply_requires_proposal": True}}, "local")
+
+
+# ── numbered optional template members (auto-scaling) ────────────────────────
+
+_TEMPLATE = {
+    "name_pattern": "realm-*",
+    "canisters": [
+        {"name": "{stand}-backend", "kind": "backend"},
+        {"name": "{stand}-token", "optional": True},
+        {"name": "{stand}-quarter-{n}", "optional": True, "install_arg": "(record { index = {n} : nat })"},
+    ],
+    "baton": {"manages": ["backend", "quarter"], "hand_off": True},
+}
+
+
+def test_template_members_numbered_and_optional():
+    spec = sv2.instantiate_template_stand(
+        _TEMPLATE, "realm-a", ["{stand}-token", "realm-a-quarter-3", "{stand}-quarter-1", "{stand}-quarter-3"])
+    names = [c["name"] for c in spec["canisters"]]
+    assert names == ["realm-a-backend", "realm-a-token", "realm-a-quarter-1", "realm-a-quarter-3"]
+    assert spec["canisters"][-1]["install_arg"] == "(record { index = 3 : nat })"
+    assert "optional" not in spec["canisters"][1]
+
+
+def test_unknown_members_rejected():
+    assert sv2.unknown_members(_TEMPLATE, "realm-a", ["realm-a-quarter-x", "{stand}-nft", "realm-a-token"]) == [
+        "realm-a-quarter-x", "{stand}-nft"]
+
+
+def test_stand_members_includes_numbered_roles():
+    spec = sv2.instantiate_template_stand(_TEMPLATE, "realm-a", ["{stand}-quarter-1", "{stand}-quarter-2"])
+    assert [c["name"] for c in sv2.stand_members(spec, "quarter")] == ["realm-a-quarter-1", "realm-a-quarter-2"]
+    assert [c["name"] for c in sv2.stand_members(spec, "backend")] == ["realm-a-backend"]
+
+
+def test_numbered_member_must_be_optional():
+    sheet = _load_corpus("dynamic-stands")
+    tmpl = sheet["sections"][1]["stand_template"]
+    tmpl["canisters"].append({"name": "{stand}-shard-{n}", "kind": "backend", "mode": "managed",
+                              "wasm": "hello-world-rust@1.0.0", "controllers": ["$self"]})
+    assert any("numbered members ({n}) must be optional" in e for e in sv2.validate(sheet, "local"))

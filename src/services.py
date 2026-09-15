@@ -15,7 +15,9 @@ from basilisk import (
     Record,
     Service,
     Variant,
+    Vec,
     blob,
+    nat,
     service_query,
     service_update,
     text,
@@ -71,12 +73,33 @@ class StoreArg(Record):
     sha256: Opt[blob]
 
 
+class ListArgs(Record):
+    start: Opt[nat]
+    length: Opt[nat]
+
+
+class AssetEncoding(Record):
+    content_encoding: text
+    sha256: Opt[blob]
+    length: nat
+    modified: int
+
+
+class AssetEntry(Record):
+    key: text
+    content_type: text
+    encodings: Vec[AssetEncoding]
+
+
 class AssetCanisterService(Service):
     @service_update
     def grant_permission(self, arg: GrantPermissionArg) -> void: ...
 
     @service_update
     def store(self, arg: StoreArg) -> void: ...
+
+    @service_query
+    def list(self, arg: ListArgs) -> Vec[AssetEntry]: ...
 
 
 # ── Basilisk introspection relay ──────────────────────────────────────────

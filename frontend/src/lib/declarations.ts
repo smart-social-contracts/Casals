@@ -18,12 +18,6 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     get_sheet:             IDL.Func([], [IDL.Text], ['query']),
     list_pool:             IDL.Func([], [IDL.Text], ['query']),
     pool_remove:           IDL.Func([IDL.Text], [IDL.Text], []),
-    list_arrangements:     IDL.Func([], [IDL.Text], ['query']),
-    get_arrangement:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
-    set_arrangement:       IDL.Func([IDL.Text], [IDL.Text], []),
-    set_active_arrangement: IDL.Func([IDL.Text], [IDL.Text], []),
-    delete_arrangement:    IDL.Func([IDL.Text], [IDL.Text], []),
-    apply_arrangement:     IDL.Func([IDL.Text], [IDL.Text], []),
 
     // ── cycles management ──
     get_cycles:            IDL.Func([], [IDL.Text], []),
@@ -38,10 +32,13 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     reconcile:             IDL.Func([], [IDL.Text], []),
     set_cycle_policy:      IDL.Func([IDL.Text], [IDL.Text], []),
 
-    // ── sheet (persistent desired-orchestra) ──
+    // ── sheet (persistent desired-orchestra) + plan / apply ──
     set_sheet:             IDL.Func([IDL.Text], [IDL.Text], []),
-    reset_sheet:           IDL.Func([], [IDL.Text], []),
-    deploy_sheet:          IDL.Func([IDL.Text], [IDL.Text], []),
+    plan:                  IDL.Func([IDL.Text], [IDL.Text], []),
+    verify:                IDL.Func([], [IDL.Text], []),
+    apply:                 IDL.Func([IDL.Text], [IDL.Text], []),
+    get_plan:              IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    last_apply:            IDL.Func([], [IDL.Text], ['query']),
 
     // ── governance / registration ──
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
@@ -58,12 +55,6 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_principal_alias:   IDL.Func([IDL.Text], [IDL.Text], []),
     delete_principal_alias: IDL.Func([IDL.Text], [IDL.Text], []),
     list_backend_controllers: IDL.Func([IDL.Text], [IDL.Text], []),
-    list_orchestration_actions: IDL.Func([], [IDL.Text], ['query']),
-    get_orchestration_policies: IDL.Func([IDL.Text], [IDL.Text], ['query']),
-    set_orchestration_policies: IDL.Func([IDL.Text], [IDL.Text], []),
-    list_governance_requests: IDL.Func([IDL.Text], [IDL.Text], ['query']),
-    approve_governance_request: IDL.Func([IDL.Text], [IDL.Text], []),
-    reject_governance_request: IDL.Func([IDL.Text], [IDL.Text], []),
     rename_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     rename_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     rename_canister:          IDL.Func([IDL.Text], [IDL.Text], []),
@@ -88,15 +79,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_log_visibility:    IDL.Func([IDL.Text], [IDL.Text], []),
     canister_browse:          IDL.Func([IDL.Text], [IDL.Text], []),
     canister_exec:            IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_status:     IDL.Func([IDL.Text], [IDL.Text], ['query']),
-    orchestration_refresh:    IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_hand_to_baton: IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_configure_baton: IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_prepare_managed_upgrade: IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_prepare_asset_provision: IDL.Func([IDL.Text], [IDL.Text], []),
-    orchestration_execute_action: IDL.Func([IDL.Text], [IDL.Text], []),
     list_subnets:          IDL.Func([], [IDL.Text], []),
-    estimate_deploy:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
     refresh_fx:            IDL.Func([], [IDL.Text], []),
     sync_controllers:      IDL.Func([IDL.Text], [IDL.Text], []),
     refresh_controllers_cache: IDL.Func([IDL.Text], [IDL.Text], []),

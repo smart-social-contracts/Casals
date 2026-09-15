@@ -10,6 +10,7 @@ from sheetv2 import (
     CONDUCTOR_NAMES,
     baton_managed_members,
     stand_member,
+    stand_members,
     MULTISIG_NAME,
     SYNTHETIC_SECTION_CONDUCTOR,
     SYNTHETIC_STAND_CONDUCTOR,
@@ -36,6 +37,7 @@ PHASE = {
     "reinstall_code": 325,
     "configure_multisig": 350,
     "config_call": 400,
+    "sync_assets": 410,
     "configure_baton": 500,
     "hand_off": 510,
     "top_up": 520,
@@ -99,6 +101,8 @@ class _PlanContext:
         self.auth_wasms = live_state.get("authorized_wasms") or {}
         self.known_ids = live_state.get("known_ids") or {}
         self.config_queries = live_state.get("config_queries") or {}
+        self.assets = live_state.get("assets") or {}
+        self.published = live_state.get("published") or {}
         self.sheet_names = set(canister_names(self.sheet))
         self.reuse_pool = bool((sheet.get("cycles") or {}).get("reuse_pool"))
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
@@ -113,6 +117,34 @@ class _PlanContext:
             return False
         self.deferred.append({"target": name, "field": field, "waiting_for": sorted(tokens)})
         return True
+
+    def _plan_assets(self, spec: dict, name: str, cid: str, section: str, stand: str,
+                     live_ctls: list, si: int, sj: int) -> None:
+        """`content` (a published registry namespace) and `files` (rendered text)
+        are the frontend's desired asset set, compared by sha256 per key. Keys
+        the asset canister has beyond that set are left alone."""
+        desired = desired_assets(spec, self.published)
+        if desired is None:
+            self.unverifiable.append({"target": name, "field": "content",
+                                      "reason": f"registry namespace {spec.get('content')} unreadable"})
+            return
+        if self.defer_if_unresolved(spec.get("files"), name, "files"):
+            return
+        live = self.assets.get(name)
+        if not isinstance(live, dict) or live.get("error"):
+            self.unverifiable.append({"target": name, "field": "assets",
+                                      "reason": (live or {}).get("error") or "asset list unavailable"})
+            return
+        keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)
+        if keys:
+            self.add(
+                "sync_assets",
+                {"name": name, "canister_id": cid, "section": section, "stand": stand},
+                f"sync {len(keys)} asset(s) into {name}",
+                requires="self" if self.self_id in live_ctls else "multisig",
+                desired={"content": spec.get("content"), "keys": keys, "all_keys": sorted(desired)},
+                section_order=si, stand_order=sj,
+            )
 
     def binding(self, name: str) -> str:
         return (self.bindings.get(name) or "").strip()
@@ -310,8 +342,8 @@ class _PlanContext:
             )
         if baton_spec.get("hand_off"):
             managed_live = bat_live.get("managed_canisters") or []
-            members = [stand_member(stand_spec, role) for role in baton_spec.get("manages") or []]
-            missing = [m["name"] for m in members if m and self.binding(m["name"])
+            members = [m for role in baton_spec.get("manages") or [] for m in stand_members(stand_spec, role)]
+            missing = [m["name"] for m in members if self.binding(m["name"])
                        and self.binding(m["name"]) not in managed_live]
             if missing:
                 self.add(
@@ -372,6 +404,8 @@ class _PlanContext:
         code_requires = "self" if self.self_id in live_ctls else "multisig"
         if mode == "managed":
             if not live_hash:
+                if self.defer_if_unresolved(spec.get("install_arg"), name, "install_arg"):
+                    return
                 self.add(
                     "install_code",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
@@ -434,21 +468,26 @@ class _PlanContext:
             if not isinstance(cfg, dict):
                 continue
             cw = cfg.get("converged_when")
-            needs = True
+            needs, current = True, {}
             if isinstance(cw, dict):
                 query = (cw.get("query") or "").strip()
                 qkey = f"{name}:{query}"
-                expected = cfg.get("args") if cw.get("equals_args") else cw.get("equals")
+                expected = cfg.get("args") if cw.get("equals_args") else cw.get("contains", cw.get("equals"))
                 actual = self.config_queries.get(qkey)
                 needs = actual is None or not _config_converged(actual, expected, cw)
+                current = {"query": query, "reply": actual if isinstance(actual, dict) else str(actual)[:400]}
             if needs and not self.defer_if_unresolved(cfg.get("args"), name, f"config.{cfg.get('method')}"):
                 self.add(
                     "config_call",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
                     f"config {name}.{cfg.get('method')}",
+                    current=current,
                     desired={"method": cfg.get("method"), "args": cfg.get("args")},
                     section_order=si, stand_order=sj,
                 )
+
+        if not stopped and (spec.get("content") or spec.get("files")):
+            self._plan_assets(spec, name, cid, section, stand, live_ctls, si, sj)
 
         if live_ctls != desired_ctls and not self.defer_if_unresolved(desired_ctls, name, "controllers"):
             err = _lockout_controllers(name, live_ctls, desired_ctls, self.self_id)
@@ -602,17 +641,39 @@ def _lockout_controllers(name, live_ctls, desired_ctls, self_id) -> str | None:
     return None
 
 
+def desired_assets(spec: dict, published: dict) -> dict[str, str] | None:
+    """`{"/key": sha256}` a frontend must serve: every file of its `content`
+    namespace plus its rendered `files`. None when the namespace is unreadable."""
+    out: dict[str, str] = {}
+    ns = spec.get("content")
+    if ns:
+        files = published.get(ns)
+        if not isinstance(files, dict) or files.get("error"):
+            return None
+        for path, meta in files.items():
+            out["/" + path.lstrip("/")] = meta.get("sha256", "")
+    for key, text in (spec.get("files") or {}).items():
+        out[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return out
+
+
 def _config_converged(actual, expected, cw: dict) -> bool:
-    """`equals_args`: every declared key reads back equal (the canister may report
-    more); `equals`: the reply is exactly the given value."""
+    """`equals_args` / `contains`: every given key reads back equal (the canister
+    may report more); `equals`: the reply is exactly the given value."""
     if isinstance(actual, dict) and actual.get("error"):
         return False
     if isinstance(actual, str):
-        try:
-            actual = json.loads(actual)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    if cw.get("equals_args") and isinstance(actual, dict) and isinstance(expected, dict):
+        if actual == expected:
+            return True
+        # Only decode what is JSON: the canister's json.loads is lenient and
+        # reads `6y4zs-…` (a canister id) as the number 6.
+        s = actual.strip()
+        if s[:1] in '{["' or s in ("true", "false", "null") or s.lstrip("-").replace(".", "", 1).isdigit():
+            try:
+                actual = json.loads(s)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    if (cw.get("equals_args") or "contains" in cw) and isinstance(actual, dict) and isinstance(expected, dict):
         return all(actual.get(k) == v for k, v in expected.items())
     return actual == expected
 

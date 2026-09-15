@@ -123,7 +123,7 @@ function fixtureTree(): Tree {
 }
 
 test('buildControlGraph emits IC controller and commander edges', () => {
-  const graph = buildControlGraph(fixtureTree(), null, [], {
+  const graph = buildControlGraph(fixtureTree(), [], {
     layers: DEFAULT_CONTROL_GRAPH_LAYERS,
     casalsBackendId: CASALS,
   });
@@ -145,7 +145,7 @@ test('buildControlGraph omits uphill IC edges between orchestra tiers', () => {
   assert.ok(multisig);
   multisig.controllers = [MULTISIG, CASALS];
 
-  const graph = buildControlGraph(tree, null, [], { casalsBackendId: CASALS });
+  const graph = buildControlGraph(tree, [], { casalsBackendId: CASALS });
 
   assert.ok(
     graph.edges.some(
@@ -203,7 +203,7 @@ test('inferManagedCanistersFromStand links same-stand peers without controller c
   assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
 });
 
-test('buildControlGraph infers baton_manages without orchestration status', () => {
+test('buildControlGraph infers baton_manages from stand topology without controller cache', () => {
   const tree = fixtureTree();
   for (const sec of tree.sections) {
     for (const stand of sec.stands) {
@@ -214,7 +214,6 @@ test('buildControlGraph infers baton_manages without orchestration status', () =
   }
   const graph = buildControlGraph(
     tree,
-    null,
     [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
     { casalsBackendId: CASALS },
   );
@@ -222,22 +221,10 @@ test('buildControlGraph infers baton_manages without orchestration status', () =
   assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_FE}`));
 });
 
-test('buildControlGraph adds baton edges from orchestration status', () => {
+test('buildControlGraph adds baton edges from cached controllers', () => {
   const graph = buildControlGraph(
     fixtureTree(),
-    {
-      ok: true,
-      batons: [
-        {
-          name: 'testrealm7-baton',
-          canister_id: BATON,
-          config: { top_commander: CASALS },
-          commanders: [{ principal: CASALS }, { principal: REALM_BE }],
-          managed_canisters: [REALM_BE, REALM_FE],
-        },
-      ],
-    },
-    [{ name: 'testrealm7-baton', canister_id: BATON, managed_canisters: [REALM_BE, REALM_FE] }],
+    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
     { casalsBackendId: CASALS },
   );
 
@@ -251,14 +238,13 @@ test('buildControlGraph adds baton edges from orchestration status', () => {
 });
 
 test('buildControlGraph respects layer toggles', () => {
-  const full = buildControlGraph(fixtureTree(), null, [], {
+  const full = buildControlGraph(fixtureTree(), [], {
     layers: DEFAULT_CONTROL_GRAPH_LAYERS,
   });
   const graph = filterControlGraphByEdgeTypes(full, {
     ic_controller: false,
     casals_commander: true,
     baton_top_commander: false,
-    baton_commander: false,
     baton_manages: false,
   });
   assert.equal(graph.edges.every((e) => e.type === 'casals_commander'), true);
@@ -267,25 +253,13 @@ test('buildControlGraph respects layer toggles', () => {
 test('filterControlGraphByEdgeTypes can hide a single edge type', () => {
   const full = buildControlGraph(
     fixtureTree(),
-    {
-      ok: true,
-      batons: [
-        {
-          name: 'testrealm7-baton',
-          canister_id: BATON,
-          config: { top_commander: CASALS },
-          managed_canisters: [REALM_BE, REALM_FE],
-        },
-      ],
-    },
-    [{ name: 'testrealm7-baton', canister_id: BATON, managed_canisters: [REALM_BE, REALM_FE] }],
+    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
     { casalsBackendId: CASALS },
   );
   const graph = filterControlGraphByEdgeTypes(full, {
     ic_controller: true,
     casals_commander: true,
     baton_top_commander: true,
-    baton_commander: true,
     baton_manages: false,
   });
   assert.ok(full.edges.some((e) => e.type === 'baton_manages'));
@@ -293,7 +267,7 @@ test('filterControlGraphByEdgeTypes can hide a single edge type', () => {
 });
 
 test('layoutControlGraph assigns positions by rank', () => {
-  const graph = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const graph = buildControlGraph(fixtureTree(), [], { casalsBackendId: CASALS });
   const positions = layoutControlGraph(graph, 900);
   const multisig = positions.get(`canister:${MULTISIG}`);
   const frontend = positions.get(`canister:${REALM_FE}`);
@@ -338,7 +312,7 @@ test('frozenGraphViewport keeps a fixed origin while dragging', () => {
 });
 
 test('filterControlGraph hides canisters in a disabled section', () => {
-  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const full = buildControlGraph(fixtureTree(), [], { casalsBackendId: CASALS });
   const filtered = filterControlGraph(full, {
     hiddenSections: new Set(['Deployments']),
     hiddenStands: new Set(),
@@ -350,7 +324,7 @@ test('filterControlGraph hides canisters in a disabled section', () => {
 });
 
 test('filterControlGraph hides a single canister', () => {
-  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const full = buildControlGraph(fixtureTree(), [], { casalsBackendId: CASALS });
   const filtered = filterControlGraph(full, {
     hiddenSections: new Set(),
     hiddenStands: new Set(),
@@ -361,7 +335,7 @@ test('filterControlGraph hides a single canister', () => {
 });
 
 test('filterControlGraph hides a principal node', () => {
-  const full = buildControlGraph(fixtureTree(), null, [], { casalsBackendId: CASALS });
+  const full = buildControlGraph(fixtureTree(), [], { casalsBackendId: CASALS });
   const filtered = filterControlGraph(full, {
     hiddenSections: new Set(),
     hiddenStands: new Set(),

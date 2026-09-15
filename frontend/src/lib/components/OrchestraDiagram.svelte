@@ -1,12 +1,10 @@
 <script lang="ts">
-  import type { Tree, Canister, OrchestrationStatus } from '$lib/api';
+  import type { Tree, Canister } from '$lib/api';
   import { shortHash, canisterLink } from '$lib/api';
   import { colorAt } from '$lib/charts';
   import {
     sortCanistersForDisplay,
-    mergeBatonStatus,
     findBatonsInTree,
-    resolveBatons,
     canisterGovernanceMeta,
     governanceConsolePath,
     isBatonCanister,
@@ -17,21 +15,15 @@
 
   interface Props {
     tree: Tree;
-    orchestrationStatus?: OrchestrationStatus | null;
   }
 
-  let {
-    tree,
-    orchestrationStatus = null,
-  }: Props = $props();
+  let { tree }: Props = $props();
 
   type HoverTarget = { section: string; stand: string; canister: Canister };
 
   let hovered = $state<HoverTarget | null>(null);
 
-  const batons = $derived(
-    mergeBatonStatus(findBatonsInTree(tree), resolveBatons(orchestrationStatus, tree)),
-  );
+  const batons = $derived(findBatonsInTree(tree));
 
   const totalCanisters = $derived(
     tree.sections.reduce((n, sec) => n + sec.stands.reduce((m, d) => m + d.canisters.length, 0), 0),

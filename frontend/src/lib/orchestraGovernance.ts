@@ -1,6 +1,6 @@
 /** Orchestra governance helpers — multisig, batons, controllers, managed-canister links. */
 
-import type { Canister, Tree, Section, Stand, OrchestrationStatus, BatonStatus } from './api';
+import type { Canister, Tree, Section, Stand } from './api';
 import {
   isBatonWasm,
   isMultisigWasm,
@@ -20,8 +20,6 @@ export interface BatonRef {
   canister_id: string;
   section?: string;
   stand?: string;
-  managed_canisters?: string[];
-  casals_is_commander?: boolean;
 }
 
 export interface CanisterGovernanceMeta {
@@ -68,36 +66,6 @@ export function findBatonsInTree(tree: Tree | null | undefined): LocatedCanister
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function resolveBatons(
-  status: OrchestrationStatus | null | undefined,
-  tree: Tree | null | undefined,
-): BatonRef[] {
-  if (status?.batons?.length) {
-    return status.batons.map((b) => ({
-      name: b.name,
-      canister_id: b.canister_id,
-      section: b.section,
-      stand: b.stand,
-      managed_canisters: b.managed_canisters,
-      casals_is_commander: b.casals_is_commander,
-    }));
-  }
-  if (status?.baton?.canister_id) {
-    return [{
-      name: status.baton.name,
-      canister_id: status.baton.canister_id,
-      managed_canisters: status.managed_canisters,
-      casals_is_commander: status.casals_is_commander,
-    }];
-  }
-  return findBatonsInTree(tree).map((c) => ({
-    name: c.name,
-    canister_id: c.canister_id,
-    section: c.section,
-    stand: c.stand,
-  }));
-}
-
 export function batonForStand(tree: Tree | null | undefined, standName: string): LocatedCanister | null {
   if (!tree || !standName) return null;
   for (const sec of tree.sections) {
@@ -120,9 +88,6 @@ export function managedByBaton(
 ): BatonRef | null {
   if (!canister.canister_id || isBatonCanister(canister) || isMultisigCanister(canister)) {
     return null;
-  }
-  for (const b of batons) {
-    if (b.managed_canisters?.includes(canister.canister_id)) return b;
   }
   for (const b of batons) {
     if (batonControlsTarget(tree, b.canister_id, canister.canister_id)) return b;
@@ -168,29 +133,6 @@ export function controllerEntries(
     const label = controllerLabel(principal, labels);
     return { principal, display: label.display, title: label.title };
   });
-}
-
-export function mergeBatonStatus(
-  treeBatons: LocatedCanister[],
-  statusBatons: BatonRef[],
-): BatonRef[] {
-  const byId = new Map<string, BatonRef>();
-  for (const b of statusBatons) {
-    if (b.canister_id) byId.set(b.canister_id, b);
-  }
-  for (const c of treeBatons) {
-    if (!c.canister_id) continue;
-    const existing = byId.get(c.canister_id);
-    byId.set(c.canister_id, {
-      name: c.name,
-      canister_id: c.canister_id,
-      section: c.section,
-      stand: c.stand,
-      managed_canisters: existing?.managed_canisters,
-      casals_is_commander: existing?.casals_is_commander,
-    });
-  }
-  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function countGovernanceCanisters(tree: Tree | null | undefined): {

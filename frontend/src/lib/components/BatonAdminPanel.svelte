@@ -1,7 +1,7 @@
 <script lang="ts">
   import { get } from 'svelte/store';
   import type { Tree } from '$lib/api';
-  import { casalsMetadata, orchestrationHandToBaton, refreshControllersCache } from '$lib/api';
+  import { casalsMetadata } from '$lib/api';
   import { identity, isAuthenticated, loginInternetIdentity, principal } from '$lib/auth';
   import {
     BATON_CAPABILITIES,
@@ -19,12 +19,7 @@
     type BatonUpgradeApprovalPolicy,
   } from '$lib/batonClient';
   import { batonEligibleApprovers, batonSupportsQuorumApproval } from '$lib/batonApproval';
-  import {
-    batonControlsTarget,
-    batonNameById,
-    canisterNameById,
-    findCanisterInTree,
-  } from '$lib/orchestrationNav';
+  import { batonControlsTarget, findCanisterInTree } from '$lib/orchestrationNav';
   import { toasts } from '$lib/stores/toast';
 
   interface Props {
@@ -346,31 +341,6 @@
     }
   }
 
-  async function wireIcControllers(managedCanisterId: string) {
-    error = '';
-    if (!$isAuthenticated) {
-      error = 'Login required';
-      return;
-    }
-    const targetName = canisterNameById(tree, managedCanisterId);
-    const batonName = batonNameById(tree, canisterId);
-    if (!targetName || !batonName) {
-      error = 'Could not resolve orchestra names for target and Baton — check the sheet tree.';
-      return;
-    }
-    busy = true;
-    try {
-      await orchestrationHandToBaton(targetName, batonName);
-      await refreshControllersCache().catch(() => {});
-      toasts.success(`${targetName}: Baton added as IC controller`);
-      onsuccess?.();
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      busy = false;
-    }
-  }
-
   function managedLabel(id: string): string {
     const c = findCanisterInTree(tree, id);
     if (c?.name) return `${c.name} (${id.slice(0, 5)}…)`;
@@ -633,20 +603,11 @@
                 </div>
                 {#if batonControlsTarget(tree, canisterId, mid)}
                   <span class="badge badge-ok text-xs">Baton is IC controller</span>
-                {:else if isTopCommander || $isAuthenticated}
-                  <div class="space-y-1">
-                    <p class="text-xs text-amber-700">
-                      Baton is registered but not an IC controller — upgrades cannot run until wired.
-                    </p>
-                    <button
-                      type="button"
-                      class="btn-secondary btn-sm"
-                      disabled={busy}
-                      onclick={() => wireIcControllers(mid)}
-                    >
-                      Wire IC controllers
-                    </button>
-                  </div>
+                {:else}
+                  <p class="text-xs text-amber-700">
+                    Baton is registered but not an IC controller — declare it in the sheet's controllers and
+                    apply from <a href="/plan" class="underline">Plan / Drift</a>.
+                  </p>
                 {/if}
               </div>
             {/each}

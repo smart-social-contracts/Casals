@@ -10,8 +10,8 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import arrangement_helpers  # noqa: E402
 import auth         # noqa: E402
+import config_call  # noqa: E402
 import util         # noqa: E402
 import views        # noqa: E402
 import wasm_helpers # noqa: E402
@@ -866,173 +866,17 @@ def test_stand_view_exposes_commanders_array():
     assert v["commanders"][0]["principal"] == "sec-cmd"
 
 
-# ── arrangement_helpers: candid_text_tuple ───────────────────────────────────
+# ── config_call: candid_text_tuple ───────────────────────────────────
 
 def test_candid_text_tuple_escapes_quotes_and_backslashes():
-    assert arrangement_helpers.candid_text_tuple("hi") == '("hi")'
+    assert config_call.candid_text_tuple("hi") == '("hi")'
     # A JSON arg with quotes/backslashes must be escaped so the Candid literal is valid.
-    assert arrangement_helpers.candid_text_tuple('{"a":"b"}') == '("{\\"a\\":\\"b\\"}")'
-    assert arrangement_helpers.candid_text_tuple("a\\b") == '("a\\\\b")'
+    assert config_call.candid_text_tuple('{"a":"b"}') == '("{\\"a\\":\\"b\\"}")'
+    assert config_call.candid_text_tuple("a\\b") == '("a\\\\b")'
 
 
 def test_candid_text_tuple_none_is_empty_string():
-    assert arrangement_helpers.candid_text_tuple(None) == '("")'
-
-
-# ── arrangement_helpers: step_text_arg ───────────────────────────────────────
-
-def test_step_text_arg_none_is_none():
-    assert arrangement_helpers.step_text_arg(None) is None
-
-
-def test_step_text_arg_string_passes_through():
-    assert arrangement_helpers.step_text_arg("Casals") == "Casals"
-
-
-def test_step_text_arg_object_is_json_serialized():
-    assert arrangement_helpers.step_text_arg({"test_mode": True}) == '{"test_mode": true}'
-
-
-def test_step_text_arg_list_is_json_serialized():
-    assert arrangement_helpers.step_text_arg([1, 2]) == "[1, 2]"
-
-
-# ── arrangement_helpers: validate_and_normalize_steps ────────────────────────
-
-def test_validate_steps_accepts_list_and_normalizes():
-    steps = [{"target": " python-backend ", "method": " greet ", "args": "hi"}]
-    out = arrangement_helpers.validate_and_normalize_steps(steps)
-    assert out == [{"target": "python-backend", "method": "greet", "args": "hi"}]
-
-
-def test_validate_steps_accepts_json_string():
-    out = arrangement_helpers.validate_and_normalize_steps(
-        '[{"target": "c", "method": "m"}]'
-    )
-    assert out == [{"target": "c", "method": "m", "args": None}]
-
-
-def test_validate_steps_none_and_empty():
-    assert arrangement_helpers.validate_and_normalize_steps(None) == []
-    assert arrangement_helpers.validate_and_normalize_steps([]) == []
-    assert arrangement_helpers.validate_and_normalize_steps("[]") == []
-
-
-def test_validate_steps_preserves_args_object():
-    out = arrangement_helpers.validate_and_normalize_steps(
-        [{"target": "c", "method": "set_canister_config", "args": {"x": 1}}]
-    )
-    assert out[0]["args"] == {"x": 1}
-
-
-def test_validate_steps_rejects_non_list():
-    with pytest.raises(ValueError):
-        arrangement_helpers.validate_and_normalize_steps({"target": "c", "method": "m"})
-
-
-def test_validate_steps_rejects_non_object_step():
-    with pytest.raises(ValueError):
-        arrangement_helpers.validate_and_normalize_steps(["not-an-object"])
-
-
-def test_validate_steps_rejects_missing_target():
-    with pytest.raises(ValueError):
-        arrangement_helpers.validate_and_normalize_steps([{"method": "m"}])
-
-
-def test_validate_steps_rejects_missing_method():
-    with pytest.raises(ValueError):
-        arrangement_helpers.validate_and_normalize_steps([{"target": "c"}])
-
-
-def test_validate_steps_rejects_bad_json():
-    with pytest.raises(ValueError):
-        arrangement_helpers.validate_and_normalize_steps("{not json")
-
-
-# ── arrangement_helpers: execute_principals ────────────────────────────────
-
-def test_normalize_execute_principals_list():
-    out = arrangement_helpers.normalize_execute_principals([
-        " abc ", "def", "abc", "",
-    ])
-    assert out == ["abc", "def"]
-
-
-def test_normalize_execute_principals_json_string():
-    out = arrangement_helpers.normalize_execute_principals('["p1", "p2"]')
-    assert out == ["p1", "p2"]
-
-
-def test_normalize_execute_principals_none_and_empty():
-    assert arrangement_helpers.normalize_execute_principals(None) == []
-    assert arrangement_helpers.normalize_execute_principals([]) == []
-    assert arrangement_helpers.normalize_execute_principals("") == []
-
-
-def test_normalize_execute_principals_rejects_non_array():
-    with pytest.raises(ValueError):
-        arrangement_helpers.normalize_execute_principals({"p": "x"})
-
-
-def test_parse_execute_principals_json_malformed_returns_empty():
-    assert arrangement_helpers.parse_execute_principals_json("{bad") == []
-
-
-# ── arrangement_helpers: parameter schema + substitution ─────────────────────
-
-def test_substitute_parameters_in_args():
-    out = arrangement_helpers.substitute_parameters(
-        ["$code_hash", {"x": "$name"}],
-        {"code_hash": "abc", "name": "Casals"},
-    )
-    assert out == ["abc", {"x": "Casals"}]
-
-
-def test_substitute_parameters_missing_raises():
-    with pytest.raises(ValueError, match="missing parameter"):
-        arrangement_helpers.substitute_parameters("$missing", {})
-
-
-def test_prepare_apply_parameters_merges_defaults():
-    schema = {"greeting": {"type": "text", "label": "Greeting", "required": True}}
-    steps = [{"target": "c", "method": "m", "args": "$greeting"}]
-    out = arrangement_helpers.prepare_apply_parameters(
-        schema, {"greeting": "default"}, {"greeting": "override"}, steps,
-    )
-    assert out["greeting"] == "override"
-
-
-def test_normalize_parameter_schema():
-    out = arrangement_helpers.normalize_parameter_schema({
-        "code_hash": {"type": "sha256", "label": "Hash", "required": True},
-    })
-    assert out["code_hash"]["type"] == "sha256"
-    assert out["code_hash"]["required"] is True
-
-
-# ── arrangement_helpers: normalize_parameters ────────────────────────────────
-
-def test_normalize_parameters_dict_passthrough():
-    assert arrangement_helpers.normalize_parameters({"A": 1}) == {"A": 1}
-
-
-def test_normalize_parameters_json_string():
-    assert arrangement_helpers.normalize_parameters('{"A": true}') == {"A": True}
-
-
-def test_normalize_parameters_none_is_empty():
-    assert arrangement_helpers.normalize_parameters(None) == {}
-
-
-def test_normalize_parameters_rejects_list():
-    with pytest.raises(ValueError):
-        arrangement_helpers.normalize_parameters([1, 2, 3])
-
-
-def test_normalize_parameters_rejects_bad_json():
-    with pytest.raises(ValueError):
-        arrangement_helpers.normalize_parameters("{bad")
+    assert config_call.candid_text_tuple(None) == '("")'
 
 
 # ── subnets: whitelist ─────────────────────────────────────────────────────
@@ -1193,21 +1037,6 @@ def test_resolve_provision_controllers_baton_and_multisig_exclude_casals(monkeyp
     assert casals not in msig
 
 
-def test_hand_to_baton_tightens_to_baton_plus_extras():
-    """orchestration_hand_to_baton replaces the provision set with [baton] + extras."""
-    import inspect
-    import orchestration_bridge
-
-    src = inspect.getsource(orchestration_bridge._hand_to_baton_gen)
-    assert "desired = _merge_controllers([baton_id], extra)" in src
-    baton_id = "baton-aaaaa-aa"
-    extra = ["extra-deployer"]
-    desired = lifecycle._merge_controllers([baton_id], extra)
-    assert desired == [baton_id, "extra-deployer"]
-    assert "qthgp-casals-conductor" not in desired
-    assert "multisig-aaaaa-aa" not in desired
-
-
 def test_batch_destroy_is_one_proposal_executed_as_multisig():
     """Approved destroy is one proposal with N ids; IC calls run as the multisig."""
     from pathlib import Path
@@ -1345,53 +1174,6 @@ def test_pull_and_install_raises_on_zero_size(monkeypatch):
     next(gen)
     with pytest.raises(Exception, match=r"size=0; re-seed the template"):
         gen.send(None)
-
-
-# ── orchestration_governance ─────────────────────────────────────────────────
-
-def test_create_permission_for_wasm_splits_orchestration():
-    import orchestration_governance as og
-    assert og.create_permission_for_wasm("orchestration-baton@1.2.8") == og.ACTION_ORCHESTRATION_BATON_CREATE
-    assert og.create_permission_for_wasm("orchestration-multisig@1.1.0") == og.ACTION_ORCHESTRATION_MULTISIG_CREATE
-    assert og.create_permission_for_wasm("hello-world-basilisk@1.0.0") == "canister.create"
-
-
-def test_quorum_met_requires_threshold_and_required():
-    import orchestration_governance as og
-    policy = {"threshold": 2, "eligible": ["a", "b"], "required": ["a"]}
-    record = {"approvals": ["a"]}
-    assert og.quorum_met(record, policy) is False
-    record = {"approvals": ["a", "b"]}
-    assert og.quorum_met(record, policy) is True
-    policy = {"threshold": 2, "eligible": ["a", "b"], "required": ["b"]}
-    record = {"approvals": ["a", "b"]}
-    assert og.quorum_met(record, policy) is True
-
-
-def test_auth_includes_orchestration_permissions():
-    keys = {p[0] for p in auth.PERMISSIONS}
-    assert "orchestration.baton.create" in keys
-    assert "orchestration.baton.upgrade" in keys
-    assert "orchestration.multisig.create" in keys
-
-
-def test_platform_controller_eligible_without_section_permission():
-    import orchestration_governance as og
-    policy = {"threshold": 2, "eligible": [], "required": []}
-    assert og.is_approval_eligible(
-        "kpvwp-controller",
-        policy,
-        og.ACTION_ORCHESTRATION_BATON_UPGRADE,
-        "",
-        platform_controller=True,
-    )
-    assert not og.is_approval_eligible(
-        "random-principal",
-        policy,
-        og.ACTION_ORCHESTRATION_BATON_UPGRADE,
-        "canister.deploy",
-        platform_controller=False,
-    )
 
 
 def test_install_mode_candid_motoko_requests_memory_keep():

@@ -71,13 +71,7 @@ After building template artifacts:
 
 ```bash
 make build-orchestration   # writes seed/templates/orchestration-*.wasm.gz
-make deploy && make seed-demo
+python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
 ```
 
-`seed-demo` uploads the orchestration WASMs, deploys the demo sheet, configures multisig (1-of-1 with `LOCAL_CONDUCTOR`), and wires each stand's Baton (`top_commander = multisig` via `$canister:multisig` at install).
-
-## Declarative stand baton topology
-
-A section in the live sheet may declare an optional `stand_template` block (JSON persisted on the section as `stand_template_json`). Placeholders: `{stand}` for the stand name, `$casals` for the conductor principal, and `$canister:<name>` / `$self` for baton install args (same resolution as sheet `install_arg`).
-
-After canisters exist, call `orchestration_release_stand` with `{"stand":"<name>"}` to create the stand's baton (when absent), hand off declared targets that already exist, and configure commanders plus approval policy. The call is idempotent and skips missing hand-off targets. It is gated like other orchestration actions (`orchestration.stand.release`).
+`casals up` publishes the orchestration WASMs, deploys the demo sheet, configures the multisig, and wires each stand's Baton (`top_commander = multisig` via `$canister:multisig` at install) from the sheet's `baton` block.

@@ -62,19 +62,7 @@ from commanders import (
 )
 from cycle_sweep import return_cycles_gen
 from bootstrap import _is_retire_protected
-from orchestration_bridge import (
-    _baton_in_stand,
-    _configure_baton_gen,
-    _execute_baton_action_gen,
-    _hand_to_baton_gen,
-    _list_baton_canisters,
-    _multisig_configure_gen,
-    _orchestration_status_all_gen,
-    _orchestration_status_gen,
-    _prepare_asset_provision_gen,
-    _prepare_managed_upgrade_gen,
-    _release_stand_gen,
-)
+from orchestration_bridge import _multisig_configure_gen
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
 from cycles import (
@@ -176,7 +164,6 @@ from models import (
     AuthorizedWasm,
     CycleSample,
     CyclesSnapshot,
-    GovernanceRequest,
     Stand,
     OrchestrationEvent,
     PooledCanister,
@@ -186,36 +173,6 @@ from models import (
     Canister,
     CanisterKind,
     CanisterStatus,
-)
-from governance_requests import (
-    approve_governance_request_gen,
-    list_governance_requests_view,
-    orchestration_governance_gate,
-    reject_governance_request_gen,
-    _load_request,
-)
-from orchestration_governance import (
-    ACTION_ORCHESTRATION_BATON_HAND_OFF,
-    ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN,
-    ACTION_ORCHESTRATION_STAND_RELEASE,
-    ORCHESTRATION_ACTIONS,
-    ORCHESTRATION_ACTION_LABELS,
-    STATUS_EXECUTED,
-    STATUS_FAILED,
-    STATUS_PENDING,
-    create_permission_for_wasm,
-    list_orchestration_actions_catalog,
-    parse_orchestration_policies,
-    quorum_met,
-    request_payload,
-    upgrade_permission_for_targets,
-)
-from stand_template import (
-    parse_stand_template,
-    require_stand_release_template,
-    resolve_stand_template_for_stand,
-    stand_template_from_section,
-    stand_template_json_to_persist,
 )
 from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from subnets import (
@@ -236,6 +193,7 @@ from util import (
     decide_topup,
     to_hex as _to_hex,
 )
+from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, unknown_members
 from views import _canister_view, _section_view, _stand_view
 from version_http import version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
@@ -250,10 +208,12 @@ from sheet_api import (
     get_bindings_impl,
     get_sheet_impl,
     plan_gen as _plan_gen,
+    reconcile_gen as _reconcile_sheet_gen,
+    reconcile_interval_secs,
     set_sheet_impl,
     verify_gen as _verify_plan_gen,
 )
-from sheet_storage import get_plan_record, load_apply_result
+from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc
 
 # IC HTTP gateway types (GET /version — gos-as-a-service#39).
 # Incoming Header is a Candid tuple, not the outgoing HttpHeader record.
@@ -424,8 +384,48 @@ def _bootstrap() -> None:
         _settings()
         _arm_autopilot()
         _arm_cycle_sampler()
+        _arm_sheet_reconcile()
     except Exception as e:  # pragma: no cover - defensive at install time
         _log.error(f"bootstrap error: {e}")
+
+
+# ── Sheet reconcile timer ─────────────────────────────────────────────────────
+# The conductor converges the orchestra on its own: stands minted at runtime
+# (`create_stand`) get built without anyone running `casals up`.
+
+_sheet_timer_id = None
+
+
+def _sheet_reconcile_cb():
+    """Timer callback (generator; never raises)."""
+    try:
+        summary = yield from _reconcile_sheet_gen()
+        if summary.get("applied"):
+            _append_event("sheet_reconcile", "", {"source": "timer", **{k: v for k, v in summary.items() if k != "failed"}})
+        if summary.get("failed"):
+            _log.error(f"sheet reconcile: {summary['failed']}")
+    except Exception as e:  # pragma: no cover - defensive
+        _log.error(f"sheet reconcile failed: {e}")
+
+
+def _arm_sheet_reconcile() -> None:
+    """(Re)arm from `conductor.settings.reconcile_interval_secs` of the stored
+    sheet; called at init / post_upgrade and after every `set_sheet`."""
+    global _sheet_timer_id
+    try:
+        if _sheet_timer_id is not None:
+            try:
+                ic.clear_timer(_sheet_timer_id)
+            except Exception:
+                pass
+            _sheet_timer_id = None
+        sheet, _env, _sh = load_sheet_doc()
+        interval = reconcile_interval_secs(sheet)
+        if interval > 0:
+            _sheet_timer_id = ic.set_timer_interval(Duration(interval), _sheet_reconcile_cb)
+            _log.info(f"sheet reconcile armed: every {interval}s")
+    except Exception as e:  # pragma: no cover - defensive at install time
+        _log.error(f"could not arm sheet reconcile: {e}")
 
 
 @init
@@ -553,26 +553,17 @@ def _require_sheet_apply() -> None:
     _require_sheet_permission("sheet.apply")
 
 
+def _conductor_commander_can(permission: str) -> bool:
+    """Conductor commanders (`conductor.commanders`, kept on the synthetic
+    `Casals` section) act anywhere their permissions allow."""
+    list(Section.instances())
+    casals = Section[SYNTHETIC_SECTION_CONDUCTOR]
+    return bool(casals) and section_commander_can(casals, _caller(), permission)
+
+
 def _section_commander_can(sec, permission: str) -> bool:
     """True if the caller is a section commander with ``permission``."""
     return section_commander_can(sec, _caller(), permission)
-
-
-def _stand_permissions_for(stand) -> str:
-    """Permission string governing a stand commander (stand grant, else section's)."""
-    caller = _caller()
-    if stand and is_commander(stand, caller):
-        p = permissions_for(stand, caller)
-        if p:
-            return p
-    sec = getattr(stand, "section", None)
-    if sec and is_commander(sec, caller):
-        return permissions_for(sec, caller)
-    p = (getattr(stand, "permissions", "") or "").strip()
-    if p:
-        return p
-    sec = getattr(stand, "section", None)
-    return (getattr(sec, "permissions", "") or "").strip() if sec else ""
 
 
 def _caller_can_manage_subnet_whitelist() -> bool:
@@ -647,11 +638,11 @@ def _require_can_add_in_section(sec, permission: str) -> None:
         return
     if _settings().open_access and _caller() != ANONYMOUS:
         return
-    if _section_commander_can(sec, permission):
+    if _section_commander_can(sec, permission) or _conductor_commander_can(permission):
         return
     raise Exception(
         "unauthorized: caller is not a controller, open access is disabled, and caller "
-        f"is not the section commander holding '{permission}'"
+        f"is neither a conductor commander nor the section commander holding '{permission}'"
     )
 
 
@@ -731,7 +722,6 @@ def get_status() -> text:
         "stands": Stand.count(),
         "canisters": Canister.count(),
         "authorized_wasms": AuthorizedWasm.count(),
-        "arrangements": 0,
         "events": OrchestrationEvent.count(),
         "principal_aliases": PrincipalAlias.count(),
         "cycle_samples": CycleSample.count(),
@@ -1030,7 +1020,9 @@ def set_sheet(args: text) -> text:
     try:
         _require_sheet_permission("sheet.set")
         params = json.loads(args) if args else {}
-        return _ok(**set_sheet_impl(params))
+        result = set_sheet_impl(params)
+        _arm_sheet_reconcile()
+        return _ok(**result)
     except Exception as e:
         return _err(str(e))
 
@@ -1094,10 +1086,13 @@ def export_sheet() -> text:
 
 @query
 def get_plan(args: text) -> text:
-    """Return a stored plan by hash (§5.5)."""
+    """Return a stored plan by hash (§5.5); without a hash, the most recent
+    plan (`plan: null` when none was ever computed)."""
     try:
         params = json.loads(args) if args else {}
         ph = (params.get("plan_hash") or "").strip()
+        if not ph:
+            return _ok(plan=get_plan_record(latest_plan_hash()))
         plan = get_plan_record(ph)
         if not plan:
             return _err("plan not found")
@@ -1254,34 +1249,74 @@ def create_section(args: text) -> text:
 
 @update
 def create_stand(args: text) -> text:
-    """Args (JSON): {section, name, description?, commander_principal?}.
+    """Args (JSON): {section?, name, description?, members?, commander_principal?}.
 
-    Authorized for Casals controllers, open-access callers, or the target
-    section's commander holding the `stand.create` permission (least privilege)."""
+    `members` names the `optional: true` template canisters this stand gets
+    (`{stand}-token`, `{stand}-quarter-3`, …). Calling it again for an existing
+    stand adds members (idempotent union; `section` may then be omitted) — that
+    is how a stand grows at runtime. Authorized for Casals controllers, open-access callers, conductor
+    commanders, the section's commander holding `stand.create`, or — for an
+    existing stand — its own commander holding `stand.create`."""
     try:
         params = json.loads(args)
-        section_name = params["section"].strip()
         name = params["name"].strip()
         list(Section.instances())
+        list(Stand.instances())
+        existing = Stand[name]
+        section_name = (params.get("section") or "").strip()
+        if not section_name:
+            if existing is None or existing.section is None:
+                return _err("section is required to create a stand")
+            section_name = existing.section.name
         sec = Section[section_name]
         if sec is None:
             return _err(f"unknown section '{section_name}'")
+        members = params.get("members") or []
+        if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
+            return _err("members must be a list of canister names")
+        tmpl = _stored_stand_template(section_name)
+        if members and tmpl is None:
+            return _err(f"section '{section_name}' has no stand_template")
+        if members:
+            unknown = unknown_members(tmpl, name, members)
+            if unknown:
+                return _err(f"not optional template members: {', '.join(unknown)}")
+        dk = existing
+        if dk is not None:
+            if dk.section is None or dk.section.name != section_name:
+                return _err(f"stand '{name}' exists in another section")
+            if not (_is_controller() or (_settings().open_access and _caller() != ANONYMOUS)
+                    or entity_has_permission(dk, _caller(), "stand.create")
+                    or _section_commander_can(sec, "stand.create") or _conductor_commander_can("stand.create")):
+                return _err("unauthorized: caller may not add members to this stand")
+            have = json.loads(dk.members_json) if dk.members_json else []
+            merged = sorted(set(have) | set(members))
+            if merged != have:
+                dk.members_json = json.dumps(merged)
+                _append_event("stand_members_added", "", {"name": name, "members": sorted(set(members) - set(have))})
+            return _ok(name=name, members=merged, created=False)
         _require_can_add_in_section(sec, "stand.create")
-        list(Stand.instances())
-        if Stand[name] is not None:
-            return _err(f"stand '{name}' already exists")
         dk = Stand(name=name)
         dk.section = sec
         dk.description = (params.get("description") or "")[:512]
+        dk.members_json = json.dumps(sorted(set(members))) if members else ""
         apply_commanders_from_spec(dk, params)
         dk.subnet = (params.get("subnet") or "").strip()
         dk.subnet_type = (params.get("subnet_type") or "").strip()
         assert_subnet_allowed(dk.subnet, dk.subnet_type)
         dk.created_by = _caller()
         _append_event("stand_created", "", {"section": section_name, "name": name})
-        return _ok(name=name)
+        return _ok(name=name, members=sorted(set(members)), created=True)
     except Exception as e:
         return _err(str(e))
+
+
+def _stored_stand_template(section_name: str) -> dict | None:
+    sheet, _env, _sh = load_sheet_doc()
+    for sec in (sheet or {}).get("sections") or []:
+        if sec.get("name") == section_name and isinstance(sec.get("stand_template"), dict):
+            return sec["stand_template"]
+    return None
 
 
 @update
@@ -2009,15 +2044,8 @@ def create_canister(args: text) -> Async[text]:
         dk = Stand[params["stand"].strip()]
         if dk is None:
             return _err(f"unknown stand '{params['stand']}'")
-        permission = create_permission_for_wasm(params.get("wasm_key", ""))
-        _require_commander(dk, permission)
-        return (yield from orchestration_governance_gate(
-            dk.section,
-            permission,
-            params,
-            lambda: _create_canister_impl_gen(params),
-            permission_grant=_stand_permissions_for(dk),
-        ))
+        _require_commander(dk, "canister.create")
+        return (yield from _create_canister_impl_gen(params))
     except Exception as e:
         _log.error(f"create_canister error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
@@ -2376,26 +2404,17 @@ def upgrade_to(args: text) -> Async[text]:
             st = Canister[params["canister"].strip()]
             if st is None:
                 return _err(f"unknown canister '{params['canister']}'")
-            targets = [st]
             dk = st.stand
         elif params.get("stand"):
             list(Stand.instances())
             dk = Stand[params["stand"].strip()]
             if dk is None:
                 return _err(f"unknown stand '{params['stand']}'")
-            targets = list(dk.canisters or [])
         else:
             return _err("expected 'stand' or 'canister'")
 
-        permission = upgrade_permission_for_targets(targets)
-        _require_commander(dk, permission)
-        return (yield from orchestration_governance_gate(
-            dk.section,
-            permission,
-            params,
-            lambda: _upgrade_to_impl_gen(params),
-            permission_grant=_stand_permissions_for(dk),
-        ))
+        _require_commander(dk, "canister.deploy")
+        return (yield from _upgrade_to_impl_gen(params))
     except Exception as e:
         _log.error(f"upgrade_to error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
@@ -2649,443 +2668,6 @@ def canister_exec(args: text) -> Async[text]:
         return _ok(output=output)
     except Exception as e:
         return _err(f"{e}")
-
-
-# ── Baton managed upgrade (orchestration bridge) ───────────────────────────
-
-def _hand_to_baton_impl_gen(target: str, baton_name: str) -> Async[str]:
-    result = yield from _hand_to_baton_gen(target, baton_name)
-    return _ok(**result)
-
-
-def _release_stand_impl_gen(stand_name: str) -> Async[str]:
-    list(Stand.instances())
-    dk = Stand[stand_name.strip()]
-    if dk is None:
-        return _err(f"unknown stand '{stand_name}'")
-    try:
-        resolved = require_stand_release_template(dk)
-    except ValueError as e:
-        return _err(str(e))
-    result = yield from _release_stand_gen(dk, resolved)
-    return _ok(**result)
-
-
-def _orchestration_execute_impl_gen(params: dict) -> Async[str]:
-    result = yield from _execute_baton_action_gen(
-        params["action_id"],
-        (params.get("baton") or "").strip(),
-    )
-    return _ok(**result)
-
-
-def _execute_governance_payload_gen(action: str, payload: dict) -> Async[str]:
-    if action in (
-        "orchestration.multisig.create",
-        "orchestration.baton.create",
-    ):
-        return (yield from _create_canister_impl_gen(payload))
-    if action == "orchestration.baton.upgrade":
-        return (yield from _upgrade_to_impl_gen(payload))
-    if action == ACTION_ORCHESTRATION_BATON_HAND_OFF:
-        target = (payload.get("target") or payload.get("canister") or "").strip()
-        baton_name = (payload.get("baton") or "").strip()
-        return (yield from _hand_to_baton_impl_gen(target, baton_name))
-    if action == ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN:
-        return (yield from _orchestration_execute_impl_gen(payload))
-    return _err(f"unsupported governance action: {action}")
-
-
-def _section_governance_policy(section, action: str) -> dict:
-    policies = parse_orchestration_policies(getattr(section, "orchestration_policies_json", "") or "")
-    return policies.get(action) or {"threshold": 1, "eligible": [], "required": []}
-
-
-def _finalize_governance_request_gen(request_id: str) -> Async[str]:
-    """Execute a quorum-approved governance request and persist terminal status."""
-    req = _load_request(request_id)
-    if req is None:
-        return _err("unknown governance request")
-    if req.status != STATUS_PENDING:
-        return _err(f"request not actionable: {req.status}")
-
-    list(Section.instances())
-    section = Section[req.section_name]
-    if section is None:
-        return _err(f"unknown section '{req.section_name}'")
-
-    policy = _section_governance_policy(section, req.action)
-    if not quorum_met({"approvals": req.approvals}, policy):
-        return _err("quorum not met")
-
-    payload = request_payload(req)
-    try:
-        exec_res = yield from _execute_governance_payload_gen(req.action, payload)
-        ok = False
-        try:
-            parsed = json.loads(exec_res)
-            ok = bool(parsed.get("ok")) if isinstance(parsed, dict) else False
-        except json.JSONDecodeError:
-            ok = True
-        req.status = STATUS_EXECUTED if ok else STATUS_FAILED
-        req.result_json = exec_res if isinstance(exec_res, str) else json.dumps(exec_res or {})
-        _append_event("governance_executed", "", {
-            "request_id": request_id,
-            "action": req.action,
-            "status": req.status,
-        })
-        if ok:
-            try:
-                merged = json.loads(exec_res)
-                if isinstance(merged, dict):
-                    merged["governance"] = {"request_id": request_id, "status": req.status}
-                    return json.dumps(merged)
-            except json.JSONDecodeError:
-                pass
-        return exec_res
-    except Exception as exc:
-        err = _err(f"{exc} :: {traceback.format_exc()[-400:]}")
-        req.status = STATUS_FAILED
-        req.result_json = err
-        _append_event("governance_executed", "", {
-            "request_id": request_id,
-            "action": req.action,
-            "status": STATUS_FAILED,
-            "error": str(exc),
-        })
-        return err
-
-
-@query
-def list_orchestration_actions() -> text:
-    """Catalog of orchestration actions that support N-of-M approval policies."""
-    return json.dumps(list_orchestration_actions_catalog())
-
-
-@query
-def get_orchestration_policies(args: text) -> text:
-    """Args (JSON): {"section": "<name>"}."""
-    try:
-        params = json.loads(args) if args else {}
-        section_name = (params.get("section") or "").strip()
-        if not section_name:
-            return _err("expected 'section'")
-        list(Section.instances())
-        sec = Section[section_name]
-        if sec is None:
-            return _err(f"unknown section '{section_name}'")
-        policies = parse_orchestration_policies(sec.orchestration_policies_json or "")
-        labels = {k: ORCHESTRATION_ACTION_LABELS.get(k, k) for k in ORCHESTRATION_ACTIONS}
-        return _ok(section=section_name, policies=policies, labels=labels)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def set_orchestration_policies(args: text) -> text:
-    """Set per-action N-of-M approval policies for a section. Controller only.
-
-    Args (JSON): {"section": str, "policies": { "<action>": {threshold, eligible[], required[]} }}.
-    """
-    try:
-        _require_admin()
-        params = json.loads(args)
-        section_name = (params.get("section") or "").strip()
-        if not section_name:
-            return _err("expected 'section'")
-        list(Section.instances())
-        sec = Section[section_name]
-        if sec is None:
-            return _err(f"unknown section '{section_name}'")
-        policies = parse_orchestration_policies(params.get("policies"))
-        sec.orchestration_policies_json = json.dumps(policies, separators=(",", ":"))
-        _append_event("orchestration_policies_set", "", {"section": section_name})
-        return _ok(section=section_name, policies=policies)
-    except Exception as e:
-        return _err(str(e))
-
-
-@query
-def list_governance_requests(args: text) -> text:
-    """Args (JSON, optional): {"section": str, "status": str}."""
-    try:
-        params = json.loads(args) if args else {}
-        return list_governance_requests_view(
-            (params.get("section") or "").strip(),
-            (params.get("status") or "").strip(),
-        )
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def approve_governance_request(args: text) -> Async[text]:
-    """Approve a pending orchestration governance request.
-
-    Args (JSON): {"request_id": str}. Executes automatically when quorum is met.
-    """
-    try:
-        params = json.loads(args)
-        request_id = (params.get("request_id") or "").strip()
-        if not request_id:
-            return _err("expected 'request_id'")
-        req = _load_request(request_id)
-        if req is not None and req.status == STATUS_PENDING:
-            list(Section.instances())
-            section = Section[req.section_name]
-            if section is not None:
-                policy = _section_governance_policy(section, req.action)
-                if quorum_met({"approvals": req.approvals}, policy):
-                    return (yield from _finalize_governance_request_gen(request_id))
-
-        res = approve_governance_request_gen(request_id)
-        parsed = json.loads(res)
-        if not parsed.get("ok"):
-            return res
-        if parsed.get("ready_to_execute"):
-            return (yield from _finalize_governance_request_gen(request_id))
-        return res
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def reject_governance_request(args: text) -> Async[text]:
-    """Args (JSON): {"request_id": str}."""
-    try:
-        params = json.loads(args)
-        request_id = (params.get("request_id") or "").strip()
-        if not request_id:
-            return _err("expected 'request_id'")
-        return reject_governance_request_gen(request_id)
-    except Exception as e:
-        return _err(str(e))
-
-
-@query
-def orchestration_status(args: text) -> text:
-    """Read Baton / multisig ids from the orchestra tree (static snapshot).
-
-    Args (JSON, optional): {"multisig": "multisig"}
-    """
-    try:
-        params = json.loads(args) if args else {}
-        multisig_name = (params.get("multisig") or "multisig").strip()
-        list(Canister.instances())
-        multisig_st = Canister[multisig_name]
-        batons = [
-            {"name": st.name, "canister_id": st.canister_id,
-             "stand": st.stand.name if st.stand else "",
-             "section": st.stand.section.name if st.stand and st.stand.section else ""}
-            for st in _list_baton_canisters()
-        ]
-        return _ok(
-            multisig={"name": multisig_name, "canister_id": multisig_st.canister_id if multisig_st else ""},
-            batons=batons,
-            note="Call orchestration_refresh for live Baton state.",
-        )
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_refresh(args: text) -> Async[text]:
-    """Fetch live multisig + every Baton config, commanders, and actions."""
-    try:
-        params = json.loads(args) if args else {}
-        multisig_name = (params.get("multisig") or "multisig").strip()
-        if params.get("baton"):
-            status = yield from _orchestration_status_gen(params["baton"], multisig_name)
-        else:
-            status = yield from _orchestration_status_all_gen(multisig_name)
-        return _ok(**status)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_hand_to_baton(args: text) -> Async[text]:
-    """Hand a managed canister to Baton (co-controller + register).
-
-    Args (JSON): {"target": "<canister name>", "baton": "baton"}
-    """
-    try:
-        params = json.loads(args)
-        target = (params.get("target") or params.get("canister") or "").strip()
-        if not target:
-            return _err("expected 'target' canister name")
-        list(Canister.instances())
-        st = Canister[target]
-        if st is None:
-            return _err(f"unknown canister '{target}'")
-        _require_commander(st.stand, ACTION_ORCHESTRATION_BATON_HAND_OFF)
-        baton_name = (params.get("baton") or "").strip()
-        section = st.stand.section if st.stand else None
-        return (yield from orchestration_governance_gate(
-            section,
-            ACTION_ORCHESTRATION_BATON_HAND_OFF,
-            params,
-            lambda: _hand_to_baton_impl_gen(target, baton_name),
-            permission_grant=_stand_permissions_for(st.stand),
-        ))
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_configure_baton(args: text) -> Async[text]:
-    """Register commanders and the upgrade approval policy on a stand's Baton.
-
-    Args (JSON): {"stand": "<stand>" | "baton": "<canister name>",
-                  "commanders": [<principal> | {"principal", "capabilities"}...],
-                  "approval_policy": {"threshold", "eligible", "required"}?}
-
-    Casals must be the Baton's top commander. Authorized by the stand/section
-    commander holding orchestration.baton.hand_off (or a Casals controller).
-    """
-    try:
-        params = json.loads(args)
-        list(Canister.instances())
-        baton_name = (params.get("baton") or "").strip()
-        if baton_name:
-            baton_st = Canister[baton_name]
-            if baton_st is None or not (baton_st.canister_id or "").strip():
-                return _err(f"unknown baton canister '{baton_name}'")
-        else:
-            stand_name = (params.get("stand") or "").strip()
-            if not stand_name:
-                return _err("expected 'baton' or 'stand'")
-            list(Stand.instances())
-            dk = Stand[stand_name]
-            if dk is None:
-                return _err(f"unknown stand '{stand_name}'")
-            baton_st = _baton_in_stand(dk)
-        _require_commander(baton_st.stand, ACTION_ORCHESTRATION_BATON_HAND_OFF)
-        result = yield from _configure_baton_gen(
-            baton_st,
-            commanders=params.get("commanders") or [],
-            approval_policy=params.get("approval_policy"),
-        )
-        return _ok(**result)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_release_stand(args: text) -> Async[text]:
-    """Apply the section stand_template baton topology for one stand.
-
-    Args (JSON): {"stand": "<stand name>"}
-    """
-    try:
-        params = json.loads(args)
-        stand_name = (params.get("stand") or "").strip()
-        if not stand_name:
-            return _err("expected 'stand'")
-        list(Stand.instances())
-        dk = Stand[stand_name]
-        if dk is None:
-            return _err(f"unknown stand '{stand_name}'")
-        _require_commander(dk, ACTION_ORCHESTRATION_STAND_RELEASE)
-        section = dk.section
-        return (yield from orchestration_governance_gate(
-            section,
-            ACTION_ORCHESTRATION_STAND_RELEASE,
-            params,
-            lambda: _release_stand_impl_gen(stand_name),
-            permission_grant=_stand_permissions_for(dk),
-        ))
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_prepare_managed_upgrade(args: text) -> Async[text]:
-    """Stage WASM, propose a Baton managed upgrade, and submit approval.
-
-    Args (JSON): {"target": "<canister>", "wasm_key": "<authorized key>", "baton": "baton"}
-    """
-    try:
-        params = json.loads(args)
-        target = (params.get("target") or params.get("canister") or "").strip()
-        wasm_key = (params.get("wasm_key") or "").strip()
-        if not target or not wasm_key:
-            return _err("expected 'target' and 'wasm_key'")
-        list(Canister.instances())
-        st = Canister[target]
-        if st is None:
-            return _err(f"unknown canister '{target}'")
-        _require_commander(st.stand, "canister.deploy")
-        baton_name = (params.get("baton") or "").strip()
-        result = yield from _prepare_managed_upgrade_gen(target, wasm_key, baton_name)
-        return _ok(**result)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_prepare_asset_provision(args: text) -> Async[text]:
-    """Propose a Baton managed_asset_provision (frontend bundle re-provision)
-    and submit Casals' approval. Under a 2-of-2 policy the consumer backend must
-    still approve before the Baton executes.
-
-    Args (JSON): {"target": "<frontend canister>", "wasm_key"?: "<frontend template>",
-                  "bundle_namespace"?: "<registry namespace>", "baton"?: "<name>"}
-    """
-    try:
-        params = json.loads(args)
-        target = (params.get("target") or params.get("canister") or "").strip()
-        if not target:
-            return _err("expected 'target' canister name")
-        list(Canister.instances())
-        st = Canister[target]
-        if st is None:
-            return _err(f"unknown canister '{target}'")
-        _require_commander(st.stand, "canister.deploy")
-        result = yield from _prepare_asset_provision_gen(
-            target,
-            wasm_key=(params.get("wasm_key") or "").strip(),
-            bundle_namespace=(params.get("bundle_namespace") or "").strip(),
-            baton_name=(params.get("baton") or "").strip(),
-        )
-        return _ok(**result)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
-def orchestration_execute_action(args: text) -> Async[text]:
-    """Run one phase of a Baton managed-upgrade pipeline.
-
-    Args (JSON): {"action_id": "<id>", "baton": "baton"}
-    Repeat until ``done`` is true in the response.
-    """
-    try:
-        params = json.loads(args)
-        action_id = (params.get("action_id") or "").strip()
-        if not action_id:
-            return _err("expected 'action_id'")
-        baton_name = (params.get("baton") or "").strip()
-        if not baton_name:
-            return _err("expected 'baton' (registered Baton canister name)")
-        list(Canister.instances())
-        baton_st = Canister[baton_name]
-        if baton_st is None:
-            return _err(f"unknown baton canister '{baton_name}'")
-        dk = baton_st.stand
-        _require_commander(dk, ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN)
-        section = dk.section if dk else None
-        return (yield from orchestration_governance_gate(
-            section,
-            ACTION_ORCHESTRATION_MANAGED_UPGRADE_RUN,
-            params,
-            lambda: _orchestration_execute_impl_gen(params),
-            permission_grant=_stand_permissions_for(dk),
-        ))
-    except Exception as e:
-        return _err(str(e))
-
-
 
 
 @update

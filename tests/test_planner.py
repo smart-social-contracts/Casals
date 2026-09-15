@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import sheetv2 as sv2  # noqa: E402
-from planner import PlanningError, build_plan  # noqa: E402
+from planner import PlanningError, build_plan, desired_assets  # noqa: E402
 
 CORPUS_DIR = os.path.join(os.path.dirname(__file__), "e2e", "orchestras")
 CORPUS = [
@@ -81,6 +81,8 @@ def _empty_live(resolved, bindings) -> dict:
         "multisig": {"signers": [], "threshold": 0},
         "batons": {},
         "config_queries": {},
+        "assets": {},
+        "published": {},
         "known_ids": {v: k for k, v in bindings.items() if v},
         "bindings": bindings,
     }
@@ -115,6 +117,10 @@ def _converged_live(resolved, bindings) -> dict:
             cw = cfg.get("converged_when") if isinstance(cfg, dict) else None
             if isinstance(cw, dict) and cw.get("equals_args"):
                 live["config_queries"][f"{n}:{cw.get('query')}"] = cfg.get("args")
+        if spec.get("content"):
+            live["published"][spec["content"]] = {"index.html": {"sha256": "11" * 32, "content_type": "text/html"}}
+        if spec.get("content") or spec.get("files"):
+            live["assets"][n] = desired_assets(spec, live["published"])
     for sec in resolved.get("sections") or []:
         sname = sec.get("name", "")
         if sname:
@@ -242,7 +248,7 @@ def test_stand_template_matching():
     live = _empty_live(resolved, bindings)
     live["stands"]["realm-alpha"] = {"exists": True, "section": "Realms", "commanders": []}
     live["sections"]["Realms"] = {"exists": True, "commanders": []}
-    plan = build_plan(sv2.materialize(resolved, {"realm-alpha": "Realms"}), env, live, self_id=SELF)
+    plan = build_plan(sv2.materialize(resolved, {"realm-alpha": {"section": "Realms", "members": []}}), env, live, self_id=SELF)
     names = {it["target"]["name"] for it in plan["items"]}
     assert {"realm-alpha-baton", "realm-alpha-backend", "realm-alpha-frontend"} <= names
 
@@ -272,3 +278,26 @@ def test_ordering_controllers_after_install():
     phases = [it["kind"] for it in plan["items"]]
     if "set_controllers" in phases and "install_code" in phases:
         assert phases.index("install_code") < phases.index("set_controllers")
+
+
+def test_asset_drift_yields_sync_item():
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    live["assets"]["rust-frontend"]["/canister_ids.js"] = "ff" * 32  # stale rendered file
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    items = [i for i in plan["items"] if i["kind"] == "sync_assets"]
+    assert len(items) == 1
+    assert items[0]["desired"]["keys"] == ["/canister_ids.js"]
+    assert items[0]["requires"] == "self"
+
+
+def test_optional_member_only_when_chosen():
+    tmpl = {"canisters": [
+        {"name": "{stand}-backend", "kind": "backend", "wasm": "x", "controllers": ["$self"]},
+        {"name": "{stand}-token", "kind": "backend", "wasm": "y", "controllers": ["$self"], "optional": True},
+    ]}
+    plain = sv2.instantiate_template_stand(tmpl, "r1")
+    assert [c["name"] for c in plain["canisters"]] == ["r1-backend"]
+    rich = sv2.instantiate_template_stand(tmpl, "r2", ["{stand}-token"])
+    assert [c["name"] for c in rich["canisters"]] == ["r2-backend", "r2-token"]
+    assert "optional" not in rich["canisters"][1]

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from typing import Any, Protocol
 
 from casals_cli.util import candid_text_arg, parse_icp_output
@@ -86,21 +87,35 @@ class IcClient:
             self._agent = Agent(Identity(), Client(self.network_url))
         return self._agent
 
+    def _read_state(self, what: str, canister_id: str, fn):
+        """read_state with retries: a busy local replica answers late (httpx's
+        5 s default → "timed out"), and a failure must never be read as an answer."""
+        last: Exception | None = None
+        for attempt in range(4):
+            try:
+                return fn()
+            except Exception as e:  # noqa: BLE001
+                last = e
+                time.sleep(2 * (attempt + 1))
+        raise RuntimeError(f"read_state {what} {canister_id} failed: {last}")
+
     def read_controllers(self, canister_id: str) -> list[str]:
         from ic import system_state
 
         agent = self._agent_client()
-        principals = system_state.canister_controllers(agent, canister_id)
+        principals = self._read_state("controllers", canister_id,
+                                      lambda: system_state.canister_controllers(agent, canister_id))
         return [p.to_str() for p in principals]
 
     def read_module_hash(self, canister_id: str) -> str | None:
-        from ic import system_state
+        from ic.certificate import lookup
+        from ic.principal import Principal
 
         agent = self._agent_client()
-        try:
-            return system_state.canister_module_hash(agent, canister_id)
-        except Exception:
-            return None
+        path = [b"canister", Principal.from_str(canister_id).bytes, b"module_hash"]
+        found = self._read_state("module_hash", canister_id,
+                                 lambda: lookup(path, agent.read_state_raw(canister_id, [path])))
+        return found.hex() if found else None  # None means "no module", never "read_state failed"
 
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any:
         cmd = ["canister", "call", canister_id, method, "--query"]

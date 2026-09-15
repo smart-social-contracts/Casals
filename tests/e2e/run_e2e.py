@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path[:0] = [REPO, os.path.join(REPO, "src")]
@@ -78,8 +79,10 @@ class Orchestra:
         raise Fail(f"no registry source for {ref}")
 
     def casals(self, *args: str, check: bool = True) -> dict:
+        # A product orchestra's first `up` streams >50 MB of wasm through the
+        # conductor; on a loaded local replica that alone can pass 30 min.
         res = sh(sys.executable, "-m", "casals_cli.main", "--json", "-e", ENV, "--identity", IDENTITY,
-                 *args, check=False, CASALS_HOME=self.home)
+                 *args, check=False, timeout=7200 if args and args[0] == "up" else 1800, CASALS_HOME=self.home)
         out = res.stdout.strip() or res.stderr.strip()
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
@@ -106,7 +109,8 @@ class Orchestra:
         rep = self.casals("oracle", self.sheet_path, check=False)
         if not rep.get("ok"):
             bad = [r for r in rep.get("rows", []) if r.get("result") == "FAIL"]
-            raise Fail("oracle FAIL: " + "; ".join(f"{r['canister']}.{r['field']}: {r['detail']}" for r in bad))
+            raise Fail("oracle FAIL: " + "; ".join(f"{r['canister']}.{r['field']}: {r['detail']}" for r in bad)
+                       + (f" error={rep.get('error')}" if rep.get("error") else ""))
 
     def module_hashes(self) -> dict[str, str]:
         view = self.casals("show", self.sheet_path)
@@ -145,6 +149,9 @@ def fresh(o: Orchestra) -> None:
         raise Fail(f"plan not empty after up: {[i['kind'] for i in res['plan']['items']]}")
     if not res["verify"]["converged"]:
         raise Fail("verify says not converged")
+    blind = [u for u in res["plan"].get("unverifiable") or [] if u.get("field") != "domains"]
+    if blind:
+        raise Fail(f"plan could not verify: {blind}")  # a local replica must be fully observable
     o.oracle()
 
 
@@ -233,27 +240,60 @@ def export_roundtrip(o: Orchestra) -> None:
 
 def runtime_stand(o: Orchestra) -> None:
     """A stand minted at runtime in a `stand_template` section (the test plays the
-    installer): the next `up` builds it from the template; idempotent afterwards."""
+    installer): the next `up` builds it from the template; idempotent afterwards.
+    Then the stand grows: `create_stand` on the existing stand adds a numbered
+    optional member (`{stand}-quarter-2`) — the auto-scaling path."""
     sections = [s for s in o.sheet["sections"] if isinstance(s.get("stand_template"), dict)]
     if not sections:
         return
     backend = o.bindings()["conductor"]["casals-backend"]
-    for sec in sections:
-        name = sec["stand_template"]["name_pattern"].replace("*", "e2e")
-        arg = json.dumps({"section": sec["name"], "name": name})
+
+    def create(sec, name, members):
+        arg = json.dumps({"section": sec["name"], "name": name, **({"members": members} if members else {})})
         res = o.icp("canister", "call", backend, "create_stand", f'("{arg.replace(chr(34), chr(92) + chr(34))}")')
-        minted = '\\"ok\\":true' in res.stdout
-        if not minted and "already exists" not in res.stdout:
-            raise Fail(f"create_stand {name}: {res.stdout[-300:]}")
-        expected = {c["name"].replace("{stand}", name) for c in sec["stand_template"]["canisters"]}
+        if '\\"ok\\":true' not in res.stdout:
+            raise Fail(f"create_stand {name} {members}: {res.stdout[-300:]}")
+        return '\\"created\\":true' in res.stdout
+
+    interval = int(((o.sheet.get("conductor") or {}).get("settings") or {}).get("reconcile_interval_secs") or 0)
+
+    def converge(name, expected, fresh):
+        """`fresh`: the members whose create items the next plan must show.
+        With `reconcile_interval_secs` set the conductor builds the stand on
+        its own timer — nobody runs `up`; the test just waits like a product would."""
+        if interval:
+            deadline = time.time() + 1800
+            while time.time() < deadline:
+                # `plan` without a sheet file = the conductor's own plan (no re-publish / set_sheet).
+                if not (expected - set(o.ids())) and not o.casals("plan")["plan"]["items"]:
+                    return
+                time.sleep(interval)
+            raise Fail(f"template stand {name}: conductor did not converge on its own within 30 min")
         kinds = {(i["kind"], i["target"]["name"]) for i in o.plan_items()}
-        if minted and {("create_canister", n) for n in expected} - kinds:
-            raise Fail(f"template stand {name}: expected create items for {sorted(expected)}, got {sorted(kinds)}")
+        if {("create_canister", n) for n in fresh} - kinds:
+            raise Fail(f"template stand {name}: expected create items for {sorted(fresh)}, got {sorted(kinds)}")
         o.casals("up", o.sheet_path, "--yes")
         if o.plan_items():
             raise Fail(f"template stand {name} did not converge")
         if expected - set(o.ids()):
             raise Fail(f"template stand {name}: missing bindings {sorted(expected - set(o.ids()))}")
+
+    for sec in sections:
+        tmpl = sec["stand_template"]
+        name = tmpl["name_pattern"].replace("*", "e2e")
+        optional = [c["name"] for c in tmpl["canisters"] if c.get("optional")]
+        first = [m.replace("{n}", "1") for m in optional]
+        minted = create(sec, name, first)
+        expected = {c["name"].replace("{stand}", name).replace("{n}", "1") for c in tmpl["canisters"]}
+        converge(name, expected, expected if minted else set())
+        numbered = [m for m in optional if "{n}" in m]
+        if numbered:
+            grown = create(sec, name, [m.replace("{n}", "2") for m in numbered])
+            if grown:
+                raise Fail(f"create_stand on existing stand {name} reported created=true")
+            new = {m.replace("{stand}", name).replace("{n}", "2") for m in numbered}
+            expected |= new
+            converge(name, expected, new - set(o.ids()))
     o.oracle()
 
 
@@ -305,8 +345,12 @@ def proposal_only(o: Orchestra) -> None:
     gated_path = os.path.join(o.home, "gated.json")
     json.dump(gated, open(gated_path, "w"))
     plan = o.casals("plan", gated_path)["plan"]
-    if [i["kind"] for i in plan["items"]] != ["set_commanders"]:
-        raise Fail(f"expected one set_commanders item, got {[i['kind'] for i in plan['items']]}")
+    kinds = [i["kind"] for i in plan["items"]]
+    # Extra non-governance items (e.g. a leftover sync_assets after content_change)
+    # are fine: the gate is that apply is refused and `up` goes through the
+    # multisig. The commander change is what this scenario is about.
+    if "set_commanders" not in kinds:
+        raise Fail(f"expected a set_commanders item, got {kinds}")
     backend = o.bindings()["conductor"]["casals-backend"]
     arg = json.dumps({"plan_hash": plan["hash"], "max_items": 5})
     res = o.icp("canister", "call", backend, "apply", f'("{arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
@@ -319,6 +363,40 @@ def proposal_only(o: Orchestra) -> None:
     if not rep.get("ok"):
         raise Fail("oracle on the gated sheet: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
     o.casals("up", o.sheet_path, "--yes")  # back to the declared sheet
+    o.oracle()
+
+
+def content_change(o: Orchestra) -> None:
+    """A new frontend build: published under a new namespace version and pointed
+    at by the sheet; `up` syncs it and the browser sees the new file."""
+    publish = (o.sheet.get("registry") or {}).get("publish") or []
+    if not publish:
+        return
+    entry = publish[0]
+    src = os.path.join(os.path.dirname(o.sheet_path), entry["source"][len("local:"):])
+    new_dir = os.path.join(o.home, "dist-v2")
+    shutil.copytree(src, new_dir, dirs_exist_ok=True)
+    with open(os.path.join(new_dir, "index.html"), "a") as fh:
+        fh.write("<!-- v2 -->\n")
+    new_ns = entry["path"] + "-v2"
+    changed = json.loads(json.dumps(o.sheet))
+    changed["registry"]["publish"] = [{"path": new_ns, "source": "local:" + new_dir}, *publish[1:]]
+    frontends = [name for _s, _st, name, c in _iter(changed) if c.get("content") == entry["path"]]
+    for _s, _st, name, c in _iter(changed):
+        if name in frontends:
+            c["content"] = new_ns
+    changed_path = os.path.join(o.home, "content.json")
+    json.dump(changed, open(changed_path, "w"))
+    if o.casals("up", changed_path, "--yes")["plan"]["items"]:
+        raise Fail("new content did not converge")
+    for name in frontends:
+        body = urllib.request.urlopen(f"http://{o.ids()[name]}.localhost:8000/index.html", timeout=10).read()
+        if b"<!-- v2 -->" not in body:
+            raise Fail(f"{name} does not serve the new build")
+    rep = o.casals("oracle", changed_path, check=False)
+    if not rep.get("ok"):
+        raise Fail("oracle on the new build: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
+    o.casals("up", o.sheet_path, "--yes")  # back to the declared build
     o.oracle()
 
 
@@ -342,7 +420,7 @@ def drift_adopted_code(o: Orchestra) -> None:
     o.oracle()
 
 
-SCENARIOS = [fresh, idempotent, runtime_stand, retire_and_pool, drift_controller, drift_stopped, drift_adopted_code,
+SCENARIOS = [fresh, idempotent, content_change, runtime_stand, retire_and_pool, drift_controller, drift_stopped, drift_adopted_code,
              proposal_only, stale_plan, export_roundtrip]
 if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterating
     SCENARIOS = [s for s in SCENARIOS if s.__name__ in os.environ["SCENARIOS"].split(",")]
@@ -377,7 +455,9 @@ def main(argv: list[str]) -> int:
     rows = []
     for n, name in enumerate(names, 1):
         sheet_path = name if name.endswith(".json") else os.path.join(CORPUS, name, "casals.json")
-        home = os.environ.get("CASALS_HOME") or tempfile.mkdtemp(prefix="casals-e2e-")
+        root = os.environ.get("CASALS_HOME") or tempfile.mkdtemp(prefix="casals-e2e-")
+        home = os.path.join(root, name if not name.endswith(".json") else json.load(open(sheet_path))["name"])
+        os.makedirs(home, exist_ok=True)
         o = Orchestra(json.load(open(sheet_path))["name"], sheet_path, home)
         desc = (o.sheet.get("$comment") or o.sheet.get("description") or "")[:42]
         status, t0 = "PASS", time.time()

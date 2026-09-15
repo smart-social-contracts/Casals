@@ -96,8 +96,11 @@ type HttpResponseIncoming = record { status_code : nat16; headers : vec Header; 
 type AssetPermission = variant { Commit; Prepare; ManagePermissions };
 type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
 type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
+type ListArgs = record { start : opt nat; length : opt nat };
+type AssetEncoding = record { content_encoding : text; sha256 : opt blob; length : nat; modified : int };
+type AssetEntry = record { key : text; content_type : text; encodings : vec AssetEncoding };
 type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text); grant_publish : (text) -> (text); revoke_publish : (text) -> (text) };
-type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
+type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> (); list : (ListArgs) -> (vec AssetEntry) query };
 type BasiliskIntrospectionService = service { __browse__ : (text) -> (text) query; __shell__ : (text) -> (text) };
 
 service : {
@@ -168,20 +171,6 @@ service : {
   "set_log_visibility" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_exec" : (text) -> (text);
-  "list_orchestration_actions" : () -> (text) query;
-  "get_orchestration_policies" : (text) -> (text) query;
-  "set_orchestration_policies" : (text) -> (text);
-  "list_governance_requests" : (text) -> (text) query;
-  "approve_governance_request" : (text) -> (text);
-  "reject_governance_request" : (text) -> (text);
-  "orchestration_status" : (text) -> (text) query;
-  "orchestration_refresh" : (text) -> (text);
-  "orchestration_hand_to_baton" : (text) -> (text);
-  "orchestration_configure_baton" : (text) -> (text);
-  "orchestration_release_stand" : (text) -> (text);
-  "orchestration_prepare_managed_upgrade" : (text) -> (text);
-  "orchestration_prepare_asset_provision" : (text) -> (text);
-  "orchestration_execute_action" : (text) -> (text);
   "get_cycles" : () -> (text);
   "get_cycles_cached" : () -> (text) query;
   "refresh_treasury" : (text) -> (text);

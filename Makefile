@@ -1,11 +1,4 @@
-.PHONY: build build-backend build-registry build-registry-frontend build-templates build-orchestration deploy deploy-ic seed seed-ic cli test clean local-conductor local-network-json
-
-# Local "master conductor": added as a controller of the local canisters after
-# a local deploy so this principal can run admin endpoints (set commanders,
-# permissions, etc.) from the browser UI — mirroring the mainnet conductor that
-# .github/workflows/deploy-ic.yml adds. Override on the CLI:
-#   make deploy LOCAL_CONDUCTOR=<your-principal>
-LOCAL_CONDUCTOR ?= kpvwp-c7tzf-sybdw-2j6l2-4c3cd-wnkt6-ryzf2-lsjit-dfqve-g5rfb-tae
+.PHONY: build build-backend build-registry build-registry-frontend build-templates build-orchestration cli test clean
 
 # Build both Basilisk canisters that make up the Casals core: the conductor
 # backend and the file-registry. icp-cli's prebuilt recipe then installs the
@@ -44,60 +37,11 @@ build-templates:
 build-orchestration:
 	bash scripts/build_orchestration_templates.sh
 
-# Local deploy (backend + registry + frontends). The frontends are built by the
-# asset-canister recipes (see icp.yaml). After installing, the local conductor
-# is added as a controller so it can drive admin endpoints from the UI.
-deploy: build
-	$(MAKE) local-network-json
-	icp deploy
-	$(MAKE) local-conductor
-	python3 scripts/seed.py -e local --wire-registry-only
-
-# Write the local replica's Candid UI canister id for the frontend (backend
-# canister links on local need it; the asset canister ic_env cookie does not
-# include manually-added env vars).
-local-network-json:
-	@CANDID_UI=$$(icp network status -e local 2>&1 | sed -n 's/Candid UI Principal: //p'); \
-	if [ -n "$$CANDID_UI" ]; then \
-		mkdir -p frontend/static; \
-		printf '{"candid_ui":"%s"}\n' "$$CANDID_UI" > frontend/static/local-network.json; \
-		echo "Wrote frontend/static/local-network.json (candid_ui=$$CANDID_UI)"; \
-	fi
-
-# Add the local master conductor as a controller of the local canisters. Safe
-# to re-run (idempotent). Skips silently if a canister isn't deployed yet.
-local-conductor:
-	@echo "Adding local conductor $(LOCAL_CONDUCTOR) as controller of casals_backend + casals_frontend"
-	@icp canister settings update casals_backend  --add-controller $(LOCAL_CONDUCTOR) -e local -f || true
-	@icp canister settings update casals_frontend --add-controller $(LOCAL_CONDUCTOR) -e local -f || true
-	@CANDID_UI=$$(icp network status -e local 2>&1 | sed -n 's/Candid UI Principal: //p'); \
-	if [ -n "$$CANDID_UI" ]; then \
-		echo "Injecting local Candid UI ($$CANDID_UI) into casals_frontend ic_env"; \
-		icp canister settings update casals_frontend \
-			--add-environment-variable "PUBLIC_CANISTER_ID:candid_ui=$$CANDID_UI" -e local -f || true; \
-	fi
-
-# Mainnet deploy.
-deploy-ic: build
-	icp deploy -e ic
-
-# Seed the catalog (templates). Does not deploy canisters — use seed-demo for that.
-seed:
-	python3 scripts/seed.py -e local
-
-seed-ic:
-	python3 scripts/seed.py -e ic --identity casals
-
-# Full demo: authorize templates, deploy demo sheet (incl. multisig + baton), wire + greet.
-seed-demo:
-	python3 scripts/seed.py -e local --deploy --sheet seed/sheets/demo.json --arrangement demo
-
-seed-demo-ic:
-	python3 scripts/seed.py -e ic --identity casals --deploy --sheet seed/sheets/demo.json --arrangement demo
+# Deploying an orchestra (conductor included) is the CLI's job:
+#   python3 -m casals_cli.main up <sheet> -e local --yes
 
 # Thin CLI for querying and commanding a deployed Casals backend.
-# Usage: make cli ARGS="status"
-#        make cli ARGS="sheet deploy seed/sheets/demo.json -e ic --identity casals"
+# Usage: make cli ARGS="up seed/sheets/demo.json -e local --yes"
 cli:
 	python3 scripts/casals.py $(ARGS)
 

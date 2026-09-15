@@ -35,7 +35,8 @@
       "kind": "frontend",
       "mode": "managed",
       "controllers": ["$self"]
-    }
+    },
+    "settings": { "reconcile_interval_secs": 20 }
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
@@ -93,8 +94,17 @@
             "kind": "frontend",
             "wasm": "hello-world-frontend@1.0.0",
             "controllers": ["$self", "$deployer"]
+          },
+          {
+            "name": "{stand}-quarter-{n}",
+            "mode": "managed",
+            "kind": "backend",
+            "wasm": "hello-world-rust@1.0.0",
+            "optional": true,
+            "controllers": ["$self", "$deployer"]
           }
         ],
+        "commanders": [{ "principal": "$stand.backend", "permissions": "stand.create" }],
         "baton": {
           "commanders": ["$self", "$stand.backend"],
           "threshold": 2,

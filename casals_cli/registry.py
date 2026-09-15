@@ -6,6 +6,7 @@ import base64
 import gzip
 import hashlib
 import json
+import mimetypes
 import os
 
 from sheetv2 import WASM_NAMESPACE, registry_path
@@ -194,9 +195,10 @@ def upload_bytes(
     path: str,
     data: bytes,
     sha256: str,
+    content_type: str = "application/wasm",
 ) -> str:
-    """Chunk-upload bytes; return recorded sha256."""
-    total = (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES
+    """Chunk-upload bytes; return recorded sha256. An empty file is one empty chunk."""
+    total = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
     for i in range(total):
         chunk = data[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
         res = ic.call_update(
@@ -208,13 +210,20 @@ def upload_bytes(
                 "chunk_index": i,
                 "total_chunks": total,
                 "data_b64": base64.b64encode(chunk).decode("ascii"),
-                "content_type": "application/wasm",
+                "content_type": content_type,
             }),
             timeout=600,
         )
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"chunk {i}/{total} upload failed: {res}")
-    return _finalize_upload(ic, registry_id, namespace, path, sha256)
+    try:
+        return _finalize_upload(ic, registry_id, namespace, path, sha256)
+    except RuntimeError:
+        # A retried finalize (the agent re-sends on a transient error) finds no
+        # active upload: the registry listing is the truth about what landed.
+        if registry_file_hashes(ic, registry_id, namespace).get(path) == sha256:
+            return sha256
+        raise
 
 
 def _finalize_upload(ic, registry_id: str, namespace: str, path: str, sha256: str) -> str:
@@ -294,4 +303,37 @@ def ensure_registry_uploads(
             continue
         upload_bytes(ic, registry_id, namespace, path, data, digest)
         rows.append({"family": family, "version": version, "path": path, "action": "uploaded", "sha256": digest})
+    for entry in registry.get("publish") or []:
+        rows.extend(publish_directory(ic, registry_id, entry, sheet_dir=sheet_dir, project_root=project_root))
+    return rows
+
+
+def publish_directory(ic, registry_id: str, entry: dict, *, sheet_dir: str, project_root: str) -> list[dict]:
+    """`registry.publish` entry: every file under `source` (a `local:` directory)
+    lands at `<path>/<relative file path>`; files already there with the same
+    sha256 are skipped."""
+    ns = str(entry.get("path") or "")
+    src = str(entry.get("source") or "")
+    if not src.startswith("local:"):
+        raise ValueError(f"registry.publish {ns}: only local: directories are supported, got {src!r}")
+    rel = src[6:]
+    candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
+    root = next((c for c in candidates if os.path.isdir(c)), None)
+    if root is None:
+        raise FileNotFoundError(f"publish source directory not found: {' or '.join(candidates)}")
+    existing = registry_file_hashes(ic, registry_id, ns)
+    rows = []
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in sorted(files):
+            full = os.path.join(dirpath, fn)
+            path = os.path.relpath(full, root).replace(os.sep, "/")
+            with open(full, "rb") as f:
+                data = f.read()
+            digest = sha256_hex(data)
+            action = "skipped"
+            if existing.get(path) != digest:
+                ctype = mimetypes.guess_type(fn)[0] or "application/octet-stream"
+                upload_bytes(ic, registry_id, ns, path, data, digest, content_type=ctype)
+                action = "uploaded"
+            rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action, "sha256": digest})
     return rows

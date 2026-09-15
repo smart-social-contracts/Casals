@@ -3,6 +3,7 @@
   import {
     getTree,
     getStatus,
+    getPlan,
     createSection,
     createStand,
     registerCanister,
@@ -23,8 +24,6 @@
     orchestraCanisterNames,
     listAuthorizedWasms,
     refreshControllersCache,
-    orchestrationStatus,
-    orchestrationRefresh,
     canisterBrowse,
     canisterExec,
     shortHash,
@@ -51,13 +50,12 @@
     writeCachedTree,
   } from '$lib/treeCache';
   import type {
-    Tree, Status, Section, Stand, Canister, UpdateResult,
+    Tree, Status, Section, Stand, Canister, UpdateResult, Plan,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
-    CanisterCycles, CanisterDeployment, IcRunStatus, OrchestrationStatus,
+    CanisterCycles, CanisterDeployment, IcRunStatus,
   } from '$lib/api';
   import { isAuthenticated, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
-  import { notifyGovernanceSubmitted } from '$lib/stores/governancePending';
   import { copyText } from '$lib/clipboard';
   import FormModal from '$lib/components/FormModal.svelte';
   import CreateCanisterModal from '$lib/components/CreateCanisterModal.svelte';
@@ -73,9 +71,7 @@
   import { buildPrincipalLabels } from '$lib/controllerLabels';
   import {
     sortCanistersForDisplay,
-    mergeBatonStatus,
     findBatonsInTree,
-    resolveBatons,
     augmentTreeWithCasals,
     isCasalsCanister,
   } from '$lib/orchestraGovernance';
@@ -100,7 +96,7 @@
   let tree = $state<Tree | null>(null);
   let status = $state<Status | null>(null);
   let orchestraName = $state('');
-  let orchStatus = $state<OrchestrationStatus | null>(null);
+  let storedPlan = $state<Plan | null>(null);
   let casalsControllers = $state<{ backend?: string[]; frontend?: string[] }>({});
   let loading = $state(true);
   let error = $state('');
@@ -148,9 +144,7 @@
     buildPrincipalLabels(displayTree, backendCanisterId(), displayTree?.principal_aliases),
   );
 
-  const orchestraBatons = $derived(
-    mergeBatonStatus(findBatonsInTree(displayTree), resolveBatons(orchStatus, displayTree)),
-  );
+  const orchestraBatons = $derived(findBatonsInTree(displayTree));
 
   // Filtered view of the tree. A section is kept when any of its stands match,
   // a stand is kept when any of its canisters match or the stand itself matches.
@@ -240,25 +234,12 @@
     return [...ids];
   }
 
-  // orchestration_status is a query and returns only baton ids; live commanders,
-  // managed canisters, and top_commander need the orchestration_refresh update.
-  function batonDetailMissing(s: OrchestrationStatus | null): boolean {
-    const batons = s?.batons ?? [];
-    if (!batons.length) return false;
-    return batons.some((b) => !b.commanders && !b.managed_canisters);
-  }
-
   async function refreshControllersAndTree(): Promise<void> {
     controllersRefreshing = true;
     try {
-      const [, fresh, liveOrch] = await Promise.all([
-        refreshControllersCache(),
-        getTree(),
-        orchestrationRefresh().catch(() => null),
-      ]);
+      const [, fresh] = await Promise.all([refreshControllersCache(), getTree()]);
       tree = fresh;
       writeCachedTree(backendCanisterId(), fresh, browserTreeStorage());
-      if (liveOrch) orchStatus = liveOrch;
     } catch (e: any) {
       toasts.error(e?.message ?? String(e));
     } finally {
@@ -272,7 +253,7 @@
       return;
     }
     if (!tree || controlAutoRefreshDone || controllersRefreshing) return;
-    if (treeMissingControllerCount(tree) === 0 && !batonDetailMissing(orchStatus)) return;
+    if (treeMissingControllerCount(tree) === 0) return;
     controlAutoRefreshDone = true;
     void refreshControllersAndTree();
   });
@@ -297,11 +278,11 @@
       if (!background && missingControllers) {
         await refreshControllersCache().catch(() => undefined);
       }
-      [tree, status, catalog, orchStatus] = await Promise.all([
+      [tree, status, catalog, storedPlan] = await Promise.all([
         getTree(),
         getStatus(),
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
-        orchestrationStatus().catch(() => null),
+        getPlan().catch(() => null),
       ]);
       writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
       orchestraName = (status?.orchestra_name ?? '').trim();
@@ -611,15 +592,7 @@
     modalBusy = true;
     _startLogPoll();
     try {
-      const result = await modal.onsubmit(values);
-      if (result?.status === 'PENDING' && !result?.ready_to_execute) {
-        _stopLogPoll();
-        const n = result.approval_count ?? result.approvals?.length ?? 1;
-        const t = result.threshold ?? 2;
-        notifyGovernanceSubmitted(`Awaiting approval (${n}/${t}) — see Commanders page`);
-        modal = null;
-        return;
-      }
+      await modal.onsubmit(values);
       toasts.success(`${modal.title} succeeded`);
       modal = null;
       await load();
@@ -1030,6 +1003,18 @@
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Events</span>
             <span class="font-semibold text-primary-900">{status.events}</span>
           </div>
+          <div class="flex flex-col gap-0.5">
+            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Plan</span>
+            <a href="/plan" class="text-primary-700 hover:underline text-sm">
+              {#if !storedPlan}
+                not computed
+              {:else if storedPlan.items.length === 0}
+                <span class="text-emerald-700 font-semibold">converged</span>{#if storedPlan.unmanaged.length} · {storedPlan.unmanaged.length} unmanaged{/if}
+              {:else}
+                <span class="font-semibold">{storedPlan.items.length} item(s)</span>{#if storedPlan.unmanaged.length} · {storedPlan.unmanaged.length} unmanaged{/if}
+              {/if}
+            </a>
+          </div>
           <div class="flex flex-col gap-0.5 sm:col-span-2">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Conductor hosting</span>
             <span class="inline-flex items-center gap-2 text-sm text-primary-700">
@@ -1080,18 +1065,14 @@
       <div class="text-center py-10 text-primary-400 text-sm">No results for <strong class="text-primary-700">"{filterQuery}"</strong></div>
     {:else if orchestraView === 'diagram'}
       <div class="card p-5">
-        <OrchestraDiagram
-          tree={filteredTree}
-          orchestrationStatus={orchStatus}
-        />
+        <OrchestraDiagram tree={filteredTree} />
       </div>
     {:else if orchestraView === 'control'}
       <div class="card p-5">
         <OrchestraControlGraph
           tree={filteredTree}
-          orchestrationStatus={orchStatus}
           casalsBackendId={backendCanisterId()}
-          principalLabel={(p) => principalLabels.get(p)?.display ?? shortPrincipal(p)}
+          principalLabel={(p) => principalLabels.get(p) ?? shortPrincipal(p)}
           onRefreshControllers={refreshControllersAndTree}
           controllersRefreshing={controllersRefreshing}
         />

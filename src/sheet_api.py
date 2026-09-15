@@ -9,7 +9,7 @@ from basilisk import ic
 from applier import apply_plan_gen
 from audit import _append_event
 from helpers import _caller, _settings
-from live_state import collect_live_state_gen, _bindings_map, stand_sections
+from live_state import collect_live_state_gen, _bindings_map, live_stands
 from models import Canister
 from planner import PlanningError, build_plan  # noqa: F401 — re-export for callers
 from sheet_storage import (
@@ -113,12 +113,13 @@ def _declared_world(env: str, sheet: dict) -> dict:
     """The sheet as the planner, live-state collector and applier all see it:
     placeholders resolved as far as the bindings allow (`$multisig` etc. resolve
     once created) and runtime template stands materialized."""
-    declared = materialize(sheet, stand_sections())
+    declared = materialize(sheet, live_stands())
     resolved, _unresolved = resolve_partial(declared, env, _resolve_ctx(env, sheet))
     return resolved
 
 
-def plan_gen(args: dict | None = None):
+def _plan_world_gen():
+    """Plan against live state; returns (plan, resolved_sheet, live_state, self_id, env)."""
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
@@ -134,12 +135,23 @@ def plan_gen(args: dict | None = None):
     except PlanningError as exc:
         raise ValueError("; ".join(exc.errors)) from exc
     store_plan(plan)
+    return plan, resolved, live, self_id, env
+
+
+def plan_gen(args: dict | None = None):
+    plan, _resolved, _live, _self_id, _env = yield from _plan_world_gen()
     return plan
 
 
 def verify_gen():
     plan = yield from plan_gen({})
     return {"converged": len(plan.get("items") or []) == 0, "plan": plan}
+
+
+# One apply at a time: the endpoint and the reconcile timer share this lock so
+# two runs never act on the same plan item (e.g. both creating a canister).
+_APPLY_LOCK = {"held": False}
+BUSY_ERROR = "busy: an apply is in progress"
 
 
 def apply_gen(args: dict):
@@ -152,39 +164,77 @@ def apply_gen(args: dict):
     plan_hash = (args.get("plan_hash") or "").strip()
     if not plan_hash:
         raise ValueError("plan_hash required")
-    sheet, env, sh = load_sheet_doc()
+    if _APPLY_LOCK["held"]:
+        return {"ok": False, "error": BUSY_ERROR}
+    sheet, env, _sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
-    resolved = _declared_world(env, sheet)
     bindings = _bindings_map()
     if apply_requires_proposal(sheet, env) and _caller() != bindings.get(MULTISIG_NAME):
         return {"ok": False, "error": "apply requires proposal: only the governance multisig may apply on this environment"}
-    self_id = ic.id().to_str()
-    live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
-    live["bindings"] = bindings
+    _APPLY_LOCK["held"] = True
     try:
-        plan = build_plan(
-            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh,
+        plan, resolved, live, self_id, _env = yield from _plan_world_gen()
+        if plan.get("hash") != plan_hash:
+            return {"ok": False, "error": "stale plan", "current_plan_hash": plan.get("hash")}
+        destructive = [it for it in (plan.get("items") or []) if it.get("destructive")]
+        if destructive and not args.get("confirm_destructive"):
+            return {"ok": False, "error": "destructive items require confirm_destructive"}
+        result = yield from apply_plan_gen(
+            plan,
+            max_items=int(args.get("max_items") or 0),
+            confirm_destructive=bool(args.get("confirm_destructive")),
+            resolved_sheet=resolved,
+            live_state=live,
+            self_id=self_id,
         )
-    except PlanningError as exc:
-        raise ValueError("; ".join(exc.errors)) from exc
-    if plan.get("hash") != plan_hash:
-        return {"ok": False, "error": "stale plan", "current_plan_hash": plan.get("hash")}
-    destructive = [it for it in (plan.get("items") or []) if it.get("destructive")]
-    if destructive and not args.get("confirm_destructive"):
-        return {"ok": False, "error": "destructive items require confirm_destructive"}
-    result = yield from apply_plan_gen(
-        plan,
-        max_items=int(args.get("max_items") or 0),
-        confirm_destructive=bool(args.get("confirm_destructive")),
-        resolved_sheet=resolved,
-        live_state=live,
-        self_id=self_id,
-    )
+    finally:
+        _APPLY_LOCK["held"] = False
     if result.get("error") and not result.get("applied"):
         return result
     store_apply_result(result)
     return {"ok": True, **result}
+
+
+def reconcile_interval_secs(sheet: dict | None) -> int:
+    """`conductor.settings.reconcile_interval_secs`: how often the conductor
+    plans and applies on its own (0 / absent = only when asked)."""
+    try:
+        return max(0, int(((sheet or {}).get("conductor") or {}).get("settings", {}).get("reconcile_interval_secs") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def reconcile_gen(max_rounds: int = 3):
+    """One reconcile tick: plan, then apply the non-destructive items the
+    conductor can do itself; repeat while progress is made (a create needs a
+    round before its install). Never destructive, never past the deployer's
+    or multisig's items, and nothing at all where `apply_requires_proposal`
+    holds — those stay a human decision. Returns a small summary."""
+    if _APPLY_LOCK["held"]:
+        return {"skipped": "busy"}
+    sheet, env, _sh = load_sheet_doc()
+    if not sheet or apply_requires_proposal(sheet, env):
+        return {"skipped": "no sheet" if not sheet else "apply requires proposal"}
+    _APPLY_LOCK["held"] = True
+    applied = 0
+    try:
+        for _round in range(max_rounds):
+            plan, resolved, live, self_id, _env = yield from _plan_world_gen()
+            mine = [it for it in plan.get("items") or []
+                    if (it.get("requires") or "self") == "self" and not it.get("destructive")]
+            if not mine:
+                return {"applied": applied, "converged": not plan.get("items")}
+            result = yield from apply_plan_gen(
+                {**plan, "items": mine}, resolved_sheet=resolved, live_state=live, self_id=self_id,
+            )
+            applied += len(result.get("applied") or [])
+            store_apply_result(result)
+            if result.get("failed") or not result.get("applied"):
+                return {"applied": applied, "failed": result.get("failed")}
+    finally:
+        _APPLY_LOCK["held"] = False
+    return {"applied": applied, "converged": False}
 
 
 def export_sheet_impl() -> dict:
