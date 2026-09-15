@@ -15,3 +15,22 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 
 Production sheets (`gos-as-a-service/casals.json`, `realms/casals.json`) are
 referenced by path in the e2e runner, not copied here.
+
+## Running
+
+```
+python3 tests/e2e/run_e2e.py                       # whole corpus on the local replica
+python3 tests/e2e/run_e2e.py minimal adopted       # a subset
+KEEP=1 python3 tests/e2e/run_e2e.py                # leave every orchestra up (frontend URLs in the table)
+SCENARIOS=fresh,idempotent CASALS_HOME=/tmp/x KEEP=1 python3 tests/e2e/run_e2e.py governed
+```
+
+Every orchestra runs every applicable scenario (spec §11.3): `fresh`,
+`idempotent`, `runtime_stand` (template sections), `retire_and_pool`
+(`retire: true` members), `drift_controller`, `drift_stopped`,
+`drift_adopted_code` (adopted members), `stale_plan`, `export_roundtrip`.
+A scenario passes only when `casals oracle` passes on its end state.
+
+Adopted canisters are installed by the harness (it plays "someone else") and
+their ids written into `environments.local.bindings` of a sheet copy under
+`CASALS_HOME`. A fresh run of the whole corpus takes about 1.5 h.

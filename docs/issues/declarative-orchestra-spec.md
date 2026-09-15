@@ -568,7 +568,22 @@ casals up casals.json -e production [--identity prod-identity] [--yes]
    Non-empty → exit 1 with the diff.
 9. `domains` reconcile (CLI side), then `verify()`.
 
-`casals plan|apply|verify|export -e <env>` are the same steps individually.
+`casals plan <sheet> -e <env>` is steps 1, 4, 5 and one `plan()`: the diff
+between the file and the world, nothing applied (it needs a conductor).
+`apply|verify|export -e <env>` talk to the conductor about the sheet it holds.
+
+Once a sheet hands the conductor to the multisig, the CLI keeps working as long
+as the deployer is a **signer**: to upgrade or sync a conductor canister it
+proposes `SetCanisterControllers` adding itself (its own approval executes the
+proposal when the threshold is met), acts, and the next plan removes it again.
+Where `apply_requires_proposal` holds, `up` proposes `ApplySheet` instead of
+calling `apply` — the conductor refuses any other caller. A pending proposal
+(threshold not met) stops `up` with the proposal id.
+
+Sections with a `stand_template` are **materialized** before planning: every
+live stand in the section whose name matches `name_pattern` becomes a declared
+stand rendered from the template, and `created_by` is granted `stand.create` on
+the section. Planner, oracle and `show` all see this one declared world.
 
 `casals show -e <env>` is the full picture of a live orchestra, read from the
 conductor **and** the IC (controllers via `canister_info`, never the cache):
@@ -610,14 +625,14 @@ to the deployer.
 
 - [ ] `casals up realms/casals.json -e local` and `casals up gos-as-a-service/casals.json -e local` build both environments from an empty replica, in one command each, with no other input.
 - [ ] Immediately re-running `casals up` makes **zero** management-canister calls (asserted from the replica log / call counter).
-- [ ] `casals plan -e local` is empty after `up`; after `dfx canister update-settings --add-controller <x>` on any canister it shows exactly one `set_controllers` item; `apply` heals it; `plan` is empty again.
-- [ ] Removing a canister from the sheet produces an `unmanaged` entry and **no** item; adding `retire: true` produces one `retire` item marked destructive; `apply` without `confirm_destructive` is rejected.
+- [x] `casals plan -e local` is empty after `up`; after `dfx canister update-settings --add-controller <x>` on any canister it shows exactly one `set_controllers` item; `apply` heals it; `plan` is empty again. *(corpus: `drift_controller`, `drift_stopped`, `stale_plan`)*
+- [x] Removing a canister from the sheet produces an `unmanaged` entry and **no** item; adding `retire: true` produces one `retire` item marked destructive; `apply` without `confirm_destructive` is rejected. *(corpus: `retire_and_pool`; unmanaged: unit test)*
 - [ ] A sheet naming only the governance stand against a populated orchestra produces `unmanaged` for everything else and touches nothing (the 2026-09-14 incident, as a test).
 - [ ] Killing `casals up` at every item boundary (fault-injection harness) and re-running converges with no duplicate canisters and no reinstall.
-- [ ] `adopted` canister with a changed module hash: plan shows information, no item.
-- [ ] Production-mode sheet on local with `apply_requires_proposal: true`: direct `apply` rejected; `ApplySheet` proposal on the multisig applies it.
-- [ ] `export_sheet()` of a freshly built local environment, fed back through `plan`, is empty.
-- [ ] Lock-out guard: a sheet whose conductor `controllers` omits every live principal fails validation.
+- [x] `adopted` canister with a changed module hash: plan shows information, no item. *(corpus: `drift_adopted_code`)*
+- [x] Production-mode sheet on local with `apply_requires_proposal: true`: direct `apply` rejected; `ApplySheet` proposal on the multisig applies it. *(corpus: `proposal_only`)*
+- [x] `export_sheet()` of a freshly built local environment, fed back through `plan`, is empty. *(corpus: `export_roundtrip`)*
+- [x] Lock-out guard: a sheet whose conductor `controllers` omits every live principal fails validation. *(unit tests)*
 - [ ] The two CLIs contain no principal, controller, or commander tables (grep-enforced in CI).
 
 ---

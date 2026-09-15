@@ -292,6 +292,36 @@ def retire_and_pool(o: Orchestra) -> None:
     o.oracle()
 
 
+def proposal_only(o: Orchestra) -> None:
+    """`apply_requires_proposal` on this environment: the conductor refuses a direct
+    `apply`; `casals up` converges through an `ApplySheet` multisig proposal."""
+    if "multisig" not in o.ids() or "governance" not in o.sheet:
+        return
+    gated = json.loads(json.dumps(o.sheet))
+    gated["governance"]["apply_requires_proposal"] = {ENV: True, "default": False}
+    gated["environments"][ENV].setdefault("principals", {})["e2e_foreign"] = FOREIGN
+    stand = next(st for sec in gated["sections"] for st in sec.get("stands") or [])
+    stand["commanders"] = [*(stand.get("commanders") or []), {"principal": "$principal:e2e_foreign", "permissions": "stand.*"}]
+    gated_path = os.path.join(o.home, "gated.json")
+    json.dump(gated, open(gated_path, "w"))
+    plan = o.casals("plan", gated_path)["plan"]
+    if [i["kind"] for i in plan["items"]] != ["set_commanders"]:
+        raise Fail(f"expected one set_commanders item, got {[i['kind'] for i in plan['items']]}")
+    backend = o.bindings()["conductor"]["casals-backend"]
+    arg = json.dumps({"plan_hash": plan["hash"], "max_items": 5})
+    res = o.icp("canister", "call", backend, "apply", f'("{arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
+    if "apply requires proposal" not in res.stdout:
+        raise Fail(f"direct apply was not refused: {res.stdout[-300:]}")
+    res = o.casals("up", gated_path, "--yes")  # converges through an ApplySheet proposal
+    if res["plan"]["items"]:
+        raise Fail("gated orchestra did not converge through the multisig")
+    rep = o.casals("oracle", gated_path, check=False)
+    if not rep.get("ok"):
+        raise Fail("oracle on the gated sheet: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
+    o.casals("up", o.sheet_path, "--yes")  # back to the declared sheet
+    o.oracle()
+
+
 def drift_adopted_code(o: Orchestra) -> None:
     """Someone reinstalls an adopted canister (its state is wiped): Casals never
     touches its code — hash drift is information, config drift heals."""
@@ -313,7 +343,7 @@ def drift_adopted_code(o: Orchestra) -> None:
 
 
 SCENARIOS = [fresh, idempotent, runtime_stand, retire_and_pool, drift_controller, drift_stopped, drift_adopted_code,
-             stale_plan, export_roundtrip]
+             proposal_only, stale_plan, export_roundtrip]
 if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterating
     SCENARIOS = [s for s in SCENARIOS if s.__name__ in os.environ["SCENARIOS"].split(",")]
 

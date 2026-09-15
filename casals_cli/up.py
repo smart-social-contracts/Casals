@@ -11,7 +11,7 @@ from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, validate
 
 from casals_cli.bindings import Bindings, load_bindings
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
-from casals_cli.multisig import set_controllers_via_multisig
+from casals_cli.multisig import apply_via_multisig, set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
 
@@ -125,6 +125,11 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                 json.dumps({"plan_hash": plan.get("hash"), "max_items": max_items, "confirm_destructive": yes}),
                 timeout=1800,
             )
+            if isinstance(apply_res, dict) and str(apply_res.get("error") or "").startswith("apply requires proposal"):
+                _progress("  apply requires proposal: proposing ApplySheet on the multisig")
+                apply_via_multisig(ic, multisig_id, deployer, backend_id, plan.get("hash"),
+                                   confirm_destructive=yes, max_items=max_items)
+                continue
             if not (isinstance(apply_res, dict) and apply_res.get("ok")):
                 raise RuntimeError(f"apply failed: {apply_res}")
             for row in apply_res.get("applied") or []:

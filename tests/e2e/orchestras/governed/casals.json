@@ -5,10 +5,21 @@
   "environments": {
     "local": {
       "network": "local",
-      "dns": { "provider": "none" },
-      "flags": { "test_mode": true, "ii_bypass": true },
-      "principals": { "operator": "$deployer", "casals_ii": "$deployer" },
-      "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
+      "dns": {
+        "provider": "none"
+      },
+      "flags": {
+        "test_mode": true,
+        "ii_bypass": true
+      },
+      "principals": {
+        "operator": "$deployer",
+        "casals_ii": "$deployer"
+      },
+      "cycles": {
+        "min_balance_tc": 0.5,
+        "budget_tc": 100
+      }
     }
   },
   "conductor": {
@@ -16,48 +27,83 @@
       "wasm": "casals-backend",
       "kind": "backend",
       "mode": "managed",
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     },
     "frontend": {
       "wasm": "casals-frontend",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     },
     "file_registry": {
       "wasm": "file-registry",
       "kind": "backend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": [
+        "$self"
+      ]
     },
     "file_registry_frontend": {
       "wasm": "file-registry-frontend",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": [
+        "$self"
+      ]
     },
     "commanders": [
-      { "principal": "$principal:casals_ii", "permissions": "*" }
+      {
+        "principal": "$principal:casals_ii",
+        "permissions": "*"
+      }
     ]
   },
   "governance": {
     "multisig": {
-      "wasm": "orchestration-multisig@1.4.0",
+      "wasm": "orchestration-multisig@1.5.0",
       "kind": "backend",
       "mode": "managed",
-      "signers": ["$principal:operator", "$principal:casals_ii"],
+      "signers": [
+        "$principal:operator",
+        "$principal:casals_ii"
+      ],
       "threshold": 1,
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     },
-    "apply_requires_proposal": { "production": true, "default": false }
+    "apply_requires_proposal": {
+      "production": true,
+      "default": false
+    }
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
     "wasms": [
-      { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
-      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
-      { "family": "orchestration-multisig", "version": "1.4.0", "source": "local:seed/templates/orchestration-multisig@1.4.0.wasm.gz" },
-      { "family": "hello-world-motoko", "version": "1.0.0", "source": "local:seed/templates/hello-world-motoko.wasm.gz" }
+      {
+        "family": "casals-backend",
+        "version": "main",
+        "source": "build:casals_backend"
+      },
+      {
+        "family": "file-registry",
+        "version": "main",
+        "source": "build:ic_file_registry"
+      },
+      {
+        "family": "orchestration-multisig",
+        "version": "1.5.0",
+        "source": "local:seed/templates/orchestration-multisig@1.5.0.wasm.gz"
+      },
+      {
+        "family": "hello-world-motoko",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-motoko.wasm.gz"
+      }
     ]
   },
   "sections": [
@@ -65,13 +111,19 @@
       "name": "Product",
       "description": "Section-level commanders for governed deployments.",
       "commanders": [
-        { "principal": "$principal:operator", "permissions": "canister.*" }
+        {
+          "principal": "$principal:operator",
+          "permissions": "canister.*"
+        }
       ],
       "stands": [
         {
           "name": "Motoko",
           "commanders": [
-            { "principal": "$principal:casals_ii", "permissions": "stand.*" }
+            {
+              "principal": "$principal:casals_ii",
+              "permissions": "stand.*"
+            }
           ],
           "canisters": [
             {
@@ -79,7 +131,10 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "hello-world-motoko@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             }
           ]
         }

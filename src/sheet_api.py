@@ -21,6 +21,8 @@ from sheet_storage import (
 )
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    MULTISIG_NAME,
+    apply_requires_proposal,
     ResolveContext,
     env_block,
     materialize,
@@ -155,6 +157,8 @@ def apply_gen(args: dict):
         raise ValueError("no sheet set")
     resolved = _declared_world(env, sheet)
     bindings = _bindings_map()
+    if apply_requires_proposal(sheet, env) and _caller() != bindings.get(MULTISIG_NAME):
+        return {"ok": False, "error": "apply requires proposal: only the governance multisig may apply on this environment"}
     self_id = ic.id().to_str()
     live = yield from collect_live_state_gen(resolved, bindings, self_id=self_id)
     live["bindings"] = bindings

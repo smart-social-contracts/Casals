@@ -19,31 +19,37 @@ def multisig_signers(ic, ms_id: str) -> tuple[set[str], int]:
     return signers, int(m.group(1)) if m else 0
 
 
-def propose_set_controllers(ic, ms_id: str, canister_id: str, controllers: list[str]) -> tuple[int, str]:
-    """Propose `SetCanisterControllers`; return (proposal id, status)."""
-    vec = "; ".join(f'principal "{c}"' for c in controllers)
-    action = (
-        f'(variant {{ SetCanisterControllers = record {{ canister_id = principal "{canister_id}"; '
-        f"controllers = vec {{ {vec} }} }} }}, null)"
-    )
-    out = ic.icp(["canister", "call", ms_id, "propose", action]).stdout
+def propose(ic, ms_id: str, action: str) -> tuple[int, str]:
+    """Propose a candid `BatonAction` variant; return (proposal id, status)."""
+    out = ic.icp(["canister", "call", ms_id, "propose", f"({action}, null)"], timeout=1800).stdout
     pid = int(re.search(r"\((\d+)", out).group(1))
     status = ic.icp(["canister", "call", ms_id, "get_proposal", f"({pid} : nat)", "--query"]).stdout
     m = re.search(r"status = variant \{ (\w+) \}", status)
     return pid, m.group(1) if m else "unknown"
 
 
-def set_controllers_via_multisig(ic, ms_id: str, deployer: str, canister_id: str, controllers: list[str]) -> None:
-    """Set a governed canister's controllers as the deployer-signer, or explain why not."""
+def _as_signer(ic, ms_id: str, deployer: str, what: str, action: str) -> None:
     signers, _threshold = multisig_signers(ic, ms_id)
     if deployer not in signers:
-        raise RuntimeError(
-            f"{canister_id} is controlled by the multisig and {deployer} is not a signer: "
-            "a signer must propose SetCanisterControllers"
-        )
-    pid, status = propose_set_controllers(ic, ms_id, canister_id, controllers)
+        raise RuntimeError(f"{what} needs a multisig proposal and {deployer} is not a signer")
+    pid, status = propose(ic, ms_id, action)
     if status != "executed":
-        raise RuntimeError(f"multisig proposal #{pid} to set controllers of {canister_id} is {status}; re-run once approved")
+        raise RuntimeError(f"multisig proposal #{pid} ({what}) is {status}; re-run once approved")
+
+
+def set_controllers_via_multisig(ic, ms_id: str, deployer: str, canister_id: str, controllers: list[str]) -> None:
+    """Set a governed canister's controllers as the deployer-signer, or explain why not."""
+    vec = "; ".join(f'principal "{c}"' for c in controllers)
+    _as_signer(ic, ms_id, deployer, f"set controllers of {canister_id}",
+               f'variant {{ SetCanisterControllers = record {{ canister_id = principal "{canister_id}"; controllers = vec {{ {vec} }} }} }}')
+
+
+def apply_via_multisig(ic, ms_id: str, deployer: str, backend_id: str, plan_hash: str, *, confirm_destructive: bool, max_items: int) -> None:
+    """`apply_requires_proposal`: the multisig applies the plan (`ApplySheet`), looping
+    `apply` on the conductor until the plan is empty."""
+    _as_signer(ic, ms_id, deployer, f"apply plan {plan_hash[:12]}",
+               f'variant {{ ApplySheet = record {{ casals_backend = principal "{backend_id}"; plan_hash = "{plan_hash}"; '
+               f"confirm_destructive = {str(confirm_destructive).lower()}; max_items = {max_items} : nat }} }}")
 
 
 def ensure_control(ic, canister_id: str, deployer: str, multisig_id: str) -> None:

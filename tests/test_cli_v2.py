@@ -445,3 +445,39 @@ class TestShowGraph:
         mmd = mermaid_graph(view, {}, {"hello-backend": "aaaa-aa", "op-p": "op-p"})
         assert "ic_controller" in mmd
         assert "casals_commander" in mmd
+
+
+class TestMultisigPaths:
+    def _ic(self):
+        ic = RecordingIc(env="local")
+        ic.icp_outputs = {
+            ("canister", "call", "ms-id", "list_signers"):
+                '(record { threshold = 1 : nat; signers = vec { principal "deployer" }; })',
+            ("canister", "call", "ms-id", "propose"): "(7 : nat)",
+            ("canister", "call", "ms-id", "get_proposal"): "(opt record { status = variant { executed }; })",
+        }
+        return ic
+
+    def test_apply_via_multisig_proposes_apply_sheet(self):
+        from casals_cli.multisig import apply_via_multisig
+
+        ic = self._ic()
+        apply_via_multisig(ic, "ms-id", "deployer", "be-id", "abc", confirm_destructive=True, max_items=5)
+        proposal = next(c[1][0] for c in ic.calls if c[0] == "icp" and c[1][0][3:4] == ("propose",))
+        assert 'ApplySheet = record { casals_backend = principal "be-id"; plan_hash = "abc"; ' \
+               'confirm_destructive = true; max_items = 5 : nat }' in proposal[4]
+
+    def test_non_signer_is_refused(self):
+        from casals_cli.multisig import apply_via_multisig
+
+        ic = self._ic()
+        with pytest.raises(RuntimeError, match="not a signer"):
+            apply_via_multisig(ic, "ms-id", "stranger", "be-id", "abc", confirm_destructive=False, max_items=5)
+
+    def test_pending_proposal_stops_with_id(self):
+        from casals_cli.multisig import set_controllers_via_multisig
+
+        ic = self._ic()
+        ic.icp_outputs[("canister", "call", "ms-id", "get_proposal")] = "(opt record { status = variant { pending }; })"
+        with pytest.raises(RuntimeError, match="#7 .* is pending"):
+            set_controllers_via_multisig(ic, "ms-id", "deployer", "c-id", ["deployer", "ms-id"])

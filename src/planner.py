@@ -566,16 +566,22 @@ def _expected_wasm_hash(sheet: dict, spec: dict) -> str:
 
 
 def _normalize_commanders(entries: list) -> list[dict]:
-    out = []
+    """One entry per principal, permissions normalized; a principal listed twice
+    gets the union of its grants ("" = everything)."""
+    grants: dict[str, str] = {}
     for e in entries or []:
-        if isinstance(e, dict):
-            p = str(e.get("principal") or "").strip()
-            if p:
-                out.append({"principal": p, "permissions": _normalize_permissions(e.get("permissions"))})
-        elif isinstance(e, str) and e.strip():
-            out.append({"principal": e.strip(), "permissions": ""})
-    out.sort(key=lambda x: x["principal"])
-    return out
+        p = str(e.get("principal") if isinstance(e, dict) else e or "").strip()
+        if not p:
+            continue
+        perms = _normalize_permissions(e.get("permissions")) if isinstance(e, dict) else ""
+        prev = grants.get(p)
+        if prev is None:
+            grants[p] = perms
+        elif prev and perms:
+            grants[p] = _normalize_permissions(f"{prev},{perms}")
+        else:
+            grants[p] = ""
+    return [{"principal": p, "permissions": grants[p]} for p in sorted(grants)]
 
 
 def _removes_principals(before: list, after: list) -> bool:

@@ -6,10 +6,20 @@
   "environments": {
     "local": {
       "network": "local",
-      "dns": { "provider": "none" },
-      "flags": { "test_mode": true, "ii_bypass": true },
-      "principals": { "operator": "$deployer" },
-      "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
+      "dns": {
+        "provider": "none"
+      },
+      "flags": {
+        "test_mode": true,
+        "ii_bypass": true
+      },
+      "principals": {
+        "operator": "$deployer"
+      },
+      "cycles": {
+        "min_balance_tc": 0.5,
+        "budget_tc": 100
+      }
     }
   },
   "conductor": {
@@ -17,51 +27,98 @@
       "wasm": "casals-backend",
       "kind": "backend",
       "mode": "managed",
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     },
     "frontend": {
       "wasm": "casals-frontend",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     },
     "file_registry": {
       "wasm": "file-registry",
       "kind": "backend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": [
+        "$self"
+      ]
     },
     "file_registry_frontend": {
       "wasm": "file-registry-frontend",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": [
+        "$self"
+      ]
     },
     "commanders": [
-      { "principal": "$principal:operator", "permissions": "*" }
+      {
+        "principal": "$principal:operator",
+        "permissions": "*"
+      }
     ]
   },
   "governance": {
     "multisig": {
-      "wasm": "orchestration-multisig@1.4.0",
+      "wasm": "orchestration-multisig@1.5.0",
       "kind": "backend",
       "mode": "managed",
-      "signers": ["$principal:operator"],
+      "signers": [
+        "$principal:operator"
+      ],
       "threshold": 1,
-      "controllers": ["$multisig"]
+      "controllers": [
+        "$multisig"
+      ]
     }
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
     "wasms": [
-      { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
-      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
-      { "family": "orchestration-multisig", "version": "1.4.0", "source": "local:seed/templates/orchestration-multisig@1.4.0.wasm.gz" },
-      { "family": "orchestration-baton", "version": "1.3.0", "source": "local:seed/templates/orchestration-baton@1.3.0.wasm.gz" },
-      { "family": "hello-world-motoko", "version": "1.0.0", "source": "local:seed/templates/hello-world-motoko.wasm.gz" },
-      { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
-      { "family": "hello-world-basilisk", "version": "1.0.0", "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz" },
-      { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" }
+      {
+        "family": "casals-backend",
+        "version": "main",
+        "source": "build:casals_backend"
+      },
+      {
+        "family": "file-registry",
+        "version": "main",
+        "source": "build:ic_file_registry"
+      },
+      {
+        "family": "orchestration-multisig",
+        "version": "1.5.0",
+        "source": "local:seed/templates/orchestration-multisig@1.5.0.wasm.gz"
+      },
+      {
+        "family": "orchestration-baton",
+        "version": "1.3.0",
+        "source": "local:seed/templates/orchestration-baton@1.3.0.wasm.gz"
+      },
+      {
+        "family": "hello-world-motoko",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-motoko.wasm.gz"
+      },
+      {
+        "family": "hello-world-rust",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-rust.wasm.gz"
+      },
+      {
+        "family": "hello-world-basilisk",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz"
+      },
+      {
+        "family": "hello-world-frontend",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-frontend.wasm.gz"
+      }
     ]
   },
   "sections": [
@@ -73,9 +130,15 @@
           "name": "Motoko",
           "description": "Motoko hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "commanders": ["$self", "$stand.backend"],
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
             "threshold": 2,
-            "manages": ["backend", "frontend"],
+            "manages": [
+              "backend",
+              "frontend"
+            ],
             "hand_off": true
           },
           "canisters": [
@@ -84,22 +147,33 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$self" },
-              "controllers": ["$multisig", "$self"]
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig",
+                "$self"
+              ]
             },
             {
               "name": "motoko-backend",
               "mode": "managed",
               "kind": "backend",
               "wasm": "hello-world-motoko@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             },
             {
               "name": "motoko-frontend",
               "mode": "managed",
               "kind": "frontend",
               "wasm": "hello-world-frontend@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             }
           ]
         },
@@ -107,9 +181,15 @@
           "name": "Rust",
           "description": "Rust hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "commanders": ["$self", "$stand.backend"],
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
             "threshold": 2,
-            "manages": ["backend", "frontend"],
+            "manages": [
+              "backend",
+              "frontend"
+            ],
             "hand_off": true
           },
           "canisters": [
@@ -118,22 +198,33 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$self" },
-              "controllers": ["$multisig", "$self"]
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig",
+                "$self"
+              ]
             },
             {
               "name": "rust-backend",
               "mode": "managed",
               "kind": "backend",
               "wasm": "hello-world-rust@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             },
             {
               "name": "rust-frontend",
               "mode": "managed",
               "kind": "frontend",
               "wasm": "hello-world-frontend@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             }
           ]
         },
@@ -141,9 +232,15 @@
           "name": "Python",
           "description": "Basilisk hello-world + Baton + certified-assets frontend.",
           "baton": {
-            "commanders": ["$self", "$stand.backend"],
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
             "threshold": 2,
-            "manages": ["backend", "frontend"],
+            "manages": [
+              "backend",
+              "frontend"
+            ],
             "hand_off": true
           },
           "canisters": [
@@ -152,22 +249,33 @@
               "mode": "managed",
               "kind": "backend",
               "wasm": "orchestration-baton@1.3.0",
-              "install_arg": { "top_commander": "$self" },
-              "controllers": ["$multisig", "$self"]
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig",
+                "$self"
+              ]
             },
             {
               "name": "python-backend",
               "mode": "managed",
               "kind": "backend",
               "wasm": "hello-world-basilisk@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             },
             {
               "name": "python-frontend",
               "mode": "managed",
               "kind": "frontend",
               "wasm": "hello-world-frontend@1.0.0",
-              "controllers": ["$self", "$multisig"]
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
             }
           ]
         }

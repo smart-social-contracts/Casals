@@ -971,6 +971,14 @@ def _resolve_canister_tree(canister: dict, path: str, stand: dict | None, resolv
         canister[key] = resolve_value(val, f"{path}.{key}", stand)
 
 
+def apply_requires_proposal(sheet: dict, env: str) -> bool:
+    """`governance.apply_requires_proposal`: a bool, or `{<env>: bool, default: bool}`."""
+    v = (sheet.get("governance") or {}).get("apply_requires_proposal", False)
+    if isinstance(v, dict):
+        v = v.get(env, v.get("default", False))
+    return bool(v)
+
+
 def glob_match(name: str, pattern: str) -> bool:
     """`*` wildcard match (stand_template.name_pattern); no other glob syntax."""
     parts = pattern.split("*")
