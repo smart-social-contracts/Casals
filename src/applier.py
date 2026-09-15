@@ -58,6 +58,13 @@ def apply_plan_gen(plan: dict, *, max_items: int = 0, confirm_destructive: bool 
                             {"kind": it.get("kind"), "name": it.get("target", {}).get("name")})
         except Exception as e:
             failed = {**it, "error": str(e)}
+        if failed:
+            # The timer-driven reconcile has no caller to return this to, so the
+            # reason must be in the event log (a wasm that traps at init otherwise
+            # looks like an endless download/install loop from the outside).
+            _append_event("plan_item_failed", it.get("target", {}).get("canister_id") or "",
+                            {"kind": it.get("kind"), "name": it.get("target", {}).get("name"),
+                             "error": str(failed.get("error") or "")[:600]})
             break
     return {
         "plan_hash": plan.get("hash"),

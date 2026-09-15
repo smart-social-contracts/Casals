@@ -2052,6 +2052,56 @@ def test_pool_free_marks_a_real_canister_free(monkeypatch):
     assert entry.canister_name == ""
 
 
+# ── applier: a failed item is in the event log ───────────────────────────────
+
+def _drive(gen):
+    """Run a generator that never really yields to the IC to completion."""
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+def test_apply_plan_failed_item_is_an_event(monkeypatch):
+    """The timer-driven reconcile has nobody to return the error to: a wasm that
+    traps at init must show up in get_events as plan_item_failed, not as an
+    endless wasm_download_start / wasm_installing loop."""
+    import applier
+
+    events = []
+    monkeypatch.setattr(applier, "_append_event", lambda kind, cid, payload: events.append((kind, cid, payload)))
+
+    def holds(_item, _live, _self):
+        return True
+        yield  # pragma: no cover - generator marker
+
+    def execute(item, _sheet):
+        if item["kind"] == "install_code":
+            raise RuntimeError("IC0503: canister trapped: Failed to execute Python code")
+        return None
+        yield  # pragma: no cover - generator marker
+
+    monkeypatch.setattr(applier, "_precondition_holds_gen", holds)
+    monkeypatch.setattr(applier, "_execute_item", execute)
+
+    plan = {"hash": "h", "items": [
+        {"kind": "create_canister", "target": {"name": "e2e-backend", "canister_id": "aaaaa-aa"}},
+        {"kind": "install_code", "target": {"name": "e2e-backend", "canister_id": "aaaaa-aa"}},
+        {"kind": "set_controllers", "target": {"name": "e2e-backend", "canister_id": "aaaaa-aa"}},
+    ]}
+    out = _drive(applier.apply_plan_gen(plan, resolved_sheet={}, live_state={}, self_id="self"))
+
+    assert [a["kind"] for a in out["applied"]] == ["create_canister"]
+    assert out["failed"]["kind"] == "install_code"
+    assert out["remaining"] == 1
+    assert [e[0] for e in events] == ["plan_item_applied", "plan_item_failed"]
+    kind, cid, payload = events[1]
+    assert cid == "aaaaa-aa"
+    assert payload["name"] == "e2e-backend"
+    assert "IC0503" in payload["error"]
+
+
 # ── frontend source locks ────────────────────────────────────────────────────
 
 def test_settings_and_svelte_get_tree_callers_import_it():
