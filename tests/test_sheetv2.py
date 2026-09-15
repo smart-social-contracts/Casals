@@ -261,6 +261,26 @@ def test_resolve_stand_backend():
     assert commanders == ["backend-id", "rust-be-id"]
 
 
+def test_domains_materialize_ic_domains_file():
+    """`domains` hosts become the frontend's `/.well-known/ic-domains`; wildcards
+    and empty hosts (an environment without a domain) are skipped."""
+    sheet = _load_corpus("minimal")
+    sheet["environments"]["local"]["portal_host"] = "gos.example"
+    sheet["domains"] = [
+        {"host": "$env.portal_host", "canister": "casals-frontend"},
+        {"host": "*.gos.example", "canister": "casals-frontend"},
+        {"host": "", "canister": "casals-frontend"},
+        {"host": "api.gos.example", "canister": "hello-backend"},
+    ]
+    assert sv2.validate(sheet, "local") == []
+    resolved = sv2.resolve(sheet, "local", _ctx(sheet))
+    assert resolved["conductor"]["frontend"]["files"][sv2.IC_DOMAINS_FILE] == "gos.example\n"
+    assert "files" not in resolved["sections"][0]["stands"][0]["canisters"][0]  # not a frontend
+    sheet["environments"]["local"]["portal_host"] = ""
+    resolved = sv2.resolve(sheet, "local", _ctx(sheet))
+    assert "files" not in resolved["conductor"]["frontend"]
+
+
 def test_resolve_env_flags_object():
     sheet = _load_corpus("adopted")
     ctx = _ctx(sheet)

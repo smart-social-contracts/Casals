@@ -578,7 +578,15 @@ def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int
 SYNC_MAX_FILES = 10
 SYNC_MAX_BYTES = 4_000_000
 _TEXT_TYPES = {".js": "application/javascript", ".json": "application/json",
-               ".html": "text/html", ".css": "text/css", ".txt": "text/plain"}
+               ".html": "text/html", ".css": "text/css", ".txt": "text/plain",
+               # extensionless well-known files, by basename
+               "ii-alternative-origins": "application/json", "ic-domains": "text/plain"}
+
+
+def _text_content_type(key: str) -> str:
+    base = key.rsplit("/", 1)[-1]
+    ext = "." + base.rsplit(".", 1)[-1] if "." in base else ""
+    return _TEXT_TYPES.get(ext) or _TEXT_TYPES.get(base) or "text/plain"
 
 
 def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, all_keys: list | None = None):
@@ -606,7 +614,7 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
     for key in keys[:SYNC_MAX_FILES]:
         if key in files:
             content = files[key].encode("utf-8")
-            content_type = _TEXT_TYPES.get("." + key.rsplit(".", 1)[-1], "text/plain")
+            content_type = _text_content_type(key)
         else:
             meta = listing.get(key)
             if not meta:

@@ -352,7 +352,27 @@ def resolve_partial(
                     _resolve_canister_tree(
                         canister, f"{stpath}.canisters[{k}]", stand, resolve_value
                     )
+    _materialize_ic_domains(copied)
     return copied, unresolved
+
+
+IC_DOMAINS_FILE = "/.well-known/ic-domains"
+
+
+def _materialize_ic_domains(sheet: dict) -> None:
+    """A frontend named in `domains` serves `/.well-known/ic-domains` listing its
+    hosts (the gateway reads it to register a custom domain). It is derived here
+    so the hosts live in the sheet, never in a dist. Wildcards and empty hosts
+    (an environment without a domain) are skipped."""
+    hosts: dict[str, list[str]] = {}
+    for dom in sheet.get("domains") or []:
+        host = (dom.get("host") or "").strip() if isinstance(dom, dict) else ""
+        if host and "*" not in host and dom.get("canister"):
+            hosts.setdefault(dom["canister"], []).append(host)
+    for name, names in hosts.items():
+        found = find_canister(sheet, name)
+        if found and found[2].get("kind") == "frontend":
+            found[2].setdefault("files", {})[IC_DOMAINS_FILE] = "\n".join(names) + "\n"
 
 
 def validate(sheet: dict, env: str | None = None) -> list[str]:

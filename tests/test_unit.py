@@ -945,6 +945,16 @@ def _provision_stand():
     return types.SimpleNamespace(name="demo-stand")
 
 
+def test_sheet_files_content_type():
+    """Sheet `files` are typed by extension, extensionless well-known files by name."""
+    ct = lifecycle._text_content_type
+    assert ct("/canister_ids.js") == "application/javascript"
+    assert ct("/.well-known/ii-alternative-origins") == "application/json"
+    assert ct("/.well-known/ic-domains") == "text/plain"
+    assert ct("/.ic-assets.json5") == "text/plain"
+    assert ct("/robots") == "text/plain"
+
+
 def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
     """Realm canisters keep Casals until hand_to_baton; installer caller is added."""
     casals = "qthgp-casals-conductor"
