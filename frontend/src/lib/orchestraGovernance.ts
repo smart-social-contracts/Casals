@@ -9,6 +9,7 @@ import {
   multisigConsoleUrl,
 } from './orchestrationNav';
 import { controllerLabel } from './controllerLabels';
+import { isOrchestraSectionName } from './governanceUx';
 
 export interface LocatedCanister extends Canister {
   section: string;
@@ -176,7 +177,7 @@ export function treeContainsCanisterId(tree: Tree | null | undefined, canisterId
 }
 
 function isCasalsSectionName(name: string): boolean {
-  return name === 'Casals' || name === 'Conductor';
+  return isOrchestraSectionName(name);
 }
 
 function canisterMatches(a: Canister, b: Canister): boolean {

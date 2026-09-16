@@ -866,6 +866,87 @@ def test_stand_view_exposes_commanders_array():
     assert v["commanders"][0]["principal"] == "sec-cmd"
 
 
+# ── commanders: lifecycle_access (orchestra → section → stand) ───────────────
+
+ANON = "2vxsx-fae"
+
+
+def _entity(*grants):
+    """A Section/Stand-like row with ``(principal, permissions)`` commander grants."""
+    e = types.SimpleNamespace(commander_principal="", commanders_json="", permissions="")
+    for principal, perms in grants:
+        cmd_mod.add_commander(e, principal, perms)
+    return e
+
+
+def _access(caller, permission, stand=None, section=None, orchestra=None, open_access=False):
+    return cmd_mod.lifecycle_access(caller, permission, stand, section, orchestra, open_access, ANON)
+
+
+def test_lifecycle_access_orchestra_commander_acts_on_any_stand():
+    # The governed corpus shape: stand and section both have commanders that
+    # exclude the caller; the caller only holds `*` on the orchestra.
+    orchestra = _entity(("ii", "*"))
+    section = _entity(("operator", "canister.*"))
+    stand = _entity(("dev", "stand.*"))
+    for perm in ("canister.tag", "canister.deploy", "stand.rename", "stand.delete"):
+        assert _access("ii", perm, stand, section, orchestra), perm
+
+
+def test_lifecycle_access_orchestra_grant_is_permission_scoped():
+    orchestra = _entity(("auditor", "canister.tag"))
+    section = _entity(("operator", "canister.*"))
+    stand = _entity(("dev", "stand.*"))
+    assert _access("auditor", "canister.tag", stand, section, orchestra)
+    assert not _access("auditor", "canister.delete", stand, section, orchestra)
+    assert not _access("auditor", "stand.delete", stand, section, orchestra)
+
+
+def test_lifecycle_access_orchestra_commander_on_commanderless_stand():
+    # A stand created by an orchestra commander has no commanders of its own and
+    # sits in a section whose commanders exclude the caller — the probe case.
+    orchestra = _entity(("ii", "*"))
+    section = _entity(("operator", "canister.*"))
+    stand = _entity()
+    assert _access("ii", "stand.delete", stand, section, orchestra)
+    assert not _access("operator", "stand.delete", stand, section, orchestra)
+
+
+def test_lifecycle_access_stand_commander_then_section_commander():
+    orchestra = _entity(("ii", "*"))
+    section = _entity(("operator", "canister.*"))
+    stand = _entity(("dev", "stand.*"))
+    assert _access("dev", "stand.rename", stand, section, orchestra)
+    assert not _access("dev", "canister.deploy", stand, section, orchestra)
+    assert _access("operator", "canister.deploy", stand, section, orchestra)
+    assert not _access("operator", "stand.rename", stand, section, orchestra)
+    assert not _access("stranger", "canister.tag", stand, section, orchestra)
+
+
+def test_lifecycle_access_section_only_when_stand_has_no_commanders():
+    section = _entity(("operator", "*"))
+    stand = _entity()
+    assert _access("operator", "stand.delete", stand, section, None)
+    assert not _access("stranger", "stand.delete", stand, section, None, open_access=True)
+
+
+def test_lifecycle_access_open_access_only_without_commanders():
+    stand = _entity()
+    section = _entity()
+    assert _access("anyone", "canister.deploy", stand, section, None, open_access=True)
+    assert not _access(ANON, "canister.deploy", stand, section, None, open_access=True)
+    assert not _access("anyone", "canister.deploy", stand, section, None, open_access=False)
+    # An orchestra with commanders that exclude the caller does not close a
+    # commander-less demo stand under open access.
+    orchestra = _entity(("ii", "*"))
+    assert _access("anyone", "canister.deploy", stand, section, orchestra, open_access=True)
+
+
+def test_lifecycle_access_tolerates_missing_orchestra_and_stand():
+    assert not _access("anyone", "canister.deploy", None, None, None)
+    assert _access("anyone", "canister.deploy", None, None, None, open_access=True)
+
+
 # ── config_call: candid_text_tuple ───────────────────────────────────
 
 def test_candid_text_tuple_escapes_quotes_and_backslashes():

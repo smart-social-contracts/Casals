@@ -55,6 +55,7 @@ from commanders import (
     entity_has_permission,
     is_commander,
     legacy_commander_principal,
+    lifecycle_access,
     list_commanders,
     permissions_for,
     remove_commander as _remove_commander_entity,
@@ -660,8 +661,10 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
     """Authorize a stand/section lifecycle action, optionally requiring a
     specific permission of the matching commander.
 
-    Resolution order:
+    Resolution order (see ``commanders.lifecycle_access``):
       - Casals controllers may do anything.
+      - Orchestra commanders (``conductor.commanders``) with the required
+        permission act on every section and stand.
       - Any stand commander with the required permission.
       - Any parent section commander with the required permission.
       - With no commander assigned, open-access mode grants any authenticated
@@ -669,24 +672,18 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
     """
     if _is_controller():
         return
-    caller = _caller()
-    section = stand.section if stand else None
-
-    if stand and list_commanders(stand):
-        if entity_has_permission(stand, caller, permission):
-            return
-        if section and entity_has_permission(section, caller, permission):
-            return
-        raise Exception("unauthorized: caller is not the commander for this stand/section")
-
-    if section and list_commanders(section):
-        if entity_has_permission(section, caller, permission):
-            return
-        raise Exception("unauthorized: caller is not the commander for this stand/section")
-
-    if _settings().open_access and caller != ANONYMOUS:
+    list(Section.instances())
+    if lifecycle_access(
+        _caller(),
+        permission,
+        stand,
+        stand.section if stand else None,
+        Section[SYNTHETIC_SECTION_CONDUCTOR],
+        _settings().open_access,
+        ANONYMOUS,
+    ):
         return
-    raise Exception("unauthorized: caller is not the commander for this stand/section")
+    raise Exception("unauthorized: caller is not the commander for this orchestra/section/stand")
 
 
 # _canister_view, _stand_view, _section_view imported from views.py above.

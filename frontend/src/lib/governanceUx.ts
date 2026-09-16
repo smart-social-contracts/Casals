@@ -50,11 +50,80 @@ export const OPERATOR_ACCESS_TABS: { id: OperatorAccessTab; label: string; hint:
   { id: 'reference', label: 'Permission reference', hint: 'All Casals commander permissions' },
 ];
 
+export type OperatorScope = 'orchestra' | 'section' | 'stand' | 'controller';
+
 export interface OperatorRoleRow {
-  scope: 'section' | 'stand' | 'controller';
+  scope: OperatorScope;
   section: string;
   stand?: string;
   label: string;
+  /** Owning principal; when set, `describeOperatorAccess` only counts rows of the signed-in principal. */
+  principal?: string;
+  /** True when the grant is `*` (every permission). */
+  allPermissions?: boolean;
+}
+
+/**
+ * The backend keeps orchestra-level commanders (`conductor.commanders` in the
+ * sheet) on a synthetic section named "Casals" (older builds: "Conductor").
+ * The UI presents that row as the orchestra rung, not as a sibling section.
+ */
+export const ORCHESTRA_SECTION = 'Casals';
+
+export function isOrchestraSectionName(name: string | null | undefined): boolean {
+  return name === 'Casals' || name === 'Conductor';
+}
+
+/** Section names an operator can pick in the assign modal (the orchestra rung has its own scope). */
+export function assignableSections(sectionNames: string[]): string[] {
+  return sectionNames.filter((n) => !isOrchestraSectionName(n));
+}
+
+export interface ScopedGrant {
+  principal: string;
+  permissions?: string[];
+  all_permissions?: boolean;
+}
+
+/** Commander grants at each rung above a stand; `null` when that rung has no row. */
+export interface StandGrantLadder {
+  orchestra?: ScopedGrant[] | null;
+  section?: ScopedGrant[] | null;
+  stand?: ScopedGrant[] | null;
+}
+
+function grantAllows(grant: ScopedGrant, key: string): boolean {
+  if (grant.all_permissions) return true;
+  if (!grant.permissions?.length) return true; // legacy empty grant == full access
+  if (grant.permissions.includes(key)) return true;
+  return key === 'subnet.whitelist' && grant.permissions.includes('commander.assign');
+}
+
+/**
+ * Pure mirror of the backend's `_require_commander` ladder: orchestra
+ * commanders act on every stand; otherwise the stand's own commanders, then
+ * the parent section's. Controllers and open-access are decided elsewhere.
+ */
+export function ladderAllows(caller: string, permissionKey: string, ladder: StandGrantLadder): boolean {
+  const who = caller.trim();
+  if (!who) return false;
+  for (const rung of [ladder.orchestra, ladder.stand, ladder.section]) {
+    for (const grant of rung ?? []) {
+      if (grant.principal === who && grantAllows(grant, permissionKey)) return true;
+    }
+  }
+  return false;
+}
+
+/** Human label for a scope row: "Orchestra · governed", "Product", "Product / Motoko". */
+export function scopeLabel(
+  row: Pick<OperatorRoleRow, 'scope' | 'section' | 'stand'>,
+  orchestraName: string,
+): string {
+  if (row.scope === 'controller') return 'Casals controller';
+  if (row.scope === 'orchestra') return orchestraName ? `Orchestra · ${orchestraName}` : 'Orchestra';
+  if (row.stand) return `${row.section} / ${row.stand}`;
+  return row.section;
 }
 
 /** Rename permission groups in assign/edit UI. */
@@ -83,15 +152,26 @@ export function describeOperatorAccess(
   principal: string,
   controllerPrincipals: string[],
   roleRows: OperatorRoleRow[],
+  orchestraName = '',
 ): string {
   const key = (principal || '').trim().toLowerCase();
   if (!key) return 'Not signed in';
   if (controllerPrincipals.some((p) => p.trim().toLowerCase() === key)) {
     return 'IC controller on Casals — full platform access';
   }
-  const mine = roleRows.filter((r) => r.scope !== 'controller');
+  const mine = roleRows.filter(
+    (r) => r.scope !== 'controller' && (!r.principal || r.principal.trim().toLowerCase() === key),
+  );
   if (!mine.length) {
     return 'No Casals operator roles — use Platform committee for on-chain governance';
+  }
+  const orchestra = mine.find((r) => r.scope === 'orchestra');
+  if (orchestra) {
+    const where = orchestraName ? ` on ${orchestraName}` : '';
+    const reach = orchestra.allPermissions === false
+      ? 'granted permissions apply to every section and stand'
+      : 'full access on every section and stand';
+    return `Orchestra commander${where} — ${reach}`;
   }
   const scopes = mine.map((r) => (r.stand ? `${r.section} / ${r.stand}` : r.section));
   const unique = [...new Set(scopes)];
@@ -184,7 +264,7 @@ export const BATON_CAPABILITY_REFERENCE: ReferenceEntry[] = [
 export const GOVERNANCE_MAP_LAYERS = [
   {
     title: 'Casals operator roles',
-    body: 'Grants permission to call Casals APIs (plan / apply, lifecycle, orchestration APIs).',
+    body: 'Grants permission to call Casals APIs (plan / apply, lifecycle, orchestration APIs). Scoped Orchestra → Section → Stand: a commander at one rung acts on everything beneath it.',
   },
   {
     title: 'Platform committee (multisig)',

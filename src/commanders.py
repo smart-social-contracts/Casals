@@ -142,6 +142,40 @@ def section_commander_can(sec, caller: str, permission: str) -> bool:
     return entity_has_permission(sec, caller, permission)
 
 
+def lifecycle_access(
+    caller: str,
+    permission: str,
+    stand,
+    section,
+    orchestra,
+    open_access: bool,
+    anonymous: str,
+) -> bool:
+    """Decide a stand/section lifecycle action for ``caller`` — the pure core of
+    ``main._require_commander`` (controllers are short-circuited before this).
+
+    The commander hierarchy is orchestra → section → stand; a commander at
+    any rung holding ``permission`` may act on everything beneath it:
+
+      - Orchestra commanders (``conductor.commanders`` in the sheet, stored on
+        the synthetic conductor section) act on every section and stand.
+      - Stand commanders act on their stand; when a stand has commanders the
+        parent section's commanders still apply, but nobody else does.
+      - Section commanders act on every stand of their section.
+      - With no commander at any rung, open-access mode admits any
+        authenticated caller (demo stands), mirroring ``_require_can_add``.
+    """
+    if orchestra is not None and entity_has_permission(orchestra, caller, permission):
+        return True
+    if stand is not None and list_commanders(stand):
+        if entity_has_permission(stand, caller, permission):
+            return True
+        return section is not None and entity_has_permission(section, caller, permission)
+    if section is not None and list_commanders(section):
+        return entity_has_permission(section, caller, permission)
+    return bool(open_access) and caller != anonymous
+
+
 def apply_commanders_from_spec(entity, spec: dict) -> None:
     """Apply commanders from a create/sheet spec (supports legacy + new format)."""
     commanders = spec.get("commanders")

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import {
     getTree, setCommander, removeCommander, setPermissions, listPermissions, listBackendControllers,
+    casalsMetadata,
     type Tree, type Permission,
   } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
@@ -11,16 +12,21 @@
   import { copyText } from '$lib/clipboard';
   import {
     OPERATOR_ACCESS_TABS,
+    ORCHESTRA_SECTION,
+    assignableSections,
     describeOperatorAccess,
     groupPermissions,
+    isOrchestraSectionName,
+    scopeLabel,
     type OperatorAccessTab,
+    type OperatorScope,
   } from '$lib/governanceUx';
   import GovernanceMapCard from '$lib/components/GovernanceMapCard.svelte';
   import PermissionReferenceTable from '$lib/components/PermissionReferenceTable.svelte';
 
   interface CommanderRow {
-    scope: 'section' | 'stand' | 'controller';
-    section: string;
+    scope: OperatorScope;
+    section: string;          // backing section row ("Casals" for orchestra scope)
     stand?: string;
     principal: string;
     label: string;            // hierarchy path label
@@ -31,6 +37,7 @@
   let tree = $state<Tree | null>(null);
   let catalog = $state<Permission[]>([]);
   let controllerPrincipals = $state<string[]>([]);
+  let orchestraName = $state('');
   let loading = $state(true);
   let error = $state('');
   let filterQuery = $state('');
@@ -40,13 +47,15 @@
     loading = true;
     error = '';
     try {
-      const [t, perms, controllers] = await Promise.all([
+      const [t, perms, controllers, meta] = await Promise.all([
         getTree(),
         listPermissions().catch(() => []),
         listBackendControllers().catch(() => []),
+        casalsMetadata().catch(() => null),
       ]);
       tree = t;
       controllerPrincipals = controllers;
+      orchestraName = (meta?.orchestra_name ?? '').trim();
       if (perms.length) catalog = perms;
     } catch (e: any) {
       error = e?.message ?? 'Failed to load data';
@@ -61,7 +70,7 @@
   const groupedCatalog = $derived.by(() => groupPermissions(catalog));
 
   const operatorStatus = $derived.by(() =>
-    describeOperatorAccess($principal, controllerPrincipals, rows),
+    describeOperatorAccess($principal, controllerPrincipals, rows, orchestraName),
   );
 
   const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
@@ -82,18 +91,27 @@
       });
     }
     if (!tree) return out;
-    for (const sec of tree.sections) {
+    // Orchestra rung first: the backend stores `conductor.commanders` on a
+    // synthetic section; those commanders act on every section and stand.
+    const sections = [...tree.sections].sort(
+      (a, b) => Number(isOrchestraSectionName(b.name)) - Number(isOrchestraSectionName(a.name)),
+    );
+    for (const sec of sections) {
+      const orchestra = isOrchestraSectionName(sec.name);
       for (const cmd of entityCommanders(sec)) {
+        const scope: OperatorScope = orchestra ? 'orchestra' : 'section';
         out.push({
-          scope: 'section', section: sec.name, principal: cmd.principal,
-          label: sec.name, permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
+          scope, section: sec.name, principal: cmd.principal,
+          label: scopeLabel({ scope, section: sec.name }, orchestraName),
+          permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
         });
       }
       for (const dk of sec.stands) {
         for (const cmd of entityCommanders(dk)) {
           out.push({
             scope: 'stand', section: sec.name, stand: dk.name, principal: cmd.principal,
-            label: `${sec.name} / ${dk.name}`, permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
+            label: scopeLabel({ scope: 'stand', section: sec.name, stand: dk.name }, orchestraName),
+            permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
           });
         }
       }
@@ -126,7 +144,8 @@
   }
 
   // ── Assign commander modal ──────────────────────────────────────────────────
-  const sectionOptions = $derived((tree?.sections ?? []).map((s) => s.name));
+  const sectionOptions = $derived(assignableSections((tree?.sections ?? []).map((s) => s.name)));
+  const hasOrchestraRung = $derived((tree?.sections ?? []).some((s) => isOrchestraSectionName(s.name)));
   function standNames(sectionName: string) {
     return (tree?.sections.find((s) => s.name === sectionName)?.stands ?? []).map((d) => d.name);
   }
@@ -134,7 +153,7 @@
   let busy = $state(false);
 
   let assignOpen = $state(false);
-  let assignScope = $state<'section' | 'stand'>('section');
+  let assignScope = $state<'orchestra' | 'section' | 'stand'>('section');
   let assignSection = $state('');
   let assignStand = $state('');
   let assignPrincipal = $state('');
@@ -164,9 +183,11 @@
     if (!assignPrincipal.trim()) return;
     busy = true;
     try {
-      const target = assignScope === 'stand' && assignStand
-        ? { stand: assignStand }
-        : { section: assignSection };
+      const target = assignScope === 'orchestra'
+        ? { section: ORCHESTRA_SECTION }
+        : assignScope === 'stand' && assignStand
+          ? { stand: assignStand }
+          : { section: assignSection };
       const permissions: string[] | '*' = assignAllChecked ? '*' : [...assignPerms];
       await setCommander({ ...target, commander_principal: assignPrincipal.trim(), permissions });
       toasts.success('Commander assigned');
@@ -203,7 +224,8 @@
   }
 
   async function submitRemove(row: CommanderRow) {
-    if (!confirm(`Remove ${row.principal.slice(0, 12)}… from ${row.scope} "${row.stand ?? row.section}"?`)) return;
+    const where = row.scope === 'orchestra' ? `the orchestra (${row.label})` : `${row.scope} "${row.stand ?? row.section}"`;
+    if (!confirm(`Remove ${row.principal.slice(0, 12)}… from ${where}?`)) return;
     busy = true;
     try {
       const target = row.scope === 'stand' && row.stand
@@ -247,7 +269,8 @@
     <div class="space-y-2">
       <h1 class="text-2xl font-bold text-primary-900">Operator access</h1>
       <p class="text-sm text-primary-500 max-w-2xl">
-        Casals commander roles — who may call Casals APIs on each section or stand.
+        Casals commander roles — who may call Casals APIs, scoped Orchestra → Section → Stand.
+        A commander at one rung acts on everything beneath it.
         This is separate from the <a href="/multisig" class="text-primary-700 underline">platform committee</a>
         (on-chain multisig).
       </p>
@@ -379,11 +402,16 @@
                 <div class="flex items-center gap-3">
                   <span class="badge shrink-0 {row.scope === 'controller'
                     ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                    : row.scope === 'section' ? 'badge-primary' : 'badge-neutral'}">{row.scope}</span>
+                    : row.scope === 'orchestra'
+                      ? 'bg-primary-800 text-white border border-primary-800'
+                      : row.scope === 'section' ? 'badge-primary' : 'badge-neutral'}">{row.scope}</span>
                   <span class="text-sm text-primary-800 flex-1 truncate">
                     {#if row.scope === 'controller'}
                       <span class="font-medium">{row.label}</span>
                       <span class="text-primary-400 ml-1">· full platform access</span>
+                    {:else if row.scope === 'orchestra'}
+                      <span class="font-medium">{row.label}</span>
+                      <span class="text-primary-400 ml-1">· every section and stand</span>
                     {:else if row.stand}
                       <span class="text-primary-500">{row.section}</span><span class="text-primary-300 mx-1">/</span><span class="font-medium">{row.stand}</span>
                     {:else}
@@ -445,16 +473,27 @@
       <div>
         <span class="label">Scope</span>
         <div class="flex gap-2 mt-1">
+          {#if hasOrchestraRung}
+            <button class="btn-sm {assignScope === 'orchestra' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'orchestra'; assignStand = ''; }}>Orchestra</button>
+          {/if}
           <button class="btn-sm {assignScope === 'section' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'section'; assignStand = ''; }}>Section</button>
           <button class="btn-sm {assignScope === 'stand' ? 'btn-primary' : 'btn-secondary'}" onclick={() => (assignScope = 'stand')}>Stand</button>
         </div>
+        {#if assignScope === 'orchestra'}
+          <p class="text-xs text-primary-500 mt-2">
+            Orchestra commanders{orchestraName ? ` on ${orchestraName}` : ''} act on every section and stand
+            (stored as <code>conductor.commanders</code> in the sheet).
+          </p>
+        {/if}
       </div>
-      <div>
-        <label class="label" for="assign-section">Section</label>
-        <select id="assign-section" class="input" bind:value={assignSection}>
-          {#each sectionOptions as name (name)}<option value={name}>{name}</option>{/each}
-        </select>
-      </div>
+      {#if assignScope !== 'orchestra'}
+        <div>
+          <label class="label" for="assign-section">Section</label>
+          <select id="assign-section" class="input" bind:value={assignSection}>
+            {#each sectionOptions as name (name)}<option value={name}>{name}</option>{/each}
+          </select>
+        </div>
+      {/if}
       {#if assignScope === 'stand'}
         <div>
           <label class="label" for="assign-stand">Stand</label>
@@ -494,7 +533,7 @@
         <span class="text-xs text-primary-400">{assignPerms.size} of {catalog.length} permissions</span>
         <div class="flex gap-3">
           <button class="btn-secondary btn-sm" onclick={() => (assignOpen = false)} disabled={busy}>Cancel</button>
-          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'stand' && !assignStand)} onclick={submitAssign}>
+          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'stand' && !assignStand) || (assignScope === 'section' && !assignSection)} onclick={submitAssign}>
             {busy ? 'Assigning…' : 'Assign'}
           </button>
         </div>
@@ -511,7 +550,7 @@
       <div>
         <h3 class="text-lg font-semibold text-primary-900">Permissions</h3>
         <p class="text-sm text-primary-500 mt-0.5">
-          {permsRow.scope === 'stand' ? `Stand "${permsRow.stand}"` : `Section "${permsRow.section}"`} ·
+          {permsRow.scope === 'stand' ? `Stand "${permsRow.stand}"` : permsRow.scope === 'orchestra' ? permsRow.label : `Section "${permsRow.section}"`} ·
           <span class="font-mono">{permsRow.principal.slice(0, 12)}…</span>
         </p>
       </div>

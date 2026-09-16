@@ -340,10 +340,26 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     ic.deployer = "operator-principal"
     from auth import _normalize_permissions, _parse_permissions
     granted = lambda p: _parse_permissions(_normalize_permissions(p))  # noqa: E731
+
+    # Mirror the sheet's conductor commanders / multisig signers so the live
+    # view tracks corpus edits (extra local principals, e.g. a browser II).
+    principals = full_sheet["environments"]["local"]["principals"]
+
+    def resolve(token: str) -> str:
+        if token == "$deployer":
+            return ic.deployer
+        if token.startswith("$principal:"):
+            return resolve(principals[token[len("$principal:"):]])
+        return token
+
+    conductor_commanders = [
+        {"principal": resolve(c["principal"]), "permissions": granted(c.get("permissions", "*"))}
+        for c in full_sheet["conductor"]["commanders"]
+    ]
+    signers = sorted({resolve(s) for s in full_sheet["governance"]["multisig"]["signers"]})
     ic.queries[(bindings["casals-backend"], "get_tree")] = {
         "sections": [
-            {"name": "Casals", "stands": [],
-             "commanders": [{"principal": "operator-principal", "permissions": granted("*")}]},
+            {"name": "Casals", "stands": [], "commanders": conductor_commanders},
             {"name": "Product",
              "commanders": [{"principal": "operator-principal", "permissions": granted("canister.*")}],
              "stands": [{
@@ -370,8 +386,9 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     ic.updates[(bindings["file-registry"], "list_files")] = [
         {"path": "hello-world-motoko@1.0.0.wasm.gz", "sha256": "a" * 64},
     ]
+    signer_vec = " ".join(f'principal "{s}";' for s in signers)
     ic.icp_outputs = {("canister", "call", bindings["multisig"], "list_signers"):
-                      '(record { threshold = 1 : nat; signers = vec { principal "operator-principal" }; })'}
+                      f'(record {{ threshold = 1 : nat; signers = vec {{ {signer_vec} }}; }})'}
 
 
 class TestOracle:

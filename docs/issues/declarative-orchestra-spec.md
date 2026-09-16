@@ -318,6 +318,16 @@ synthetic section `Casals` / stand `conductor` and `System` / `governance`.
 Baton canisters are `kind: backend` with a name ending in `-baton`;
 `$stand.backend` / `$stand.frontend` skip them.
 
+`conductor.commanders` is the **orchestra rung** of the commander hierarchy
+(orchestra → section → stand). It is stored on the synthetic `Casals` section
+and consulted first by every authorization path — lifecycle actions
+(`_require_commander`: deploy, tag, rename, snapshot, start/stop, delete, …),
+structural adds (`_require_can_add_in_section`) and `sheet.set` / `sheet.apply`
+— so a commander holding a permission there may exercise it on every section
+and stand. Section commanders act on every stand of their section; stand
+commanders on their stand only. The UI shows this rung as scope `orchestra`
+(named after the sheet), not as a section called "Casals".
+
 The two conductor frontends are asset canisters: the CLI deploys and syncs
 their `dist` (frontend builds are not reproducible, so idempotency is by dist
 content hash in the bindings file). They have **no `registry.wasms` entry**;

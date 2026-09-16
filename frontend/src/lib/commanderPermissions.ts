@@ -1,5 +1,6 @@
 import type { Section, Stand, Tree } from './api';
 import { entityCommanders } from './commanderAccess';
+import { isOrchestraSectionName, ladderAllows } from './governanceUx';
 
 export function permissionsGrant(
   permissions: string[] | undefined,
@@ -14,38 +15,38 @@ export function permissionsGrant(
   return false;
 }
 
-function commanderGrantAllows(
-  grant: { permissions?: string[]; all_permissions?: boolean },
-  key: string,
-): boolean {
-  return permissionsGrant(grant.permissions, grant.all_permissions, key);
+/** The synthetic section carrying orchestra-level commanders (`conductor.commanders`), if present. */
+export function orchestraSection(tree: Tree | null | undefined): Section | null {
+  return tree?.sections.find((s) => isOrchestraSectionName(s.name)) ?? null;
 }
 
-/** True when `principal` has `permissionKey` on the stand (or its section). */
+/**
+ * True when `principal` has `permissionKey` on the stand — mirrors the
+ * backend's `_require_commander`: orchestra commanders act everywhere, then
+ * the stand's own commanders, then the parent section's.
+ */
 export function canActOnStand(
   section: Section,
   stand: Stand,
   principal: string,
   permissionKey: string,
+  orchestra: Section | null = null,
 ): boolean {
-  const caller = principal.trim();
-  if (!caller) return false;
-  for (const cmd of entityCommanders(stand)) {
-    if (cmd.principal === caller && commanderGrantAllows(cmd, permissionKey)) return true;
-  }
-  for (const cmd of entityCommanders(section)) {
-    if (cmd.principal === caller && commanderGrantAllows(cmd, permissionKey)) return true;
-  }
-  return false;
+  return ladderAllows(principal, permissionKey, {
+    orchestra: orchestra ? entityCommanders(orchestra) : null,
+    stand: entityCommanders(stand),
+    section: entityCommanders(section),
+  });
 }
 
 /** True when `principal` may set tags on the named orchestra canister. */
 export function canTagCanister(tree: Tree | null, principal: string, canisterName: string): boolean {
   if (!tree || !principal.trim()) return false;
+  const orchestra = orchestraSection(tree);
   for (const sec of tree.sections) {
     for (const stand of sec.stands) {
       if (stand.canisters.some((c) => c.name === canisterName)) {
-        return canActOnStand(sec, stand, principal, 'canister.tag');
+        return canActOnStand(sec, stand, principal, 'canister.tag', orchestra);
       }
     }
   }

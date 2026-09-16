@@ -91,7 +91,7 @@ rendered by `frontend/src/routes/+layout.svelte`:
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, reconcile |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
-| `/commanders` | Operator access: section/stand commanders and granular permissions |
+| `/commanders` | Operator access: orchestra / section / stand commanders and granular permissions (a commander at one rung acts on everything beneath it) |
 | `/multisig` | Platform committee: on-chain multisig for IC controller actions |
 | `/settings` | Instance settings; **subnet whitelist** matrix |
 
