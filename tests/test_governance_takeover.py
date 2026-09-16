@@ -494,15 +494,16 @@ class TestGovernanceTakeover:
             f"live={live!r}\nproposal:\n{prop}"
         )
 
-        # Casals was removed from gov-b's controller list, so it can no longer
-        # introspect the canister and refresh_controllers_cache cannot update
-        # the tree — the cached controllers field goes stale/empty.
+        # Casals was removed from gov-b's controller list. It still reads the
+        # controller set through the management canister's canister_info (open
+        # to any canister), so refresh_controllers_cache reports the live set:
+        # the tree shows the takeover result rather than a stale copy.
         _refresh_controllers_cache()
         row = _tree_canister(call_canister("get_tree"), target["name"])
         cached = [c for c in (row.get("controllers") or []) if c]
-        assert not cached, (
-            f"expected stale/empty tree controllers for {target['name']} after "
-            f"dropping Casals; got {cached!r}\nrow={row!r}\nproposal:\n{prop}"
+        assert set(cached) == {multisig_id, deployer}, (
+            f"tree controllers for {target['name']} after dropping Casals should "
+            f"mirror the live set; got {cached!r}\nrow={row!r}\nproposal:\n{prop}"
         )
 
     def test_03_emergency_takeover_recovery(self, gov_env):
