@@ -117,8 +117,11 @@ class Orchestra:
         return {c["name"]: c.get("module_hash", "") for c in view["canisters"]}
 
     def deployer_controls(self, cid: str) -> bool:
-        out = self.icp("canister", "status", cid, check=False)
-        return out.returncode == 0
+        # Read the controller list instead of probing `icp canister status`:
+        # newer icp-cli answers status for non-controllers too (public
+        # read_state), so its exit code no longer says who controls what.
+        ic = IcClient(env=ENV, identity=IDENTITY, project_root=REPO)
+        return ic.deployer_principal() in (ic.read_controllers(cid) or [])
 
     def add_controller(self, cid: str, principal: str) -> bool:
         """Drift injection: directly when the deployer is a controller, else through

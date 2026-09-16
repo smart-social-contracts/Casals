@@ -1,0 +1,14 @@
+// Asset-canister policy, honoured by Casals exactly as dfx honours it.
+[
+  {
+    "match": "**/*",
+    "security_policy": "standard",
+    "headers": {
+      "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline';",
+    },
+  },
+  {
+    "match": "assets/**",
+    "headers": { "Cache-Control": "public, max-age=31536000, immutable" },
+  },
+]

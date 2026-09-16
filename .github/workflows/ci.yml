@@ -40,8 +40,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install pytest
-        run: pip install pytest
+      # test_cli_v2.py patches ic-py's read_state helpers, so the CLI's runtime
+      # deps are needed even though no replica is.
+      - name: Install CLI deps
+        run: pip install -r requirements-dev.txt
 
       # tests/test_cli_unit.py covers scripts/casals.py with no IC runtime:
       # _parse / _candid_unescape / _candid_text_arg helpers, the arg parser,
