@@ -22,6 +22,7 @@ from commanders import commander_principals
 from subnets import assert_subnet_allowed
 
 from helpers import (
+    ANONYMOUS,
     _caller,
     _file_registry,
     _find_canister_by_id,
@@ -995,8 +996,16 @@ def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
 def _is_canister_principal(p: str) -> bool:
     """True for opaque (canister) principals, False for self-authenticating
     (user key) principals. Canister ids are short (<= ~10 bytes, 27 text
-    chars); self-authenticating principals are 29 bytes (63 text chars)."""
-    return len((p or "").strip()) < 40
+    chars); self-authenticating principals are 29 bytes (63 text chars).
+
+    The anonymous principal (``2vxsx-fae``) is short too but is nobody: making
+    it a controller would hand the canister to every anonymous caller. It is
+    never a canister.
+    """
+    p = (p or "").strip()
+    if not p or p == ANONYMOUS:
+        return False
+    return len(p) < 40
 
 
 def _ensure_provision_controllers_gen(canister_id: str, dk, w=None):

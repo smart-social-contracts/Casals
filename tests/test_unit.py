@@ -1002,6 +1002,29 @@ def test_resolve_provision_controllers_skips_user_caller(monkeypatch):
     assert deployer not in got
 
 
+def test_resolve_provision_controllers_never_adds_the_anonymous_caller(monkeypatch):
+    """`2vxsx-fae` is short like a canister id but is nobody: an anonymous
+    commander (icp with no identity) must not make every anonymous caller a
+    controller of what Casals provisions."""
+    casals = "qthgp-casals-conductor"
+    mid = "multisig-aaaaa-aa"
+    monkeypatch.setattr(
+        lifecycle,
+        "ic",
+        types.SimpleNamespace(id=lambda: types.SimpleNamespace(to_str=lambda: casals)),
+    )
+    monkeypatch.setattr(lifecycle, "_governance_multisig_id", lambda: mid)
+    monkeypatch.setattr(lifecycle, "_parse_extra_controller_principals", lambda: [])
+    monkeypatch.setattr(lifecycle, "_caller", lambda: "2vxsx-fae")
+
+    w = types.SimpleNamespace(wasm_type="basilisk", key="hello-world-basilisk")
+    got = lifecycle._resolve_provision_controllers(_provision_stand(), w, canister_id="new-cid")
+    assert got == [mid, casals]
+    assert lifecycle._is_canister_principal("2vxsx-fae") is False
+    assert lifecycle._is_canister_principal("") is False
+    assert lifecycle._is_canister_principal("aaaaa-aa") is True
+
+
 def test_resolve_provision_controllers_detects_baton_from_canister_record(monkeypatch):
     """deploy_sheet skip path may omit w; baton must still drop Casals."""
     casals = "qthgp-casals-conductor"

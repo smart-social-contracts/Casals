@@ -105,9 +105,14 @@ class TestMultisigApplySheet:
             f'(variant {{ ApplySheet = record {{ casals_backend = principal "{casals_id}"; '
             f'plan_hash = "{plan_hash}"; confirm_destructive = false; max_items = 5 : nat }} }}, null)',
         ))
-        prop = call(multisig_env["multisig_id"], "get_proposal", f"({proposal_id} : nat)")
-        assert "executed" in str(prop) or "failed" in str(prop)
-        assert "result" in str(prop)
+        # Raw Candid text: `call()` extracts the first..last quoted span, which
+        # on a multi-field record is not the record.
+        prop = icp([
+            "canister", "call", multisig_env["multisig_id"], "get_proposal",
+            f"({proposal_id} : nat)", "-n", "local",
+        ]).stdout
+        assert "executed" in prop or "failed" in prop, prop
+        assert "result" in prop, prop
 
 
 class TestMultisigCallCanister:
@@ -115,16 +120,20 @@ class TestMultisigCallCanister:
 
     def test_call_canister_proposal(self, multisig_env):
         target = multisig_env["baton_id"]
-        arg = '{\\"ping\\":true}'.replace("\\", "")
+        # Candid text: the JSON's quotes must stay escaped inside the string.
+        arg = '{\\"ping\\":true}'
         proposal_id = parse_nat_output(call(
             multisig_env["multisig_id"],
             "propose",
             f'(variant {{ CallCanister = record {{ canister = principal "{target}"; '
             f'method = "list_commanders"; arg_json = "{arg}" }} }}, null)',
         ))
-        prop = call(multisig_env["multisig_id"], "get_proposal", f"({proposal_id} : nat)")
+        prop = icp([
+            "canister", "call", multisig_env["multisig_id"], "get_proposal",
+            f"({proposal_id} : nat)", "-n", "local",
+        ]).stdout
         assert proposal_id >= 0
-        assert "CallCanister" in str(prop)
+        assert "CallCanister" in prop, prop
 
 
 class TestMultisigUpgradeSafety:

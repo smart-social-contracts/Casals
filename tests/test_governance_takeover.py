@@ -2,7 +2,7 @@
 
 Casals provisions ordinary canisters with IC controllers ``[multisig, casals]``
 and **never** adds the deploying identity — that is already the production
-lockout topology. The deployer cannot read canister status or call management
+lockout topology. The deployer is not a controller and cannot call management
 methods until governance hands control back via ``#SetCanisterControllers``.
 
 This module proves that lockout by default, then exercises recovery and upgrade
@@ -38,7 +38,6 @@ from conftest import (
     call_canister,
     canister_controllers_live,
     canister_module_hash,
-    canister_status_text,
 )
 
 HELLO_MOTOKO_GZ = os.path.join(
@@ -513,10 +512,10 @@ class TestGovernanceTakeover:
         deployer = gov_env["deployer"]
         casals_id = gov_env["casals_id"]
 
-        status_text = canister_status_text(cid)
-        assert not status_text.strip(), (
-            f"deployer should not be able to read status of locked-out {cid}:\n"
-            f"{status_text[-400:]}"
+        live = canister_controllers_live(cid)
+        assert live and deployer not in live, (
+            f"deployer must not control locked-out {cid} before recovery; "
+            f"live controllers={live!r}"
         )
 
         denied = _deployer_settings_update(cid, "--add-controller", deployer)

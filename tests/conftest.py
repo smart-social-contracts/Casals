@@ -252,13 +252,12 @@ def registry_store_chunked(fr_id: str, namespace: str, path: str, data: bytes,
 
 
 def canister_status_text(canister_id: str, identity: str = None) -> str:
-    """Raw ``icp canister status`` output, or '' when the caller may not read it.
+    """Raw ``icp canister status`` output.
 
     The management canister rejects status reads from non-controllers with
-    IC0542, so the calling identity must be a controller of ``canister_id``.
-    Casals provisions canisters with controllers ``[multisig, casals]`` (batons
-    get ``[multisig]``, a multisig controls itself) and never adds the deployer
-    key — so plain deployer reads fail until governance grants control.
+    IC0542; ``icp`` >= 1.5 then falls back to the public state tree, so the
+    text (controllers, module hash) is available to anyone. Readability is
+    therefore not a controller check — use ``canister_controllers_live``.
     """
     cmd = ["canister", "status", canister_id, "-n", "local"]
     if identity:
@@ -288,10 +287,16 @@ def canister_controllers_live(canister_id: str, identity: str = None) -> list:
     reports) goes stale/empty because Casals can no longer introspect it.
     Requires the calling identity to be a controller.
     """
-    m = re.search(r"Controllers:\s*(.+)", canister_status_text(canister_id, identity))
+    text = canister_status_text(canister_id, identity)
+    # icp >= 1.5 prints one indented "controller: <principal>" line per
+    # controller; older versions printed them on the "Controllers:" line, a
+    # single one bare and several comma-separated.
+    lines = re.findall(r"^\s*controller:\s*(\S+)\s*$", text, flags=re.M)
+    if lines:
+        return lines
+    m = re.search(r"Controllers:\s*(.+)", text)
     if not m:
         return []
-    # icp prints a single controller bare and multiple ones comma-separated.
     return [p for p in re.split(r"[,\s]+", m.group(1).strip()) if p]
 
 
