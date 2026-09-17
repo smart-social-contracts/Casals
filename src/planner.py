@@ -499,11 +499,16 @@ class _PlanContext:
                 # deployer or the multisig must.
                 removes_self = self.self_id in live_ctls and self.self_id not in desired_ctls
                 requires = "self" if self.self_id in live_ctls else "multisig"
+                # Handing a baton back — Casals dropping exactly itself after the
+                # install — is what the sheet rules demand (no $self on batons), so
+                # the reconcile timer may do it unattended; any other removal stays
+                # a human decision.
+                baton_handback = name.endswith("-baton") and set(live_ctls) - set(desired_ctls) == {self.self_id}
                 self.add(
                     "set_controllers",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
                     f"controllers for {name} differ",
-                    destructive=set(live_ctls) - set(desired_ctls) != set(),
+                    destructive=set(live_ctls) - set(desired_ctls) != set() and not baton_handback,
                     requires=requires,
                     current={"controllers": live_ctls},
                     desired={"controllers": desired_ctls},

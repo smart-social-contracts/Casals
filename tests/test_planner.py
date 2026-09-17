@@ -271,6 +271,38 @@ def test_lockout_conductor_commanders():
     assert any("lock-out" in e for e in exc.value.errors)
 
 
+def test_baton_handback_is_not_destructive():
+    """Casals dropping exactly itself from a baton's controllers is the sheet's
+    rule (no $self on batons), so the reconcile timer may apply it unattended.
+    Any other removal — another principal, or Casals leaving a non-baton — stays
+    destructive."""
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    baton = live["canisters"]["rust-baton"]
+    assert SELF not in baton["controllers"]
+    baton["controllers"] = sorted({*baton["controllers"], SELF})  # right after install_code
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers"]
+    assert [(it["target"]["name"], it["destructive"], it["requires"]) for it in ctrl] == [("rust-baton", False, "self")]
+
+    # Casals plus a stranger on the baton: still destructive (the stranger goes too).
+    baton["controllers"] = sorted({*baton["controllers"], "extra-principal"})
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers"]
+    assert [(it["target"]["name"], it["destructive"]) for it in ctrl] == [("rust-baton", True)]
+
+    # Casals leaving a non-baton canister is destructive as before.
+    live = _converged_live(resolved, bindings)
+    backend = live["canisters"]["rust-backend"]
+    live_ctls = [c for c in backend["controllers"] if c != SELF]
+    resolved_backend = sv2.find_canister(resolved, "rust-backend")[2]
+    resolved_backend["controllers"] = [c for c in resolved_backend["controllers"] if c != SELF]
+    backend["controllers"] = sorted({*live_ctls, SELF})
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers" and it["target"]["name"] == "rust-backend"]
+    assert [it["destructive"] for it in ctrl] == [True]
+
+
 def test_ordering_controllers_after_install():
     resolved, env, bindings = _resolved("minimal")
     live = _empty_live(resolved, bindings)

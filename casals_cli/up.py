@@ -18,7 +18,68 @@ from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycl
 
 
 def _progress(msg: str) -> None:
-    print(msg, file=sys.stderr)
+    print(msg, file=sys.stderr, flush=True)
+
+
+# The steps of `casals up`, in order, with what each one is for. Printed up
+# front so the operator knows what to expect, then repeated as each step
+# starts. Steps 6–8 of the spec (plan, apply, converge) are one loop here.
+STEPS: list[tuple[str, str]] = [
+    ("validate",
+     "check the sheet against the v2 schema for this environment; nothing touches the replica until it passes"),
+    ("fund",
+     "read the deployer's cycles balance and require environments.<env>.cycles.budget_tc"),
+    ("conductor bootstrap",
+     "create or upgrade the four conductor canisters (casals-backend, casals-frontend, file-registry, "
+     "file-registry-frontend) and top the conductor up; slow on a fresh replica: two 7 MB Python wasms to install"),
+    ("registry upload",
+     "upload every wasm in registry.wasms (chunked update calls) and every published dist into the file-registry; "
+     "entries whose sha256 already matches are skipped"),
+    ("set_sheet",
+     "bind the conductor canister ids and hand the sheet to casals-backend, which owns it from here on"),
+    ("plan/apply",
+     "the conductor diffs the sheet against the live replica and applies the difference in rounds "
+     "(create → install → configure → set_controllers); a create must land before its install can be planned, "
+     "so expect one round per rung; controller changes only the deployer may make are done by the CLI; "
+     "loops until the plan is empty"),
+    ("domains + verify",
+     "DNS reconcile (skipped when dns.provider is none), a final verify that live state equals the sheet, "
+     "and save the name → canister-id bindings under CASALS_HOME"),
+]
+
+_T0 = {"start": 0.0}
+
+
+def _elapsed() -> str:
+    s = int(time.monotonic() - _T0["start"])
+    return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def _print_step_list(sheet: dict, sheet_name: str, env: str, network_url: str, deployer: str, dry_run: bool) -> None:
+    from sheetv2 import canister_names
+
+    _T0["start"] = time.monotonic()
+    sections = sheet.get("sections") or []
+    stands = sum(len(sec.get("stands") or []) for sec in sections)
+    templates = sum(1 for sec in sections if sec.get("stand_template"))
+    wasms = len(((sheet.get("registry") or {}).get("wasms")) or [])
+    _progress(f"casals {'plan' if dry_run else 'up'}: {sheet_name} → {env} ({network_url}) as {deployer}")
+    _progress(
+        f"  sheet: {len(sections)} section(s), {stands} stand(s)"
+        + (f", {templates} stand template(s)" if templates else "")
+        + f", {len(canister_names(sheet))} canister(s), {wasms} wasm(s) in the registry"
+    )
+    last = 5 if dry_run else len(STEPS)
+    _progress(f"steps ({last} of {len(STEPS)}{', dry run stops after set_sheet and prints the plan' if dry_run else ''}):")
+    for i, (title, purpose) in enumerate(STEPS[:last], 1):
+        _progress(f"  step {i}/{len(STEPS)}: {title:20} — {purpose}")
+    _progress("")
+
+
+def _step(n: int) -> None:
+    title, purpose = STEPS[n - 1]
+    _progress(f"step {n}/{len(STEPS)}: {title}  [t+{_elapsed()}]")
+    _progress(f"  ({purpose})")
 
 
 def check_funds(ic, sheet: dict, env: str, deployer: str) -> None:
@@ -121,7 +182,10 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
     Each round the conductor applies what it can, then the deployer does the
     controller changes only it can; a round that changes nothing is an error."""
     last_hash = None
+    round_no = 0
     while True:
+        round_no += 1
+        _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
         plan_res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
             raise RuntimeError(f"plan failed: {plan_res}")
@@ -136,6 +200,8 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
         if any(i.get("destructive") for i in items) and not yes:
             raise RuntimeError("plan has destructive items; pass --yes to continue")
         if any((i.get("requires") or "self") == "self" for i in items):
+            mine = sum(1 for i in items if (i.get("requires") or "self") == "self")
+            _progress(f"  applying {min(mine, max_items)} of {mine} conductor item(s) (max {max_items} per call)")
             apply_res = ic.call_update(
                 backend_id, "apply",
                 json.dumps({"plan_hash": plan.get("hash"), "max_items": max_items, "confirm_destructive": yes}),
@@ -193,13 +259,16 @@ def run_up(
     project_root = project_root or os.getcwd()
     sheet = load_json_file(sheet_path)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
+    deployer = ic.deployer_principal()
+    _print_step_list(sheet, sheet_name, env, ic.network_url, deployer, dry_run)
 
     # 1. validate
+    _step(1)
     errors = validate(sheet, env)
     if errors:
         raise RuntimeError("sheet validation failed:\n  " + "\n  ".join(errors))
+    _progress("  ok")
 
-    deployer = ic.deployer_principal()
     bindings = load_bindings(sheet_name, env) or Bindings(
         sheet_name=sheet_name,
         env=env,
@@ -210,14 +279,16 @@ def run_up(
         bindings.backend_id = conductor_override
 
     # 2. fund
+    _step(2)
     check_funds(ic, sheet, env, deployer)
 
     # 3. conductor bootstrap
+    _step(3)
     if dry_run:
         if not bindings.casals_backend_id:
             raise RuntimeError("no conductor yet; run casals up first")
+        _progress(f"  dry run: reusing conductor {bindings.casals_backend_id}")
     else:
-        _progress("step 3: conductor bootstrap")
         bindings = bootstrap_conductor(
             ic, sheet, bindings,
             sheet_path=sheet_path,
@@ -236,7 +307,7 @@ def run_up(
     bindings.conductor.get(CONDUCTOR_NAMES["file_registry_frontend"], "")
 
     # 4. registry upload (CLI uploads bytes; authorize via apply)
-    _progress("step 4: registry upload")
+    _step(4)
     if registry_id:
         if not dry_run:
             fund_file_registry(ic, sheet, registry_id)
@@ -253,26 +324,31 @@ def run_up(
     bind_conductor(ic, backend_id, bind_map)
 
     # 5. set_sheet
-    _progress("step 5: set_sheet")
+    _step(5)
     set_res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
     if not (isinstance(set_res, dict) and set_res.get("ok")):
         raise RuntimeError(f"set_sheet failed: {set_res}")
+    _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
 
     if dry_run:
         res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"plan failed: {res}")
+        _progress(f"dry run done in {_elapsed()}")
         return res
 
     # 6-8. plan → apply until empty
-    _progress("step 6: plan/apply")
+    _step(6)
     plan = converge(ic, backend_id, deployer, multisig_id(ic, backend_id), yes=yes, max_items=max_items)
 
     # 9. domains + verify
-    _progress("step 9: domains + verify")
+    _step(7)
     domain_rows = reconcile_domains(sheet, env, bindings)
     verify_res = ic.call_update(backend_id, "verify", "{}")
     bindings.save()
+    conv = isinstance(verify_res, dict) and verify_res.get("converged")
+    _progress("  verify: live state equals the sheet" if conv else f"  verify: NOT converged — {verify_res}")
+    _progress(f"done in {_elapsed()}: {sheet_name} → {env}, conductor {backend_id}, bindings saved")
 
     return {
         "ok": True,

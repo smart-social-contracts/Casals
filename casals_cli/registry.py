@@ -295,16 +295,24 @@ def ensure_registry_uploads(
         )
         if not expected:
             entry["sha256"] = digest
-            if progress:
-                progress(f"  {family}@{version} sha256={digest}")
         reg_hash = existing.get(path, "")
+        chunks = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
         if reg_hash == digest:
+            if progress:
+                progress(f"  {family}@{version}: already in the registry (sha256 {digest[:12]}…), skipped")
             rows.append({"family": family, "version": version, "path": path, "action": "skipped", "sha256": digest})
             continue
+        if progress:
+            progress(f"  {family}@{version}: uploading {len(data) / 1_048_576:.1f} MB in {chunks} chunk(s) "
+                     f"(sha256 {digest[:12]}…)")
         upload_bytes(ic, registry_id, namespace, path, data, digest)
         rows.append({"family": family, "version": version, "path": path, "action": "uploaded", "sha256": digest})
     for entry in registry.get("publish") or []:
-        rows.extend(publish_directory(ic, registry_id, entry, sheet_dir=sheet_dir, project_root=project_root))
+        published = publish_directory(ic, registry_id, entry, sheet_dir=sheet_dir, project_root=project_root)
+        if progress:
+            n_up = sum(1 for r in published if r["action"] == "uploaded")
+            progress(f"  publish {entry.get('path')}: {len(published)} file(s), {n_up} uploaded, {len(published) - n_up} unchanged")
+        rows.extend(published)
     return rows
 
 
