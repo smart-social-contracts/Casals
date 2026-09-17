@@ -7,7 +7,13 @@
       "network": "local",
       "dns": { "provider": "none" },
       "flags": { "test_mode": true, "ii_bypass": true },
-      "principals": { "operator": "$deployer" },
+      "principals": {
+        "operator": "$deployer",
+        "$comment": "access-code slots (`casals code new`): admin=casals (everything), platform_operator=casals-platform (deploys, runs and tops up the installer), realms_operator=casals-realms (creates, renames, deletes and keeps alive the stands the installer mints under Realms)",
+        "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "platform_operator": "sha256:d36cff64938b358015571bc697b8eb14d311d3be486c3ef7ca57244e795151a6",
+        "realms_operator": "sha256:d6606c861e0311482adeac5d701f162d3d7365d612eada47ca9007ebc9d2f27b"
+      },
       "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
     }
   },
@@ -36,7 +42,10 @@
       "mode": "managed",
       "controllers": ["$self"]
     },
-    "settings": { "reconcile_interval_secs": 20 }
+    "settings": { "reconcile_interval_secs": 20 },
+    "commanders": [
+      { "principal": "$principal:admin", "permissions": "*" }
+    ]
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
@@ -52,6 +61,9 @@
   "sections": [
     {
       "name": "Platform",
+      "commanders": [
+        { "principal": "$principal:platform_operator", "permissions": "canister.deploy,canister.lifecycle,canister.topup" }
+      ],
       "stands": [
         {
           "name": "Installer",
@@ -69,6 +81,9 @@
     },
     {
       "name": "Realms",
+      "commanders": [
+        { "principal": "$principal:realms_operator", "permissions": "stand.create,stand.rename,stand.delete,canister.lifecycle,canister.topup" }
+      ],
       "stand_template": {
         "name_pattern": "realm-*",
         "created_by": "$canister:installer",
@@ -79,7 +94,7 @@
             "kind": "backend",
             "wasm": "orchestration-baton@1.3.0",
             "install_arg": { "top_commander": "$self" },
-            "controllers": ["$self", "$deployer"]
+            "controllers": ["$deployer"]
           },
           {
             "name": "{stand}-backend",

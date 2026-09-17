@@ -14,7 +14,13 @@
       },
       "principals": {
         "operator": "$deployer",
-        "casals_ii": "$deployer"
+        "casals_ii": "$deployer",
+        "browser_ii": "kmmq7-cya3t-5a4ag-jee7o-uptix-ordu5-qov4m-yyivk-pm64q-ojhvz-oqe",
+        "$comment": "access-code checksums (`casals code new`): whoever redeems the code on the Access Denied dialog (or via claim_commander) takes that commander slot. invited_operator=CASALS-E2E-ACCESS-CODE (used by the access_code e2e scenario; keep it the only slot on Motoko), admin=casals (everything), steward=casals-steward (governance only: sets/applies the sheet and appoints commanders, no canister rights), release_manager=casals-release (deploys, snapshots and reverts across Product; on this env apply goes through the multisig)",
+        "invited_operator": "sha256:de5b0cf9529d693d3f371967298ca3841b1b0cdf7a41d8102e45c8f3e5dce688",
+        "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "steward": "sha256:65fa65e8d3e12282657a11e515874c26e11858802bd9512e2d7c5eef88c5f409",
+        "release_manager": "sha256:de2e8fcf679a855ba862c7264278e2c118c5839da20e09f44ce3766acb3f6323"
       },
       "cycles": {
         "min_balance_tc": 0.5,
@@ -59,6 +65,18 @@
       {
         "principal": "$principal:casals_ii",
         "permissions": "*"
+      },
+      {
+        "principal": "$principal:browser_ii",
+        "permissions": "*"
+      },
+      {
+        "principal": "$principal:admin",
+        "permissions": "*"
+      },
+      {
+        "principal": "$principal:steward",
+        "permissions": "sheet.set,sheet.apply,commander.assign"
       }
     ]
   },
@@ -69,7 +87,8 @@
       "mode": "managed",
       "signers": [
         "$principal:operator",
-        "$principal:casals_ii"
+        "$principal:casals_ii",
+        "$principal:browser_ii"
       ],
       "threshold": 1,
       "controllers": [
@@ -114,6 +133,10 @@
         {
           "principal": "$principal:operator",
           "permissions": "canister.*"
+        },
+        {
+          "principal": "$principal:release_manager",
+          "permissions": "canister.deploy,canister.snapshot,canister.revert"
         }
       ],
       "stands": [
@@ -123,6 +146,10 @@
             {
               "principal": "$principal:casals_ii",
               "permissions": "stand.*"
+            },
+            {
+              "principal": "$principal:invited_operator",
+              "permissions": "canister.lifecycle"
             }
           ],
           "canisters": [

@@ -13,7 +13,11 @@
         "ii_bypass": true
       },
       "principals": {
-        "operator": "$deployer"
+        "operator": "$deployer",
+        "$comment": "access-code slots (`casals code new`): admin=casals (everything), release_manager=casals-release (deploys, snapshots and reverts across Demo; upgrades still need the baton's approval), sre=casals-sre (start/stop and top up the Rust stand)",
+        "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "release_manager": "sha256:de2e8fcf679a855ba862c7264278e2c118c5839da20e09f44ce3766acb3f6323",
+        "sre": "sha256:837a16075a6d801bd8c1065191b64086e2ca7cc6f06049cdde9b120ae7b1b818"
       },
       "cycles": {
         "min_balance_tc": 0.5,
@@ -57,6 +61,10 @@
     "commanders": [
       {
         "principal": "$principal:operator",
+        "permissions": "*"
+      },
+      {
+        "principal": "$principal:admin",
         "permissions": "*"
       }
     ]
@@ -119,9 +127,21 @@
   "sections": [
     {
       "name": "Demo",
+      "commanders": [
+        {
+          "principal": "$principal:release_manager",
+          "permissions": "canister.deploy,canister.snapshot,canister.revert"
+        }
+      ],
       "stands": [
         {
           "name": "Rust",
+          "commanders": [
+            {
+              "principal": "$principal:sre",
+              "permissions": "canister.lifecycle,canister.topup"
+            }
+          ],
           "baton": {
             "commanders": [
               "$self",
@@ -144,8 +164,7 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig",
-                "$self"
+                "$multisig"
               ]
             },
             {

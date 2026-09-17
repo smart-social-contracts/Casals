@@ -13,7 +13,11 @@
         "ii_bypass": true
       },
       "principals": {
-        "operator": "$deployer"
+        "operator": "$deployer",
+        "$comment": "access-code slots (`casals code new`): admin=casals (everything), lifecycle_operator=casals-lifecycle (create, retire/delete, start/stop and top up canisters across the Lifecycle section), stand_owner=casals-owner (rename or delete the Retiring stand)",
+        "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "lifecycle_operator": "sha256:84675f7c094aff5946321fe9c5ec1764229091cfdbbd12f59fc64fb275d99fbd",
+        "stand_owner": "sha256:2338c757727ad87f8527f871f9dd28af850bf97fb4f496ab94f45913496cd126"
       },
       "cycles": {
         "min_balance_tc": 0.5,
@@ -53,7 +57,13 @@
       "controllers": [
         "$self"
       ]
-    }
+    },
+    "commanders": [
+      {
+        "principal": "$principal:admin",
+        "permissions": "*"
+      }
+    ]
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
@@ -78,9 +88,21 @@
   "sections": [
     {
       "name": "Lifecycle",
+      "commanders": [
+        {
+          "principal": "$principal:lifecycle_operator",
+          "permissions": "canister.create,canister.delete,canister.lifecycle,canister.topup"
+        }
+      ],
       "stands": [
         {
           "name": "Retiring",
+          "commanders": [
+            {
+              "principal": "$principal:stand_owner",
+              "permissions": "stand.rename,stand.delete"
+            }
+          ],
           "canisters": [
             {
               "name": "keep-backend",

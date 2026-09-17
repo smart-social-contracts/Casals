@@ -7,7 +7,13 @@
       "network": "local",
       "dns": { "provider": "none" },
       "flags": { "test_mode": true, "ii_bypass": true },
-      "principals": { "operator": "$deployer" },
+      "principals": {
+        "operator": "$deployer",
+        "$comment": "access-code slots (`casals code new`); redeem the code on the Access Denied dialog: admin=casals (everything), app_operator=casals-operator (runs the App section), hello_dev=casals-dev (ships the Hello stand)",
+        "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "app_operator": "sha256:e96e0fcf99e791d5293d86f3032c11de0bb8fc3f85c36db495d7a059caff8809",
+        "hello_dev": "sha256:399f110d3d5f533181d50a7c0dcf0e8518235123cbe9fd45e075c9e6cbd3f033"
+      },
       "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
     }
   },
@@ -35,7 +41,10 @@
       "kind": "frontend",
       "mode": "managed",
       "controllers": ["$self"]
-    }
+    },
+    "commanders": [
+      { "principal": "$principal:admin", "permissions": "*" }
+    ]
   },
   "registry": {
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
@@ -48,9 +57,15 @@
   "sections": [
     {
       "name": "App",
+      "commanders": [
+        { "principal": "$principal:app_operator", "permissions": "canister.deploy,canister.lifecycle,canister.topup,canister.snapshot,canister.revert" }
+      ],
       "stands": [
         {
           "name": "Hello",
+          "commanders": [
+            { "principal": "$principal:hello_dev", "permissions": "canister.deploy,canister.tag" }
+          ],
           "canisters": [
             {
               "name": "hello-backend",

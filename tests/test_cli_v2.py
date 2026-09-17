@@ -357,14 +357,27 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
         for c in full_sheet["conductor"]["commanders"]
     ]
     signers = sorted({resolve(s) for s in full_sheet["governance"]["multisig"]["signers"]})
+    # The Motoko stand mirrors the sheet too: it carries an unclaimed access-code
+    # slot (`sha256:` principal) next to the operator.
+    product = next(sec for sec in full_sheet["sections"] if sec["name"] == "Product")
+    motoko = next(st for st in product["stands"] if st["name"] == "Motoko")
+
+    def mirror(entries):
+        return [
+            {"principal": resolve(c["principal"]), "permissions": granted(c.get("permissions", "*")),
+             "unclaimed": resolve(c["principal"]).startswith("sha256:")}
+            for c in entries
+        ]
+
+    stand_commanders = mirror(motoko["commanders"])
     ic.queries[(bindings["casals-backend"], "get_tree")] = {
         "sections": [
             {"name": "Casals", "stands": [], "commanders": conductor_commanders},
             {"name": "Product",
-             "commanders": [{"principal": "operator-principal", "permissions": granted("canister.*")}],
+             "commanders": mirror(product["commanders"]),
              "stands": [{
                  "name": "Motoko",
-                 "commanders": [{"principal": "operator-principal", "permissions": granted("stand.*")}],
+                 "commanders": stand_commanders,
                  "canisters": [{"name": "motoko-backend", "canister_id": bindings.get("motoko-backend")}],
              }]},
         ],
@@ -408,6 +421,36 @@ class TestOracle:
         report = run_oracle(sheet, "local", bindings, ic)
         failures = [r for r in report.rows if r.result == "FAIL"]
         assert not failures, failures
+
+    def test_claimed_access_code_slot_still_passes(self):
+        """After someone redeems the code, the tree shows their principal with
+        `code_checksum`; the oracle must read that as the declared slot."""
+        ic = RecordingIc()
+        with open(CORPUS, encoding="utf-8") as f:
+            sheet = json.load(f)
+        bindings = {
+            "casals-backend": "backend-id",
+            "file-registry": "fr-id",
+            "file-registry-frontend": "fr-fe-id",
+            "casals-frontend": "fe-id",
+            "multisig": "ms-id",
+            "motoko-backend": "motoko-id",
+        }
+        _governed_live(ic, sheet, bindings)
+        tree = ic.queries[(bindings["casals-backend"], "get_tree")]
+        motoko = tree["sections"][1]["stands"][0]
+        for c in motoko["commanders"]:
+            if c.get("unclaimed"):
+                c.update(principal="claimer-principal", unclaimed=False,
+                         code_checksum=sheet["environments"]["local"]["principals"]["invited_operator"])
+        report = run_oracle(sheet, "local", bindings, ic)
+        failures = [r for r in report.rows if r.result == "FAIL"]
+        assert not failures, failures
+        # …but a stranger holding the slot's permissions without the checksum is drift.
+        for c in motoko["commanders"]:
+            c.pop("code_checksum", None)
+        report = run_oracle(sheet, "local", bindings, ic)
+        assert any(r.canister == "Motoko" and r.field == "commanders" and r.result == "FAIL" for r in report.rows)
 
     @pytest.mark.parametrize("field,mutator", [
         ("controllers", lambda ic, b: ic.controllers.__setitem__(b["motoko-backend"], ["wrong-principal"])),
