@@ -190,13 +190,15 @@ def _arm_resume_timer(action_id: str, delay_secs: int = 0) -> None:
     secs = max(0, delay_secs)
 
     def _tick():
-        _resume_action(action_id)
+        # The callback itself must be the generator: returning a generator
+        # object from a plain function leaves it undriven and the tick is a no-op.
+        try:
+            reply = yield from _execute_action_gen(action_id)
+            _log.info(f"resume {action_id}: {str(reply)[:200]}")
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.error(f"resume {action_id} failed: {exc}")
 
     _active_timer = ic.set_timer(Duration(secs), _tick)
-
-
-def _resume_action(action_id: str) -> Async[void]:
-    yield from _execute_action_gen(action_id)
 
 
 def _execute_action_gen(action_id: str) -> Async[text]:
@@ -233,6 +235,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
                 return _err(detail)
             record["status"] = STATUS_STOPPING
             _save_action(record)
+            _arm_resume_timer(action_id, 0)
             return _ok(action_id=action_id, status=STATUS_STOPPING)
 
         if status == STATUS_STOPPING:
@@ -244,6 +247,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
                 return _err(detail)
             record["status"] = STATUS_SNAPSHOTTING
             _save_action(record)
+            _arm_resume_timer(action_id, 0)
             return _ok(action_id=action_id, status=STATUS_SNAPSHOTTING)
 
         if status == STATUS_SNAPSHOTTING:
@@ -256,6 +260,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
             record["status"] = STATUS_UPGRADING
             record["upgrade_index"] = int(record.get("upgrade_index") or 0)
             _save_action(record)
+            _arm_resume_timer(action_id, 0)
             return _ok(action_id=action_id, status=STATUS_UPGRADING)
 
         if status == STATUS_UPGRADING:
@@ -272,7 +277,9 @@ def _execute_action_gen(action_id: str) -> Async[text]:
             if result == "done":
                 record["status"] = STATUS_STARTING
                 _save_action(record)
+                _arm_resume_timer(action_id, 0)
                 return _ok(action_id=action_id, status=STATUS_STARTING)
+            _arm_resume_timer(action_id, 0)
             return _ok(
                 action_id=action_id,
                 status=STATUS_UPGRADING,
@@ -287,6 +294,7 @@ def _execute_action_gen(action_id: str) -> Async[text]:
                 return _err(detail)
             record["status"] = STATUS_VERIFYING
             _save_action(record)
+            _arm_resume_timer(action_id, 0)
             return _ok(action_id=action_id, status=STATUS_VERIFYING)
 
         if status == STATUS_VERIFYING:
@@ -468,7 +476,11 @@ def set_test_trap(args: text) -> text:
 
 @update
 def add_commander(args: text) -> text:
-    """Top commander only. JSON: {principal, capabilities: [str]}."""
+    """Top commander only. JSON: {principal, capabilities: [str], weight?: int}.
+
+    ``weight`` (default 1) is what this commander's approval counts for against
+    the policy threshold: an orchestra multisig with weight 2 passes a 2-of
+    policy alone, while two weight-1 commanders must agree."""
     try:
         params = json.loads(args)
         caller = _caller()
@@ -478,8 +490,11 @@ def add_commander(args: text) -> text:
         for c in caps:
             if c not in ALL_CAPABILITIES:
                 return _err(f"unknown capability: {c}")
-        _commanders.insert(principal, encode_record(new_commander(principal, caps)))
-        return _ok(principal=principal, capabilities=caps)
+        weight = int(params.get("weight", 1))
+        if weight < 1:
+            return _err("weight must be a positive integer")
+        _commanders.insert(principal, encode_record(new_commander(principal, caps, weight)))
+        return _ok(principal=principal, capabilities=caps, weight=weight)
     except AuthError as e:
         return _err(str(e))
     except Exception as e:
@@ -655,9 +670,12 @@ def propose_asset_provision(args: text) -> text:
 
 @update
 def submit_approval(action_id: text) -> text:
+    """A registered commander's vote, counted with its weight. The top commander
+    has no bypass here (see approval_policy.is_approval_eligible). Once the
+    weighted quorum is met the action is APPROVED and the pipeline starts on a
+    timer — nobody has to pump execute_action."""
     try:
         caller = _caller()
-        require_capability(caller, CAP_SUBMIT_APPROVAL, _commanders, _config)
         aid = action_id.strip()
         record = _load_action(aid)
         if record is None:
@@ -668,11 +686,12 @@ def submit_approval(action_id: text) -> text:
         if not is_approval_eligible(caller, policy, _commanders, _config):
             return _err("caller not eligible to approve this action")
         append_approval(record, caller)
-        progress = approval_progress(record, policy)
-        if quorum_met(record, policy):
+        progress = approval_progress(record, policy, _commanders)
+        if quorum_met(record, policy, _commanders):
             record["status"] = STATUS_APPROVED
             record["approval_path"] = "governance"
             _save_action(record)
+            _arm_resume_timer(aid, 0)
             return _ok(action_id=aid, status=STATUS_APPROVED, **progress)
         _save_action(record)
         return _ok(action_id=aid, status=STATUS_PENDING, **progress)
@@ -695,6 +714,7 @@ def submit_multisig_accelerant(action_id: text) -> text:
         record["status"] = STATUS_APPROVED
         record["approval_path"] = "multisig_accelerant"
         _save_action(record)
+        _arm_resume_timer(action_id.strip(), 0)
         return _ok(action_id=action_id, status=STATUS_APPROVED, approval_path="multisig_accelerant")
     except AuthError as e:
         return _err(str(e))

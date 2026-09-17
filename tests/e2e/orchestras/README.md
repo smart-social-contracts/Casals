@@ -7,11 +7,11 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 |---|---|
 | `minimal` | conductor + one managed backend |
 | `governed` | multisig, proposal-only apply, commanders, an access-code commander slot (`invited_operator`) |
-| `baton-stand` | one stand with baton, 2-of-2 hand_off, `$stand.backend` |
+| `baton-stand` | one stand with baton: sole hand-off of the backend (controllers = the baton), weighted commanders (multisig 2 / Casals 1 / `$stand.backend` 1, threshold 2) |
 | `adopted` | adopted backend reconciles control and config only |
 | `demo` | three stands, three batons, shared multisig |
 | `retire-and-pool` | retire: true, pool behaviour, reuse_pool |
-| `dynamic-stands` | stand_template with runtime-created stands via installer |
+| `dynamic-stands` | stand_template with runtime-created stands via installer; governed (conductor under `$multisig`, operator as conductor commander); template baton controlled by the multisig only, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]`; the reconcile timer finishes a minted stand on its own |
 
 Production sheets (`gos-as-a-service/casals.json`, `realms/casals.json`) are
 referenced by path in the e2e runner, not copied here.
@@ -30,9 +30,11 @@ CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
 ```
 
 Every orchestra runs every applicable scenario (spec §11.3): `fresh`,
-`idempotent`, `runtime_stand` (template sections), `retire_and_pool`
-(`retire: true` members), `drift_controller`, `drift_stopped`,
-`drift_adopted_code` (adopted members), `stale_plan`, `export_roundtrip`.
+`idempotent`, `runtime_stand` (template sections), `baton_upgrade` (sole
+hand-off: controllers verified, a code change becomes a baton proposal the
+multisig approves), `retire_and_pool` (`retire: true` members),
+`drift_controller`, `drift_stopped`, `drift_adopted_code` (adopted members),
+`stale_plan`, `access_code`, `export_roundtrip`.
 A scenario passes only when `casals oracle` passes on its end state.
 
 Adopted canisters are installed by the harness (it plays "someone else") and

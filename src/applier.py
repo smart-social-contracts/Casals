@@ -27,7 +27,12 @@ from lifecycle import (
 )
 from models import AuthorizedWasm, Canister, CanisterKind, CanisterStatus, Section, Stand
 from config_call import _call_text_method
-from orchestration_bridge import _configure_baton_gen, _multisig_configure_gen, _parse_baton_reply
+from orchestration_bridge import (
+    _baton_propose_upgrade_gen,
+    _configure_baton_gen,
+    _multisig_configure_gen,
+    _parse_baton_reply,
+)
 from pool import _pool_mark_in_use
 from services import FileRegistryService
 from sheetv2 import WASM_NAMESPACE, registry_path
@@ -83,6 +88,16 @@ def _precondition_holds_gen(item: dict, live_state: dict, self_id: str):
     if kind == "create_canister":
         list(Canister.instances())
         return Canister[name] is None or not (Canister[name].canister_id or "").strip()
+    if kind == "upgrade_via_baton":
+        # Casals is not a controller here (the baton is), so `canister_status` is
+        # refused; `canister_info` is readable by anyone and carries the module hash.
+        if not cid:
+            return False
+        desired = (item.get("desired") or {}).get("module_hash") or ""
+        info = yield from _canister_info_gen(cid)
+        if info.get("error"):
+            raise Exception(f"{name}: canister_info failed: {info['error']}")
+        return (info.get("module_hash") or "").lower() != desired.lower()
     if kind in ("install_code", "upgrade_code", "reinstall_code"):
         if not cid:
             return False
@@ -220,9 +235,30 @@ def _execute_item(item: dict, sheet: dict):
         if baton_st is None:
             raise Exception(f"baton '{name}' not found")
         desired = item.get("desired") or {}
+        wanted = {c["principal"] for c in desired.get("commanders") or [] if isinstance(c, dict)}
+        stale = [c["principal"] for c in (item.get("current") or {}).get("commanders") or []
+                 if isinstance(c, dict) and c.get("principal") and c["principal"] not in wanted]
         yield from _configure_baton_gen(
             baton_st, commanders=desired.get("commanders"),
             approval_policy={"threshold": int(desired.get("threshold") or 1)},
+            remove=stale,
+        )
+        return
+    if kind == "upgrade_via_baton":
+        # Casals is not a controller of this member; its baton is. Casals asks the
+        # baton to run the upgrade (registry pull → stop → snapshot → install →
+        # verify → rollback on failure) and casts its own vote; the rest of the
+        # approvals are the baton commanders' decision. The plan shows the
+        # proposal under `pending` until the baton reports it done.
+        desired = item.get("desired") or {}
+        found = _find_canister_spec(sheet, name)
+        w = _resolve_authorized_wasm((found.get("wasm") or "").strip(), None)
+        if (desired.get("module_hash") or "").lower() != (w.wasm_hash or "").lower():
+            raise Exception(f"{name}: sheet wants {desired.get('module_hash')} but the registry holds {w.wasm_hash}")
+        yield from _baton_propose_upgrade_gen(
+            (desired.get("baton_id") or "").strip(), cid,
+            registry_namespace=w.registry_namespace, registry_path=w.registry_path,
+            wasm_hash=w.wasm_hash, health_check=bool(desired.get("health_check")),
         )
         return
     if kind == "hand_off":

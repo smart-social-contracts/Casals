@@ -163,7 +163,7 @@ def _multisig_configure_gen(canister_id: str, signers: list, threshold: int, exp
         raise Exception(reply["err"])
 
 
-def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
+def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove=()):
     """Generator: register commanders and the upgrade approval policy on a Baton.
 
     Casals must be the Baton's top commander (i.e. the Baton was created with
@@ -171,7 +171,9 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
     and ``set_config`` are top-commander-only on the Baton.
 
     ``commanders`` entries are either bare principals (granted
-    BATON_COMMANDER_DEFAULT_CAPS) or {"principal", "capabilities"} dicts.
+    BATON_COMMANDER_DEFAULT_CAPS, weight 1) or {"principal", "capabilities"?,
+    "weight"?} dicts; a weight is what the commander's approval counts for
+    against the policy threshold. ``remove`` names commanders to drop.
 
     Also propagates Casals' file-registry canister id into the Baton config
     (when set and not yet configured) so the Baton can pull registry-backed
@@ -189,17 +191,26 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
             }))
             _parse_baton_reply(reply)
 
+    removed = []
+    for principal in remove or ():
+        principal = str(principal or "").strip()
+        if principal:
+            reply = yield from _call_text_method(baton_id, "remove_commander", principal)
+            _parse_baton_reply(reply)
+            removed.append(principal)
+
     added = []
     for entry in commanders or []:
         if isinstance(entry, str):
-            principal, caps = entry.strip(), list(BATON_COMMANDER_DEFAULT_CAPS)
+            principal, caps, weight = entry.strip(), list(BATON_COMMANDER_DEFAULT_CAPS), 1
         else:
             principal = (entry.get("principal") or "").strip()
             caps = entry.get("capabilities") or list(BATON_COMMANDER_DEFAULT_CAPS)
+            weight = int(entry.get("weight") or 1)
         if not principal:
             continue
         reply = yield from _call_text_method(baton_id, "add_commander", json.dumps({
-            "principal": principal, "capabilities": caps,
+            "principal": principal, "capabilities": caps, "weight": weight,
         }))
         _parse_baton_reply(reply)
         added.append(principal)
@@ -215,14 +226,49 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None):
     _append_event("baton_configured", baton_id, {
         "baton": baton_st.name,
         "commanders": added,
+        "removed": removed,
         "approval_policy": policy_set,
     })
     return {
         "baton": baton_st.name,
         "baton_id": baton_id,
         "commanders": added,
+        "removed": removed,
         "approval_policy": policy_set,
     }
+
+
+def _baton_propose_upgrade_gen(baton_id: str, target_cid: str, *, registry_namespace: str,
+                               registry_path: str, wasm_hash: str, health_check: bool):
+    """Generator: file a managed-upgrade proposal on a baton for one canister and
+    cast Casals' own vote. Casals is a commander like any other (its weight is
+    whatever the sheet gives it); the baton's threshold decides, and the baton
+    runs the pipeline once approved. Returns the action id."""
+    payload = {"targets": [{
+        "canister_id": target_cid,
+        "registry_namespace": registry_namespace,
+        "registry_path": registry_path,
+        "wasm_hash": wasm_hash,
+        # The baton probes `health_check` after the install only when the sheet
+        # declares that query on the member; otherwise the module hash is the check.
+        "upgrade_memory_keep": bool(health_check),
+    }]}
+    reply = yield from _call_text_method(baton_id, "propose_managed_upgrade", json.dumps({
+        "affected_canisters": [target_cid], "payload": payload,
+    }))
+    data = _parse_baton_reply(reply)
+    action_id = str(data.get("action_id") or "")
+    if not action_id:
+        raise Exception(f"baton {baton_id} returned no action id: {data}")
+    # Casals' own approval: one vote of its weight. A refusal (Casals is not a
+    # commander on this baton) is not an error — the proposal stands.
+    approval = yield from _call_text_method(baton_id, "submit_approval", action_id)
+    voted = _parse_baton_json_reply(approval)
+    _append_event("baton_upgrade_proposed", target_cid, {
+        "baton": baton_id, "action_id": action_id, "wasm_hash": wasm_hash,
+        "casals_vote": voted if isinstance(voted, dict) else {"raw": str(voted)[:200]},
+    })
+    return action_id
 
 
 def _baton_in_stand_optional(stand):

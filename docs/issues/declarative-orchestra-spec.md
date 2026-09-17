@@ -176,6 +176,7 @@ Anywhere a principal is expected:
 | Placeholder | Resolves to |
 |---|---|
 | `$self` | the Casals backend (conductor) |
+| `$this` | the canister's own id — only inside a canister block; a realm backend lists it among its `controllers` to keep the key it needs to leave (rewrite its controllers, secede). Alone it is a lock-out and rejected |
 | `$multisig` | `governance.multisig` canister |
 | `$canister:<name>` | any canister in the sheet, by name (already supported in install args) |
 | `$stand.<role>` | the stand member named `<name>-<role>` (`$stand.backend`, `$stand.baton`, `$stand.token`); for `backend`/`frontend` the `kind` also matches |
@@ -227,17 +228,50 @@ optionally `subnet` / `subnet_type` (ignored on local).
 
 Stands may declare a `baton` **policy**. The baton canister itself is an
 ordinary member of `canisters` (name ending `-baton`, its own `wasm`,
-`controllers`, and `install_arg: {"top_commander": "$self"}` so Casals can
-configure it); the block only says how it is run:
+`controllers` — which must include `$multisig` and never `$self`: the
+governance multisig is the one key that can reinstall a broken baton — and
+`install_arg: {"top_commander": "$self"}` so Casals can configure it); the
+block only says how it is run:
 
 ```jsonc
 "baton": {
-  "commanders": ["$self", "$stand.backend"],
-  "threshold": 2,
-  "manages": ["backend", "frontend"],     // stand members the baton co-controls
-  "hand_off": true                        // plan adds the baton to those members' desired controllers
-}                                         // and registers them on the baton (`add_managed_canister`)
+  "commanders": [                          // who may approve a managed upgrade, and with what weight
+    { "principal": "$multisig", "weight": 2 },   // the orchestra multisig passes alone
+    "$self",                                     // Casals: weight 1 (a bare principal weighs 1)
+    "$stand.backend"                             // the realm capital: weight 1 — Casals + capital = 2
+  ],
+  "threshold": 2,                          // approvals are summed by weight against this
+  "manages": "*",                          // members the baton controls: roles, or "*" = every member but itself
+  "hand_off": "sole"                       // false | true | "sole"
+}
 ```
+
+`hand_off: true` — the baton **co-controls** what it manages: the plan adds the
+baton to those members' desired controllers, registers them on the baton
+(`add_managed_canister`), and Casals stays a controller (it installs upgrades
+itself). `hand_off: "sole"` — the baton **is** the controller: Casals creates
+and installs a member, registers it on the baton, then hands it over and leaves
+(`set_controllers` dropping the provisioning controllers — Casals, the orchestra
+multisig and, on a template stand, the canister that called `create_stand` — and
+nobody else; non-destructive, so the reconcile timer finishes a runtime-minted
+stand unattended; ordered after the `hand_off`, and only once the code is in.
+The multisig keeps its say through the baton it controls). Managed members must not list
+`$self` or `$deployer` (validation), and a member with `content`/`files` —
+assets Casals writes as a controller — cannot be managed sole. A realm keeps
+`$this` among its controllers so it can leave.
+
+From then on a code change on a sole-managed member is not an install but a
+proposal: the plan emits `upgrade_via_baton` (Casals `propose_managed_upgrade`s
+the registry wasm and casts its own vote), and while the baton's action is open
+the plan is item-free but lists the member under **`pending`** (`action_id`,
+status, approvals). The baton's commanders approve (`submit_approval`; the top
+commander has no bypass — Casals votes only with the weight it was given); at
+the weighted threshold the baton runs its pipeline on its own timers
+(pre-flight → stop → snapshot → install → start → verify → finalize, rolling
+back on failure) and the next plan sees the new hash. A member whose live
+controllers include neither Casals nor the baton has **departed** (a realm that
+used its `$this` key to secede): the plan lists it under `departed` and plans
+nothing for it.
 
 `mode: adopted` canisters: Casals never calls `install_code` on them, never
 compares module hash for reinstall, and reconciles only `controllers`,
@@ -420,8 +454,9 @@ or Casals call it will make.
 | `create_canister` | no | name in sheet, no bound id |
 | `install_code` | no | managed, bound, no module |
 | `upgrade_code` | no | managed, module hash ≠ registry hash, `upgrade: upgrade` |
+| `upgrade_via_baton` | no | as above on a member its baton controls and Casals does not: Casals proposes on the baton (and votes); shown under `pending` while the action is open |
 | `reinstall_code` | **yes** | as above with `upgrade: reinstall` and `allow_destructive` |
-| `set_controllers` | yes if it removes a principal | live set ≠ declared set |
+| `set_controllers` | yes if it removes a principal — except Casals dropping exactly itself from a baton, or from a sole-handed member after its install | live set ≠ declared set |
 | `set_commanders` | yes if it removes a principal | Casals state ≠ declared |
 | `configure_baton` / `hand_off` | no / yes | baton config or managed set differs |
 | `configure_multisig` | yes if it removes a signer | signers/threshold differ |
@@ -723,7 +758,7 @@ directly:
 | `controllers` | same | same (never Casals' cache) |
 | `commanders` | conductor `get_tree` — Casals' own state is the truth for its own permissions | `icp canister call` |
 | `governance.multisig.signers` / `threshold` | multisig `get_signers` / `get_config` | direct query |
-| `baton.*`, `hand_off` | baton `get_config`, `managed_canisters` + management-canister controllers | direct |
+| `baton.*`, `hand_off` | baton `get_config`, `list_commanders` (principals **and weights**), `managed_canisters` + management-canister controllers; under `"sole"` also that neither Casals nor the deployer controls a managed member | direct |
 | `registry.wasms` / `publish` | file registry listing by sha256; conductor `list_authorized_wasms` | direct |
 | `config[].converged_when` | the named query on the target canister | direct |
 | `health` | the query / HTTP against the replica gateway | direct |
@@ -752,11 +787,11 @@ because `make e2e` accepts extra sheet paths.
 |---|---|---|
 | 1 | `minimal` | conductor + one managed backend, deployer as the only principal |
 | 2 | `governed` | + self-controlled multisig, conductor `controllers: [$multisig]`, section + stand commanders, `apply_requires_proposal` |
-| 3 | `baton-stand` | one stand with baton, 2-of-2, `hand_off`, `$stand.backend` |
+| 3 | `baton-stand` | one stand with baton: sole hand-off of the backend, weighted commanders (multisig 2 / Casals 1 / `$stand.backend` 1, threshold 2) |
 | 4 | `adopted` | a canister installed by the test via dfx, then adopted; `config` + `controllers` reconciled, module never touched; hash change → information only |
 | 5 | `demo` | `seed/sheets/demo.json` as v2: three stands, three batons, shared multisig |
 | 6 | `retire-and-pool` | `retire: true`, pool behaviour, `reuse_pool` |
-| 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5) |
+| 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5); template baton `[$multisig]`, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]` |
 | 8 | `gaas` | `gos-as-a-service/casals.json` (`-e local`) |
 | 9 | `realmsgos` | `realms/casals.json` (`-e local`), product wasms built once and cached |
 
@@ -780,6 +815,7 @@ the oracle passes on its end state.
 | **stale plan** | `plan`, mutate replica, `apply(old_hash)` | rejected with the new hash |
 | **proposal-only** | orchestra 2/8/9 with `apply_requires_proposal` | direct `apply` rejected; `ApplySheet` proposal applies |
 | **export round-trip** | `export_sheet()` → `set_sheet` → `plan` | empty |
+| **baton upgrade** | orchestras with `hand_off: "sole"` (3, 7): sheet copy bumps a sole-managed backend to `hello-world-rust@1.0.1` → `up`; the multisig approves on the baton (`CallCanister submit_approval`, weight 2); poll `get_action`; `up` again; then back to the declared sheet the same way | before: controllers are exactly `{baton(, itself)}`, the baton's `{multisig}`; `up` leaves no items, one `pending` entry with Casals' vote only, hash unchanged; after approval the action reaches `COMPLETE` on the baton's own timers, plan empty, hash new; oracle passes (`baton.sole`, weighted `baton.commanders`) |
 | **destroy** | `casals destroy --all --confirm-destructive` | replica has no orchestra canisters; deployer balance ≥ before − fees |
 
 ### 11.4 Running it from a laptop

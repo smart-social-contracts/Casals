@@ -1,7 +1,7 @@
 {
   "version": 2,
   "name": "baton-stand",
-  "description": "one stand with baton, 2-of-2 hand_off, $stand.backend",
+  "description": "one stand with baton: sole hand-off of the backend (controllers = baton), weighted 2-of commanders (multisig alone, or Casals + $stand.backend)",
   "environments": {
     "local": {
       "network": "local",
@@ -103,8 +103,8 @@
       },
       {
         "family": "orchestration-baton",
-        "version": "1.3.0",
-        "source": "local:seed/templates/orchestration-baton@1.3.0.wasm.gz"
+        "version": "1.4.0",
+        "source": "local:seed/templates/orchestration-baton@1.4.0.wasm.gz"
       },
       {
         "family": "hello-world-rust",
@@ -143,23 +143,27 @@
             }
           ],
           "baton": {
+            "$comment": "The frontend keeps Casals as a controller: Casals writes its assets (content/files). Sole hand-off covers the backend; the multisig (weight 2) can approve alone, Casals and the backend (1 each) together.",
             "commanders": [
+              {
+                "principal": "$multisig",
+                "weight": 2
+              },
               "$self",
               "$stand.backend"
             ],
             "threshold": 2,
             "manages": [
-              "backend",
-              "frontend"
+              "backend"
             ],
-            "hand_off": true
+            "hand_off": "sole"
           },
           "canisters": [
             {
               "name": "rust-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.3.0",
+              "wasm": "orchestration-baton@1.4.0",
               "install_arg": {
                 "top_commander": "$self"
               },
@@ -173,8 +177,7 @@
               "kind": "backend",
               "wasm": "hello-world-rust@1.0.0",
               "controllers": [
-                "$self",
-                "$multisig"
+                "$stand.baton"
               ]
             },
             {

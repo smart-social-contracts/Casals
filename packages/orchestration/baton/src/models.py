@@ -103,8 +103,20 @@ def new_action_record(
     }
 
 
-def new_commander(principal: str, capabilities: list[str]) -> dict[str, Any]:
-    return {"principal": principal, "capabilities": list(capabilities)}
+def new_commander(principal: str, capabilities: list[str], weight: int = 1) -> dict[str, Any]:
+    """A commander's approval counts ``weight`` towards the policy threshold
+    (an orchestra multisig with weight 2 can pass a 2-of policy alone)."""
+    return {"principal": principal, "capabilities": list(capabilities), "weight": int(weight)}
+
+
+def commander_weight(record: dict[str, Any] | None) -> int:
+    """Weight of a stored commander record; records from before weights weigh 1."""
+    if not isinstance(record, dict):
+        return 1
+    try:
+        return max(1, int(record.get("weight", 1)))
+    except (TypeError, ValueError):
+        return 1
 
 
 def encode_record(record: dict[str, Any]) -> str:

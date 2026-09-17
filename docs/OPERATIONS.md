@@ -71,6 +71,7 @@ Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 | the sheet the conductor runs, with bindings | `casals -e local export sheet.json` |
 | the audit log / cycles / wasm catalog | `casals -e local events\|cycles\|wasms sheet.json` |
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
+| upgrade a member its baton controls (`hand_off: "sole"`) | bump its `wasm` in the sheet, `up`: Casals files the proposal on the baton and votes; the plan lists it under `pending` with the `action_id`. The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers and the next `up` is empty |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
 Add `--json` for machine-readable output. The conductor's frontend shows the

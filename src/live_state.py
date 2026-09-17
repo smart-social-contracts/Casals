@@ -157,12 +157,25 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
     }
 
     sheet_names = set(canister_names(resolved_sheet))
+    list(Canister.instances())
     for name in sheet_names:
         cid = (bindings or {}).get(name, "").strip()
         if not cid:
             state["canisters"][name] = {"canister_id": None}
             continue
         entry = yield from _canister_status_gen(cid, self_id)
+        if "status" not in entry and not entry.get("error") and entry.get("module_hash"):
+            # Casals is not a controller (a member handed to its baton): the
+            # baton reads the balance for it, so top-ups still get planned.
+            from orchestration_bridge import _canister_status_via_baton_gen
+            try:
+                via = yield from _canister_status_via_baton_gen(Canister[name])
+            except Exception:
+                via = None
+            if via:
+                entry["status"] = _ic_run_status(via)
+                entry["cycles"] = _status_cycles(via)
+                entry["status_via"] = "baton"
         state["canisters"][name] = entry
 
     mid = (bindings or {}).get(MULTISIG_NAME, "").strip()

@@ -29,7 +29,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path[:0] = [REPO, os.path.join(REPO, "src")]
 from sheetv2 import iter_canisters as _iter  # noqa: E402
 from casals_cli.ic import IcClient  # noqa: E402
-from casals_cli.multisig import set_controllers_via_multisig  # noqa: E402
+from casals_cli.multisig import propose, set_controllers_via_multisig  # noqa: E402
 from casals_cli.replica import (  # noqa: E402
     activate as activate_replica,
     canister_http_url,
@@ -138,6 +138,11 @@ class Orchestra:
         view = self.casals("show", self.sheet_path)
         return {c["name"]: c.get("module_hash", "") for c in view["canisters"]}
 
+    def reconcile_interval(self) -> int:
+        """`conductor.settings.reconcile_interval_secs` of the sheet (0 = no timer)."""
+        sheet = json.load(open(self.sheet_path))
+        return int(((sheet.get("conductor") or {}).get("settings") or {}).get("reconcile_interval_secs") or 0)
+
     def deployer_controls(self, cid: str) -> bool:
         # Read the controller list instead of probing `icp canister status`:
         # newer icp-cli answers status for non-controllers too (public
@@ -221,7 +226,14 @@ def drift_stopped(o: Orchestra) -> None:
             continue  # stopping the conductor itself would stop the planner
         o.icp("canister", "stop", cid)
         kinds = [(i["kind"], i["target"]["name"]) for i in o.plan_items()]
-        if kinds != [("start", name)]:
+        if kinds == [] and o.reconcile_interval():
+            # A sheet with `reconcile_interval_secs` heals a stopped canister on the
+            # conductor's own timer; the CLI's dry run may simply arrive too late.
+            status = o.icp("canister", "status", cid).stdout
+            if "Status: Running" not in status:
+                raise Fail(f"after stopping {name}: no start item and not running:\n{status[-300:]}")
+            print(f"    ({name} was restarted by the reconcile timer before the plan ran)")
+        elif kinds != [("start", name)]:
             raise Fail(f"after stopping {name}: expected one start item, got {kinds}")
         o.casals("up", o.sheet_path, "--yes")
         if o.plan_items():
@@ -319,6 +331,136 @@ def runtime_stand(o: Orchestra) -> None:
             new = {m.replace("{stand}", name).replace("{n}", "2") for m in numbered}
             expected |= new
             converge(name, expected, new - set(o.ids()))
+    o.oracle()
+
+
+def _sole_backends(o: Orchestra) -> list[tuple[str, str, dict, str]]:
+    """(backend name, baton name, backend spec, sheet path to the spec) for every
+    stand whose baton has `hand_off: "sole"` — declared stands, and the runtime
+    stand `runtime_stand` minted from a template (`name_pattern` with `e2e`)."""
+    out = []
+    for si, sec in enumerate(o.sheet["sections"]):
+        for sj, st in enumerate(sec.get("stands") or []):
+            if (st.get("baton") or {}).get("hand_off") == "sole":
+                be = _member(st, "backend")
+                out.append((be["name"], _member(st, "baton")["name"], be, f"sections[{si}].stands[{sj}]"))
+        tmpl = sec.get("stand_template")
+        if isinstance(tmpl, dict) and (tmpl.get("baton") or {}).get("hand_off") == "sole":
+            stand = tmpl["name_pattern"].replace("*", "e2e")
+            be = next(c for c in tmpl["canisters"] if c["name"].endswith("-backend"))
+            baton = next(c for c in tmpl["canisters"] if c["name"].endswith("-baton"))
+            out.append((be["name"].replace("{stand}", stand), baton["name"].replace("{stand}", stand), be,
+                        f"sections[{si}].stand_template"))
+    return out
+
+
+def _member(stand: dict, role: str) -> dict:
+    return next(c for c in stand["canisters"] if c["name"].endswith("-" + role))
+
+
+def baton_upgrade(o: Orchestra) -> None:
+    """Sole hand-off: once built, a stand member is controlled by its baton (and by
+    itself when it declares `$this`) — never by Casals or the deployer. A code
+    change on it is therefore not an install but a baton proposal: `up` files it
+    (Casals votes with weight 1), the plan reports it under `pending`, the module
+    hash does not move. The orchestra multisig (weight 2) approves through the
+    baton, the baton runs its pipeline on its own timers, and the next plan is
+    empty with the new hash live."""
+    targets = _sole_backends(o)
+    if not targets:
+        return
+    ids = o.ids()
+    ic = IcClient(env=ENV, identity=IDENTITY)
+    casals = o.bindings()["conductor"]["casals-backend"]
+    ms = ids.get("multisig")
+    if not ms:
+        raise Fail("sole hand-off needs governance.multisig")
+    for name, baton, spec, _where in targets:
+        if name not in ids:
+            raise Fail(f"{name} not built (runtime_stand must run first)")
+        ctrls = set(ic.read_controllers(ids[name]) or [])
+        want = {ids[baton]} | ({ids[name]} if "$this" in spec["controllers"] else set())
+        if ctrls != want:
+            raise Fail(f"{name} controllers {sorted(ctrls)} != {sorted(want)} (baton{' + itself' if len(want) > 1 else ''})")
+        if casals in ctrls or ic.deployer_principal() in ctrls:
+            raise Fail(f"{name}: Casals/deployer still control a sole-handed member")
+        if set(ic.read_controllers(ids[baton]) or []) != {ms}:
+            raise Fail(f"{baton} controllers {ic.read_controllers(ids[baton])} != [multisig]")
+
+    # the upgrade: hello-world-rust 1.0.0 → 1.0.1 (same code, new module hash)
+    upgradable = [(n, b, s) for n, b, s, _w in targets if s["wasm"] == "hello-world-rust@1.0.0"]
+    if not upgradable:
+        print("    (no hello-world-rust@1.0.0 backend to upgrade — controllers verified only)")
+        return
+    changed = json.loads(json.dumps(o.sheet))
+    changed["registry"]["wasms"].append({"family": "hello-world-rust", "version": "1.0.1",
+                                         "source": "local:seed/templates/hello-world-rust@1.0.1.wasm.gz"})
+    for _n, _b, spec in upgradable:
+        for sec in changed["sections"]:
+            for st in [*(sec.get("stands") or []), *([sec["stand_template"]] if sec.get("stand_template") else [])]:
+                for c in st.get("canisters") or []:
+                    if c["name"] == spec["name"]:
+                        c["wasm"] = "hello-world-rust@1.0.1"
+    changed_path = os.path.join(o.home, "upgrade.json")
+    json.dump(changed, open(changed_path, "w"))
+    before = o.module_hashes()
+    res = o.casals("up", changed_path, "--yes")
+    if res["plan"]["items"]:
+        raise Fail(f"up left items: {[i['kind'] for i in res['plan']['items']]}")
+    pending = {p["target"]: p for p in res["plan"].get("pending") or []}
+    if set(pending) != {n for n, _b, _s in upgradable}:
+        raise Fail(f"expected pending upgrades for {[n for n, _b, _s in upgradable]}, got {pending}")
+    after = o.module_hashes()
+    for n, _b, _s in upgradable:
+        if after[n] != before[n]:
+            raise Fail(f"{n} was upgraded without the baton's approval")
+        if pending[n]["approvals"] != [casals]:
+            raise Fail(f"{n}: expected Casals' own vote only, got {pending[n]['approvals']}")
+
+    # the multisig (weight 2) approves through the baton; the pipeline runs on the baton's timers
+    for n, b, _s in upgradable:
+        aid = pending[n]["action_id"]
+        action = f'variant {{ CallCanister = record {{ canister = principal "{ids[b]}"; method = "submit_approval"; arg_json = "{aid}" }} }}'
+        pid, status = propose(ic, ms, action)
+        if status != "executed":
+            raise Fail(f"multisig proposal #{pid} to approve {aid} is {status}")
+        deadline = time.time() + 600
+        while True:
+            rec = ic.query(ids[b], "get_action", aid)
+            st = (rec or {}).get("status")
+            if st == "COMPLETE":
+                break
+            if st in ("REJECTED", "REJECTED_PREFLIGHT", "FAILED_STOP", "FAILED_SNAPSHOT",
+                      "REVERTED_PARTIAL_FAILURE", "REVERTED_FAILED_VERIFY"):
+                raise Fail(f"{n}: baton action {aid} ended {st}: {json.dumps((rec or {}).get('phase_log'))[-600:]}")
+            if time.time() > deadline:
+                raise Fail(f"{n}: baton action {aid} still {st} after 10 min")
+            time.sleep(5)
+    res = o.casals("up", changed_path, "--yes")
+    if res["plan"]["items"] or res["plan"].get("pending"):
+        raise Fail(f"after approval: items={[i['kind'] for i in res['plan']['items']]} pending={res['plan'].get('pending')}")
+    after = o.module_hashes()
+    for n, _b, _s in upgradable:
+        if after[n] == before[n]:
+            raise Fail(f"{n}: module hash unchanged after the baton completed the upgrade")
+    rep = o.casals("oracle", changed_path, check=False)
+    if not rep.get("ok"):
+        raise Fail("oracle after baton upgrade: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
+    # back to the declared sheet: the downgrade is a proposal too (approve, wait, converge)
+    res = o.casals("up", o.sheet_path, "--yes")
+    for n, b, _s in upgradable:
+        p = next((p for p in res["plan"].get("pending") or [] if p["target"] == n), None)
+        if not p:
+            raise Fail(f"{n}: going back to 1.0.0 did not become a baton proposal")
+        action = f'variant {{ CallCanister = record {{ canister = principal "{ids[b]}"; method = "submit_approval"; arg_json = "{p["action_id"]}" }} }}'
+        propose(ic, ms, action)
+        deadline = time.time() + 600
+        while (ic.query(ids[b], "get_action", p["action_id"]) or {}).get("status") != "COMPLETE":
+            if time.time() > deadline:
+                raise Fail(f"{n}: downgrade action did not complete")
+            time.sleep(5)
+    if o.casals("up", o.sheet_path, "--yes")["plan"]["items"]:
+        raise Fail("not converged after the downgrade")
     o.oracle()
 
 
@@ -518,8 +660,8 @@ def access_code(o: Orchestra) -> None:
     o.oracle()
 
 
-SCENARIOS = [fresh, idempotent, content_change, runtime_stand, retire_and_pool, drift_controller, drift_stopped, drift_adopted_code,
-             proposal_only, stale_plan, access_code, export_roundtrip]
+SCENARIOS = [fresh, idempotent, content_change, runtime_stand, baton_upgrade, retire_and_pool, drift_controller, drift_stopped,
+             drift_adopted_code, proposal_only, stale_plan, access_code, export_roundtrip]
 if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterating
     SCENARIOS = [s for s in SCENARIOS if s.__name__ in os.environ["SCENARIOS"].split(",")]
 

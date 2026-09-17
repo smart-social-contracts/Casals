@@ -14,16 +14,18 @@ from auth import _normalize_permissions, _parse_permissions
 from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    HAND_OFF_SOLE,
     MULTISIG_NAME,
     WASM_NAMESPACE,
     ResolveContext,
+    baton_commanders,
+    baton_hand_off_mode,
     baton_managed_members,
     env_block,
     registry_path,
     materialize,
     resolve,
     stand_member,
-    stand_members,
     wasm_ref,
 )
 from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on conductor dicts
@@ -319,16 +321,34 @@ def run_oracle(
             except Exception as exc:
                 report.add(bname, "baton", "FAIL", str(exc))
                 continue
-            want_cmds = set(baton.get("commanders") or [])
-            have_cmds = {c.get("principal") for c in cmds or [] if isinstance(c, dict)}
+            # commanders with their weights (a baton from before weights reports none → 1)
+            want_cmds = {(c["principal"], c["weight"]) for c in baton_commanders(baton)}
+            have_cmds = {(c.get("principal"), int(c.get("weight") or 1)) for c in cmds or [] if isinstance(c, dict)}
             report.add(bname, "baton.commanders", "PASS" if want_cmds == have_cmds else "FAIL",
                        f"{len(have_cmds)} commanders" if want_cmds == have_cmds else f"want={sorted(want_cmds)} have={sorted(have_cmds)}")
             have_t = int(((cfg or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
             report.add(bname, "baton.threshold", "PASS" if have_t == int(baton.get("threshold") or 0) else "FAIL", str(have_t))
-            if baton.get("hand_off"):
-                want_managed = {bindings.get(m["name"], "") for r in baton.get("manages") or [] for m in stand_members(stand, r)}
+            if baton_hand_off_mode(baton):
+                want_managed = {bindings.get(m["name"], "") for m in baton_managed_members(stand)}
                 report.add(bname, "baton.managed", "PASS" if want_managed <= managed else "FAIL",
                            f"{len(managed)} managed" if want_managed <= managed else f"missing={sorted(want_managed - managed)}")
+            if baton_hand_off_mode(baton) == HAND_OFF_SOLE:
+                # Sole hand-off: Casals (and the deployer) hold no key to any managed member.
+                casals_id = ctx.self_id or ""
+                deployer = ctx.deployer or ""
+                leaked = []
+                for m in baton_managed_members(stand):
+                    mid = bindings.get(m["name"], "")
+                    if not mid:
+                        continue
+                    try:
+                        ctrls = set(ic.read_controllers(mid) or [])
+                    except Exception:
+                        continue
+                    if casals_id in ctrls or deployer in ctrls:
+                        leaked.append(m["name"])
+                report.add(bname, "baton.sole", "PASS" if not leaked else "FAIL",
+                           "Casals controls no managed member" if not leaked else f"Casals/deployer still control {leaked}")
 
     # unmanaged expectation
     expect = set(expect_unmanaged or [])

@@ -144,7 +144,63 @@ class TestEligibility:
         assert is_approval_eligible("deputy-a", policy, cmd, _config())
         assert not is_approval_eligible("deputy-b", policy, cmd, _config())
 
-    def test_top_commander_with_cap(self):
+    def test_top_commander_has_no_approval_bypass(self):
+        """The top commander (Casals) configures the baton and files proposals; it
+        votes only when — and with the weight — it is registered as a commander."""
         cmd = _commanders()
-        policy = {"threshold": 1, "eligible": ["top-principal"], "required": []}
+        policy = {"threshold": 1, "eligible": [], "required": []}
+        assert not is_approval_eligible("top-principal", policy, cmd, _config())
+        cmd = _commanders(("top-principal", [CAP_SUBMIT_APPROVAL]))
         assert is_approval_eligible("top-principal", policy, cmd, _config())
+
+    def test_commander_without_cap_cannot_vote(self):
+        cmd = _commanders(("observer", ["read_cycle_balance"]))
+        assert not is_approval_eligible("observer", {"threshold": 1, "eligible": [], "required": []}, cmd, _config())
+
+
+def _weighted(*entries):
+    """(principal, weight) commanders with the approval capability."""
+    store = FakeMap()
+    for principal, weight in entries:
+        store[principal] = __import__("json").dumps(new_commander(principal, [CAP_SUBMIT_APPROVAL], weight))
+    return store
+
+
+class TestWeightedQuorum:
+    """The orchestra policy: multisig weight 2, Casals 1, realm capital 1, threshold 2 —
+    the multisig passes alone; Casals and the capital only together; neither alone."""
+
+    POLICY = {"threshold": 2, "eligible": [], "required": []}
+
+    def _store(self):
+        return _weighted(("multisig", 2), ("casals", 1), ("capital", 1))
+
+    def test_multisig_alone(self):
+        rec = _pending_action()
+        append_approval(rec, "multisig")
+        assert quorum_met(rec, self.POLICY, self._store())
+        assert approval_progress(rec, self.POLICY, self._store())["approval_weight"] == 2
+
+    def test_casals_alone_is_not_enough(self):
+        rec = _pending_action()
+        append_approval(rec, "casals")
+        assert not quorum_met(rec, self.POLICY, self._store())
+
+    def test_casals_plus_capital(self):
+        rec = _pending_action()
+        append_approval(rec, "casals")
+        append_approval(rec, "capital")
+        assert quorum_met(rec, self.POLICY, self._store())
+
+    def test_legacy_records_weigh_one(self):
+        store = FakeMap({"old": __import__("json").dumps({"principal": "old", "capabilities": [CAP_SUBMIT_APPROVAL]})})
+        rec = _pending_action()
+        append_approval(rec, "old")
+        assert approval_progress(rec, self.POLICY, store)["approval_weight"] == 1
+        assert not quorum_met(rec, self.POLICY, store)
+
+    def test_without_store_counts_heads(self):
+        rec = _pending_action()
+        append_approval(rec, "a")
+        append_approval(rec, "b")
+        assert quorum_met(rec, self.POLICY)

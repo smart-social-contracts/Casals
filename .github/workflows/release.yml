@@ -70,7 +70,7 @@ jobs:
         run: |
           # gaas new / realms seed fetch these from the GitHub release instead of
           # a local Casals checkout. Committed artifacts under seed/templates/.
-          cp seed/templates/orchestration-baton@1.3.0.wasm.gz ./orchestration-baton@1.3.0.wasm.gz
+          cp seed/templates/orchestration-baton@1.4.0.wasm.gz ./orchestration-baton@1.4.0.wasm.gz
           cp seed/templates/orchestration-multisig@1.2.0.wasm.gz ./orchestration-multisig@1.2.0.wasm.gz
 
       - name: Set up Node.js
@@ -92,7 +92,7 @@ jobs:
                    casals_conductor.wasm.gz casals_conductor.did \
                    casals_frontend.tar.gz \
                    file_registry.wasm.gz ic_file_registry.wasm.gz \
-                   orchestration-baton@1.3.0.wasm.gz orchestration-multisig@1.2.0.wasm.gz; do
+                   orchestration-baton@1.4.0.wasm.gz orchestration-multisig@1.2.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
           cat checksums.txt
@@ -111,6 +111,6 @@ jobs:
             casals_frontend.tar.gz
             file_registry.wasm.gz
             ic_file_registry.wasm.gz
-            orchestration-baton@1.3.0.wasm.gz
+            orchestration-baton@1.4.0.wasm.gz
             orchestration-multisig@1.2.0.wasm.gz
             checksums.txt

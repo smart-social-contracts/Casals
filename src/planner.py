@@ -10,9 +10,12 @@ from auth import _normalize_permissions
 from commanders import reconcile_claimed
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    HAND_OFF_SOLE,
+    baton_commanders,
+    baton_hand_off_mode,
     baton_managed_members,
+    registry_path,
     stand_member,
-    stand_members,
     MULTISIG_NAME,
     SYNTHETIC_SECTION_CONDUCTOR,
     SYNTHETIC_STAND_CONDUCTOR,
@@ -36,6 +39,7 @@ PHASE = {
     "create_canister": 300,
     "install_code": 310,
     "upgrade_code": 320,
+    "upgrade_via_baton": 322,
     "reinstall_code": 325,
     "configure_multisig": 350,
     "config_call": 400,
@@ -49,6 +53,21 @@ PHASE = {
     "set_controllers": 600,
     "set_commanders": 610,
 }
+
+
+# Baton action statuses after which nothing more happens (mirrors the baton's
+# TERMINAL_STATUSES): a new proposal is needed to try again.
+_BATON_TERMINAL = frozenset({
+    "REJECTED", "REJECTED_PREFLIGHT", "FAILED_STOP", "FAILED_SNAPSHOT",
+    "REVERTED_PARTIAL_FAILURE", "REVERTED_FAILED_VERIFY", "COMPLETE", "FAILED_PROVISION",
+})
+
+
+def _wants_health_check(spec: dict) -> bool:
+    """The baton probes `health_check` after an upgrade only when the sheet
+    declares that query on the member; otherwise the module hash is the check."""
+    return any(isinstance(h, dict) and (h.get("query") or "").strip() == "health_check"
+               for h in spec.get("health") or [])
 
 
 class PlanningError(Exception):
@@ -97,6 +116,8 @@ class _PlanContext:
         self.info: list[dict] = []
         self.deferred: list[dict] = []  # fields still naming a canister that does not exist yet
         self.unverifiable: list[dict] = []
+        self.pending: list[dict] = []  # upgrades proposed on a baton, waiting for its commanders
+        self.departed: list[dict] = []  # members whose controllers dropped both Casals and the baton
         self.bindings = dict(live_state.get("bindings") or {})
         self.canisters_live = live_state.get("canisters") or {}
         self.sections_live = live_state.get("sections") or {}
@@ -277,14 +298,23 @@ class _PlanContext:
                 desired={"commanders": desired_sec},
                 section_order=si,
             )
+        # Principals Casals puts on a member while provisioning it: itself, the
+        # governance multisig and — for template stands — the canister that
+        # called `create_stand`. Under sole hand-off they all leave; the sheet
+        # says so, and the multisig keeps its power through the baton it controls.
+        provisioners = {p for p in (self.self_id, self.binding(MULTISIG_NAME)) if p}
+        created_by = ((sec_spec.get("stand_template") or {}).get("created_by") or "").strip()
+        if created_by and not find_placeholder_tokens(created_by):
+            provisioners.add(created_by)
         for sj, stand_spec in enumerate(sec_spec.get("stands") or []):
             if isinstance(stand_spec, dict):
                 dname = (stand_spec.get("name") or "").strip()
                 if dname:
                     self.declared_stands.add(dname)
-                    self._plan_stand(stand_spec, sname, dname, si, sj)
+                    self._plan_stand(stand_spec, sname, dname, si, sj, provisioners)
 
-    def _plan_stand(self, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
+    def _plan_stand(self, stand_spec: dict, sname: str, dname: str, si: int, sj: int,
+                    provisioners: set[str] | None = None):
         if not (self.stands_live.get(dname) or {}).get("exists"):
             self.add(
                 "register_stand",
@@ -306,31 +336,45 @@ class _PlanContext:
             )
         baton = stand_spec.get("baton") if isinstance(stand_spec.get("baton"), dict) else None
         baton_member = stand_member(stand_spec, "baton") if baton else None
-        # members the baton co-controls → baton id, or a placeholder until it exists (deferred)
-        co_controlled = {m["name"]: self.binding(baton_member["name"]) or "$stand.baton"
-                         for m in baton_managed_members(stand_spec)}
+        # members the baton controls → the baton's id, or a placeholder until it exists (deferred)
+        managed = {m["name"] for m in baton_managed_members(stand_spec)}
+        baton_ctx = None
+        if baton and baton_member and managed:
+            bat_live = (self.live_state.get("batons") or {}).get(baton_member["name"]) or {}
+            baton_ctx = {
+                "name": baton_member["name"],
+                "id": self.binding(baton_member["name"]) or "$stand.baton",
+                "sole": baton_hand_off_mode(baton) == HAND_OFF_SOLE,
+                "provisioners": set(provisioners or ()) | {self.self_id},
+                "managed_live": set(bat_live.get("managed_canisters") or []),
+                "actions": [a for a in bat_live.get("actions") or [] if isinstance(a, dict)],
+            }
         for canister_spec in stand_spec.get("canisters") or []:
             if isinstance(canister_spec, dict):
                 cname = (canister_spec.get("name") or "").strip()
                 if cname:
                     self._plan_canister(cname, canister_spec, sname, dname, si, sj,
-                                        extra_controllers=[co_controlled[cname]] if cname in co_controlled else ())
+                                        baton_ctx=baton_ctx if cname in managed else None)
         if baton and baton_member:
             self._plan_baton(baton, baton_member["name"], stand_spec, sname, dname, si, sj)
 
     def _plan_baton(self, baton_spec: dict, baton_name: str, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
-        """Baton policy: commanders/threshold on the baton, and its managed set (hand_off).
+        """Baton policy: weighted commanders/threshold on the baton, and its managed set (hand_off).
         The baton canister itself is a regular `-baton` member of the stand."""
         bid = self.binding(baton_name)
         if not bid:
             return  # created first; policy is planned on the next pass
         bat_live = (self.live_state.get("batons") or {}).get(baton_name) or {}
-        # Baton commanders are principals (baton default capabilities); the approval
-        # threshold lives in the baton's upgrade_approval_policy.
-        desired_cmd = sorted({str(p).strip() for p in baton_spec.get("commanders") or [] if str(p).strip()})
+        # Baton commanders are principals with a weight (baton default capabilities);
+        # the approval threshold lives in the baton's upgrade_approval_policy.
+        desired_cmd = baton_commanders(baton_spec)
         if self.defer_if_unresolved(desired_cmd, baton_name, "baton.commanders"):
             return
-        live_cmd = sorted({c.get("principal", "") for c in bat_live.get("commanders") or [] if isinstance(c, dict)})
+        live_cmd = sorted(
+            ({"principal": c.get("principal", ""), "weight": int(c.get("weight") or 1)}
+             for c in bat_live.get("commanders") or [] if isinstance(c, dict) and c.get("principal")),
+            key=lambda c: c["principal"],
+        )
         desired_threshold = int(baton_spec.get("threshold") or 1)
         live_threshold = int(((bat_live.get("config") or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
         if desired_cmd != live_cmd or desired_threshold != live_threshold:
@@ -342,11 +386,11 @@ class _PlanContext:
                 desired={"commanders": desired_cmd, "threshold": desired_threshold},
                 section_order=si, stand_order=sj,
             )
-        if baton_spec.get("hand_off"):
+        if baton_hand_off_mode(baton_spec):
             managed_live = bat_live.get("managed_canisters") or []
-            members = [m for role in baton_spec.get("manages") or [] for m in stand_members(stand_spec, role)]
-            missing = [m["name"] for m in members if self.binding(m["name"])
-                       and self.binding(m["name"]) not in managed_live]
+            missing = [m["name"] for m in baton_managed_members(stand_spec) if self.binding(m["name"])
+                       and self.binding(m["name"]) not in managed_live
+                       and not self._departed(m["name"])]
             if missing:
                 self.add(
                     "hand_off",
@@ -356,11 +400,34 @@ class _PlanContext:
                     section_order=si, stand_order=sj,
                 )
 
+    def _departed(self, name: str) -> bool:
+        return any(d["target"] == name for d in self.departed)
+
+    def _baton_action_for(self, baton_ctx: dict, cid: str, wasm_hash: str) -> dict | None:
+        """The most recent baton action that upgrades ``cid`` to ``wasm_hash``."""
+        found = None
+        for a in baton_ctx.get("actions") or []:
+            if cid not in (a.get("affected_canisters") or []):
+                continue
+            targets = (a.get("payload") or {}).get("targets") or []
+            if not any(isinstance(t, dict) and t.get("canister_id") == cid
+                       and (t.get("wasm_hash") or "").lower() == wasm_hash for t in targets):
+                continue
+            if found is None or int(a.get("proposed_at") or 0) >= int(found.get("proposed_at") or 0):
+                found = a
+        return found
+
     def _plan_canister(self, name: str, spec: dict, section: str, stand: str, si: int, sj: int,
-                       extra_controllers=()):
+                       baton_ctx: dict | None = None):
+        """``baton_ctx`` is set for a member its stand's baton controls: the baton
+        joins the desired controllers; under sole hand-off Casals leaves after the
+        install and code changes become baton proposals."""
         mode = (spec.get("mode") or "managed").strip()
         cid = self.binding(name)
         lv = self.live(name)
+        baton_id = (baton_ctx or {}).get("id") or ""
+        sole = bool((baton_ctx or {}).get("sole"))
+        extra_controllers = [baton_id] if baton_ctx else []
         desired_ctls = sorted({str(c).strip() for c in [*(spec.get("controllers") or []), *extra_controllers] if str(c).strip()})
         live_ctls = sorted(str(c).strip() for c in (lv.get("controllers") or []) if str(c).strip())
         expected_hash = _expected_wasm_hash(self.sheet, spec)
@@ -380,6 +447,17 @@ class _PlanContext:
             return
         if lv.get("error"):  # never plan against a canister we could not read
             self.unverifiable.append({"target": name, "field": "canister_info", "reason": lv["error"]})
+            return
+
+        if sole and live_ctls and self.self_id not in live_ctls and baton_id not in live_ctls:
+            # The member rewrote its own controllers and dropped the baton (a realm
+            # seceding with its `$this` key). Casals lets go instead of planning a
+            # fight it could not win anyway: no controller, code or hand-off items.
+            self.departed.append({
+                "target": name, "canister_id": cid, "stand": stand,
+                "controllers": live_ctls,
+                "note": f"{name} is controlled by {live_ctls}: neither Casals nor baton {baton_ctx['name']}; treated as departed",
+            })
             return
 
         if spec.get("retire"):
@@ -404,6 +482,12 @@ class _PlanContext:
         # Code changes need a controller: Casals when it is one, else the deployer /
         # multisig (the conductor's own canisters at bootstrap, or under governance).
         code_requires = "self" if self.self_id in live_ctls else "multisig"
+        # A member the baton controls and Casals does not: code goes through the
+        # baton's pipeline. Casals proposes (and casts its own vote); the baton's
+        # commanders approve; the baton installs, verifies and rolls back.
+        via_baton = (baton_ctx is not None and self.self_id not in live_ctls
+                     and baton_id in live_ctls and cid in baton_ctx["managed_live"])
+        code_pending = False
         if mode == "managed":
             if not live_hash:
                 if self.defer_if_unresolved(spec.get("install_arg"), name, "install_arg"):
@@ -416,7 +500,35 @@ class _PlanContext:
                     requires=code_requires,
                     section_order=si, stand_order=sj,
                 )
+                code_pending = True
+            elif expected_hash and live_hash != expected_hash and via_baton:
+                code_pending = True
+                action = self._baton_action_for(baton_ctx, cid, expected_hash)
+                status = (action or {}).get("status") or ""
+                if action and status not in _BATON_TERMINAL:
+                    self.pending.append({
+                        "target": name, "canister_id": cid, "baton": baton_ctx["name"],
+                        "action_id": action.get("action_id"), "status": status,
+                        "approvals": action.get("approvals") or [],
+                        "current": {"module_hash": live_hash}, "desired": {"module_hash": expected_hash},
+                        "note": f"upgrade of {name} to {spec.get('wasm')} waits on baton {baton_ctx['name']} ({status})",
+                    })
+                else:
+                    family, version = wasm_ref(spec.get("wasm") or "")
+                    retry = f" (retry after {status})" if action else ""
+                    self.add(
+                        "upgrade_via_baton",
+                        {"name": name, "canister_id": cid, "section": section, "stand": stand},
+                        f"propose upgrade of {name} on baton {baton_ctx['name']}{retry}",
+                        current={"module_hash": live_hash},
+                        desired={"module_hash": expected_hash, "wasm": spec.get("wasm"),
+                                 "baton": baton_ctx["name"], "baton_id": baton_id,
+                                 "registry_path": registry_path(family, version),
+                                 "health_check": _wants_health_check(spec)},
+                        section_order=si, stand_order=sj,
+                    )
             elif expected_hash and live_hash != expected_hash:
+                code_pending = True
                 if upgrade_mode == "reinstall":
                     if not spec.get("allow_destructive"):
                         self.errors.append(f"{name}: reinstall requires allow_destructive")
@@ -447,13 +559,16 @@ class _PlanContext:
             })
 
         stopped = (lv.get("status") or "").lower() == "stopped"
-        if stopped:
+        if stopped and self.self_id in live_ctls:
             self.add(
                 "start",
                 {"name": name, "canister_id": cid, "section": section, "stand": stand},
                 f"start stopped canister {name}",
                 section_order=si, stand_order=sj,
             )
+        elif stopped:
+            # Not ours to start (a baton-controlled member, possibly mid-pipeline).
+            self.info.append({"target": name, "note": f"{name} is stopped; only its controllers {live_ctls} can start it"})
 
         min_tc = float((spec.get("cycles") or {}).get("min_balance_tc") or self.default_min_tc or 0)
         cycles = lv.get("cycles")
@@ -493,24 +608,42 @@ class _PlanContext:
 
         if live_ctls != desired_ctls and not self.defer_if_unresolved(desired_ctls, name, "controllers"):
             err = _lockout_controllers(name, live_ctls, desired_ctls, self.self_id)
+            removes_self = self.self_id in live_ctls and self.self_id not in desired_ctls
+            removed = set(live_ctls) - set(desired_ctls)
+            # Handing a baton back — Casals dropping exactly itself after the
+            # install — is what the sheet rules demand (no $self on batons), so
+            # the reconcile timer may do it unattended; any other removal stays
+            # a human decision.
+            baton_handback = name.endswith("-baton") and removed == {self.self_id}
+            # Sole hand-off: the provisioning controllers (Casals, the multisig, the
+            # canister that minted the stand) leaving a member once installed is the
+            # sheet's rule too — the multisig keeps its say through the baton it
+            # controls. Only once the code is in (a canister with no module and no
+            # Casals could only be installed through the baton's upgrade pipeline),
+            # and never when the removal touches anyone else.
+            provisioners = (baton_ctx or {}).get("provisioners") or {self.self_id}
+            sole_handback = sole and removes_self and removed <= provisioners and baton_id in desired_ctls
             if err:
                 self.errors.append(err)
+            elif sole_handback and code_pending:
+                self.deferred.append({"target": name, "field": "controllers", "waiting_for": ["install_code"]})
             else:
                 # Casals does it when it is a controller (even when that removes itself:
                 # the sheet says so, and the item is ordered last); otherwise the
-                # deployer or the multisig must.
-                removes_self = self.self_id in live_ctls and self.self_id not in desired_ctls
-                requires = "self" if self.self_id in live_ctls else "multisig"
-                # Handing a baton back — Casals dropping exactly itself after the
-                # install — is what the sheet rules demand (no $self on batons), so
-                # the reconcile timer may do it unattended; any other removal stays
-                # a human decision.
-                baton_handback = name.endswith("-baton") and set(live_ctls) - set(desired_ctls) == {self.self_id}
+                # deployer or the multisig must — or, on a baton-controlled member,
+                # nobody Casals can ask (the baton has no controller API), so the
+                # item is reported as requiring the baton.
+                if self.self_id in live_ctls:
+                    requires = "self"
+                elif baton_ctx is not None and baton_id in live_ctls:
+                    requires = "baton"
+                else:
+                    requires = "multisig"
                 self.add(
                     "set_controllers",
                     {"name": name, "canister_id": cid, "section": section, "stand": stand},
                     f"controllers for {name} differ",
-                    destructive=set(live_ctls) - set(desired_ctls) != set() and not baton_handback,
+                    destructive=bool(removed) and not baton_handback and not sole_handback,
                     requires=requires,
                     current={"controllers": live_ctls},
                     desired={"controllers": desired_ctls},
@@ -588,6 +721,8 @@ class _PlanContext:
             "unmanaged": unmanaged,
             "unverifiable": unverifiable,
             "deferred": self.deferred,
+            "pending": self.pending,
+            "departed": self.departed,
             "info": self.info,
         }
 

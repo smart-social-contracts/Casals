@@ -277,10 +277,18 @@ def test_stand_member_backend():
 
 def test_resolve_stand_backend():
     sheet = _load_corpus("baton-stand")
-    ctx = _ctx(sheet, canister_ids={"rust-backend": "rust-be-id", "multisig": "ms-id"})
+    ctx = _ctx(sheet, canister_ids={"rust-backend": "rust-be-id", "multisig": "ms-id", "rust-baton": "baton-id"})
     resolved = sv2.resolve(sheet, "local", ctx)
-    commanders = resolved["sections"][0]["stands"][0]["baton"]["commanders"]
-    assert commanders == ["backend-id", "rust-be-id"]
+    baton = resolved["sections"][0]["stands"][0]["baton"]
+    # `$multisig` resolves inside a weighted entry; bare principals weigh 1.
+    assert baton["commanders"] == [{"principal": "ms-id", "weight": 2}, "backend-id", "rust-be-id"]
+    assert sv2.baton_commanders(baton) == [
+        {"principal": "backend-id", "weight": 1},
+        {"principal": "ms-id", "weight": 2},
+        {"principal": "rust-be-id", "weight": 1},
+    ]
+    # `$stand.baton` on the backend resolves to the baton's id.
+    assert resolved["sections"][0]["stands"][0]["canisters"][1]["controllers"] == ["baton-id"]
 
 
 def test_domains_materialize_ic_domains_file():

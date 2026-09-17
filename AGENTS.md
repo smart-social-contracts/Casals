@@ -317,6 +317,33 @@ The pool (`PooledCanister` entity, stable memory) is the list of every canister
 Casals has ever created. Because creation is expensive, canisters are recycled,
 not discarded.
 
+### Baton-governed stands (`baton.hand_off`)
+
+A stand may declare a `baton` block (`packages/orchestration/baton`, an N-of-M
+upgrade pipeline). `commanders` are weighted (`"$multisig"` or
+`{"principal": "$multisig", "weight": 2}`); `threshold` is a weight sum, and the
+baton's `top_commander` (Casals) gets no approval bypass. `manages` is a role list
+or `"*"` (every member but the baton). `hand_off`:
+
+- `true` — co-control: Casals stays a controller and upgrades members directly.
+- `"sole"` — Casals installs a member, then hands its controllers back to
+  `[$stand.baton]` (plus `$this` when the member controls itself, as realm
+  backends do so they can secede). The provisioning controllers (Casals, the
+  multisig, the stand's `created_by` canister) leave non-destructively, so the
+  reconcile timer finishes a runtime-minted stand by itself; the baton's own
+  timers drive its pipeline (`_arm_resume_timer`: the callback must be the
+  generator). From then on a `wasm` bump plans an
+  `upgrade_via_baton` item: the conductor files `propose_managed_upgrade` on the
+  baton, votes with its own weight, and the plan lists the action under
+  `pending` until the other commanders approve and the baton finishes. A member
+  that dropped both Casals and the baton from its controllers is `departed` and
+  left alone. Sole-managed members can't carry `content`/`files` (Casals could
+  not sync assets afterwards); `validate` enforces that.
+
+Baton controllers must be `[$multisig]` (the orchestra multisig can unbrick).
+`hand_off: "sole"` lets Casals only reach a member through `canister_info`; the
+oracle and `live_state` fall back to the baton for status/cycles.
+
 ### Manual pool assign (`assign_pool_canister`)
 
 When pool canisters exist but are not linked to the orchestra tree (e.g. after

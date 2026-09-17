@@ -137,18 +137,17 @@ def _converged_live(resolved, bindings) -> dict:
             if isinstance(baton, dict):
                 bname = sv2.stand_member(stand, "baton")["name"]
                 managed_ids = []
-                for role in baton.get("manages") or []:
-                    member = sv2.stand_member(stand, role)
-                    if member and bindings.get(member["name"]):
+                for member in sv2.baton_managed_members(stand):  # the baton controls what it manages
+                    if bindings.get(member["name"]):
                         managed_ids.append(bindings[member["name"]])
-                        if baton.get("hand_off"):  # the baton co-controls what it manages
-                            live["canisters"][member["name"]]["controllers"] = sorted(
-                                set(live["canisters"][member["name"]]["controllers"]) | {bindings[bname]}
-                            )
+                        live["canisters"][member["name"]]["controllers"] = sorted(
+                            set(live["canisters"][member["name"]]["controllers"]) | {bindings[bname]}
+                        )
                 live["batons"][bname] = {
-                    "commanders": [{"principal": p, "capabilities": []} for p in baton.get("commanders") or []],
+                    "commanders": [{**c, "capabilities": []} for c in sv2.baton_commanders(baton)],
                     "config": {"upgrade_approval_policy": {"threshold": baton.get("threshold")}},
                     "managed_canisters": [m for m in managed_ids if m],
+                    "actions": [],
                 }
     live["sections"][sv2.SYNTHETIC_SECTION_CONDUCTOR] = {"exists": True, "commanders": []}
     cond = (resolved.get("conductor") or {}).get("commanders") or []
@@ -291,15 +290,27 @@ def test_baton_handback_is_not_destructive():
     ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers"]
     assert [(it["target"]["name"], it["destructive"]) for it in ctrl] == [("rust-baton", True)]
 
-    # Casals leaving a non-baton canister is destructive as before.
+    # Sole hand-off: Casals leaving a member it installed (controllers become
+    # exactly the baton's) is the sheet's rule as well — not destructive, self last.
     live = _converged_live(resolved, bindings)
     backend = live["canisters"]["rust-backend"]
-    live_ctls = [c for c in backend["controllers"] if c != SELF]
-    resolved_backend = sv2.find_canister(resolved, "rust-backend")[2]
-    resolved_backend["controllers"] = [c for c in resolved_backend["controllers"] if c != SELF]
-    backend["controllers"] = sorted({*live_ctls, SELF})
+    assert backend["controllers"] == [bindings["rust-baton"]]
+    backend["controllers"] = sorted({*backend["controllers"], SELF})  # right after install_code
     plan = build_plan(resolved, env, live, self_id=SELF)
     ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers" and it["target"]["name"] == "rust-backend"]
+    assert [(it["destructive"], it["requires"], it["desired"]["controllers"]) for it in ctrl] == [
+        (False, "self", [bindings["rust-baton"]])
+    ]
+
+    # Casals leaving a canister the baton does not manage is destructive as before.
+    live = _converged_live(resolved, bindings)
+    frontend = live["canisters"]["rust-frontend"]
+    live_ctls = [c for c in frontend["controllers"] if c != SELF]
+    resolved_frontend = sv2.find_canister(resolved, "rust-frontend")[2]
+    resolved_frontend["controllers"] = [c for c in resolved_frontend["controllers"] if c != SELF]
+    frontend["controllers"] = sorted({*live_ctls, SELF})
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    ctrl = [it for it in plan["items"] if it["kind"] == "set_controllers" and it["target"]["name"] == "rust-frontend"]
     assert [it["destructive"] for it in ctrl] == [True]
 
 
@@ -321,6 +332,177 @@ def test_asset_drift_yields_sync_item():
     assert len(items) == 1
     assert items[0]["desired"]["keys"] == ["/canister_ids.js"]
     assert items[0]["requires"] == "self"
+
+
+def _realm_world(live_members=("{stand}-quarter-1",)):
+    """dynamic-stands with one runtime stand `realm-e2e` (template + quarter 1),
+    every canister bound, live state converged. Returns (resolved, live, bindings)."""
+    sheet = _load("dynamic-stands")
+    stands = {"realm-e2e": {"section": "Realms", "members": list(live_members)}}
+    declared = sv2.materialize(sheet, stands)
+    ctx = _ctx(declared)
+    for n in sv2.canister_names(declared):
+        ctx.canister_ids.setdefault(n, f"id-{n}")
+    resolved, unresolved = sv2.resolve_partial(declared, "local", ctx)
+    assert not unresolved
+    bindings = dict(ctx.canister_ids)
+    live = _converged_live(resolved, bindings)
+    live["stands"]["realm-e2e"] = {"exists": True, "section": "Realms", "commanders": _normalize(
+        sv2.find_canister(resolved, "realm-e2e-backend")[1].get("commanders"))}
+    return resolved, live, bindings
+
+
+def test_sole_handoff_converged_controllers():
+    """Under `hand_off: "sole"` a realm backend/quarter is controlled by its baton
+    and itself (`$this`), the frontend by the baton only, the baton by the
+    multisig only — Casals nowhere. That world is converged."""
+    resolved, live, b = _realm_world()
+    spec = {n: sv2.find_canister(resolved, n)[2]["controllers"] for n in
+            ("realm-e2e-backend", "realm-e2e-frontend", "realm-e2e-quarter-1", "realm-e2e-baton")}
+    assert spec["realm-e2e-backend"] == [b["realm-e2e-baton"], b["realm-e2e-backend"]]
+    assert spec["realm-e2e-quarter-1"] == [b["realm-e2e-baton"], b["realm-e2e-quarter-1"]]
+    assert spec["realm-e2e-frontend"] == [b["realm-e2e-baton"]]
+    assert spec["realm-e2e-baton"] == [MS]
+    for n in spec:
+        assert SELF not in live["canisters"][n]["controllers"]
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    assert plan["items"] == [] and plan["pending"] == [] and plan["departed"] == []
+    assert set(live["batons"]["realm-e2e-baton"]["managed_canisters"]) == {
+        b["realm-e2e-backend"], b["realm-e2e-frontend"], b["realm-e2e-quarter-1"]}  # manages: "*"
+
+
+def test_sole_handoff_bootstrap_sequence():
+    """Right after Casals installed a quarter, its controllers are the provisioning
+    set lifecycle gives a stand member: the multisig, Casals and the canister that
+    called `create_stand` (the installer). The plan registers the quarter on the
+    baton, then hands it over — all three provisioners leave, non-destructively
+    (the reconcile timer must be able to finish a runtime-minted stand on its own),
+    ordered after the hand_off. Before the install lands, the hand-over waits (a
+    canister without code and without Casals could not be installed). Dropping
+    anyone else stays destructive."""
+    resolved, live, b = _realm_world()
+    q = live["canisters"]["realm-e2e-quarter-1"]
+    q["controllers"] = sorted([MS, SELF, b["installer"]])
+    live["batons"]["realm-e2e-baton"]["managed_canisters"].remove(b["realm-e2e-quarter-1"])
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    kinds = [(it["kind"], it["target"]["name"]) for it in plan["items"]]
+    assert kinds == [("hand_off", "realm-e2e-baton"), ("set_controllers", "realm-e2e-quarter-1")]
+    assert plan["items"][0]["desired"]["members"] == ["realm-e2e-quarter-1"]
+    ctl = plan["items"][1]
+    assert ctl["destructive"] is False and ctl["requires"] == "self"
+    assert ctl["desired"]["controllers"] == [b["realm-e2e-baton"], b["realm-e2e-quarter-1"]]
+
+    q["controllers"] = sorted([MS, SELF, "stranger-principal"])
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    ctl = [it for it in plan["items"] if it["kind"] == "set_controllers"][0]
+    assert ctl["destructive"] is True
+
+    q["controllers"] = sorted([MS, SELF, b["installer"]])
+    q["module_hash"] = ""  # created, not yet installed
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    kinds = [(it["kind"], it["target"]["name"]) for it in plan["items"]]
+    assert ("install_code", "realm-e2e-quarter-1") in kinds
+    assert ("set_controllers", "realm-e2e-quarter-1") not in kinds
+    assert {"target": "realm-e2e-quarter-1", "field": "controllers", "waiting_for": ["install_code"]} in plan["deferred"]
+
+
+def test_sole_handoff_upgrade_goes_through_baton():
+    """Hash drift on a baton-controlled member is a baton proposal, not an install:
+    `upgrade_via_baton` (Casals proposes), then `pending` while the action is open,
+    a retry item once it failed, nothing once complete and the hash matches."""
+    resolved, live, b = _realm_world()
+    for reg in resolved["registry"]["wasms"]:
+        if reg["family"] == "hello-world-rust":
+            reg["sha256"] = "aa" * 32
+    q = live["canisters"]["realm-e2e-quarter-1"]
+    q["module_hash"] = "bb" * 32
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    items = [it for it in plan["items"] if it["target"]["name"] == "realm-e2e-quarter-1"]
+    assert [it["kind"] for it in items] == ["upgrade_via_baton"]
+    it = items[0]
+    assert it["requires"] == "self" and it["destructive"] is False
+    assert it["desired"] == {
+        "module_hash": "aa" * 32, "wasm": "hello-world-rust@1.0.0",
+        "baton": "realm-e2e-baton", "baton_id": b["realm-e2e-baton"],
+        "registry_path": "hello-world-rust@1.0.0.wasm.gz", "health_check": False,
+    }
+
+    def action(status, approvals=()):
+        return {"action_id": "act-1", "status": status, "proposed_at": 5, "approvals": list(approvals),
+                "affected_canisters": [b["realm-e2e-quarter-1"]],
+                "payload": {"targets": [{"canister_id": b["realm-e2e-quarter-1"], "wasm_hash": "aa" * 32}]}}
+
+    live["batons"]["realm-e2e-baton"]["actions"] = [action("PENDING", [SELF])]
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    assert plan["items"] == []
+    assert [(p["target"], p["action_id"], p["status"], p["approvals"]) for p in plan["pending"]] == [
+        ("realm-e2e-quarter-1", "act-1", "PENDING", [SELF])]
+
+    live["batons"]["realm-e2e-baton"]["actions"] = [action("REVERTED_FAILED_VERIFY")]
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    assert [it["kind"] for it in plan["items"]] == ["upgrade_via_baton"]
+    assert "retry after REVERTED_FAILED_VERIFY" in plan["items"][0]["reason"]
+
+    q["module_hash"] = "aa" * 32
+    live["batons"]["realm-e2e-baton"]["actions"] = [action("COMPLETE")]
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    assert plan["items"] == [] and plan["pending"] == []
+
+
+def test_sole_handoff_departed_member_is_left_alone():
+    """A realm that used its own key to drop the baton has left: no controller
+    fight, no hand_off, no upgrade — it is reported under `departed`."""
+    resolved, live, b = _realm_world()
+    q = live["canisters"]["realm-e2e-quarter-1"]
+    q["controllers"] = [b["realm-e2e-quarter-1"], "their-new-multisig"]
+    q["module_hash"] = "bb" * 32
+    live["batons"]["realm-e2e-baton"]["managed_canisters"].remove(b["realm-e2e-quarter-1"])
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    assert plan["items"] == []
+    assert [d["target"] for d in plan["departed"]] == ["realm-e2e-quarter-1"]
+    assert plan["departed"][0]["controllers"] == [b["realm-e2e-quarter-1"], "their-new-multisig"]
+
+
+def test_this_placeholder_resolves_per_canister():
+    sheet = _load("minimal")
+    c = sheet["sections"][0]["stands"][0]["canisters"][0]
+    c["controllers"] = ["$self", "$this"]
+    assert sv2.validate(sheet, "local") == []
+    resolved = sv2.resolve(sheet, "local", _ctx(sheet))
+    assert resolved["sections"][0]["stands"][0]["canisters"][0]["controllers"] == [SELF, "hello-id"]
+    # unbound: stays a token under partial resolution (the planner defers the field)
+    ctx = _ctx(sheet)
+    del ctx.canister_ids["hello-backend"]
+    partial, unresolved = sv2.resolve_partial(sheet, "local", ctx)
+    assert unresolved == {"$this"}
+    assert partial["sections"][0]["stands"][0]["canisters"][0]["controllers"] == [SELF, "$this"]
+    # outside a canister block it means nothing
+    sheet["sections"][0]["commanders"] = [{"principal": "$this", "permissions": "*"}]
+    assert any("$this" in e for e in sv2.validate(sheet, "local"))
+    # alone it is a lock-out
+    sheet["sections"][0]["commanders"] = []
+    c["controllers"] = ["$this"]
+    assert any("only of itself" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_sole_handoff_validation():
+    sheet = _load("dynamic-stands")
+    tmpl = sheet["sections"][1]["stand_template"]
+    backend = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-backend")
+    backend["controllers"] = ["$self", "$stand.baton", "$this"]
+    errs = sv2.validate(sheet, "local")
+    assert any('hand_off "sole" but managed member {stand}-backend lists $self' in e for e in errs)
+    backend["controllers"] = ["$stand.baton", "$this"]
+    tmpl["baton"]["threshold"] = 5
+    errs = sv2.validate(sheet, "local")
+    assert any("threshold 5 exceeds the commanders' total weight 4" in e for e in errs)
+    tmpl["baton"]["threshold"] = 2
+    tmpl["baton"]["hand_off"] = "maybe"
+    assert any('hand_off must be true, false or "sole"' in e for e in sv2.validate(sheet, "local"))
+    tmpl["baton"]["hand_off"] = "sole"
+    baton = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-baton")
+    baton["controllers"] = ["$deployer"]
+    assert any("must include $multisig" in e for e in sv2.validate(sheet, "local"))
 
 
 def test_optional_member_only_when_chosen():

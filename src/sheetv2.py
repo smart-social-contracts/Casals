@@ -32,8 +32,13 @@ SYNTHETIC_STAND_GOVERNANCE = "governance"
 MULTISIG_NAME = "multisig"
 _NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _ENV_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
-_BARE_PLACEHOLDERS = ("$multisig", "$self", "$deployer")
+_BARE_PLACEHOLDERS = ("$multisig", "$self", "$deployer", "$this")
 _PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
+# `baton.hand_off`: false/absent = no hand-off; true = the baton co-controls
+# what it manages (Casals stays a controller); "sole" = the baton is the
+# controller — Casals installs, hands over and leaves (the sheet must not list
+# $self/$deployer on managed members; a realm may list $this to keep its exit key).
+HAND_OFF_SOLE = "sole"
 
 
 def _is_wasm_ref(value: str) -> bool:
@@ -192,12 +197,60 @@ def stand_of(sheet: dict, name: str) -> dict | None:
     return found[1]
 
 
-def baton_managed_members(stand: dict) -> list[dict]:
-    """Stand members the baton co-controls: `baton.manages` roles when `hand_off` is set."""
+def baton_hand_off_mode(baton) -> str:
+    """`""` (no hand-off), `"co"` (`hand_off: true`) or `"sole"`."""
+    if not isinstance(baton, dict):
+        return ""
+    v = baton.get("hand_off")
+    if v == HAND_OFF_SOLE:
+        return HAND_OFF_SOLE
+    return "co" if v is True else ""
+
+
+def baton_manages(stand: dict) -> list[dict]:
+    """Stand members named by `baton.manages`: a list of roles, or `"*"` for
+    every member but the baton itself (numbered, runtime-minted ones included)."""
     baton = stand.get("baton")
-    if not isinstance(baton, dict) or not baton.get("hand_off") or stand_member(stand, "baton") is None:
+    if not isinstance(baton, dict):
         return []
-    return [m for role in baton.get("manages") or [] for m in stand_members(stand, role)]
+    manages = baton.get("manages")
+    if manages == "*":
+        return [c for c in stand.get("canisters") or []
+                if isinstance(c, dict) and not (c.get("name") or "").endswith("-baton")]
+    if not isinstance(manages, list):
+        return []
+    out: list[dict] = []
+    for role in manages:
+        for m in stand_members(stand, role):
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def baton_managed_members(stand: dict) -> list[dict]:
+    """Stand members the baton controls (co- or sole): `baton.manages` when `hand_off` is set."""
+    if not baton_hand_off_mode(stand.get("baton")) or stand_member(stand, "baton") is None:
+        return []
+    return baton_manages(stand)
+
+
+def baton_commanders(baton: dict) -> list[dict]:
+    """`baton.commanders` normalized to `[{principal, weight}]`, sorted by principal.
+    A bare principal weighs 1; `{"principal": "$multisig", "weight": 2}` can pass
+    the threshold alone."""
+    out: dict[str, int] = {}
+    for entry in (baton or {}).get("commanders") or []:
+        if isinstance(entry, dict):
+            p = str(entry.get("principal") or "").strip()
+            try:
+                w = int(entry.get("weight", 1))
+            except (TypeError, ValueError):
+                w = 1
+        else:
+            p, w = str(entry or "").strip(), 1
+        if p:
+            out[p] = max(out.get(p, 0), w)
+    return [{"principal": p, "weight": out[p]} for p in sorted(out)]
 
 
 def stand_member(stand: dict, role: str) -> dict | None:
@@ -261,11 +314,11 @@ def resolve_partial(
     unresolved: set[str] = set()
     env_data = _env_lookup_root(sheet, env, ctx)
 
-    def resolve_value(value: Any, path: str, stand: dict | None) -> Any:
+    def resolve_value(value: Any, path: str, stand: dict | None, this: str | None = None) -> Any:
         if isinstance(value, dict):
-            return {k: resolve_value(v, f"{path}.{k}", stand) for k, v in value.items()}
+            return {k: resolve_value(v, f"{path}.{k}", stand, this) for k, v in value.items()}
         if isinstance(value, list):
-            return [resolve_value(v, f"{path}[{i}]", stand) for i, v in enumerate(value)]
+            return [resolve_value(v, f"{path}[{i}]", stand, this) for i, v in enumerate(value)]
         if not isinstance(value, str):
             return value
         tokens = find_placeholder_tokens(value)
@@ -273,7 +326,7 @@ def resolve_partial(
             return value
         if len(tokens) == 1 and value == tokens[0]:
             try:
-                return _resolve_token(tokens[0], path, stand, env_data, ctx)
+                return _resolve_token(tokens[0], path, stand, env_data, ctx, this)
             except UnresolvedPlaceholder as exc:
                 if partial:
                     unresolved.add(exc.name)
@@ -282,7 +335,7 @@ def resolve_partial(
         out = value
         for token in sorted(set(tokens), key=len, reverse=True):  # `$env.a.bc` before its prefix `$env.a.b`
             try:
-                replacement = _resolve_token(token, path, stand, env_data, ctx)
+                replacement = _resolve_token(token, path, stand, env_data, ctx, this)
             except UnresolvedPlaceholder as exc:
                 if partial:
                     unresolved.add(exc.name)
@@ -294,13 +347,13 @@ def resolve_partial(
         return out
 
     copied = json.loads(json.dumps(sheet))
-    for section, stand, _name, canister in _iter_named_canisters(copied):
-        _resolve_canister_tree(canister, "canister", stand, resolve_value)
+    for section, stand, name, canister in _iter_named_canisters(copied):
+        _resolve_canister_tree(canister, "canister", stand, resolve_value, name)
     if isinstance(copied.get("conductor"), dict):
         for key in CONDUCTOR_KEYS:
             block = copied["conductor"].get(key)
             if isinstance(block, dict):
-                _resolve_canister_tree(block, f"conductor.{key}", None, resolve_value)
+                _resolve_canister_tree(block, f"conductor.{key}", None, resolve_value, CONDUCTOR_NAMES[key])
         if "commanders" in copied["conductor"]:
             copied["conductor"]["commanders"] = resolve_value(
                 copied["conductor"]["commanders"], "conductor.commanders", None
@@ -311,7 +364,7 @@ def resolve_partial(
             )
     gov = copied.get("governance")
     if isinstance(gov, dict) and isinstance(gov.get("multisig"), dict):
-        _resolve_canister_tree(gov["multisig"], "governance.multisig", None, resolve_value)
+        _resolve_canister_tree(gov["multisig"], "governance.multisig", None, resolve_value, MULTISIG_NAME)
     if isinstance(copied.get("domains"), list):
         copied["domains"] = resolve_value(copied["domains"], "domains", None)
     if isinstance(copied.get("cycles"), dict):
@@ -326,8 +379,9 @@ def resolve_partial(
             tmpl = section["stand_template"]
             for j, canister in enumerate(tmpl.get("canisters") or []):
                 if isinstance(canister, dict):
+                    # `$this` stays a token too: the member is rendered per stand later
                     _resolve_canister_tree(
-                        canister, f"{spath}.stand_template.canisters[{j}]", TEMPLATE_STAND, resolve_value
+                        canister, f"{spath}.stand_template.canisters[{j}]", TEMPLATE_STAND, resolve_value, None
                     )
             if "controllers" in tmpl:
                 tmpl["controllers"] = resolve_value(
@@ -352,7 +406,7 @@ def resolve_partial(
             for k, canister in enumerate(stand.get("canisters") or []):
                 if isinstance(canister, dict):
                     _resolve_canister_tree(
-                        canister, f"{stpath}.canisters[{k}]", stand, resolve_value
+                        canister, f"{stpath}.canisters[{k}]", stand, resolve_value, canister.get("name")
                     )
     _materialize_ic_domains(copied)
     return copied, unresolved
@@ -545,15 +599,23 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
         errors.append(f"{path}.controllers must be a non-empty list")
     elif not all(isinstance(c, str) and c.strip() for c in controllers):
         errors.append(f"{path}.controllers entries must be non-empty strings")
-    elif (canister.get("name") or "").endswith("-baton") and "$self" in controllers:
+    elif (canister.get("name") or "").endswith("-baton"):
         # A baton exists so that upgrades of its stand need its commanders'
         # approval. Casals as IC controller could reinstall the baton and void
         # that; Casals only ever operates it as `top_commander`. Casals installs
         # the baton at creation and then drops itself (set_controllers, self last).
-        errors.append(
-            f"{path}.controllers must not include $self: Casals operates a baton as top_commander, "
-            "never as IC controller (baton upgrades go through the multisig)"
-        )
+        if "$self" in controllers:
+            errors.append(
+                f"{path}.controllers must not include $self: Casals operates a baton as top_commander, "
+                "never as IC controller (baton upgrades go through the multisig)"
+            )
+        # The baton is the only path to upgrade its stand; the one key that can
+        # reinstall a broken baton is the orchestra's multisig (the signers).
+        if "$multisig" not in controllers:
+            errors.append(
+                f"{path}.controllers must include $multisig: only the governance multisig "
+                "may reinstall a baton (declare governance.multisig)"
+            )
     if "commanders" in canister:
         _validate_commanders(canister["commanders"], f"{path}.commanders", errors)
     if "config" in canister:
@@ -663,12 +725,67 @@ def _validate_baton(value: Any, path: str, errors: list[str], stand: dict | None
     for field in ("commanders", "threshold", "manages", "hand_off"):
         if field not in value:
             errors.append(f"{path}.{field} is required")
+    cmds = value.get("commanders")
+    if cmds is not None:
+        if not isinstance(cmds, list) or not cmds:
+            errors.append(f"{path}.commanders must be a non-empty list")
+        else:
+            for i, entry in enumerate(cmds):
+                ep = f"{path}.commanders[{i}]"
+                if isinstance(entry, str):
+                    if not entry.strip():
+                        errors.append(f"{ep} must be a principal or placeholder")
+                elif isinstance(entry, dict):
+                    if not (isinstance(entry.get("principal"), str) and entry["principal"].strip()):
+                        errors.append(f"{ep}.principal must be a string")
+                    w = entry.get("weight", 1)
+                    if not isinstance(w, int) or isinstance(w, bool) or w < 1:
+                        errors.append(f"{ep}.weight must be a positive integer")
+                    for k in entry:
+                        if k not in ("principal", "weight"):
+                            errors.append(f"{ep}.{k}: unknown field")
+                else:
+                    errors.append(f"{ep} must be a principal or {{principal, weight}}")
+    threshold = value.get("threshold")
+    if threshold is not None and (not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1):
+        errors.append(f"{path}.threshold must be a positive integer")
+    elif isinstance(threshold, int) and isinstance(cmds, list) and cmds:
+        total = sum(c["weight"] for c in baton_commanders(value))
+        if threshold > total:
+            errors.append(f"{path}.threshold {threshold} exceeds the commanders' total weight {total}")
+    manages = value.get("manages")
+    if manages is not None and manages != "*" and not (
+        isinstance(manages, list) and all(isinstance(r, str) and r.strip() for r in manages)
+    ):
+        errors.append(f"{path}.manages must be a list of member roles or \"*\"")
+    hand_off = value.get("hand_off")
+    if "hand_off" in value and not (isinstance(hand_off, bool) or hand_off == HAND_OFF_SOLE):
+        errors.append(f"{path}.hand_off must be true, false or \"{HAND_OFF_SOLE}\"")
     if stand is not None:
         member = stand_member(stand, "baton")
         if member is None:
             errors.append(f"{path}: stand has no '-baton' canister")
         elif (member.get("install_arg") or {}).get("top_commander") != "$self":
             errors.append(f"{path}: the baton canister's install_arg.top_commander must be $self (Casals configures it)")
+        if hand_off == HAND_OFF_SOLE and member is not None:
+            # Sole hand-off: after install the baton (plus the member itself, when it
+            # keeps `$this`) is the controller. Casals and the deployer would be a
+            # way around the baton's approvals, and Casals could no longer write
+            # assets into a `content`/`files` frontend.
+            for m in baton_manages(stand):
+                mname = m.get("name") or "?"
+                ctls = m.get("controllers") if isinstance(m.get("controllers"), list) else []
+                for banned in ("$self", "$deployer"):
+                    if banned in ctls:
+                        errors.append(
+                            f"{path}: hand_off \"{HAND_OFF_SOLE}\" but managed member {mname} lists {banned} "
+                            "among its controllers (the baton, and optionally $this, control it)"
+                        )
+                if m.get("content") or m.get("files"):
+                    errors.append(
+                        f"{path}: hand_off \"{HAND_OFF_SOLE}\" but managed member {mname} has content/files "
+                        "(Casals writes those as a controller) — leave it out of manages"
+                    )
 
 
 def _validate_stand_template(value: Any, spath: str, names: dict[str, str], errors: list[str]) -> None:
@@ -852,7 +969,7 @@ def _validate_lockout_self_only(sheet: dict, names: dict[str, str], errors: list
             continue
         only = controllers[0]
         path = names.get(cname, cname)
-        if only == f"$canister:{cname}":
+        if only == f"$canister:{cname}" or only == "$this":
             errors.append(f"{path}.controllers must not consist only of itself")
         elif only == "$self" and cname == CONDUCTOR_NAMES["backend"]:
             errors.append(f"{path}.controllers must not be only $self")
@@ -866,18 +983,18 @@ def _validate_placeholders_for_env(
     if not isinstance(principals, dict):
         principals = {}
 
-    def check(value: Any, path: str, stand: dict | None) -> None:
+    def check(value: Any, path: str, stand: dict | None, in_canister: bool = False) -> None:
         if isinstance(value, str):
             for token in find_placeholders(value):
                 _check_placeholder(
-                    token, path, env, names, principals, env_data, stand, errors
+                    token, path, env, names, principals, env_data, stand, errors, in_canister
                 )
         elif isinstance(value, dict):
             for k, v in value.items():
-                check(v, f"{path}.{k}", stand)
+                check(v, f"{path}.{k}", stand, in_canister)
         elif isinstance(value, list):
             for i, item in enumerate(value):
-                check(item, f"{path}[{i}]", stand)
+                check(item, f"{path}[{i}]", stand, in_canister)
 
     for section, stand, cname, canister in _iter_named_canisters(sheet):
         base = names.get(cname, cname)
@@ -930,14 +1047,15 @@ def _validate_placeholders_for_env(
 
 
 def _walk_for_placeholders(obj: Any, path: str, stand: dict | None, check) -> None:
+    """Placeholders inside one canister block (`$this` is legal only here)."""
     if isinstance(obj, dict):
         for k, v in obj.items():
-            check(v, f"{path}.{k}", stand)
+            check(v, f"{path}.{k}", stand, True)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            check(v, f"{path}[{i}]", stand)
+            check(v, f"{path}[{i}]", stand, True)
     else:
-        check(obj, path, stand)
+        check(obj, path, stand, True)
 
 
 def _check_placeholder(
@@ -949,6 +1067,7 @@ def _check_placeholder(
     env_data: dict,
     stand: dict | None,
     errors: list[str],
+    in_canister: bool = False,
 ) -> None:
     if token == "$deployer":
         if env == "production" and "$deployer" not in principals.values():
@@ -956,6 +1075,10 @@ def _check_placeholder(
                 f"{path}: $deployer is not allowed in production "
                 "(unless listed in environments.production.principals)"
             )
+        return
+    if token == "$this":
+        if not in_canister:
+            errors.append(f"{path}: $this (the canister's own id) is only meaningful inside a canister block")
         return
     if token.startswith("$principal:"):
         alias = token.split(":", 1)[1]
@@ -1000,7 +1123,8 @@ def _is_commander_principal_path(path: str) -> bool:
     if sep != "." or tail != "principal":
         return False
     base, br, idx = head.rpartition("[")
-    return br == "[" and idx.endswith("]") and idx[:-1].isdigit() and base.endswith(".commanders")
+    return (br == "[" and idx.endswith("]") and idx[:-1].isdigit()
+            and base.endswith(".commanders") and not base.endswith(".baton.commanders"))
 
 
 def _validate_env_principals(sheet: dict, errors: list[str]) -> None:
@@ -1049,10 +1173,19 @@ def _resolve_token(
     stand: dict | None,
     env_data: dict,
     ctx: ResolveContext,
+    this: str | None = None,
 ) -> Any:
     token = _unbrace(token)
     if token == "$multisig":
         cid = ctx.canister_ids.get(MULTISIG_NAME)
+        if not cid:
+            raise UnresolvedPlaceholder(token, path)
+        return cid
+    if token == "$this":
+        # The canister's own id; a template member keeps the token until rendered.
+        if stand is TEMPLATE_STAND:
+            return token
+        cid = ctx.canister_ids.get(this or "") if this else None
         if not cid:
             raise UnresolvedPlaceholder(token, path)
         return cid
@@ -1104,9 +1237,9 @@ def _resolve_token(
     raise UnresolvedPlaceholder(token, path)
 
 
-def _resolve_canister_tree(canister: dict, path: str, stand: dict | None, resolve_value) -> None:
+def _resolve_canister_tree(canister: dict, path: str, stand: dict | None, resolve_value, this: str | None) -> None:
     for key, val in list(canister.items()):
-        canister[key] = resolve_value(val, f"{path}.{key}", stand)
+        canister[key] = resolve_value(val, f"{path}.{key}", stand, this)
 
 
 def apply_requires_proposal(sheet: dict, env: str) -> bool:

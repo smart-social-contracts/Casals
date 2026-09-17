@@ -115,15 +115,23 @@ def print_plan_table(plan: dict) -> None:
     items = plan.get("items") or []
     if not items:
         _progress("plan: converged (no items)")
-        return
-    _progress(f"plan hash={plan.get('hash')} items={len(items)}")
-    for item in items:
-        target = item.get("target") or {}
-        name = target.get("name") or "?"
-        kind = item.get("kind") or "?"
-        req = item.get("requires") or "self"
-        dest = "yes" if item.get("destructive") else "no"
-        _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
+    else:
+        _progress(f"plan hash={plan.get('hash')} items={len(items)}")
+        for item in items:
+            target = item.get("target") or {}
+            name = target.get("name") or "?"
+            kind = item.get("kind") or "?"
+            req = item.get("requires") or "self"
+            dest = "yes" if item.get("destructive") else "no"
+            _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
+    # Upgrades Casals filed on a baton: not items (Casals has done its part), but
+    # the sheet is not live until the baton's commanders approve and it converges.
+    for p in plan.get("pending") or []:
+        votes = len(p.get("approvals") or [])
+        _progress(f"  pending  {p.get('target')}: baton {p.get('baton')} action {p.get('action_id')} "
+                  f"{p.get('status')} ({votes} vote(s) so far) — approve on the baton")
+    for d in plan.get("departed") or []:
+        _progress(f"  departed {d.get('target')}: controllers {d.get('controllers')} — left alone")
 
 
 def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:

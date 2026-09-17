@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from auth import AuthError, has_capability, is_top_commander
-from models import CAP_SUBMIT_APPROVAL
+from auth import AuthError, get_commander
+from models import CAP_SUBMIT_APPROVAL, commander_weight
 
 DEFAULT_UPGRADE_APPROVAL_POLICY: dict[str, Any] = {
     "threshold": 1,
@@ -109,7 +109,12 @@ def is_approval_eligible(
     commanders_store,
     config_store,
 ) -> bool:
-    if not has_capability(caller, CAP_SUBMIT_APPROVAL, commanders_store, config_store):
+    """Only a registered commander holding ``submit_approval`` may vote. The top
+    commander (Casals) gets no bypass here: it configures the baton and files
+    proposals, and votes only with the weight it was explicitly given as a
+    commander — otherwise the approval policy would be theatre against it."""
+    cmd = get_commander(caller, commanders_store)
+    if cmd is None or CAP_SUBMIT_APPROVAL not in set(cmd.get("capabilities") or []):
         return False
     eligible = policy.get("eligible") or []
     if not eligible:
@@ -126,9 +131,17 @@ def required_approvers_met(record: dict[str, Any], policy: dict[str, Any]) -> bo
     return all(_norm_principal(p) in approved for p in required)
 
 
-def quorum_met(record: dict[str, Any], policy: dict[str, Any]) -> bool:
+def approval_weight(record: dict[str, Any], commanders_store=None) -> int:
+    """Sum of the approvers' weights (a principal no longer registered weighs 1)."""
+    total = 0
+    for p in action_approvals(record):
+        total += commander_weight(get_commander(p, commanders_store)) if commanders_store is not None else 1
+    return total
+
+
+def quorum_met(record: dict[str, Any], policy: dict[str, Any], commanders_store=None) -> bool:
     threshold = int(policy.get("threshold") or 1)
-    if len(action_approvals(record)) < threshold:
+    if approval_weight(record, commanders_store) < threshold:
         return False
     return required_approvers_met(record, policy)
 
@@ -141,7 +154,7 @@ def append_approval(record: dict[str, Any], caller: str) -> None:
     record["approvals"] = approvals
 
 
-def approval_progress(record: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+def approval_progress(record: dict[str, Any], policy: dict[str, Any], commanders_store=None) -> dict[str, Any]:
     approvals = action_approvals(record)
     required = policy.get("required") or []
     approved_norm = {_norm_principal(p) for p in approvals}
@@ -151,8 +164,9 @@ def approval_progress(record: dict[str, Any], policy: dict[str, Any]) -> dict[st
         "threshold": threshold,
         "approvals": approvals,
         "approval_count": len(approvals),
+        "approval_weight": approval_weight(record, commanders_store),
         "eligible": policy.get("eligible") or [],
         "required": required,
         "missing_required": missing_required,
-        "quorum_met": quorum_met(record, policy),
+        "quorum_met": quorum_met(record, policy, commanders_store),
     }
