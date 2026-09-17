@@ -512,6 +512,13 @@ def proposal_only(o: Orchestra) -> None:
     stand["commanders"] = [*(stand.get("commanders") or []), {"principal": "$principal:e2e_foreign", "permissions": "stand.*"}]
     gated_path = os.path.join(o.home, "gated.json")
     json.dump(gated, open(gated_path, "w"))
+    backend = o.bindings()["conductor"]["casals-backend"]
+    # The declared sheet does not manage this stand's commanders, so the foreign
+    # one would outlive the scenario; drop it (a leftover from an earlier pass
+    # too) so the gated sheet has something to add and re-runs stay clean.
+    remove_arg = json.dumps({"stand": stand["name"], "commander_principal": FOREIGN})
+    o.icp("canister", "call", backend, "remove_commander",
+          f'("{remove_arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
     plan = o.casals("plan", gated_path)["plan"]
     kinds = [i["kind"] for i in plan["items"]]
     # Extra non-governance items (e.g. a leftover sync_assets after content_change)
@@ -519,7 +526,6 @@ def proposal_only(o: Orchestra) -> None:
     # multisig. The commander change is what this scenario is about.
     if "set_commanders" not in kinds:
         raise Fail(f"expected a set_commanders item, got {kinds}")
-    backend = o.bindings()["conductor"]["casals-backend"]
     arg = json.dumps({"plan_hash": plan["hash"], "max_items": 5})
     res = o.icp("canister", "call", backend, "apply", f'("{arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
     if "apply requires proposal" not in res.stdout:
@@ -531,6 +537,10 @@ def proposal_only(o: Orchestra) -> None:
     if not rep.get("ok"):
         raise Fail("oracle on the gated sheet: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
     o.casals("up", o.sheet_path, "--yes")  # back to the declared sheet
+    res = o.icp("canister", "call", backend, "remove_commander",
+                f'("{remove_arg.replace(chr(34), chr(92) + chr(34))}")')
+    if '\\"ok\\":true' not in res.stdout:
+        raise Fail(f"could not remove the foreign commander again: {res.stdout[-300:]}")
     o.oracle()
 
 

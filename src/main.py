@@ -565,6 +565,18 @@ def _conductor_commander_can(permission: str) -> bool:
     return bool(casals) and section_commander_can(casals, _caller(), permission)
 
 
+def _can_assign_commanders() -> bool:
+    """Controllers and conductor commanders holding `commander.assign` manage
+    commanders at every rung (the orchestra rung is consulted first, like the
+    lifecycle paths); section commanders are checked per section by the caller."""
+    return _is_controller() or _conductor_commander_can("commander.assign")
+
+
+def _require_assign_commanders() -> None:
+    if not _can_assign_commanders():
+        raise Exception("unauthorized: caller is not a Casals controller or a conductor commander with 'commander.assign'")
+
+
 def _section_commander_can(sec, permission: str) -> bool:
     """True if the caller is a section commander with ``permission``."""
     return section_commander_can(sec, _caller(), permission)
@@ -1667,17 +1679,17 @@ def set_commander(args: text) -> text:
             dk = Stand[params["stand"].strip()]
             if dk is None:
                 return _err(f"unknown stand '{params['stand']}'")
-            if not _is_controller():
+            if not _can_assign_commanders():
                 sec = dk.section
                 if not sec or not entity_has_permission(sec, caller, "commander.assign"):
                     raise Exception(
-                        "unauthorized: must be a Casals controller or a section commander "
-                        "with 'commander.assign' to set a stand commander"
+                        "unauthorized: must be a Casals controller, a conductor commander or "
+                        "a section commander with 'commander.assign' to set a stand commander"
                     )
             add_commander(dk, commander, perms)
             _append_event("commander_set", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
-            _require_admin()
+            _require_assign_commanders()
             list(Section.instances())
             sec = Section[params["section"].strip()]
             if sec is None:
@@ -1710,18 +1722,18 @@ def remove_commander(args: text) -> text:
             dk = Stand[params["stand"].strip()]
             if dk is None:
                 return _err(f"unknown stand '{params['stand']}'")
-            if not _is_controller():
+            if not _can_assign_commanders():
                 sec = dk.section
                 if not sec or not entity_has_permission(sec, caller, "commander.assign"):
                     raise Exception(
-                        "unauthorized: must be a Casals controller or a section commander "
-                        "with 'commander.assign' to remove a stand commander"
+                        "unauthorized: must be a Casals controller, a conductor commander or "
+                        "a section commander with 'commander.assign' to remove a stand commander"
                     )
             if not _remove_commander_entity(dk, commander):
                 return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
             _append_event("commander_removed", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
-            _require_admin()
+            _require_assign_commanders()
             list(Section.instances())
             sec = Section[params["section"].strip()]
             if sec is None:
