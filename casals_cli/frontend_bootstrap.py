@@ -157,6 +157,10 @@ def bootstrap_asset_canister(
     stored_module_hash = bindings.conductor_module_hashes.get(conductor_name, "")
 
     live_hash = ic.read_module_hash(existing_id) if existing_id else None
+    if existing_id and live_hash is None and not ic.canister_exists(existing_id):
+        if progress:
+            progress(f"  {conductor_name}: {existing_id} is not on this network; creating anew")
+        existing_id = ""
     has_live_module = live_hash is not None
 
     if existing_id and has_live_module and stored_module_hash:

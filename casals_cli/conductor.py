@@ -63,6 +63,13 @@ def _bootstrap_wasm_canister(
     progress=None,
 ) -> None:
     live_hash = ic.read_module_hash(existing_id) if existing_id else None
+    if existing_id and live_hash is None and not ic.canister_exists(existing_id):
+        # The binding names a canister this replica never had (bindings from
+        # another network, or a replica started over): create a new one instead
+        # of installing into an id that would be rejected.
+        if progress:
+            progress(f"  conductor {name}: {existing_id} is not on this network; creating anew")
+        existing_id = ""
     has_code = live_hash is not None
 
     if existing_id and has_code and expected_hash and live_hash.lower() == expected_hash.lower():

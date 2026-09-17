@@ -33,6 +33,7 @@ from casals_cli.multisig import propose, set_controllers_via_multisig  # noqa: E
 from casals_cli.replica import (  # noqa: E402
     activate as activate_replica,
     canister_http_url,
+    healthy as replica_healthy,
     icp_project_args,
     start as start_replica,
 )
@@ -676,13 +677,10 @@ def ensure_replica() -> bool:
     """
     if ENV != "local":
         return False
-    activate_replica()
-    if subprocess.run(
-        ["icp", "network", "status", "-e", ENV, *icp_project_args()],
-        capture_output=True, cwd=REPO,
-    ).returncode == 0:
+    replica = activate_replica()
+    if replica_healthy(replica):
         return False
-    start_replica()
+    start_replica(replica)
     return True
 
 

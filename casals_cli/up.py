@@ -277,7 +277,14 @@ def run_up(
         raise RuntimeError("sheet validation failed:\n  " + "\n  ".join(errors))
     _progress("  ok")
 
-    bindings = load_bindings(sheet_name, env) or Bindings(
+    bindings = load_bindings(sheet_name, env)
+    if bindings and bindings.network_url and bindings.network_url.rstrip("/") != ic.network_url.rstrip("/"):
+        # Bindings from another replica (a CASALS_HOME reused with a different
+        # CASALS_REPLICA_PORT): those canister ids do not exist here, and the
+        # bootstrap would try to install into them. Start over on this network.
+        _progress(f"  bindings for {sheet_name} belong to {bindings.network_url}, not {ic.network_url}: ignored")
+        bindings = None
+    bindings = bindings or Bindings(
         sheet_name=sheet_name,
         env=env,
         network_url=ic.network_url,

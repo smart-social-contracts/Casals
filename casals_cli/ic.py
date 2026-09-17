@@ -27,6 +27,7 @@ class IcAccess(Protocol):
     def deployer_principal(self) -> str: ...
     def read_controllers(self, canister_id: str) -> list[str]: ...
     def read_module_hash(self, canister_id: str) -> str | None: ...
+    def canister_exists(self, canister_id: str) -> bool: ...
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any: ...
     def call_update(self, canister_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any: ...
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
@@ -128,6 +129,19 @@ class IcClient:
         found = self._read_state("module_hash", canister_id,
                                  lambda: lookup(path, agent.read_state_raw(canister_id, [path])))
         return found.hex() if found else None  # None means "no module", never "read_state failed"
+
+    def canister_exists(self, canister_id: str) -> bool:
+        """Is this id a canister on *this* network? A created-but-empty canister
+        already has controllers in the state tree; an id from another replica
+        (stale bindings, a replica started over) has nothing there."""
+        from ic.certificate import lookup
+        from ic.principal import Principal
+
+        agent = self._agent_client()
+        path = [b"canister", Principal.from_str(canister_id).bytes, b"controllers"]
+        found = self._read_state("controllers", canister_id,
+                                 lambda: lookup(path, agent.read_state_raw(canister_id, [path])))
+        return found is not None
 
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any:
         cmd = ["canister", "call", canister_id, method, "--query"]
@@ -297,6 +311,10 @@ class RecordingIc:
     def read_module_hash(self, canister_id: str) -> str | None:
         self.record("read_module_hash", canister_id)
         return self.module_hashes.get(canister_id)
+
+    def canister_exists(self, canister_id: str) -> bool:
+        self.record("canister_exists", canister_id)
+        return canister_id in self.controllers or canister_id in self.module_hashes
 
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any:
         self.record("query", canister_id, method, text_arg)

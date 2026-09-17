@@ -142,6 +142,19 @@ def write_env_file(home: str, port: int, url: str) -> str:
     return path
 
 
+def recorded_port(home: str) -> int | None:
+    """The port the last `activate` wrote to `<home>/env`, if any."""
+    path = os.path.join(home, "env")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            key, _, value = line.strip().partition("=")
+            if key == "CASALS_REPLICA_PORT" and value.strip().isdigit():
+                return int(value.strip())
+    return None
+
+
 def export_env(replica: Replica) -> None:
     if replica.home:
         os.environ["CASALS_REPLICA_HOME"] = replica.home
@@ -162,15 +175,18 @@ def activate() -> Replica:
         replica = Replica(home=None, port=DEFAULT_PORT, url=DEFAULT_URL, isolated=False)
         return replica
 
-    port_spec = (os.environ.get("CASALS_REPLICA_PORT") or "").strip().lower()
-    if port_spec in ("", "auto", "0"):
-        port = pick_free_port()
-    else:
-        port = int(port_spec)
-
     home = replica_home()
     assert home is not None
     os.makedirs(home, exist_ok=True)
+    port_spec = (os.environ.get("CASALS_REPLICA_PORT") or "").strip().lower()
+    if port_spec in ("", "auto", "0"):
+        # A replica this home already runs (KEEP=1, or a previous run still up)
+        # is reused; picking another free port would rewrite the sidecar
+        # project to a port nothing listens on.
+        recorded = recorded_port(home)
+        port = recorded if recorded and port_in_use(recorded) else pick_free_port()
+    else:
+        port = int(port_spec)
     url = f"http://127.0.0.1:{port}"
     write_replica_project(home, port)
     write_env_file(home, port, url)
@@ -189,11 +205,21 @@ def status_ok() -> bool:
     return _icp(["network", "status", "-e", "local"], timeout=30).returncode == 0
 
 
+def healthy(replica: Replica) -> bool:
+    """Running *and* answering on the port the sidecar names. icp tracks a
+    managed network by project, so `network status` alone stays green after the
+    sidecar was rewritten for another port."""
+    return status_ok() and (not replica.isolated or port_in_use(replica.port))
+
+
 def start(replica: Replica | None = None) -> Replica:
     """Start this replica if needed. Returns the (possibly newly activated) replica."""
     replica = replica or activate()
-    if status_ok():
+    if healthy(replica):
         return replica
+    if status_ok():
+        # running for another port: restart it on this one
+        _icp(["network", "stop", "-e", "local"], timeout=120)
     extra = ["--project-root-override", replica.home] if replica.home else []
     cwd = replica.home or os.getcwd()
     res = subprocess.run(
@@ -209,7 +235,7 @@ def start(replica: Replica | None = None) -> Replica:
             f"{(res.stderr or res.stdout)[-1500:]}"
         )
     for _ in range(60):
-        if status_ok():
+        if healthy(replica):
             return replica
         import time
 
