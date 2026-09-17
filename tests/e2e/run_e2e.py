@@ -5,9 +5,12 @@ graded by the oracle on a local replica.
     python3 tests/e2e/run_e2e.py minimal governed
     KEEP=1 python3 tests/e2e/run_e2e.py minimal  # leave the replica + orchestras up
 CASALS_HOME=/tmp/x SCENARIOS=stale_plan ...  # reuse an orchestra, run a subset
+CASALS_REPLICA_PORT=auto CASALS_HOME=~/casals-home-corpus KEEP=1 \
+    python3 tests/e2e/run_e2e.py minimal         # own gateway; does not touch :8000
 
-Each orchestra gets a private CASALS_HOME (fresh bindings) and its own conductor
-on the shared replica, so with KEEP=1 all of them are browsable at once.
+Each orchestra gets a private CASALS_HOME (fresh bindings) and its own conductor.
+Without CASALS_REPLICA_PORT they share the laptop's :8000 replica; with it
+(or CASALS_REPLICA=1) they get a sidecar gateway under $CASALS_HOME/.replica.
 """
 
 from __future__ import annotations
@@ -27,12 +30,22 @@ sys.path[:0] = [REPO, os.path.join(REPO, "src")]
 from sheetv2 import iter_canisters as _iter  # noqa: E402
 from casals_cli.ic import IcClient  # noqa: E402
 from casals_cli.multisig import set_controllers_via_multisig  # noqa: E402
+from casals_cli.replica import (  # noqa: E402
+    activate as activate_replica,
+    canister_http_url,
+    icp_project_args,
+    start as start_replica,
+)
 CORPUS = os.path.join(REPO, "tests", "e2e", "orchestras")
 ENV = os.environ.get("CASALS_E2E_ENV", "local")
 IDENTITY = os.environ.get("CASALS_E2E_IDENTITY", "local-dev")
 KEEP = os.environ.get("KEEP") == "1"
 ORDER = ["minimal", "governed", "baton-stand", "adopted", "demo", "retire-and-pool", "dynamic-stands"]
 FOREIGN = "2vxsx-fae"  # anonymous principal: a controller nobody declared
+# governed/casals.json declares `invited_operator` as the sha256 checksum of this code.
+ACCESS_CODE_ALIAS = "invited_operator"
+ACCESS_CODE = "CASALS-E2E-ACCESS-CODE"
+CLAIMER_IDENTITY = os.environ.get("CASALS_E2E_CLAIMER", "casals-e2e-claimer")
 
 
 class Fail(Exception):
@@ -40,6 +53,9 @@ class Fail(Exception):
 
 
 def sh(*argv: str, check: bool = True, timeout: int = 1800, **env) -> subprocess.CompletedProcess:
+    argv = list(argv)
+    if argv and argv[0] == "icp" and "--project-root-override" not in argv:
+        argv.extend(icp_project_args())
     full_env = {**os.environ, **env}
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=full_env, cwd=REPO)
     if check and res.returncode != 0:
@@ -81,15 +97,21 @@ class Orchestra:
     def casals(self, *args: str, check: bool = True) -> dict:
         # A product orchestra's first `up` streams >50 MB of wasm through the
         # conductor; on a loaded local replica that alone can pass 30 min.
-        res = sh(sys.executable, "-m", "casals_cli.main", "--json", "-e", ENV, "--identity", IDENTITY,
-                 *args, check=False, timeout=7200 if args and args[0] == "up" else 1800, CASALS_HOME=self.home)
-        out = res.stdout.strip() or res.stderr.strip()
+        # Capture stdout (the --json result) but inherit stderr so the plan
+        # table and "applied …" lines show up instead of a 30-minute silence.
+        full_env = {**os.environ, "CASALS_HOME": self.home}
+        cmd = [sys.executable, "-m", "casals_cli.main", "--json", "-e", ENV, "--identity", IDENTITY, *args]
+        res = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=None, text=True,
+            timeout=7200 if args and args[0] == "up" else 1800, env=full_env, cwd=REPO,
+        )
+        out = (res.stdout or "").strip()
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
         except json.JSONDecodeError:
             data = {}
         if check and (res.returncode != 0 or data.get("ok") is False):
-            raise Fail(f"casals {' '.join(args)} failed:\n{res.stderr[-2000:]}\n{res.stdout[-800:]}")
+            raise Fail(f"casals {' '.join(args)} failed:\n{(res.stdout or '')[-800:]}")
         return data
 
     def icp(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -120,7 +142,7 @@ class Orchestra:
         # Read the controller list instead of probing `icp canister status`:
         # newer icp-cli answers status for non-controllers too (public
         # read_state), so its exit code no longer says who controls what.
-        ic = IcClient(env=ENV, identity=IDENTITY, project_root=REPO)
+        ic = IcClient(env=ENV, identity=IDENTITY)
         return ic.deployer_principal() in (ic.read_controllers(cid) or [])
 
     def add_controller(self, cid: str, principal: str) -> bool:
@@ -132,7 +154,7 @@ class Orchestra:
         ms = self.ids().get("multisig")
         if not ms:
             return False
-        ic = IcClient(env=ENV, identity=IDENTITY, project_root=REPO)
+        ic = IcClient(env=ENV, identity=IDENTITY)
         current = ic.read_controllers(cid) or []
         if ms not in current:
             return False
@@ -141,7 +163,7 @@ class Orchestra:
 
     def frontend_url(self) -> str:
         fe = self.bindings()["conductor"].get("casals-frontend", "")
-        return f"http://{fe}.localhost:8000/" if fe else "-"
+        return canister_http_url(fe) if fe else "-"
 
 
 # ── scenarios (spec §11.3) ────────────────────────────────────────────────────
@@ -393,7 +415,7 @@ def content_change(o: Orchestra) -> None:
     if o.casals("up", changed_path, "--yes")["plan"]["items"]:
         raise Fail("new content did not converge")
     for name in frontends:
-        body = urllib.request.urlopen(f"http://{o.ids()[name]}.localhost:8000/index.html", timeout=10).read()
+        body = urllib.request.urlopen(canister_http_url(o.ids()[name], "/index.html"), timeout=10).read()
         if b"<!-- v2 -->" not in body:
             raise Fail(f"{name} does not serve the new build")
     rep = o.casals("oracle", changed_path, check=False)
@@ -423,8 +445,81 @@ def drift_adopted_code(o: Orchestra) -> None:
     o.oracle()
 
 
+def access_code(o: Orchestra) -> None:
+    """An operator invited by access code: `environments.<env>.principals` holds
+    the code's `sha256:` checksum and a commanders block references it. The slot
+    grants nothing until a fresh identity redeems the code (`claim_commander`);
+    afterwards the sheet is still converged (no drift, oracle passes) and the
+    code is spent. Finally the claimer is removed and `up` restores the slot."""
+    principals = (o.sheet["environments"].get(ENV) or {}).get("principals") or {}
+    checksum = principals.get(ACCESS_CODE_ALIAS)
+    if not checksum:
+        return
+    stand = next((st["name"] for sec in o.sheet["sections"] for st in sec.get("stands") or []
+                  if any(c.get("principal") == f"$principal:{ACCESS_CODE_ALIAS}" for c in st.get("commanders") or [])), None)
+    if not stand:
+        raise Fail(f"{ACCESS_CODE_ALIAS} is declared but no stand references it")
+    backend = o.bindings()["conductor"]["casals-backend"]
+    deployer = IcClient(env=ENV, identity=IDENTITY)
+
+    def stand_commanders() -> list[dict]:
+        tree = deployer.query(backend, "get_tree")
+        return next(st for sec in tree["sections"] for st in sec["stands"] if st["name"] == stand)["commanders"]
+
+    def claim(identity: str, code: str) -> dict:
+        res = IcClient(env=ENV, identity=identity).call_update(backend, "claim_commander", json.dumps({"code": code}))
+        return res if isinstance(res, dict) else {"ok": False, "raw": res}
+
+    pending = [c for c in stand_commanders() if c.get("unclaimed")]
+    if [c["principal"] for c in pending] != [checksum]:
+        raise Fail(f"expected one unclaimed slot {checksum} on {stand}, got {stand_commanders()}")
+
+    # a throwaway identity plays the invited operator
+    sh("icp", "identity", "new", CLAIMER_IDENTITY, "--storage", "plaintext", check=False)
+    claimer = sh("icp", "identity", "principal", "--identity", CLAIMER_IDENTITY).stdout.strip()
+    if not claimer:
+        raise Fail("could not create the claimer identity")
+
+    if claim(CLAIMER_IDENTITY, "NOT-THE-CODE").get("ok") is not False:
+        raise Fail("a wrong code was accepted")
+    if claim("anonymous", ACCESS_CODE).get("ok") is not False:
+        raise Fail("an anonymous caller redeemed the code")
+    res = claim(CLAIMER_IDENTITY, ACCESS_CODE)
+    if not res.get("ok") or [c["name"] for c in res.get("claimed") or []] != [stand]:
+        raise Fail(f"claim failed: {res}")
+
+    after = stand_commanders()
+    mine = [c for c in after if c["principal"] == claimer]
+    if len(mine) != 1 or mine[0].get("code_checksum") != checksum or any(c.get("unclaimed") for c in after):
+        raise Fail(f"claim did not rewrite the slot: {after}")
+    if [i["kind"] for i in o.plan_items() if i["kind"] == "set_commanders"]:
+        raise Fail("a claimed slot shows up as commander drift")
+    o.oracle()
+    if claim(CLAIMER_IDENTITY, ACCESS_CODE).get("ok") is not False:
+        raise Fail("the code was not spent by the first claim")
+
+    # back to the declared sheet, declaratively: a sheet without the alias drops
+    # the claimer (destructive set_commanders), the real sheet re-creates the slot
+    stripped = json.loads(json.dumps(o.sheet))
+    for sec in stripped["sections"]:
+        for st in sec.get("stands") or []:
+            if st["name"] == stand:
+                st["commanders"] = [c for c in st["commanders"] if c.get("principal") != f"$principal:{ACCESS_CODE_ALIAS}"]
+    stripped_path = os.path.join(o.home, "no-code.json")
+    json.dump(stripped, open(stripped_path, "w"))
+    o.casals("up", stripped_path, "--yes")
+    if claimer in {c["principal"] for c in stand_commanders()}:
+        raise Fail("dropping the alias from the sheet did not remove the claimer")
+    res = o.casals("up", o.sheet_path, "--yes")
+    if res["plan"]["items"]:
+        raise Fail("slot not restored by up")
+    if [c["principal"] for c in stand_commanders() if c.get("unclaimed")] != [checksum]:
+        raise Fail(f"slot missing after up: {stand_commanders()}")
+    o.oracle()
+
+
 SCENARIOS = [fresh, idempotent, content_change, runtime_stand, retire_and_pool, drift_controller, drift_stopped, drift_adopted_code,
-             proposal_only, stale_plan, export_roundtrip]
+             proposal_only, stale_plan, access_code, export_roundtrip]
 if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterating
     SCENARIOS = [s for s in SCENARIOS if s.__name__ in os.environ["SCENARIOS"].split(",")]
 
@@ -432,15 +527,21 @@ if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterati
 # ── runner ───────────────────────────────────────────────────────────────────
 
 def ensure_replica() -> bool:
-    """Start the local replica if needed; return True if we started it."""
-    if subprocess.run(["icp", "network", "status", "-e", ENV], capture_output=True, cwd=REPO).returncode == 0:
+    """Start the local replica if needed; return True if we started it.
+
+    With CASALS_REPLICA / CASALS_REPLICA_PORT this is a private gateway, not
+    the laptop's :8000 replica (so a corpus can run beside local_up).
+    """
+    if ENV != "local":
         return False
-    sh("icp", "network", "start", "-e", ENV, "--background", timeout=300)
-    for _ in range(60):
-        if subprocess.run(["icp", "network", "status", "-e", ENV], capture_output=True, cwd=REPO).returncode == 0:
-            return True
-        time.sleep(1)
-    raise Fail("replica did not come up")
+    activate_replica()
+    if subprocess.run(
+        ["icp", "network", "status", "-e", ENV, *icp_project_args()],
+        capture_output=True, cwd=REPO,
+    ).returncode == 0:
+        return False
+    start_replica()
+    return True
 
 
 def ensure_cycles(min_tc: int = 500) -> None:
@@ -453,6 +554,9 @@ def ensure_cycles(min_tc: int = 500) -> None:
 
 def main(argv: list[str]) -> int:
     names = argv or ORDER
+    replica = activate_replica()
+    if replica.isolated:
+        print(f"isolated replica {replica.url}  home {replica.home}")
     started = ensure_replica()
     ensure_cycles()
     rows = []

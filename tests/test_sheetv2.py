@@ -147,6 +147,28 @@ def test_lockout_only_self_on_conductor():
     assert any("must not be only $self" in e for e in sv2.validate(sheet, "local"))
 
 
+def test_baton_never_controlled_by_casals():
+    sheet = _load_corpus("baton-stand")
+    baton = sheet["sections"][0]["stands"][0]["canisters"][0]
+    assert baton["name"] == "rust-baton"
+    assert "$self" not in baton["controllers"]
+    baton["controllers"] = ["$multisig", "$self"]
+    errors = sv2.validate(sheet, "local")
+    assert errors == [
+        "sections[0].stands[0].canisters[0].controllers must not include $self: Casals operates a baton "
+        "as top_commander, never as IC controller (baton upgrades go through the multisig)"
+    ]
+    # A stand-template baton is checked the same way.
+    sheet = _load_corpus("dynamic-stands")
+    tpl = sheet["sections"][1]["stand_template"]["canisters"]
+    idx = next(i for i, c in enumerate(tpl) if c["name"].endswith("-baton"))
+    tpl[idx]["controllers"] = ["$self", "$deployer"]
+    assert any(
+        e.startswith(f"sections[1].stand_template.canisters[{idx}].controllers must not include $self")
+        for e in sv2.validate(sheet, "local")
+    )
+
+
 def test_lockout_only_itself():
     sheet = _load_corpus("minimal")
     sheet["sections"][0]["stands"][0]["canisters"][0]["controllers"] = ["$canister:hello-backend"]

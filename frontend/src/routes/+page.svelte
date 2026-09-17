@@ -76,7 +76,7 @@
     isCasalsCanister,
   } from '$lib/orchestraGovernance';
   import { treeMissingControllerCount } from '$lib/orchestraControlGraph';
-  import { entityCommanders } from '$lib/commanderAccess';
+  import { entityCommanders, isUnclaimedSlot } from '$lib/commanderAccess';
   import { canTagCanister } from '$lib/commanderPermissions';
   import { isOrchestraSectionName } from '$lib/governanceUx';
   import type { Field } from '$lib/components/FormModal.svelte';
@@ -1110,7 +1110,11 @@
                 {/if}
                 {#each entityCommanders(section) as cmd (cmd.principal)}
                   <div class="text-xs text-primary-400 mt-1 font-mono" title={cmd.principal}>
-                    {isOrchestraSectionName(section.name) ? 'orchestra commander' : 'commander'}: {shortPrincipal(cmd.principal)}
+                    {#if isUnclaimedSlot(cmd)}
+                      {isOrchestraSectionName(section.name) ? 'orchestra commander' : 'commander'}: <span class="italic">pending access code</span>
+                    {:else}
+                      {isOrchestraSectionName(section.name) ? 'orchestra commander' : 'commander'}: {shortPrincipal(cmd.principal)}
+                    {/if}
                   </div>
                 {/each}
                 {#if placementLabel(section)}
@@ -1167,7 +1171,11 @@
                         {/if}
                         {#each entityCommanders(stand) as cmd (cmd.principal)}
                           <div class="text-xs text-primary-400 mt-0.5 font-mono" title={cmd.principal}>
-                            commander: {shortPrincipal(cmd.principal)}
+                            {#if isUnclaimedSlot(cmd)}
+                              commander: <span class="italic">pending access code</span>
+                            {:else}
+                              commander: {shortPrincipal(cmd.principal)}
+                            {/if}
                           </div>
                         {/each}
                         {#if placementLabel(stand)}

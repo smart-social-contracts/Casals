@@ -146,6 +146,7 @@ service : {
   "set_commander" : (text) -> (text);
   "remove_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
+  "claim_commander" : (text) -> (text);
   "list_permissions" : () -> (text) query;
   "list_principal_aliases" : () -> (text) query;
   "set_principal_alias" : (text) -> (text);

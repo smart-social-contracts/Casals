@@ -51,6 +51,17 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
       canister_ids: I.Vec(I.Principal),
       casals_backend: I.Principal,
     }),
+    ApplySheet: I.Record({
+      casals_backend: I.Principal,
+      plan_hash: I.Text,
+      confirm_destructive: I.Bool,
+      max_items: I.Nat,
+    }),
+    CallCanister: I.Record({
+      canister: I.Principal,
+      method: I.Text,
+      arg_json: I.Text,
+    }),
   });
   const ProposalStatus = I.Variant({
     pending: I.Null,
@@ -67,6 +78,7 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     status: ProposalStatus,
     created_at: I.Int,
     expires_at: I.Int,
+    result: I.Opt(I.Text),
   });
   const Result = I.Variant({ ok: I.Null, err: I.Text });
   const AuditEvent = I.Record({
@@ -146,6 +158,10 @@ function actionSummary(action: Record<string, unknown>): string {
         ? `Destroy canister ${fmtPrincipal(ids?.[0])}`
         : `Destroy ${n} canisters`;
     }
+    case 'ApplySheet':
+      return `Apply sheet ${String(payload?.plan_hash ?? '').slice(0, 12) || '—'}`;
+    case 'CallCanister':
+      return `Call ${String(payload?.method ?? '—')} on ${fmtPrincipal(payload?.canister)}`;
     default:
       return key;
   }

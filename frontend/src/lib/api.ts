@@ -1,4 +1,4 @@
-import { Actor, HttpAgent } from '@dfinity/agent';
+import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
 import { idlFactory } from './declarations';
 import { get } from 'svelte/store';
@@ -29,9 +29,14 @@ export interface Canister {
 }
 
 export interface CommanderGrant {
+  /** An IC principal, or `sha256:<hex>` for a slot nobody has claimed yet. */
   principal: string;
   permissions?: string[];
   all_permissions?: boolean;
+  /** True while the slot waits for its access code to be redeemed. */
+  unclaimed?: boolean;
+  /** Checksum of the access code this commander redeemed (claimed slots only). */
+  code_checksum?: string;
 }
 
 export interface Stand {
@@ -577,17 +582,21 @@ function _makeActorWithAgent(agent: HttpAgent): any {
   return Actor.createActor(idlFactory, { agent, canisterId });
 }
 
+async function _actorAs(id: Identity): Promise<any> {
+  // Authenticated calls need their own agent with the user identity.
+  // We must also fetch (and await) the root key into this agent on local
+  // networks — sharing the shared-agent's key promise is not enough because
+  // each HttpAgent instance manages its own root key buffer.
+  const agent = createHttpAgent({ identity: id, host: icHost() });
+  if (IS_LOCAL) await agent.fetchRootKey();
+  return _makeActorWithAgent(agent);
+}
+
 async function _actor(authenticated = false): Promise<any> {
   if (authenticated) {
     const id = get(identity);
     if (!id) throw new Error('Not authenticated');
-    // Authenticated calls need their own agent with the user identity.
-    // We must also fetch (and await) the root key into this agent on local
-    // networks — sharing the shared-agent's key promise is not enough because
-    // each HttpAgent instance manages its own root key buffer.
-    const agent = createHttpAgent({ identity: id, host: icHost() });
-    if (IS_LOCAL) await agent.fetchRootKey();
-    return _makeActorWithAgent(agent);
+    return _actorAs(id);
   }
   // Anonymous reads share the single agent whose root key is already fetched.
   const agent = await _readyAgent();
@@ -1365,6 +1374,26 @@ export async function setPermissions(args: {
   permissions: string[] | '*';
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
+}
+
+export interface ClaimedSlot {
+  scope: 'orchestra' | 'section' | 'stand';
+  name: string;
+  permissions: string[];
+}
+
+/**
+ * Redeem a commander access code. The caller becomes the commander of every
+ * unclaimed slot whose `sha256:` checksum matches the code. Pass `as` when the
+ * identity is not (yet) the session identity — the Access Denied dialog claims
+ * with the freshly logged-in identity before the session is opened.
+ */
+export async function claimCommander(
+  code: string,
+  as?: Identity,
+): Promise<UpdateResult & { claimed?: ClaimedSlot[] }> {
+  const actor = as ? await _actorAs(as) : await _actor(true);
+  return _parseUpdate(await actor.claim_commander(JSON.stringify({ code: code.trim() })));
 }
 
 export async function listPermissions(): Promise<Permission[]> {

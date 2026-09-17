@@ -9,6 +9,7 @@ import tempfile
 import time
 from typing import Any, Protocol
 
+from casals_cli.replica import icp_project_args, network_url as replica_network_url, replica_home
 from casals_cli.util import candid_text_arg, parse_icp_output
 
 NETWORK_URLS = {
@@ -47,8 +48,16 @@ class IcClient:
     ) -> None:
         self.env = env
         self.identity = identity
-        self.project_root = project_root or os.getcwd()
-        self.network_url = network_url or NETWORK_URLS.get(env, NETWORK_URLS["local"])
+        # Isolated replicas own their icp.yaml; product builds still use the
+        # Casals checkout (passed as project_root by the CLI for wasm paths).
+        isolated = replica_home()
+        self.project_root = isolated or project_root or os.getcwd()
+        if network_url:
+            self.network_url = network_url
+        elif env == "ic":
+            self.network_url = NETWORK_URLS["ic"]
+        else:
+            self.network_url = replica_network_url()
         self._agent = None
 
     def _base_flags(self, env: bool = True) -> list[str]:
@@ -58,6 +67,9 @@ class IcClient:
         return flags
 
     def _project_root_flag(self) -> list[str]:
+        extra = icp_project_args()
+        if extra:
+            return extra
         if os.path.isfile(os.path.join(self.project_root, "icp.yaml")):
             return ["--project-root-override", self.project_root]
         return []

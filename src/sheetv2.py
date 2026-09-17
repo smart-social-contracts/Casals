@@ -9,6 +9,8 @@ import hashlib
 import json
 from typing import Any, Iterator
 
+from access_code import is_code_checksum, normalize_code_checksum
+
 
 SCHEMA_VERSION = 2
 
@@ -471,6 +473,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
     _validate_lockout_self_only(sheet, names, errors)
 
     _validate_domains(sheet.get("domains"), names, errors)
+    _validate_env_principals(sheet, errors)
 
     for target_env in env_targets:
         _validate_placeholders_for_env(sheet, target_env, names, errors)
@@ -542,6 +545,15 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
         errors.append(f"{path}.controllers must be a non-empty list")
     elif not all(isinstance(c, str) and c.strip() for c in controllers):
         errors.append(f"{path}.controllers entries must be non-empty strings")
+    elif (canister.get("name") or "").endswith("-baton") and "$self" in controllers:
+        # A baton exists so that upgrades of its stand need its commanders'
+        # approval. Casals as IC controller could reinstall the baton and void
+        # that; Casals only ever operates it as `top_commander`. Casals installs
+        # the baton at creation and then drops itself (set_controllers, self last).
+        errors.append(
+            f"{path}.controllers must not include $self: Casals operates a baton as top_commander, "
+            "never as IC controller (baton upgrades go through the multisig)"
+        )
     if "commanders" in canister:
         _validate_commanders(canister["commanders"], f"{path}.commanders", errors)
     if "config" in canister:
@@ -951,6 +963,11 @@ def _check_placeholder(
             errors.append(
                 f"{path}: {token} unresolved in environments.{env}.principals"
             )
+        elif is_code_checksum(principals[alias]) and not _is_commander_principal_path(path):
+            errors.append(
+                f"{path}: {token} is an access-code checksum in environments.{env}.principals; "
+                "it may only be used as a commanders[].principal"
+            )
         return
     if token.startswith("$canister:"):
         target = token.split(":", 1)[1]
@@ -974,6 +991,34 @@ def _check_placeholder(
 
 
 _MISSING = object()
+
+
+def _is_commander_principal_path(path: str) -> bool:
+    """True for ``….commanders[<i>].principal`` — the only place an access-code
+    alias may appear (baton ``commanders`` are bare principals and do not qualify)."""
+    head, sep, tail = path.rpartition(".")
+    if sep != "." or tail != "principal":
+        return False
+    base, br, idx = head.rpartition("[")
+    return br == "[" and idx.endswith("]") and idx[:-1].isdigit() and base.endswith(".commanders")
+
+
+def _validate_env_principals(sheet: dict, errors: list[str]) -> None:
+    """``environments.<env>.principals`` values are principals, placeholders,
+    or well-formed access-code checksums (``sha256:<64 hex>``)."""
+    envs = sheet.get("environments")
+    if not isinstance(envs, dict):
+        return
+    for env, data in envs.items():
+        principals = data.get("principals") if isinstance(data, dict) else None
+        if not isinstance(principals, dict):
+            continue
+        for alias, value in principals.items():
+            if is_code_checksum(value):
+                try:
+                    normalize_code_checksum(value)
+                except ValueError as exc:
+                    errors.append(f"environments.{env}.principals.{alias}: {exc}")
 
 
 def _env_get(data: dict, dotted: str) -> Any:

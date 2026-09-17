@@ -6,7 +6,8 @@
     type Tree, type Permission,
   } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
-  import { entityCommanders } from '$lib/commanderAccess';
+  import { entityCommanders, isUnclaimedSlot } from '$lib/commanderAccess';
+  import { codeChecksum, generateAccessCode, shortChecksum } from '$lib/accessCode';
   import { identity, isAuthenticated, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
@@ -28,10 +29,12 @@
     scope: OperatorScope;
     section: string;          // backing section row ("Casals" for orchestra scope)
     stand?: string;
-    principal: string;
+    principal: string;        // principal, or `sha256:<hex>` for an unclaimed slot
     label: string;            // hierarchy path label
     permissions: string[];    // resolved granted keys
     allPermissions: boolean;  // true => full access ("*")
+    unclaimed: boolean;       // access-code slot nobody has redeemed yet
+    codeChecksum?: string;    // checksum of the code a claimed commander redeemed
   }
 
   let tree = $state<Tree | null>(null);
@@ -88,6 +91,7 @@
         label: 'Casals controller',
         permissions: [],
         allPermissions: true,
+        unclaimed: false,
       });
     }
     if (!tree) return out;
@@ -104,6 +108,7 @@
           scope, section: sec.name, principal: cmd.principal,
           label: scopeLabel({ scope, section: sec.name }, orchestraName),
           permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
+          unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
         });
       }
       for (const dk of sec.stands) {
@@ -112,6 +117,7 @@
             scope: 'stand', section: sec.name, stand: dk.name, principal: cmd.principal,
             label: scopeLabel({ scope: 'stand', section: sec.name, stand: dk.name }, orchestraName),
             permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
+            unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
           });
         }
       }
@@ -158,16 +164,44 @@
   let assignStand = $state('');
   let assignPrincipal = $state('');
   let assignPerms = $state<Set<string>>(new Set());
+  // 'principal': grant a known principal. 'code': mint an access code; the slot
+  // is stored as the code's sha256 checksum until someone redeems it.
+  let assignMode = $state<'principal' | 'code'>('principal');
+  let assignCode = $state('');
+  let assignCodeChecksum = $state('');
+  // Set once a code slot was created: the plaintext is shown one last time.
+  let mintedCode = $state('');
+
+  async function regenerateAssignCode() {
+    assignCode = generateAccessCode();
+    assignCodeChecksum = await codeChecksum(assignCode);
+  }
 
   function openAssign() {
     assignScope = 'section';
     assignSection = sectionOptions[0] ?? '';
     assignStand = '';
     assignPrincipal = '';
+    assignMode = 'principal';
+    assignCode = '';
+    assignCodeChecksum = '';
+    mintedCode = '';
     // Default a new commander to full access (all permissions checked).
     assignPerms = new Set(catalog.map((p) => p.key));
     assignOpen = true;
   }
+
+  async function setAssignMode(mode: 'principal' | 'code') {
+    assignMode = mode;
+    if (mode === 'code' && !assignCode) await regenerateAssignCode();
+  }
+
+  const assignTargetReady = $derived(
+    !(assignScope === 'stand' && !assignStand) && !(assignScope === 'section' && !assignSection),
+  );
+  const assignReady = $derived(
+    assignTargetReady && (assignMode === 'code' ? !!assignCodeChecksum : !!assignPrincipal.trim()),
+  );
 
   const assignAllChecked = $derived(catalog.length > 0 && assignPerms.size >= catalog.length);
   function assignToggleAll() {
@@ -180,7 +214,7 @@
   }
 
   async function submitAssign() {
-    if (!assignPrincipal.trim()) return;
+    if (!assignReady) return;
     busy = true;
     try {
       const target = assignScope === 'orchestra'
@@ -189,9 +223,16 @@
           ? { stand: assignStand }
           : { section: assignSection };
       const permissions: string[] | '*' = assignAllChecked ? '*' : [...assignPerms];
-      await setCommander({ ...target, commander_principal: assignPrincipal.trim(), permissions });
-      toasts.success('Commander assigned');
-      assignOpen = false;
+      const commander_principal = assignMode === 'code' ? assignCodeChecksum : assignPrincipal.trim();
+      await setCommander({ ...target, commander_principal, permissions });
+      if (assignMode === 'code') {
+        // Keep the dialog open: this is the last time the plaintext code is visible.
+        mintedCode = assignCode;
+        toasts.success('Access code slot created');
+      } else {
+        toasts.success('Commander assigned');
+        assignOpen = false;
+      }
       await load();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed');
@@ -225,7 +266,8 @@
 
   async function submitRemove(row: CommanderRow) {
     const where = row.scope === 'orchestra' ? `the orchestra (${row.label})` : `${row.scope} "${row.stand ?? row.section}"`;
-    if (!confirm(`Remove ${row.principal.slice(0, 12)}… from ${where}?`)) return;
+    const who = row.unclaimed ? `the pending access code ${shortChecksum(row.principal)}` : `${row.principal.slice(0, 12)}…`;
+    if (!confirm(`Remove ${who} from ${where}?`)) return;
     busy = true;
     try {
       const target = row.scope === 'stand' && row.stand
@@ -369,14 +411,23 @@
   {:else}
     <div class="space-y-3">
       {#each byPrincipal as [principal, pRows] (principal)}
-        {@const pl = controllerLabel(principal, principalLabels)}
-        <div class="card overflow-hidden">
+        {@const unclaimed = pRows.every((r) => r.unclaimed)}
+        {@const pl = unclaimed
+          ? { display: 'Pending access code', title: principal }
+          : controllerLabel(principal, principalLabels)}
+        <div class="card overflow-hidden {unclaimed ? 'border-dashed' : ''}">
           <!-- Principal header -->
           <div class="flex items-center gap-3 px-4 py-3 bg-primary-50/60 border-b border-primary-100">
-            <div class="w-9 h-9 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
-              <svg class="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-              </svg>
+            <div class="w-9 h-9 rounded-full {unclaimed ? 'bg-amber-50' : 'bg-primary-100'} flex items-center justify-center shrink-0">
+              {#if unclaimed}
+                <svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25z" />
+                </svg>
+              {:else}
+                <svg class="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                </svg>
+              {/if}
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2 min-w-0">
@@ -384,9 +435,22 @@
                 {#if pRows.some((r) => r.scope === 'controller')}
                   <span class="badge shrink-0 bg-amber-50 text-amber-800 border border-amber-200">controller</span>
                 {/if}
+                {#if unclaimed}
+                  <span class="badge shrink-0 bg-amber-50 text-amber-800 border border-amber-200">unclaimed</span>
+                {:else if pRows.some((r) => r.codeChecksum)}
+                  <span class="badge shrink-0 badge-neutral" title="Joined by redeeming an access code">via code</span>
+                {/if}
               </div>
-              <div class="font-mono text-xs text-primary-400 truncate mt-0.5" title={pl.title}>{pl.title}</div>
-              <div class="text-xs text-primary-400 mt-0.5">{pRows.length} role{pRows.length !== 1 ? 's' : ''}</div>
+              <div class="font-mono text-xs text-primary-400 truncate mt-0.5" title={pl.title}>
+                {unclaimed ? shortChecksum(principal) : pl.title}
+              </div>
+              <div class="text-xs text-primary-400 mt-0.5">
+                {#if unclaimed}
+                  Whoever redeems this code takes {pRows.length} role{pRows.length !== 1 ? 's' : ''}
+                {:else}
+                  {pRows.length} role{pRows.length !== 1 ? 's' : ''}
+                {/if}
+              </div>
             </div>
             <button class="icon-btn shrink-0" aria-label="Copy principal" onclick={() => copyToClipboard(principal)}>
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -504,12 +568,46 @@
         </div>
       {/if}
       <div>
-        <label class="label" for="assign-principal">Principal</label>
-        <input id="assign-principal" type="text" class="input font-mono text-sm" placeholder="aaaaa-aa…" bind:value={assignPrincipal} />
+        <span class="label">Who</span>
+        <div class="flex gap-2 mt-1">
+          <button class="btn-sm {assignMode === 'principal' ? 'btn-primary' : 'btn-secondary'}" onclick={() => setAssignMode('principal')} disabled={!!mintedCode}>Known principal</button>
+          <button class="btn-sm {assignMode === 'code' ? 'btn-primary' : 'btn-secondary'}" onclick={() => setAssignMode('code')} disabled={!!mintedCode}>Access code</button>
+        </div>
       </div>
+      {#if assignMode === 'principal'}
+        <div>
+          <label class="label" for="assign-principal">Principal</label>
+          <input id="assign-principal" type="text" class="input font-mono text-sm" placeholder="aaaaa-aa…" bind:value={assignPrincipal} />
+        </div>
+      {:else if mintedCode}
+        <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-2">
+          <p class="text-sm font-medium text-emerald-900">Slot created. Hand this code to the new operator:</p>
+          <div class="flex items-center gap-2">
+            <code class="flex-1 min-w-0 rounded border border-emerald-200 bg-white px-3 py-2 font-mono text-base tracking-wider text-primary-900 break-all select-all">{mintedCode}</code>
+            <button class="btn-secondary btn-sm shrink-0" onclick={() => copyToClipboard(mintedCode)}>Copy</button>
+          </div>
+          <p class="text-xs text-emerald-800">
+            This is the only time the code is shown; Casals stores just its checksum
+            (<span class="font-mono">{shortChecksum(assignCodeChecksum)}</span>). The recipient logs in, sees the
+            Access Denied dialog and enters the code there. It works once.
+          </p>
+        </div>
+      {:else}
+        <div class="rounded-lg border border-primary-100 bg-primary-50/60 p-3 space-y-2">
+          <div class="flex items-center gap-2">
+            <code class="flex-1 min-w-0 rounded border border-primary-200 bg-white px-3 py-2 font-mono text-base tracking-wider text-primary-900 break-all select-all">{assignCode || '…'}</code>
+            <button class="btn-secondary btn-sm shrink-0" onclick={regenerateAssignCode} aria-label="Generate another code">↻</button>
+          </div>
+          <p class="text-xs text-primary-500">
+            Generated in your browser. Only its checksum
+            <span class="font-mono">{assignCodeChecksum ? shortChecksum(assignCodeChecksum) : '…'}</span>
+            is sent to Casals; whoever redeems the code becomes this commander. Copy it after the slot is created.
+          </p>
+        </div>
+      {/if}
 
       <!-- Permissions -->
-      <div class="border-t border-primary-100 pt-3 space-y-3">
+      <div class="border-t border-primary-100 pt-3 space-y-3 {mintedCode ? 'opacity-60 pointer-events-none' : ''}">
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" class="w-4 h-4 rounded border-primary-300" checked={assignAllChecked} onchange={assignToggleAll} />
           <span class="text-sm font-semibold text-primary-800">Full access (all permissions)</span>
@@ -532,10 +630,14 @@
       <div class="flex items-center justify-between pt-1 border-t border-primary-100">
         <span class="text-xs text-primary-400">{assignPerms.size} of {catalog.length} permissions</span>
         <div class="flex gap-3">
-          <button class="btn-secondary btn-sm" onclick={() => (assignOpen = false)} disabled={busy}>Cancel</button>
-          <button class="btn-primary btn-sm" disabled={busy || !assignPrincipal.trim() || (assignScope === 'stand' && !assignStand) || (assignScope === 'section' && !assignSection)} onclick={submitAssign}>
-            {busy ? 'Assigning…' : 'Assign'}
-          </button>
+          {#if mintedCode}
+            <button class="btn-primary btn-sm" onclick={() => (assignOpen = false)}>Done</button>
+          {:else}
+            <button class="btn-secondary btn-sm" onclick={() => (assignOpen = false)} disabled={busy}>Cancel</button>
+            <button class="btn-primary btn-sm" disabled={busy || !assignReady} onclick={submitAssign}>
+              {busy ? (assignMode === 'code' ? 'Creating…' : 'Assigning…') : (assignMode === 'code' ? 'Create code slot' : 'Assign')}
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -551,7 +653,7 @@
         <h3 class="text-lg font-semibold text-primary-900">Permissions</h3>
         <p class="text-sm text-primary-500 mt-0.5">
           {permsRow.scope === 'stand' ? `Stand "${permsRow.stand}"` : permsRow.scope === 'orchestra' ? permsRow.label : `Section "${permsRow.section}"`} ·
-          <span class="font-mono">{permsRow.principal.slice(0, 12)}…</span>
+          <span class="font-mono">{permsRow.unclaimed ? `pending code ${shortChecksum(permsRow.principal)}` : `${permsRow.principal.slice(0, 12)}…`}</span>
         </p>
       </div>
 

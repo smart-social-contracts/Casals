@@ -151,8 +151,7 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig",
-                "$self"
+                "$multisig"
               ]
             },
             {
@@ -202,8 +201,7 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig",
-                "$self"
+                "$multisig"
               ]
             },
             {
@@ -253,8 +251,7 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig",
-                "$self"
+                "$multisig"
               ]
             },
             {

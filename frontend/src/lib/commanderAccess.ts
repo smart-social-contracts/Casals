@@ -1,13 +1,16 @@
-import type { Section, Stand, Tree } from './api';
+import type { CommanderGrant, Section, Stand, Tree } from './api';
 import { getTree } from './api';
+import { isCodeChecksum } from './accessCode';
 
-export interface CommanderGrant {
-  principal: string;
-  permissions?: string[];
-  all_permissions?: boolean;
+export type { CommanderGrant } from './api';
+
+/** True for a `sha256:` slot nobody has redeemed yet — it grants nothing. */
+export function isUnclaimedSlot(grant: CommanderGrant): boolean {
+  return grant.unclaimed === true || isCodeChecksum(grant.principal);
 }
 
-/** Resolved commander list (supports legacy single-commander fields). */
+/** Every entry — claimed commanders and unclaimed access-code slots
+ * (supports legacy single-commander fields). */
 export function entityCommanders(
   entity: Pick<Section | Stand, 'commanders' | 'commander_principal' | 'permissions' | 'all_permissions'>,
 ): CommanderGrant[] {
@@ -21,15 +24,22 @@ export function entityCommanders(
   }];
 }
 
+/** Claimed commanders only — the entries that actually grant access. */
+export function activeCommanders(
+  entity: Pick<Section | Stand, 'commanders' | 'commander_principal' | 'permissions' | 'all_permissions'>,
+): CommanderGrant[] {
+  return entityCommanders(entity).filter((c) => !isUnclaimedSlot(c));
+}
+
 /** Principals registered as section or stand commanders in the orchestra tree. */
 export function commanderPrincipalsFromTree(tree: Tree): Set<string> {
   const out = new Set<string>();
   for (const sec of tree.sections) {
-    for (const c of entityCommanders(sec)) {
+    for (const c of activeCommanders(sec)) {
       if (c.principal) out.add(c.principal);
     }
     for (const stand of sec.stands) {
-      for (const c of entityCommanders(stand)) {
+      for (const c of activeCommanders(stand)) {
         if (c.principal) out.add(c.principal);
       }
     }

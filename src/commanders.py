@@ -1,18 +1,58 @@
-"""Multi-commander helpers for sections and stands — pure, no IC runtime."""
+"""Multi-commander helpers for sections and stands — pure, no IC runtime.
+
+A commander entry is ``{"principal", "permissions"}`` plus, optionally,
+``"code_checksum"``. Two flavours exist:
+
+  - a *claimed* commander: ``principal`` is an IC principal. When it was
+    obtained through an access code, ``code_checksum`` remembers which one
+    (so a sheet re-apply recognises the slot as satisfied).
+  - an *unclaimed slot*: ``principal`` is ``sha256:<hex>`` — the checksum of
+    an access code nobody has presented yet (see ``access_code``). Slots grant
+    nothing until claimed; every authorization helper below ignores them.
+"""
+
+from __future__ import annotations
 
 import json
 
+from access_code import checksums_equal, is_code_checksum, normalize_code_checksum
 from auth import _has_permission, _normalize_permissions, _parse_permissions
 
 
-def _entry(principal: str, permissions) -> dict:
+def _entry(principal: str, permissions, code_checksum: str = "") -> dict:
     p = (principal or "").strip()
+    if is_code_checksum(p):
+        p = normalize_code_checksum(p)
     perms = _normalize_permissions(permissions) if permissions is not None else ""
-    return {"principal": p, "permissions": perms}
+    out = {"principal": p, "permissions": perms}
+    cc = (code_checksum or "").strip()
+    if cc:
+        out["code_checksum"] = normalize_code_checksum(cc)
+    return out
+
+
+def _entry_from_item(item) -> dict | None:
+    if isinstance(item, dict):
+        p = (item.get("principal") or "").strip()
+        if not p:
+            return None
+        try:
+            return _entry(p, item.get("permissions", ""), item.get("code_checksum", ""))
+        except ValueError:
+            return None
+    if isinstance(item, str) and item.strip():
+        return _entry(item.strip(), "")
+    return None
+
+
+def is_unclaimed(entry: dict) -> bool:
+    """True for a slot still waiting for its access code to be presented."""
+    return is_code_checksum((entry or {}).get("principal", ""))
 
 
 def list_commanders(entity) -> list:
-    """Return [{principal, permissions}, ...] for a Section or Stand entity."""
+    """Return every entry (claimed commanders and unclaimed slots) for a
+    Section or Stand entity: ``[{principal, permissions[, code_checksum]}, ...]``."""
     raw = (getattr(entity, "commanders_json", "") or "").strip()
     entries = []
     if raw:
@@ -20,12 +60,9 @@ def list_commanders(entity) -> list:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
                 for item in parsed:
-                    if isinstance(item, dict):
-                        p = (item.get("principal") or "").strip()
-                        if p:
-                            entries.append(_entry(p, item.get("permissions", "")))
-                    elif isinstance(item, str) and item.strip():
-                        entries.append(_entry(item.strip(), ""))
+                    e = _entry_from_item(item)
+                    if e is not None:
+                        entries.append(e)
         except Exception:
             pass
     if not entries:
@@ -35,13 +72,33 @@ def list_commanders(entity) -> list:
     return entries
 
 
+def active_commanders(entity) -> list:
+    """Claimed commanders only — the entries that grant anything."""
+    return [e for e in list_commanders(entity) if not is_unclaimed(e)]
+
+
+def unclaimed_slots(entity) -> list:
+    return [e for e in list_commanders(entity) if is_unclaimed(e)]
+
+
 def commander_principals(entity) -> list:
-    return [e["principal"] for e in list_commanders(entity)]
+    return [e["principal"] for e in active_commanders(entity)]
 
 
 def is_commander(entity, principal: str) -> bool:
     p = (principal or "").strip()
     return p in commander_principals(entity)
+
+
+def has_entry(entity, principal: str) -> bool:
+    """True when ``principal`` (a principal or a ``sha256:`` slot) is listed."""
+    p = (principal or "").strip()
+    if is_code_checksum(p):
+        try:
+            p = normalize_code_checksum(p)
+        except ValueError:
+            return False
+    return any(e["principal"] == p for e in list_commanders(entity))
 
 
 def permissions_for(entity, principal: str) -> str:
@@ -60,31 +117,48 @@ def entity_has_permission(entity, principal: str, permission: str) -> bool:
     return _has_permission(permissions_for(entity, principal), permission)
 
 
+def _union_permissions(a: str, b: str) -> str:
+    """Union of two stored grants; "" (everything) absorbs the other."""
+    if not a or not b:
+        return ""
+    return _normalize_permissions(f"{a},{b}")
+
+
 def persist_commanders(entity, entries: list) -> None:
-    """Write commander list and sync legacy single-commander fields."""
+    """Write commander list and sync legacy single-commander fields.
+
+    Raises ValueError when a slot principal is a malformed ``sha256:`` value."""
     clean = []
     seen = set()
     for e in entries:
         p = (e.get("principal") or "").strip()
-        if not p or p in seen:
+        if not p:
+            continue
+        if is_code_checksum(p):
+            p = normalize_code_checksum(p)
+        if p in seen:
             continue
         seen.add(p)
-        perms = _normalize_permissions(e.get("permissions", ""))
-        clean.append({"principal": p, "permissions": perms})
+        entry = _entry(p, e.get("permissions", ""), e.get("code_checksum", ""))
+        clean.append(entry)
     entity.commanders_json = json.dumps(clean) if clean else ""
-    if clean:
-        entity.commander_principal = clean[0]["principal"]
-        entity.permissions = clean[0]["permissions"]
+    active = [e for e in clean if not is_unclaimed(e)]
+    if active:
+        entity.commander_principal = active[0]["principal"]
+        entity.permissions = active[0]["permissions"]
     else:
         entity.commander_principal = ""
         entity.permissions = ""
 
 
 def add_commander(entity, principal: str, permissions=None) -> bool:
-    """Add or update a commander. Returns False if principal is empty."""
+    """Add or update a commander (or an unclaimed ``sha256:`` slot).
+    Returns False if principal is empty; raises ValueError on a malformed slot."""
     p = (principal or "").strip()
     if not p:
         return False
+    if is_code_checksum(p):
+        p = normalize_code_checksum(p)
     entries = list_commanders(entity)
     perms_norm = _normalize_permissions(permissions) if permissions is not None else None
     for e in entries:
@@ -103,6 +177,11 @@ def remove_commander(entity, principal: str) -> bool:
     p = (principal or "").strip()
     if not p:
         return False
+    if is_code_checksum(p):
+        try:
+            p = normalize_code_checksum(p)
+        except ValueError:
+            return False
     before = list_commanders(entity)
     entries = [e for e in before if e["principal"] != p]
     if len(entries) == len(before):
@@ -111,13 +190,81 @@ def remove_commander(entity, principal: str) -> bool:
     return True
 
 
+def claim_code_slot(entity, checksum: str, principal: str):
+    """Hand every unclaimed slot matching ``checksum`` to ``principal``.
+
+    Returns the resulting stored permission string for ``principal`` when a
+    slot was claimed, else None (no matching slot on this entity). If the
+    principal already holds a grant here, the grants are merged."""
+    p = (principal or "").strip()
+    if not p or is_code_checksum(p):
+        return None
+    try:
+        checksum = normalize_code_checksum(checksum)
+    except ValueError:
+        return None
+    entries = list_commanders(entity)
+    matched = [e for e in entries if is_unclaimed(e) and checksums_equal(e["principal"], checksum)]
+    if not matched:
+        return None
+    perms = matched[0]["permissions"]
+    kept = [e for e in entries if e not in matched]
+    existing = next((e for e in kept if e["principal"] == p), None)
+    if existing is not None:
+        existing["permissions"] = _union_permissions(existing["permissions"], perms)
+        existing["code_checksum"] = checksum
+        result = existing["permissions"]
+    else:
+        kept.append(_entry(p, perms, checksum))
+        result = perms
+    persist_commanders(entity, kept)
+    return result
+
+
+def reconcile_claimed(desired: list, live: list) -> list:
+    """Planner helper: a desired ``sha256:`` slot that a live commander has
+    already claimed (``code_checksum`` matches) is rewritten to that live
+    principal, so a re-apply neither reverts the claim nor reports drift.
+    Entries are ``{principal, permissions[, code_checksum]}``; the result is
+    one entry per principal, sorted, with grants merged."""
+    claimed = {}
+    for e in live or []:
+        cc = (e.get("code_checksum") or "").strip()
+        if cc and not is_unclaimed(e):
+            claimed[cc] = e["principal"]
+    merged: dict[str, dict] = {}
+    for e in desired or []:
+        p = (e.get("principal") or "").strip()
+        if not p:
+            continue
+        cc = (e.get("code_checksum") or "").strip()
+        if is_unclaimed(e) and p in claimed:
+            cc, p = p, claimed[p]
+        perms = e.get("permissions", "")
+        prev = merged.get(p)
+        if prev is None:
+            merged[p] = {"principal": p, "permissions": perms}
+            if cc:
+                merged[p]["code_checksum"] = cc
+        else:
+            prev["permissions"] = _union_permissions(prev["permissions"], perms)
+            if cc and not prev.get("code_checksum"):
+                prev["code_checksum"] = cc
+    return [merged[p] for p in sorted(merged)]
+
+
 def commander_view(entry: dict) -> dict:
     perms = entry["permissions"]
-    return {
+    out = {
         "principal": entry["principal"],
         "permissions": _parse_permissions(perms),
         "all_permissions": _normalize_permissions(perms) == "*" or perms == "",
+        "unclaimed": is_unclaimed(entry),
     }
+    cc = entry.get("code_checksum") or ""
+    if cc:
+        out["code_checksum"] = cc
+    return out
 
 
 def commanders_view(entity) -> list:
@@ -125,12 +272,12 @@ def commanders_view(entity) -> list:
 
 
 def legacy_commander_principal(entity) -> str:
-    entries = list_commanders(entity)
+    entries = active_commanders(entity)
     return entries[0]["principal"] if entries else ""
 
 
 def legacy_permissions(entity) -> str:
-    entries = list_commanders(entity)
+    entries = active_commanders(entity)
     if entries:
         return entries[0]["permissions"]
     return (getattr(entity, "permissions", "") or "").strip()
@@ -164,14 +311,16 @@ def lifecycle_access(
       - Section commanders act on every stand of their section.
       - With no commander at any rung, open-access mode admits any
         authenticated caller (demo stands), mirroring ``_require_can_add``.
+
+    Unclaimed access-code slots do not count as commanders at any rung.
     """
     if orchestra is not None and entity_has_permission(orchestra, caller, permission):
         return True
-    if stand is not None and list_commanders(stand):
+    if stand is not None and active_commanders(stand):
         if entity_has_permission(stand, caller, permission):
             return True
         return section is not None and entity_has_permission(section, caller, permission)
-    if section is not None and list_commanders(section):
+    if section is not None and active_commanders(section):
         return entity_has_permission(section, caller, permission)
     return bool(open_access) and caller != anonymous
 
@@ -182,12 +331,9 @@ def apply_commanders_from_spec(entity, spec: dict) -> None:
     if isinstance(commanders, list) and commanders:
         entries = []
         for item in commanders:
-            if isinstance(item, dict):
-                p = (item.get("principal") or "").strip()
-                if p:
-                    entries.append(_entry(p, item.get("permissions", "")))
-            elif isinstance(item, str) and item.strip():
-                entries.append(_entry(item.strip(), ""))
+            e = _entry_from_item(item)
+            if e is not None:
+                entries.append(e)
         if entries:
             persist_commanders(entity, entries)
             return

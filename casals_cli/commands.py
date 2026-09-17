@@ -160,6 +160,44 @@ def cmd_register(ic, args) -> None:
     emit_json(res)
 
 
+# Crockford-style base32 without look-alikes (0/O, 1/I/L): codes are read aloud
+# and typed. 20 symbols ≈ 100 bits of entropy.
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+_CODE_GROUPS, _CODE_GROUP_LEN = 4, 5
+
+
+def generate_access_code() -> str:
+    """A fresh access code such as ``K7MQ2-XTR4V-9BCDF-HJ3NP``."""
+    import secrets
+
+    groups = [
+        "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_GROUP_LEN))
+        for _ in range(_CODE_GROUPS)
+    ]
+    return "-".join(groups)
+
+
+def cmd_code_new(args) -> None:
+    """Mint access codes and print each with its checksum. The checksum goes
+    into ``environments.<env>.principals`` (or ``set_commander``); the code goes
+    to the person who should claim the commander slot."""
+    from access_code import code_checksum
+
+    count = max(1, int(getattr(args, "count", 1) or 1))
+    codes = [{"code": c, "checksum": code_checksum(c)} for c in (generate_access_code() for _ in range(count))]
+    if getattr(args, "json", False):
+        emit_json({"ok": True, "codes": codes})
+        return
+    for entry in codes:
+        print(f"code:     {entry['code']}")
+        print(f"checksum: {entry['checksum']}")
+        print()
+    print("Put the checksum under environments.<env>.principals as an alias, e.g.")
+    print(f'  "new_operator": "{codes[0]["checksum"]}"')
+    print("and reference it from a commanders block: {\"principal\": \"$principal:new_operator\", \"permissions\": \"*\"}.")
+    print("Hand the code to the person; they redeem it on the Access Denied dialog after logging in.")
+
+
 def cmd_orchestra_destroy(ic, args) -> None:
     """Legacy orchestra destroy via conductor destroy_orchestra batches."""
     backend, _ = _backend(args)

@@ -179,7 +179,7 @@ Anywhere a principal is expected:
 | `$multisig` | `governance.multisig` canister |
 | `$canister:<name>` | any canister in the sheet, by name (already supported in install args) |
 | `$stand.<role>` | the stand member named `<name>-<role>` (`$stand.backend`, `$stand.baton`, `$stand.token`); for `backend`/`frontend` the `kind` also matches |
-| `$principal:<alias>` | `principals.<alias>` → `environments.<env>.principals.<alias>` |
+| `$principal:<alias>` | `principals.<alias>` → `environments.<env>.principals.<alias>`. The value may be an access-code checksum `sha256:<hex>` (`casals code new`): then the alias is only valid as a `commanders[].principal` and declares an *unclaimed slot* that `claim_commander` hands to whoever presents the code |
 | `$deployer` | the principal running `casals up` (local / bootstrap only; **rejected** in `production` sheets after bootstrap) |
 | `$env.<key>` | any value under `environments.<env>` (used in `config` args and `install_arg`); the value may itself hold placeholders |
 

@@ -9,7 +9,7 @@
     type PrincipalAlias,
     type Tree,
   } from '$lib/api';
-  import { entityCommanders } from '$lib/commanderAccess';
+  import { activeCommanders } from '$lib/commanderAccess';
   import { isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
@@ -69,9 +69,9 @@
     const principals = new Set<string>(controllerPrincipals);
     if (tree) {
       for (const sec of tree.sections) {
-        for (const cmd of entityCommanders(sec)) principals.add(cmd.principal);
+        for (const cmd of activeCommanders(sec)) principals.add(cmd.principal);
         for (const stand of sec.stands) {
-          for (const cmd of entityCommanders(stand)) principals.add(cmd.principal);
+          for (const cmd of activeCommanders(stand)) principals.add(cmd.principal);
         }
       }
     }

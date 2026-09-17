@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 
+from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions
+from commanders import reconcile_claimed
 from sheetv2 import (
     CONDUCTOR_NAMES,
     baton_managed_members,
@@ -213,8 +215,8 @@ class _PlanContext:
 
     def _plan_conductor_commanders(self):
         conductor = self.sheet.get("conductor") or {}
-        desired = _normalize_commanders(conductor.get("commanders") or [])
         live = _normalize_commanders(self.live_state.get("conductor_commanders") or [])
+        desired = _desired_commanders(conductor.get("commanders") or [], live)
         if desired == live:
             return
         destructive = _removes_principals(live, desired)
@@ -263,8 +265,8 @@ class _PlanContext:
                 f"register section {sname}",
                 section_order=si,
             )
-        desired_sec = _normalize_commanders(sec_spec.get("commanders") or [])
         live_sec = _normalize_commanders((self.sections_live.get(sname) or {}).get("commanders") or [])
+        desired_sec = _desired_commanders(sec_spec.get("commanders") or [], live_sec)
         if desired_sec and desired_sec != live_sec and not self.defer_if_unresolved(desired_sec, sname, "commanders"):
             self.add(
                 "set_commanders",
@@ -290,8 +292,8 @@ class _PlanContext:
                 f"register stand {dname}",
                 section_order=si, stand_order=sj,
             )
-        desired_st = _normalize_commanders(stand_spec.get("commanders") or [])
         live_st = _normalize_commanders((self.stands_live.get(dname) or {}).get("commanders") or [])
+        desired_st = _desired_commanders(stand_spec.get("commanders") or [], live_st)
         if desired_st and desired_st != live_st and not self.defer_if_unresolved(desired_st, dname, "commanders"):
             self.add(
                 "set_commanders",
@@ -611,13 +613,23 @@ def _expected_wasm_hash(sheet: dict, spec: dict) -> str:
 
 def _normalize_commanders(entries: list) -> list[dict]:
     """One entry per principal, permissions normalized; a principal listed twice
-    gets the union of its grants ("" = everything)."""
+    gets the union of its grants ("" = everything). ``sha256:`` slot principals
+    are canonicalised; a claimed commander keeps its ``code_checksum``."""
     grants: dict[str, str] = {}
+    checksums: dict[str, str] = {}
     for e in entries or []:
         p = str(e.get("principal") if isinstance(e, dict) else e or "").strip()
         if not p:
             continue
+        if is_code_checksum(p):
+            try:
+                p = normalize_code_checksum(p)
+            except ValueError:
+                continue
         perms = _normalize_permissions(e.get("permissions")) if isinstance(e, dict) else ""
+        cc = str(e.get("code_checksum") or "").strip() if isinstance(e, dict) else ""
+        if cc and not checksums.get(p):
+            checksums[p] = cc
         prev = grants.get(p)
         if prev is None:
             grants[p] = perms
@@ -625,7 +637,19 @@ def _normalize_commanders(entries: list) -> list[dict]:
             grants[p] = _normalize_permissions(f"{prev},{perms}")
         else:
             grants[p] = ""
-    return [{"principal": p, "permissions": grants[p]} for p in sorted(grants)]
+    out = []
+    for p in sorted(grants):
+        entry = {"principal": p, "permissions": grants[p]}
+        if checksums.get(p):
+            entry["code_checksum"] = checksums[p]
+        out.append(entry)
+    return out
+
+
+def _desired_commanders(spec_entries: list, live: list) -> list[dict]:
+    """Desired commander list for a plan diff: normalized, with slots already
+    claimed on the live entity rewritten to the claiming principal."""
+    return reconcile_claimed(_normalize_commanders(spec_entries), live)
 
 
 def _removes_principals(before: list, after: list) -> bool:

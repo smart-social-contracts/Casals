@@ -71,6 +71,11 @@ def _build_parser() -> argparse.ArgumentParser:
     reg_p.add_argument("kind", choices=("backend", "frontend"))
     reg_p.add_argument("--wasm-type", default=None)
 
+    code_p = sub.add_parser("code", help="commander access codes")
+    code_sub = code_p.add_subparsers(dest="code_command", required=True)
+    code_new = code_sub.add_parser("new", help="mint an access code and print its sha256: checksum")
+    code_new.add_argument("--count", "-n", type=int, default=1, help="number of codes to mint")
+
     orch_p = sub.add_parser("orchestra", help="legacy orchestra commands")
     orch_sub = orch_p.add_subparsers(dest="orchestra_command", required=True)
     od = orch_sub.add_parser("destroy", help="destroy via conductor destroy_orchestra")
@@ -154,6 +159,8 @@ def main(argv: list[str] | None = None) -> None:
             commands.cmd_pool(ic, args)
         elif cmd == "register":
             commands.cmd_register(ic, args)
+        elif cmd == "code" and args.code_command == "new":
+            commands.cmd_code_new(args)
         elif cmd == "orchestra" and args.orchestra_command == "destroy":
             commands.cmd_orchestra_destroy(ic, args)
         else:

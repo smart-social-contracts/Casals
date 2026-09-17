@@ -3,8 +3,9 @@
   import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
-  import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied } from '$lib/auth';
+  import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied, claimAccessCode } from '$lib/auth';
   import { backendCanisterId, casalsMetadata, initLocalNetworkHints } from '$lib/api';
+  import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
   import BuildFooter from '$lib/components/BuildFooter.svelte';
@@ -28,6 +29,15 @@
 
   async function handleLogin() {
     await login(backendCanisterId());
+  }
+
+  async function handleClaimAccessCode(code: string) {
+    const claimed = await claimAccessCode(code);
+    const where = claimed
+      .map((c) => (c.scope === 'orchestra' ? 'the orchestra' : `${c.scope} ${c.name}`))
+      .join(', ');
+    toasts.success(where ? `Access granted on ${where}` : 'Access granted');
+    return claimed;
   }
 
   $effect(() => {
@@ -221,5 +231,6 @@
     message={$accessDenied.message}
     principal={$accessDenied.principal}
     onclose={dismissAccessDenied}
+    onclaim={handleClaimAccessCode}
   />
 {/if}

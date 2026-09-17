@@ -27,6 +27,25 @@ icp network start -e local --background        # once
 casals -e local --identity local-dev up path/to/casals.json --yes
 ```
 
+One laptop can run several replicas at once. icp binds one gateway per project
+directory; Casals defaults to the implicit `local` network on `:8000`. To give
+a run its own gateway (a corpus beside `local_up`, two `local_up`s, …):
+
+```sh
+# corpus on a free port; does not touch :8000
+CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
+  python3 tests/e2e/run_e2e.py minimal
+
+# product orchestra on another free port
+CASALS_HOME=~/casals-home-b \
+  ../realms/scripts/local_up.sh --gaas --replica-port=auto
+```
+
+`CASALS_REPLICA=1` is the same as `CASALS_REPLICA_PORT=auto`. Bindings stay
+under `CASALS_HOME`; replica state lives in `$CASALS_HOME/.replica`.
+`--down` / a harness teardown without `KEEP=1` stop only that replica.
+`python3 -m casals_cli.replica status|stop` inspects or kills it.
+
 `up` validates the sheet, funds the deployer if the sheet's
 `environments.local.cycles.budget_tc` asks for it, bootstraps the conductor's
 four canisters (backend, frontend, file registry, registry frontend) if they
@@ -51,6 +70,7 @@ Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 | the control graph | `casals -e local graph sheet.json` (Mermaid; `--ascii` for text) |
 | the sheet the conductor runs, with bindings | `casals -e local export sheet.json` |
 | the audit log / cycles / wasm catalog | `casals -e local events\|cycles\|wasms sheet.json` |
+| invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
 Add `--json` for machine-readable output. The conductor's frontend shows the
@@ -69,6 +89,27 @@ are `requires: multisig`; the deployer executes them during bootstrap, the
 multisig thereafter. On an environment with
 `governance.apply_requires_proposal: true` `up` does not apply directly: it
 files an `ApplySheet` proposal on the multisig and the signers approve it.
+
+### Inviting an operator with an access code
+
+When someone should get commander access before you know their Internet
+Identity principal, declare the slot by the checksum of a secret code:
+
+```bash
+casals code new
+# code:     K7MQ2-XTR4V-9BCDF-HJ3NP
+# checksum: sha256:9f86d0…
+```
+
+Add the checksum under `environments.<env>.principals` (say `"new_operator"`),
+reference `$principal:new_operator` from any `commanders` block, run `up`, and
+send the code to the person. They log in to the Casals frontend, get the
+*Access Denied* dialog, and enter the code there; from then on their principal
+holds that slot with its permissions. The code works once. The same can be
+done without touching the sheet from the Operator access page (*Assign* →
+*Access code*), which mints a code in the browser and sends only its checksum
+to the conductor. To revoke, remove the alias (or the claimed commander) and
+`up` — the usual path.
 
 ### Stands created at runtime
 

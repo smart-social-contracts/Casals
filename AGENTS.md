@@ -111,6 +111,8 @@ npm --prefix frontend install        # frontend deps (one-time)
 
 # Terminal 1 — keep the replica running
 icp network start -e local
+# Parallel run on the same laptop: CASALS_REPLICA_PORT=auto CASALS_HOME=~/casals-home-b
+# (see docs/OPERATIONS.md — isolated replica).
 
 # Terminal 2 — build, deploy and reconcile an orchestra from its sheet
 python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
@@ -211,9 +213,10 @@ make cli ARGS="<command>"
 
 Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`, `verify`,
 `export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
-`graph`, `oracle`, `destroy`, `register`, and the legacy `orchestra destroy
---preserve <name>` (batched conductor `destroy_orchestra`). Every command reads
-the sheet's bindings (`$CASALS_HOME`, default `~/.casals`) or `--conductor <id>`.
+`graph`, `oracle`, `destroy`, `register`, `code new` (mint a commander access
+code; offline), and the legacy `orchestra destroy --preserve <name>` (batched
+conductor `destroy_orchestra`). Every other command reads the sheet's bindings
+(`$CASALS_HOME`, default `~/.casals`) or `--conductor <id>`.
 Day-to-day usage is in `docs/OPERATIONS.md`.
 
 ## Backend API (JSON-in / JSON-out)
@@ -257,7 +260,8 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `delete_section` / `delete_stand` / `delete_canister` | delete (canisters → pool) |
 | `destroy_canister` | stop + delete IC canister (irreversible) |
 | `register_canister` | register an existing IC canister as a Canister |
-| `set_commander` / `set_permissions` | commander principal + permission keys |
+| `set_commander` / `set_permissions` | commander principal + permission keys (`sha256:<hex>` = unclaimed access-code slot) |
+| `claim_commander` | redeem an access code: the caller takes every slot whose checksum matches |
 | `set_settings` | instance settings |
 
 ### Lifecycle
@@ -333,6 +337,36 @@ granular keys (e.g. `canister.create`, `canister.deploy`, `stand.create`,
 `subnet.whitelist`) configured on the **Commanders** page or via
 `set_permissions`. Empty / `*` = full access. The deploy/conductor principal is
 also a canister controller and bypasses commander checks for admin operations.
+
+### Access codes (inviting an operator whose principal is unknown)
+
+A commander slot can be declared by the SHA-256 checksum of a secret code
+instead of a principal. In the sheet the checksum is a `principals` alias:
+
+```json
+"environments": { "local": { "principals": {
+  "new_operator": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+} } },
+"sections": [{ "name": "Product", "commanders": [
+  { "principal": "$principal:new_operator", "permissions": "canister.*" }
+] }]
+```
+
+`casals code new` mints a code and prints its checksum; the checksum goes into
+the sheet (or `set_commander` with `commander_principal: "sha256:…"` from the
+Operator access page's *Access code* option), the code goes to the person.
+A `sha256:` alias is only valid in a `commanders[].principal` (never as a
+controller or signer) — `validate` enforces that.
+
+An unclaimed slot grants nothing and is skipped by every authorization check
+(`commanders.active_commanders`). The invitee logs in, gets the Access Denied
+dialog and enters the code; `claim_commander` hashes it and rewrites every
+matching slot to the caller's principal, keeping the permissions and recording
+`code_checksum`. Codes are single-use. The planner and the oracle treat a
+claimed slot as satisfied by its claimer (`commanders.reconcile_claimed`), so a
+later `up` neither reverts nor reports drift; removing the alias from the sheet
+removes the claimed commander like any other. `get_tree` shows slots as
+`{principal: "sha256:…", unclaimed: true}` and claimers with `code_checksum`.
 
 ## Subnet whitelist
 

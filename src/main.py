@@ -48,11 +48,14 @@ from auth import (
     _normalize_permissions,
     _parse_permissions,
 )
+from access_code import code_checksum, is_code_checksum, normalize_code_checksum
 from commanders import (
     add_commander,
     apply_commanders_from_spec,
+    claim_code_slot,
     commander_principals,
     entity_has_permission,
+    has_entry,
     is_commander,
     legacy_commander_principal,
     lifecycle_access,
@@ -1645,12 +1648,17 @@ def set_commander(args: text) -> text:
       - A section commander may appoint stand commanders within that section.
 
     Args (JSON): {"section": str} or {"stand": str} + {"commander_principal": str}.
+
+    ``commander_principal`` may also be ``sha256:<hex>`` — the checksum of an
+    access code (see ``claim_commander``); that creates an unclaimed slot.
     """
     try:
         params = json.loads(args)
         commander = (params.get("commander_principal") or "").strip()
         if not commander:
             return _err("commander_principal is required")
+        if is_code_checksum(commander):
+            commander = normalize_code_checksum(commander)
         perms = params.get("permissions", None)
         caller = _caller()
         if params.get("stand"):
@@ -1754,7 +1762,7 @@ def set_permissions(args: text) -> text:
                 sec = dk.section
                 if not sec or not entity_has_permission(sec, caller, "commander.assign"):
                     raise Exception("unauthorized: must be a controller or the section commander")
-            if not is_commander(dk, commander):
+            if not has_entry(dk, commander):
                 return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
             add_commander(dk, commander, perms)
             _append_event("permissions_set", "", {
@@ -1768,7 +1776,7 @@ def set_permissions(args: text) -> text:
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
-            if not is_commander(sec, commander):
+            if not has_entry(sec, commander):
                 return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
             add_commander(sec, commander, perms)
             _append_event("permissions_set", "", {
@@ -1779,6 +1787,54 @@ def set_permissions(args: text) -> text:
         else:
             return _err("expected 'section' or 'stand'")
         return _ok()
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def claim_commander(args: text) -> text:
+    """Redeem an access code: the caller becomes the commander of every
+    unclaimed ``sha256:`` slot whose checksum matches the code.
+
+    Slots are declared in the sheet (``environments.<env>.principals`` holds
+    ``sha256:<hex>``, referenced from any ``commanders`` block) or at runtime via
+    ``set_commander``. A code is single-use: claiming rewrites the slot to the
+    caller's principal (keeping its permissions and remembering the checksum
+    so a later sheet apply recognises the claim).
+
+    Args (JSON): {"code": str}. Returns {ok, claimed: [{scope, name, permissions}]}.
+    """
+    try:
+        caller = _caller()
+        if caller == ANONYMOUS:
+            return _err("authentication required")
+        params = json.loads(args) if args else {}
+        code = (params.get("code") or "").strip()
+        if not code:
+            return _err("code is required")
+        checksum = code_checksum(code)
+        claimed = []
+        list(Section.instances())
+        list(Stand.instances())
+        for sec in Section.instances():
+            perms = claim_code_slot(sec, checksum, caller)
+            if perms is None:
+                continue
+            scope = "orchestra" if sec.name == SYNTHETIC_SECTION_CONDUCTOR else "section"
+            claimed.append({"scope": scope, "name": sec.name, "permissions": _parse_permissions(perms)})
+        for stand in Stand.instances():
+            perms = claim_code_slot(stand, checksum, caller)
+            if perms is None:
+                continue
+            claimed.append({"scope": "stand", "name": stand.name, "permissions": _parse_permissions(perms)})
+        if not claimed:
+            return _err("invalid or already used access code")
+        _append_event("commander_claimed", "", {
+            "commander": caller,
+            "code_checksum": checksum,
+            "claimed": [{"scope": c["scope"], "name": c["name"]} for c in claimed],
+        })
+        return _ok(claimed=claimed)
     except Exception as e:
         return _err(str(e))
 

@@ -1,5 +1,5 @@
 import type { Section, Stand, Tree } from './api';
-import { entityCommanders } from './commanderAccess';
+import { activeCommanders } from './commanderAccess';
 import { isOrchestraSectionName, ladderAllows } from './governanceUx';
 
 export function permissionsGrant(
@@ -32,10 +32,11 @@ export function canActOnStand(
   permissionKey: string,
   orchestra: Section | null = null,
 ): boolean {
+  // Unclaimed access-code slots grant nothing (matches `commanders.lifecycle_access`).
   return ladderAllows(principal, permissionKey, {
-    orchestra: orchestra ? entityCommanders(orchestra) : null,
-    stand: entityCommanders(stand),
-    section: entityCommanders(section),
+    orchestra: orchestra ? activeCommanders(orchestra) : null,
+    stand: activeCommanders(stand),
+    section: activeCommanders(section),
   });
 }
 

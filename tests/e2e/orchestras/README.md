@@ -6,7 +6,7 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 | Orchestra | Description |
 |---|---|
 | `minimal` | conductor + one managed backend |
-| `governed` | multisig, proposal-only apply, commanders |
+| `governed` | multisig, proposal-only apply, commanders, an access-code commander slot (`invited_operator`) |
 | `baton-stand` | one stand with baton, 2-of-2 hand_off, `$stand.backend` |
 | `adopted` | adopted backend reconciles control and config only |
 | `demo` | three stands, three batons, shared multisig |
@@ -23,6 +23,10 @@ python3 tests/e2e/run_e2e.py                       # whole corpus on the local r
 python3 tests/e2e/run_e2e.py minimal adopted       # a subset
 KEEP=1 python3 tests/e2e/run_e2e.py                # leave every orchestra up (frontend URLs in the table)
 SCENARIOS=fresh,idempotent CASALS_HOME=/tmp/x KEEP=1 python3 tests/e2e/run_e2e.py governed
+
+# beside an already-running local_up on :8000 — own gateway, own CASALS_HOME
+CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
+  python3 tests/e2e/run_e2e.py minimal
 ```
 
 Every orchestra runs every applicable scenario (spec §11.3): `fresh`,

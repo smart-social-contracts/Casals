@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
 
+from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions, _parse_permissions
 from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
@@ -30,6 +31,7 @@ from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on co
 from casals_cli.bindings import live_stands
 from casals_cli.multisig import multisig_signers
 from casals_cli.registry import registry_file_hashes
+from casals_cli.replica import canister_http_url
 from casals_cli.util import cycles_to_tc, tc_to_cycles
 
 Result = Literal["PASS", "FAIL", "SKIP"]
@@ -84,7 +86,10 @@ def _grade_assets(report: OracleReport, ic, registry_id: str, cname: str, cid: s
     bad = []
 
     def fetch(key: str) -> tuple[bytes, dict]:
-        req = urllib.request.Request(f"http://{cid}.localhost:8000{urllib.parse.quote(key)}", headers={"Accept-Encoding": "identity"})
+        req = urllib.request.Request(
+            canister_http_url(cid, urllib.parse.quote(key), url=getattr(ic, "network_url", None)),
+            headers={"Accept-Encoding": "identity"},
+        )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.read(), {k.lower(): v for k, v in resp.headers.items()}
 
@@ -113,11 +118,25 @@ def _grade_assets(report: OracleReport, ic, registry_id: str, cname: str, cid: s
 
 
 def _grade_commanders(report: OracleReport, name: str, declared, live_entity: dict | None) -> None:
-    """Declared commanders (principal → granted permission keys) must equal the tree's."""
+    """Declared commanders (principal → granted permission keys) must equal the tree's.
+
+    A declared ``sha256:`` access-code slot is satisfied either by the unclaimed
+    slot itself or by the commander who redeemed it (``code_checksum``)."""
     if not declared:
         return
-    want = {c["principal"]: set(_parse_permissions(_normalize_permissions(c.get("permissions")))) for c in declared}
-    have = {c["principal"]: set(c.get("permissions") or []) for c in (live_entity or {}).get("commanders") or []}
+    live = [c for c in (live_entity or {}).get("commanders") or [] if isinstance(c, dict)]
+    claimed_by = {c["code_checksum"]: c["principal"] for c in live if c.get("code_checksum") and not c.get("unclaimed")}
+    want: dict[str, set] = {}
+    for c in declared:
+        p = c["principal"]
+        if is_code_checksum(p):
+            try:
+                p = normalize_code_checksum(p)
+            except ValueError:
+                pass
+            p = claimed_by.get(p, p)
+        want.setdefault(p, set()).update(_parse_permissions(_normalize_permissions(c.get("permissions"))))
+    have = {c["principal"]: set(c.get("permissions") or []) for c in live}
     if want == have:
         report.add(name, "commanders", "PASS", f"{len(want)} commanders")
     else:
@@ -228,7 +247,7 @@ def run_oracle(
                 except Exception as exc:
                     report.add(cname, f"health[{i}]", "FAIL", str(exc))
             elif "http" in hc and env == "local" and cid:
-                url = f"http://{cid}.localhost:8000{hc['http']}"
+                url = canister_http_url(cid, hc["http"], url=getattr(ic, "network_url", None))
                 try:
                     with urllib.request.urlopen(url, timeout=10) as resp:
                         ok = resp.status == int(hc.get("status", 200))
