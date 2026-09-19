@@ -46,13 +46,24 @@ under `CASALS_HOME`; replica state lives in `$CASALS_HOME/.replica`.
 `--down` / a harness teardown without `KEEP=1` stop only that replica.
 `python3 -m casals_cli.replica status|stop` inspects or kills it.
 
-`up` validates the sheet, funds the deployer if the sheet's
-`environments.local.cycles.budget_tc` asks for it, bootstraps the conductor's
-three canisters (backend, frontend, `casals-wasms` store) if they
+`up` validates the sheet, checks the deployer's cycles, bootstraps the
+conductor's three canisters (backend, frontend, `casals-wasms` store) if they
 are not bound yet, uploads the wasms and content the `registry` block names,
 stores the sheet (`set_sheet`), then runs `plan` → `apply` until the plan is
 empty. It is safe to interrupt and re-run at any point: the next `up` continues
 from whatever the IC already has.
+
+Cycles: the deployer pays 2 TC per conductor canister it creates (`icp canister
+create`'s default deposit; the IC keeps 0.5 TC of it as the creation fee) and
+then tops the conductor treasury up to `environments.<env>.cycles.budget_tc`
+whenever it is under `cycles.conductor_min_balance_tc`. The conductor pays for
+everything it creates from that treasury (2 TC per canister by default), so a
+budget must cover the product canisters plus the 1 TC reserve, and a resumed
+`up` refills the treasury again if the conductor has spent it under the floor.
+The preflight sums exactly what this run will pull (creates + top-up) and
+prints it; a fresh production deploy with `budget_tc: 20` needs roughly 25 TC
+on the deployer. The top-up never asks for more than the deployer holds, and
+refuses (spending nothing) when it could not even reach the floor.
 
 Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 `~/.casals`) as `<orchestra>.<env>.json`; every other command reads them, so

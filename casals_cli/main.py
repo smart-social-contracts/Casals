@@ -74,6 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
     destroy_p.add_argument("sheet", nargs="?", help="path to casals.json (or pass --conductor)")
     destroy_p.add_argument("--all", action="store_true")
     destroy_p.add_argument("--confirm-destructive", action="store_true")
+    destroy_p.add_argument("--json", action="store_true", help="JSON output")
 
     reg_p = sub.add_parser("register", help="register an existing canister")
     reg_p.add_argument("stand")

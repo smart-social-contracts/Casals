@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 
 from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, resolve_backend_id
@@ -123,10 +124,40 @@ def cmd_export(ic, args) -> None:
 _CONDUCTOR_META = {"casals_frontend_canister_id": "casals-frontend", "wasm_store_canister_id": "casals-wasms"}
 
 
+def _already_gone(err: str) -> bool:
+    e = (err or "").lower()
+    return any(s in e for s in (
+        "not found", "does not exist", "unknown canister", "no canister",
+        "has no canister_id", "already deleted",
+    ))
+
+
+def _optional_query(ic, canister_id: str, method: str):
+    """Query that returns None when the method does not exist (pre-store
+    conductors have no ``get_bindings``)."""
+    try:
+        return ic.query(canister_id, method)
+    except Exception as exc:
+        if "has no query method" in str(exc) or "IC0536" in str(exc):
+            return None
+        raise
+
+
+def _multisig_from_tree(tree) -> str:
+    if not isinstance(tree, dict):
+        return ""
+    for sec in tree.get("sections") or []:
+        for st in sec.get("stands") or []:
+            for c in st.get("canisters") or []:
+                if (c.get("name") or "") in ("multisig", "orchestration-multisig"):
+                    return (c.get("canister_id") or "").strip()
+    return ""
+
+
 def _conductor_canisters(ic, backend: str, bindings) -> dict[str, str]:
     """name → id of the conductor's own canisters: the bindings file when there
     is one, else what the live conductor reports (`casals_metadata`, and
-    `get_bindings` for the multisig)."""
+    `get_bindings` or the tree for the multisig)."""
     out: dict[str, str] = {}
     if bindings:
         out.update({k: v for k, v in bindings.conductor.items() if v})
@@ -136,8 +167,10 @@ def _conductor_canisters(ic, backend: str, bindings) -> dict[str, str]:
         for key, name in _CONDUCTOR_META.items():
             if (meta.get(key) or "").strip():
                 out.setdefault(name, meta[key].strip())
-    res = ic.query(backend, "get_bindings")
+    res = _optional_query(ic, backend, "get_bindings")
     ms = ((res or {}).get("bindings") or {}).get("multisig", "") if isinstance(res, dict) else ""
+    if not ms:
+        ms = _multisig_from_tree(_optional_query(ic, backend, "get_tree") or {})
     if ms:
         out.setdefault("multisig", ms)
     return out
@@ -201,7 +234,7 @@ def cmd_destroy(ic, args) -> None:
                     cid = (c.get("canister_id") or "").strip()
                     if cid and cid not in conductor_ids:
                         managed.append((c.get("name") or cid, cid))
-    pool = ic.query(backend, "list_pool")
+    pool = _optional_query(ic, backend, "list_pool") or {}
     for entry in (pool.get("canisters") if isinstance(pool, dict) else pool) or []:
         cid = (entry.get("canister_id") or "").strip() if isinstance(entry, dict) else ""
         if cid and cid not in conductor_ids and cid not in {c for _n, c in managed}:
@@ -210,15 +243,45 @@ def cmd_destroy(ic, args) -> None:
     drained: list[dict] = []
     failed: list[dict] = []
     for name, cid in dict.fromkeys(managed):
-        try:
-            res = ic.call_update(backend, "destroy_canister", json.dumps({"canister_id": cid}), timeout=900)
-            if not (isinstance(res, dict) and res.get("ok")):
-                raise RuntimeError((res or {}).get("error") if isinstance(res, dict) else str(res))
-            drained.append({"name": name, "canister_id": cid, "cycles_reclaimed": res.get("cycles_reclaimed")})
-        except Exception as exc:
-            failed.append({"name": name, "canister_id": cid, "error": str(exc)})
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                res = ic.call_update(backend, "destroy_canister", json.dumps({"canister_id": cid}), timeout=900)
+                if not (isinstance(res, dict) and res.get("ok")):
+                    err = (res or {}).get("error") if isinstance(res, dict) else str(res)
+                    if _already_gone(str(err)):
+                        drained.append({"name": name, "canister_id": cid, "cycles_reclaimed": 0, "already_gone": True})
+                        last_exc = None
+                        break
+                    raise RuntimeError(err)
+                drained.append({"name": name, "canister_id": cid, "cycles_reclaimed": res.get("cycles_reclaimed")})
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if _already_gone(str(exc)):
+                    drained.append({"name": name, "canister_id": cid, "cycles_reclaimed": 0, "already_gone": True})
+                    last_exc = None
+                    break
+                if "Pkcs11" not in str(exc) or attempt == 2:
+                    break
+                time.sleep(2)
+        if last_exc is not None:
+            failed.append({"name": name, "canister_id": cid, "error": str(last_exc)})
             if not destroy_all:
-                raise RuntimeError(f"destroy_canister {name} ({cid}) failed: {exc}") from exc
+                raise RuntimeError(f"destroy_canister {name} ({cid}) failed: {last_exc}") from last_exc
+
+    # Do not delete the conductor while a product still holds cycles: that
+    # orphans the canister and the drain path dies with the backend.
+    if failed:
+        emit_json({
+            "ok": False,
+            "error": "product drain incomplete; conductor left intact so cycles stay recoverable",
+            "drained_into_treasury": drained,
+            "failed": failed,
+            "deleted": [],
+        })
+        return
 
     # Leg 2: the conductor's own canisters, balances returned to the deployer.
     order = [n for n in conductor if n not in ("casals-backend", "multisig")] + \

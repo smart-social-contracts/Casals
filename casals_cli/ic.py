@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -17,6 +18,40 @@ NETWORK_URLS = {
     "local": "http://127.0.0.1:8000",
     "ic": "https://icp0.io",
 }
+
+_PIN_FILES: list[str] = []
+
+
+def _hsm_pin_file() -> str | None:
+    """Path to a PIN file icp will accept, or None.
+
+    icp ignores ``DFX_HSM_PIN`` and cannot prompt when stdout is captured.
+    ``ICP_IDENTITY_PASSWORD_FILE`` is used as-is; otherwise a 0600 tempfile
+    is created from ``DFX_HSM_PIN`` for this process."""
+    explicit = (os.environ.get("ICP_IDENTITY_PASSWORD_FILE") or "").strip()
+    if explicit:
+        return explicit
+    pin = os.environ.get("DFX_HSM_PIN") or ""
+    if not pin:
+        return None
+    tmp = tempfile.NamedTemporaryFile("w", prefix="casals-hsm-pin-", delete=False)
+    os.chmod(tmp.name, 0o600)
+    tmp.write(pin)
+    tmp.close()
+    _PIN_FILES.append(tmp.name)
+    return tmp.name
+
+
+def _cleanup_pin_files() -> None:
+    for path in _PIN_FILES:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    _PIN_FILES.clear()
+
+
+atexit.register(_cleanup_pin_files)
 
 
 class IcAccess(Protocol):
@@ -64,6 +99,10 @@ class IcClient:
         else:
             self.network_url = replica_network_url()
         self._agent = None
+        # icp has no DFX_HSM_PIN: it prompts, and we capture stdout so that
+        # is "not a terminal". A PIN in the env (or a file) is written to a
+        # 0600 temp file and passed as --identity-password-file on every call.
+        self._pin_file = _hsm_pin_file()
 
     def _is_mainnet(self) -> bool:
         url = (self.network_url or "").rstrip("/")
@@ -80,6 +119,8 @@ class IcClient:
             flags = ["-e", self.env]
         if self.identity:
             flags += ["--identity", self.identity]
+        if self._pin_file:
+            flags += ["--identity-password-file", self._pin_file]
         return flags
 
     def _project_root_flag(self) -> list[str]:
@@ -237,11 +278,17 @@ class IcClient:
         timeout: int = 300,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        # `icp canister link` is local project bookkeeping: no --identity flag.
+        # Sidecar icp.yaml declares environment `self.env` (e.g. production)
+        # pointed at this network. `-n ic` is rejected by `canister link` and
+        # is the wrong flag here anyway (`-e production` is the project env).
+        # `canister link` is local bookkeeping: no --identity.
         needs_identity = argv[:2] != ["canister", "link"]
-        cmd = ["icp"] + argv + self._base_flags() + ["--project-root-override", project_dir]
-        if not needs_identity and self.identity:
-            cmd = [f for f in cmd if f not in ("--identity", self.identity)]
+        flags = ["-e", self.env]
+        if needs_identity and self.identity:
+            flags += ["--identity", self.identity]
+        if needs_identity and self._pin_file:
+            flags += ["--identity-password-file", self._pin_file]
+        cmd = ["icp"] + argv + flags + ["--project-root-override", project_dir]
         result = subprocess.run(
             cmd,
             cwd=project_dir,
@@ -289,10 +336,11 @@ class IcClient:
         self.icp(cmd)
 
     def stop_canister(self, canister_id: str) -> None:
-        self.icp(["canister", "stop", canister_id, "-y"])
+        self.icp(["canister", "stop", canister_id])
 
     def delete_canister(self, canister_id: str) -> None:
-        self.icp(["canister", "delete", canister_id, "-y"])
+        # Default: recover liquid cycles to the caller's cycles-ledger account.
+        self.icp(["canister", "delete", canister_id])
 
 
 class RecordingIc:

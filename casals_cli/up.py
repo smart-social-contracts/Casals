@@ -84,7 +84,50 @@ def _step(n: int) -> None:
     _progress(f"  ({purpose})")
 
 
-def check_funds(ic, sheet: dict, env: str, deployer: str) -> None:
+# `icp canister create` deposits this much on every new canister unless told
+# otherwise (`--cycles`, default 2T); the IC keeps ~0.5 TC of it as the
+# creation fee. Bootstrap creates up to three conductor canisters from the
+# deployer *before* the conductor treasury is topped up, so the preflight has
+# to count those deposits on top of `budget_tc` — checking the balance against
+# `budget_tc` alone passes, then the top-up finds the wallet already spent.
+CREATE_DEPOSIT_TC = 2.0
+CREATE_FEE_TC = 0.5
+# Left on the deployer after a top-up so the rest of the run can still pay
+# its own message fees.
+DEPLOYER_KEEP_TC = 0.1
+
+
+def funding_needed(ic, sheet: dict, env: str, bindings=None) -> dict[str, Any]:
+    """What this `up` will pull from the deployer: one create deposit per
+    conductor canister that has no binding yet, plus the conductor top-up to
+    `budget_tc` when its treasury is (or, once created, will be) below
+    `cycles.conductor_min_balance_tc`."""
+    budget_tc = float((env_block(sheet, env).get("cycles") or {}).get("budget_tc", 0) or 0)
+    floor_tc = float((sheet.get("cycles") or {}).get("conductor_min_balance_tc", 0) or 0)
+    bound = dict(getattr(bindings, "conductor", None) or {})
+    backend_id = (getattr(bindings, "backend_id", "") or bound.get(CONDUCTOR_NAMES["backend"], "") or "").strip()
+    if backend_id:
+        bound[CONDUCTOR_NAMES["backend"]] = backend_id
+    declared = [k for k in ("backend", "frontend", "wasms") if k in (sheet.get("conductor") or {})]
+    creates = [CONDUCTOR_NAMES[k] for k in declared if not bound.get(CONDUCTOR_NAMES[k])]
+
+    if backend_id and ic.read_module_hash(backend_id):
+        have_tc = cycles_to_tc(int((ic.query(backend_id, "get_status") or {}).get("cycles") or 0))
+    else:
+        # Not there yet: after `create` it holds the deposit minus the fee.
+        have_tc = CREATE_DEPOSIT_TC - CREATE_FEE_TC
+    topup_tc = 0.0 if have_tc >= floor_tc or have_tc >= budget_tc else budget_tc - have_tc
+
+    return {
+        "creates": creates,
+        "creates_tc": len(creates) * CREATE_DEPOSIT_TC,
+        "conductor_tc": have_tc,
+        "topup_tc": topup_tc,
+        "total_tc": len(creates) * CREATE_DEPOSIT_TC + topup_tc + DEPLOYER_KEEP_TC,
+    }
+
+
+def check_funds(ic, sheet: dict, env: str, deployer: str, bindings=None) -> None:
     block = env_block(sheet, env)
     cycles_cfg = block.get("cycles") or {}
     budget_tc = float(cycles_cfg.get("budget_tc", 0) or 0)
@@ -97,18 +140,33 @@ def check_funds(ic, sheet: dict, env: str, deployer: str) -> None:
             f"try: icp cycles balance -e {env}"
         )
     have_tc = cycles_to_tc(bal)
-    _progress(f"deployer cycles: {have_tc:.2f} TC (budget {budget_tc:.2f} TC)")
-    if have_tc < budget_tc:
-        shortfall = budget_tc - have_tc
+    need = funding_needed(ic, sheet, env, bindings)
+    need_tc = need["total_tc"]
+    parts = []
+    if need["creates"]:
+        parts.append(f"{len(need['creates'])} conductor create(s) × {CREATE_DEPOSIT_TC:.0f} TC")
+    if need["topup_tc"]:
+        parts.append(f"conductor top-up +{need['topup_tc']:.2f} TC to the {budget_tc:.2f} TC budget")
+    _progress(
+        f"deployer cycles: {have_tc:.2f} TC; this run needs ≈{need_tc:.2f} TC"
+        + (f" ({', '.join(parts)})" if parts else " (conductor already funded)")
+    )
+    if have_tc < need_tc:
+        shortfall = need_tc - have_tc
         msg = (
-            f"deployer has {have_tc:.2f} TC but environments.{env}.cycles.budget_tc "
-            f"requires {budget_tc:.2f} TC (shortfall {shortfall:.2f} TC)"
+            f"deployer has {have_tc:.2f} TC but this run needs ≈{need_tc:.2f} TC "
+            f"(shortfall {shortfall:.2f} TC): "
+            + (", ".join(parts) or f"environments.{env}.cycles.budget_tc = {budget_tc:.2f} TC")
         )
         if env == "local":
             _progress(
                 f"Hint: mint cycles on local with "
                 f"`icp cycles mint --cycles {shortfall:.1f}t -e local` "
                 f"(local replica seeds balances at `icp network start`)"
+            )
+        else:
+            _progress(
+                f"Hint: icp cycles transfer {shortfall + 0.5:.1f}t {deployer} -n ic --identity <funded-identity>"
             )
         raise RuntimeError(msg)
 
@@ -144,8 +202,32 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
     have = int((ic.query(backend_id, "get_status") or {}).get("cycles") or 0)
     if have >= floor or have >= budget:
         return
-    _progress(f"  funding conductor: +{cycles_to_tc(budget - have):.2f} TC (below {cycles_to_tc(floor):.1f} TC floor)")
-    ic.top_up(backend_id, budget - have)
+    want = budget - have
+    # Never ask the ledger for more than the deployer holds: bootstrap has just
+    # paid the create deposits out of the same account. Reaching the floor is
+    # the hard requirement; the rest of the budget is best effort.
+    bal = ic.deployer_cycles_balance()
+    if bal is not None:
+        available = max(0, bal - tc_to_cycles(DEPLOYER_KEEP_TC))
+        if available < floor - have:
+            raise RuntimeError(
+                f"conductor {backend_id} holds {cycles_to_tc(have):.2f} TC, below the "
+                f"{cycles_to_tc(floor):.1f} TC floor, and the deployer has only {cycles_to_tc(bal):.2f} TC; "
+                f"nothing was spent. Send at least {cycles_to_tc(floor - have - available):.2f} TC "
+                f"(ideally {cycles_to_tc(want - available):.2f} TC to reach the {cycles_to_tc(budget):.2f} TC budget) "
+                f"to the deployer and rerun `casals up` — it resumes this orchestra."
+            )
+        if available < want:
+            _progress(
+                f"  funding conductor: +{cycles_to_tc(available):.2f} TC — all the deployer can spare "
+                f"(holds {cycles_to_tc(bal):.2f} TC; the {cycles_to_tc(budget):.2f} TC budget would take +{cycles_to_tc(want):.2f} TC)"
+            )
+            want = available
+        else:
+            _progress(f"  funding conductor: +{cycles_to_tc(want):.2f} TC (below {cycles_to_tc(floor):.1f} TC floor)")
+    else:
+        _progress(f"  funding conductor: +{cycles_to_tc(want):.2f} TC (below {cycles_to_tc(floor):.1f} TC floor)")
+    ic.top_up(backend_id, want)
 
 
 def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
@@ -377,7 +459,7 @@ def run_up(
 
     # 2. fund
     _step(2)
-    check_funds(ic, sheet, env, deployer)
+    check_funds(ic, sheet, env, deployer, bindings)
 
     # 3. conductor bootstrap
     _step(3)

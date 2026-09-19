@@ -158,7 +158,9 @@ class TestUpSequencing:
     def _governed_ic(self) -> RecordingIc:
         ic = RecordingIc(env="local")
         ic.deployer = "deployer-principal"
-        ic.cycles["__deployer__"] = 100_000_000_000_000
+        # budget + three create deposits + headroom (exactly budget_tc is the
+        # GaaS-prod trap the preflight now catches)
+        ic.cycles["__deployer__"] = 110_000_000_000_000
         ic.converged = False
         return ic
 
@@ -328,9 +330,75 @@ class TestFundCheck:
 
         ic = RecordingIc()
         ic.cycles["__deployer__"] = 1_000_000_000_000
-        sheet = {"environments": {"local": {"cycles": {"budget_tc": 100}}}}
+        sheet = {
+            "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+            "cycles": {"conductor_min_balance_tc": 5.0},
+            "environments": {"local": {"cycles": {"budget_tc": 100}}},
+        }
         with pytest.raises(RuntimeError, match="shortfall"):
             check_funds(ic, sheet, "local", "deployer-principal")
+
+    _SHEET = {
+        "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+        "cycles": {"conductor_min_balance_tc": 5.0},
+        "environments": {"production": {"cycles": {"budget_tc": 7}}},
+    }
+
+    def test_fresh_deploy_counts_the_create_deposits(self):
+        """GaaS prod, 2026-09-19: 7.44 TC passed a budget of 7, then three
+        `icp canister create` deposits (2 TC each) left 1.44 TC and the
+        conductor top-up failed. The preflight must count the deposits."""
+        from casals_cli.up import check_funds, funding_needed
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 7_440_000_000_000
+        need = funding_needed(ic, self._SHEET, "production", None)
+        assert need["creates"] == ["casals-backend", "casals-frontend", "casals-wasms"]
+        assert need["creates_tc"] == 6.0
+        assert need["topup_tc"] == pytest.approx(7 - 1.5)  # deposit minus creation fee
+        with pytest.raises(RuntimeError, match=r"needs ≈11\.6\d TC.*3 conductor create"):
+            check_funds(ic, self._SHEET, "production", "dep", None)
+        ic.cycles["__deployer__"] = 12_000_000_000_000
+        check_funds(ic, self._SHEET, "production", "dep", None)
+
+    def test_resume_with_funded_conductor_needs_nothing(self):
+        """Realms prod resume #3: the conductor already held the budget, yet
+        `up` refused because the deployer (7.44 TC) was under budget_tc (20)."""
+        from casals_cli.bindings import Bindings
+        from casals_cli.up import check_funds, funding_needed
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 7_440_000_000_000
+        ic.module_hashes["be"] = "hash"
+        ic.queries[("be", "get_status")] = {"cycles": 20_000_000_000_000}
+        b = Bindings(sheet_name="realms", env="production", network_url="https://icp0.io", deployer="dep",
+                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-wasms": "ws"}, backend_id="be")
+        sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 20}}})
+        need = funding_needed(ic, sheet, "production", b)
+        assert need["creates"] == [] and need["topup_tc"] == 0
+        check_funds(ic, sheet, "production", "dep", b)
+
+    def test_fund_conductor_caps_at_the_deployer_balance(self):
+        from casals_cli.up import fund_conductor
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 7_000_000_000_000
+        ic.queries[("be", "get_status")] = {"cycles": 1_470_000_000_000}
+        sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 20}}})
+        fund_conductor(ic, sheet, "production", "be")
+        topups = [c for c in ic.calls if c[0] == "top_up"]
+        assert len(topups) == 1
+        assert topups[0][1] == ("be", 6_900_000_000_000)  # balance minus the 0.1 TC keep
+
+    def test_fund_conductor_refuses_when_the_floor_is_out_of_reach(self):
+        from casals_cli.up import fund_conductor
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 1_440_000_000_000
+        ic.queries[("be", "get_status")] = {"cycles": 1_470_000_000_000}
+        with pytest.raises(RuntimeError, match="nothing was spent"):
+            fund_conductor(ic, self._SHEET, "production", "be")
+        assert not [c for c in ic.calls if c[0] == "top_up"]
 
 
 # ── oracle ───────────────────────────────────────────────────────────────────
@@ -701,6 +769,30 @@ class TestIcClientNetwork:
         assert ic._base_flags()[:2] == ["-n", "ic"]
         assert ic._base_flags(env=False)[:1] != ["-n"]
 
+    def test_hsm_pin_becomes_a_password_file(self, tmp_path, monkeypatch):
+        from casals_cli.ic import _cleanup_pin_files, _hsm_pin_file
+
+        monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE", raising=False)
+        monkeypatch.delenv("DFX_HSM_PIN", raising=False)
+        assert _hsm_pin_file() is None
+
+        given = tmp_path / "pin"
+        given.write_text("from-file")
+        monkeypatch.setenv("ICP_IDENTITY_PASSWORD_FILE", str(given))
+        assert _hsm_pin_file() == str(given)
+
+        monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE")
+        monkeypatch.setenv("DFX_HSM_PIN", "221000")
+        path = _hsm_pin_file()
+        assert path and os.path.isfile(path)
+        assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+        assert open(path).read() == "221000"
+        _cleanup_pin_files()
+        assert not os.path.exists(path)
+
+        ic = IcClient(env="production", identity="prod-identity")
+        assert "--identity-password-file" in ic._base_flags()
+
 
 class TestDestroy:
     def test_drains_managed_then_deletes_conductor(self):
@@ -735,6 +827,37 @@ class TestDestroy:
         deleted = [c[1][0] for c in ic.calls if c[0] == "delete_canister"]
         assert deleted == ["frontend-id", "backend-id"]
         assert "product-id" not in deleted
+
+    def test_pre_store_conductor_without_get_bindings_uses_the_tree(self):
+        from argparse import Namespace
+        from casals_cli.commands import cmd_destroy
+
+        ic = RecordingIc(env="production")
+        ic.deployer = "deployer"
+        ic.controllers["backend-id"] = ["ms-id"]
+        ic.controllers["frontend-id"] = ["ms-id"]
+        ic.controllers["ms-id"] = ["ms-id"]
+        ic.controllers["product-id"] = ["backend-id"]
+        ic.queries[("backend-id", "casals_metadata")] = {"casals_frontend_canister_id": "frontend-id"}
+        ic.queries[("backend-id", "get_tree")] = {
+            "sections": [{"stands": [{"canisters": [
+                {"name": "widget", "canister_id": "product-id"},
+                {"name": "multisig", "canister_id": "ms-id"},
+            ]}]}]
+        }
+        ic.queries[("backend-id", "list_pool")] = {"canisters": []}
+        ic.updates[("backend-id", "destroy_canister")] = {"ok": True, "cycles_reclaimed": 1}
+
+        def query(canister_id, method, text_arg=None):
+            if method == "get_bindings":
+                raise RuntimeError("Canister has no query method 'get_bindings' IC0536")
+            return RecordingIc.query(ic, canister_id, method, text_arg)
+
+        ic.query = query  # type: ignore[method-assign]
+        # deployer is not a controller; ensure_control would propose — we
+        # only assert the lookup found the multisig (no crash on get_bindings).
+        from casals_cli.commands import _conductor_canisters
+        assert _conductor_canisters(ic, "backend-id", None)["multisig"] == "ms-id"
 
     def test_refuses_when_deployer_is_not_a_controller_and_there_is_no_multisig(self):
         from argparse import Namespace
