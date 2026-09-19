@@ -790,7 +790,7 @@ class TestIcClientNetwork:
         _cleanup_pin_files()
         assert not os.path.exists(path)
 
-        ic = IcClient(env="production", identity="prod-identity")
+        ic = IcClient(env="production", identity="hsm-deployer")
         assert "--identity-password-file" in ic._base_flags()
 
 
