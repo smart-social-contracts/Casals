@@ -49,6 +49,12 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
 
+      # Without an identity icp signs as the anonymous principal; Casals refuses
+      # anonymous callers on the store/catalog endpoints (and a real deployer is
+      # never anonymous), so the suite runs as a plaintext local identity.
+      - name: Create the test identity
+        run: icp identity new local-dev --storage plaintext || true
+
       - name: Show toolchain versions
         run: |
           icp --version || true
@@ -61,6 +67,7 @@ jobs:
       - name: Run create/destroy lock tests
         env:
           CASALS_TOPUP: "50t"
+          CASALS_TEST_IDENTITY: local-dev
         run: |
           export PATH="$(npm config get prefix)/bin:$PATH"
           pytest tests/test_create_destroy_lock.py -v --tb=short -p no:randomly

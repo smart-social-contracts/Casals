@@ -43,9 +43,20 @@ CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
 WASM_STORE_TOPUP = os.environ.get("WASM_STORE_TOPUP", "100t")
 
 
+# Signing identity for every icp call the suites make without naming one.
+# Defaults to icp's default identity (CI); set it on a workstation whose
+# default is a hardware key. `identity`, `build` and `network` take no flag.
+TEST_IDENTITY = os.environ.get("CASALS_TEST_IDENTITY") or None
+
+
 def _icp(args, cwd=REPO_ROOT, check=True, timeout=300):
+    cmd = ["icp"] + list(args)
+    if TEST_IDENTITY and args and args[0] not in ("identity", "build", "network") and "--identity" not in args:
+        cmd += ["--identity", TEST_IDENTITY]
+    if TEST_IDENTITY and args[:2] == ["identity", "principal"] and "--identity" not in args:
+        cmd += ["--identity", TEST_IDENTITY]
     result = subprocess.run(
-        ["icp"] + args,
+        cmd,
         cwd=cwd,
         capture_output=True,
         text=True,

@@ -34,6 +34,12 @@ jobs:
       - name: Install backend / test dependencies
         run: pip install -r requirements-dev.txt
 
+      # Without an identity icp signs as the anonymous principal; Casals refuses
+      # anonymous callers on the store/catalog endpoints (and a real deployer is
+      # never anonymous), so the suite runs as a plaintext local identity.
+      - name: Create the test identity
+        run: icp identity new local-dev --storage plaintext || true
+
       - name: Show toolchain versions
         run: |
           icp --version || true
@@ -45,6 +51,8 @@ jobs:
       # create/upgrade/snapshot/rollback lifecycle. The replica is stopped on
       # teardown.
       - name: Run tests (unit + integration + e2e)
+        env:
+          CASALS_TEST_IDENTITY: local-dev
         run: pytest tests/ ${{ inputs.verbose && '-v' || '' }}
 
       - name: Stop local replica (safety net)
