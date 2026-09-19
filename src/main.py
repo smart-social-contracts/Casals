@@ -3481,6 +3481,50 @@ def top_up(args: text) -> Async[text]:
 
 
 @update
+def treasury_send(args: text) -> Async[text]:
+    """Deposit treasury cycles into a canister Casals does not manage.
+
+    The counterpart of ``destroy_canister``'s drain when an orchestra is being
+    retired for good: its product canisters are drained into this treasury,
+    and this moves the treasury on — to the conductor that replaces it — so
+    the emptied conductor can be deleted without burning what it holds.
+    Controller or governance multisig only. Args (JSON): {canister_id: str,
+    amount: int} or {canister_id: str, all: true} (everything above the
+    treasury reserve).
+    """
+    try:
+        _require_admin_or_governance_multisig()
+        params = json.loads(args)
+        target = (params.get("canister_id") or "").strip()
+        if not target:
+            return _err("canister_id required")
+        Principal.from_str(target)  # validates
+        s = _settings()
+        reserve = int(s.treasury_reserve or 0)
+        treasury = int(ic.canister_balance128())
+        spendable = max(0, treasury - reserve)
+        if params.get("all"):
+            amount = spendable
+        else:
+            amount = int(params.get("amount") or 0)
+        if amount <= 0:
+            return _err("amount must be positive (or pass all: true)")
+        if amount > spendable:
+            return _err(
+                f"insufficient treasury: need {amount}, spendable {spendable} "
+                f"(balance {treasury}, reserve {reserve})"
+            )
+        yield management_canister.deposit_cycles(
+            {"canister_id": Principal.from_str(target)}
+        ).with_cycles(amount)
+        _append_event("treasury_sent", target, {"amount": amount, "caller": _caller()})
+        return _ok(canister_id=target, sent=amount, treasury=treasury - amount)
+    except Exception as e:
+        _log.error(f"treasury_send error: {e}")
+        return _err(str(e))
+
+
+@update
 def return_cycles(args: text) -> Async[text]:
     """Sweep cycles from a managed canister back into the Casals treasury.
 

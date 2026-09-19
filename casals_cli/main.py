@@ -45,6 +45,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         sub.add_parser(name, help=help_text).add_argument("sheet", nargs="?", help="path to casals.json")
 
+    send_p = sub.add_parser("treasury-send", help="deposit treasury cycles into any canister id (controller/multisig)")
+    send_p.add_argument("sheet", nargs="?", help="path to casals.json")
+    send_p.add_argument("--to", required=True, help="target canister id (e.g. the conductor that replaces this one)")
+    grp = send_p.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--amount", type=int, help="cycles to send")
+    grp.add_argument("--all", action="store_true", help="everything above the treasury reserve")
+
     pin_p = sub.add_parser("pin", help="write each registry.wasms artifact's sha256 into the sheet")
     pin_p.add_argument("sheet", help="path to casals.json")
     pin_p.add_argument("--check", action="store_true", help="only compare; exit 1 on unpinned or drifted rows")
@@ -161,6 +168,8 @@ def main(argv: list[str] | None = None) -> None:
             commands.cmd_wasms(ic, args)
         elif cmd == "cycles":
             commands.cmd_cycles(ic, args)
+        elif cmd == "treasury-send":
+            commands.cmd_treasury_send(ic, args)
         elif cmd == "pool":
             commands.cmd_pool(ic, args)
         elif cmd == "register":

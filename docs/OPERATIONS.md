@@ -73,6 +73,7 @@ Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
 | upgrade a member its baton controls (`hand_off: "sole"`) | bump its `wasm` in the sheet, `up`: Casals files the proposal on the baton and votes; the plan lists it under `pending` with the `action_id`. The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers and the next `up` is empty |
 | pin the artifacts a production sheet installs | build, then `casals pin sheet.json` (writes `registry.wasms[].sha256`); `casals pin --check sheet.json` exits non-zero on drift. `up -e production` refuses a row whose source builds to something else; other environments re-pin to the local build and say so |
+| move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
 Add `--json` for machine-readable output. The conductor's frontend shows the
@@ -131,6 +132,26 @@ place — only the store is new. On the conductor's side the retired
 file-registry pair is re-homed if the sheet still declares a canister under
 that name in a section (GaaS keeps its registry, with its data, as a product
 canister) and pooled otherwise. `plan` before `up` shows exactly that.
+
+### Retiring an orchestra without burning its cycles
+
+`delete_canister` on the IC refunds nothing: whatever a canister holds when
+it is deleted is gone. Retiring a whole orchestra (an environment replaced by
+a fresh deploy, say) is therefore done in an order that moves every balance
+before anything is deleted:
+
+1. `destroy_canister` for each product canister (the Cycles page's *Destroy*,
+   or the CLI). It drains the canister into the conductor's treasury first and
+   refuses to delete if the drain fails, so nothing is ever burned.
+2. `casals treasury-send --to <successor conductor id> --all` (controller or
+   multisig): the treasury, above its reserve, lands in the orchestra that
+   takes over.
+3. Delete the now-empty conductor canisters and multisig with the deployer
+   (`icp canister delete`). Only the dust below the reserve and the drain fees
+   (a few billion cycles per canister) are lost.
+
+An orchestra whose only controller is its multisig does each step through a
+multisig proposal; the signers approve them in that same order.
 
 ### Stands created at runtime
 

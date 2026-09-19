@@ -185,6 +185,20 @@ def cmd_cycles(ic, args) -> None:
     emit_json(ic.call_update(backend, "get_cycles"))
 
 
+def cmd_treasury_send(ic, args) -> None:
+    """Move treasury cycles to a canister outside the orchestra — the last step
+    of retiring an orchestra: product canisters drained into the treasury by
+    `destroy`, the treasury handed to the successor conductor, then the empty
+    conductor deleted. Refused unless the caller is a controller/multisig."""
+    backend, _ = _backend(args)
+    payload = {"canister_id": args.to}
+    if getattr(args, "all", False):
+        payload["all"] = True
+    else:
+        payload["amount"] = int(args.amount)
+    emit_json(ic.call_update(backend, "treasury_send", json.dumps(payload)))
+
+
 def cmd_pool(ic, args) -> None:
     backend, _ = _backend(args)
     emit_json(ic.query(backend, "list_pool"))

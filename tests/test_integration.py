@@ -8,6 +8,7 @@ environment.
 """
 
 import json
+import re
 
 from conftest import call_canister, _icp, CANISTER_NAME
 
@@ -298,6 +299,33 @@ class TestCyclesManagement:
     def test_return_cycles_unknown_target(self, canister):
         res = call_canister("return_cycles", json.dumps({"canister": "ghost", "amount": 1}))
         assert res.get("ok") is False
+
+    def test_treasury_send_validates_target_and_amount(self, canister):
+        res = call_canister("treasury_send", json.dumps({"amount": 1}))
+        assert res.get("ok") is False and "canister_id" in res.get("error", "")
+        res = call_canister("treasury_send", json.dumps({"canister_id": "aaaaa-aa"}))
+        assert res.get("ok") is False and "amount" in res.get("error", "")
+
+    def test_treasury_send_moves_cycles_to_a_foreign_canister(self, canister):
+        """The deployer (a controller) sends part of the treasury to a canister
+        Casals does not manage — the successor conductor, when an orchestra is
+        retired; the target's balance grows by that amount."""
+        from conftest import _create_detached, canister_status_text
+
+        target = _create_detached()
+
+        def balance(cid: str) -> int:
+            text = canister_status_text(cid)
+            m = re.search(r"^\s*Cycles:\s*([\d_,]+)", text, re.M)
+            assert m, text
+            return int(re.sub(r"[_,]", "", m.group(1)))
+
+        before = balance(target)
+        amount = 100_000_000_000  # 0.1 TC: the test canister's spendable (balance - reserve) is small
+        res = call_canister("treasury_send", json.dumps({"canister_id": target, "amount": amount}))
+        assert res.get("ok") is True, res
+        assert res["sent"] == amount and res["canister_id"] == target
+        assert balance(target) >= before + amount - 10_000_000  # the whole deposit landed (minus idle burn meanwhile)
 
     def test_get_cycles_shape(self, canister):
         rep = call_canister("get_cycles")

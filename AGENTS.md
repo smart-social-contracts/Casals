@@ -288,6 +288,7 @@ placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
 | `refresh_canisters` | partial live refresh for named canisters only |
 | `reconcile` | autopilot top-up pass + full balance read |
 | `top_up` / `return_cycles` | manual cycle transfer to/from orchestra canisters |
+| `treasury_send` | controller/multisig: deposit treasury cycles into any canister id (above the reserve) — moves a retired orchestra's balance to its successor before the conductor is deleted |
 | `convert_treasury_icp` | burn ledger ICP → cycles via CMC |
 | `set_cycle_policy` | per-entity min/topup overrides |
 | `refresh_fx` | refresh cached cycles→fiat rate (throttled) |
