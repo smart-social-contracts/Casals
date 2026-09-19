@@ -16,7 +16,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _common_flags(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("-e", "--env", default="local", help="icp environment (local|ic)")
+    ap.add_argument("-e", "--env", default="local", help="sheet environment (local|production); production talks to the IC")
     ap.add_argument("--identity", default=None, help="icp identity")
     ap.add_argument("--conductor", default=None, help="conductor backend canister id override")
     ap.add_argument("--json", action="store_true", help="JSON output")
@@ -71,7 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
     oracle_p.add_argument("sheet", help="path to casals.json")
 
     destroy_p = sub.add_parser("destroy", help="tear down bound orchestra")
-    destroy_p.add_argument("sheet", help="path to casals.json")
+    destroy_p.add_argument("sheet", nargs="?", help="path to casals.json (or pass --conductor)")
     destroy_p.add_argument("--all", action="store_true")
     destroy_p.add_argument("--confirm-destructive", action="store_true")
 

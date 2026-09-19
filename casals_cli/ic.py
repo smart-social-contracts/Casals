@@ -57,14 +57,27 @@ class IcClient:
         self.project_root = isolated or project_root or os.getcwd()
         if network_url:
             self.network_url = network_url
-        elif env == "ic":
+        elif env in ("ic", "production"):
+            # Sheet env `production` is the IC. icp.yaml in this checkout has
+            # no such environment, so calls use `-n ic` (see `_base_flags`).
             self.network_url = NETWORK_URLS["ic"]
         else:
             self.network_url = replica_network_url()
         self._agent = None
 
+    def _is_mainnet(self) -> bool:
+        url = (self.network_url or "").rstrip("/")
+        return url in (NETWORK_URLS["ic"].rstrip("/"), "https://ic0.app") or self.env in ("ic", "production")
+
     def _base_flags(self, env: bool = True) -> list[str]:
-        flags = ["-e", self.env] if env else []
+        # Mainnet: `-n ic`. A sheet env named `production` is not an icp
+        # environment in this repo's icp.yaml (`-e production` fails).
+        if not env:
+            flags: list[str] = []
+        elif self._is_mainnet():
+            flags = ["-n", "ic"]
+        else:
+            flags = ["-e", self.env]
         if self.identity:
             flags += ["--identity", self.identity]
         return flags
@@ -416,6 +429,12 @@ class RecordingIc:
 
     def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None) -> None:
         self.record("settings_update", canister_id, set_controllers=set_controllers)
+
+    def stop_canister(self, canister_id: str) -> None:
+        self.record("stop_canister", canister_id)
+
+    def delete_canister(self, canister_id: str) -> None:
+        self.record("delete_canister", canister_id)
 
     def call_conductor(self, backend_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any:
         return self.call_update(backend_id, method, text_arg, timeout=timeout)

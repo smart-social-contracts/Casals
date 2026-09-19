@@ -117,48 +117,139 @@ def cmd_export(ic, args) -> None:
     emit_json(res)
 
 
+# casals_metadata field → conductor canister name, for the canisters the
+# deployer (not the conductor) controls. A legacy file-registry pair is
+# controlled by the backend and is handled like any managed canister.
+_CONDUCTOR_META = {"casals_frontend_canister_id": "casals-frontend", "wasm_store_canister_id": "casals-wasms"}
+
+
+def _conductor_canisters(ic, backend: str, bindings) -> dict[str, str]:
+    """name → id of the conductor's own canisters: the bindings file when there
+    is one, else what the live conductor reports (`casals_metadata`, and
+    `get_bindings` for the multisig)."""
+    out: dict[str, str] = {}
+    if bindings:
+        out.update({k: v for k, v in bindings.conductor.items() if v})
+    out.setdefault("casals-backend", backend)
+    meta = ic.query(backend, "casals_metadata")
+    if isinstance(meta, dict):
+        for key, name in _CONDUCTOR_META.items():
+            if (meta.get(key) or "").strip():
+                out.setdefault(name, meta[key].strip())
+    res = ic.query(backend, "get_bindings")
+    ms = ((res or {}).get("bindings") or {}).get("multisig", "") if isinstance(res, dict) else ""
+    if ms:
+        out.setdefault("multisig", ms)
+    return out
+
+
 def cmd_destroy(ic, args) -> None:
+    """Tear an orchestra down without burning its cycles.
+
+    `delete_canister` on the IC refunds nothing, so nothing is deleted before
+    its balance has moved. Two legs:
+
+    1. Every canister the conductor controls (product canisters, pooled ones,
+       a legacy file-registry pair) goes through the conductor's own
+       `destroy_canister`: it drains the canister into the treasury first and
+       refuses to delete when the drain fails.
+    2. The conductor canisters themselves (frontend, store, multisig, backend
+       last — it holds the treasury) are deleted by the deployer with
+       `icp canister delete`, which returns each balance to the deployer's
+       cycles-ledger account. Where the multisig is the controller, the
+       deployer is added first through a `SetCanisterControllers` proposal
+       (it must be a signer).
+
+    `--all` keeps going past a canister that cannot be handled and reports it;
+    without it the first failure stops everything, nothing half-done."""
+    from casals_cli.multisig import ensure_control
+
     sheet_name = getattr(args, "sheet_name", "") or ""
     env = args.env
     bindings = load_bindings(sheet_name, env) if sheet_name else None
     backend = resolve_backend_id(bindings, getattr(args, "conductor", None))
     if not backend:
-        raise RuntimeError("no conductor bindings for destroy")
+        raise RuntimeError("no conductor bindings for destroy (pass --conductor <backend id>)")
 
     confirm = bool(getattr(args, "confirm_destructive", False))
     destroy_all = bool(getattr(args, "all", False))
     if destroy_all and not confirm:
         raise RuntimeError("destroy --all requires --confirm-destructive")
 
+    deployer = ic.deployer_principal()
+    conductor = _conductor_canisters(ic, backend, bindings)
+    conductor_ids = set(conductor.values())
+    multisig = conductor.get("multisig", "")
+
+    # destroy_canister is controller-or-multisig only. Prod conductors are
+    # owned solely by the multisig — take control first or the drain never
+    # starts and we must not delete anything.
+    if deployer not in (ic.read_controllers(backend) or []):
+        if not multisig:
+            raise RuntimeError(
+                f"{backend} is not controlled by {deployer} and there is no multisig to add them"
+            )
+        ensure_control(ic, backend, deployer, multisig)
+
+    # Leg 1: everything the conductor controls, drained into its treasury.
     tree = ic.query(backend, "get_tree")
-    ids: list[str] = []
+    managed: list[tuple[str, str]] = []
     if isinstance(tree, dict):
         for sec in tree.get("sections") or []:
             for stand in sec.get("stands") or []:
                 for c in stand.get("canisters") or []:
                     cid = (c.get("canister_id") or "").strip()
-                    if cid:
-                        ids.append(cid)
-    if bindings:
-        ids.extend(bindings.conductor.values())
-    ids = list(dict.fromkeys(ids))
+                    if cid and cid not in conductor_ids:
+                        managed.append((c.get("name") or cid, cid))
+    pool = ic.query(backend, "list_pool")
+    for entry in (pool.get("canisters") if isinstance(pool, dict) else pool) or []:
+        cid = (entry.get("canister_id") or "").strip() if isinstance(entry, dict) else ""
+        if cid and cid not in conductor_ids and cid not in {c for _n, c in managed}:
+            managed.append((f"pool:{cid}", cid))
 
-    destroyed = []
-    for cid in ids:
+    drained: list[dict] = []
+    failed: list[dict] = []
+    for name, cid in dict.fromkeys(managed):
         try:
-            ic.stop_canister(cid)
-            ic.delete_canister(cid)
-            destroyed.append(cid)
+            res = ic.call_update(backend, "destroy_canister", json.dumps({"canister_id": cid}), timeout=900)
+            if not (isinstance(res, dict) and res.get("ok")):
+                raise RuntimeError((res or {}).get("error") if isinstance(res, dict) else str(res))
+            drained.append({"name": name, "canister_id": cid, "cycles_reclaimed": res.get("cycles_reclaimed")})
         except Exception as exc:
+            failed.append({"name": name, "canister_id": cid, "error": str(exc)})
             if not destroy_all:
-                raise RuntimeError(f"destroy failed for {cid}: {exc}") from exc
+                raise RuntimeError(f"destroy_canister {name} ({cid}) failed: {exc}") from exc
 
-    if bindings:
+    # Leg 2: the conductor's own canisters, balances returned to the deployer.
+    order = [n for n in conductor if n not in ("casals-backend", "multisig")] + \
+            [n for n in ("multisig", "casals-backend") if n in conductor]
+    before = ic.deployer_cycles_balance()
+    deleted: list[dict] = []
+    for name in order:
+        cid = conductor[name]
+        try:
+            ensure_control(ic, cid, deployer, multisig)  # the multisig adds the deployer, to itself too
+            ic.stop_canister(cid)
+            ic.delete_canister(cid)  # icp recovers the liquid cycles to the caller's cycles-ledger account
+            deleted.append({"name": name, "canister_id": cid})
+        except Exception as exc:
+            failed.append({"name": name, "canister_id": cid, "error": str(exc)})
+            if not destroy_all:
+                raise RuntimeError(f"delete {name} ({cid}) failed: {exc}") from exc
+    after = ic.deployer_cycles_balance()
+
+    if bindings and not failed:
         bindings.remove()
-    emit_json({"ok": True, "destroyed": destroyed})
+    emit_json({
+        "ok": not failed,
+        "drained_into_treasury": drained,
+        "deleted": deleted,
+        "failed": failed,
+        "deployer_cycles_before": before,
+        "deployer_cycles_after": after,
+        "deployer_cycles_recovered": (after - before) if (before is not None and after is not None) else None,
+    })
 
-
-# ── legacy commands kept from v1 ─────────────────────────────────────────────
 
 def cmd_status(ic, args) -> None:
     backend, _ = _backend(args)

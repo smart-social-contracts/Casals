@@ -136,22 +136,21 @@ canister) and pooled otherwise. `plan` before `up` shows exactly that.
 ### Retiring an orchestra without burning its cycles
 
 `delete_canister` on the IC refunds nothing: whatever a canister holds when
-it is deleted is gone. Retiring a whole orchestra (an environment replaced by
-a fresh deploy, say) is therefore done in an order that moves every balance
-before anything is deleted:
+it is deleted is gone. `casals destroy --all --confirm-destructive` does the
+move first:
 
-1. `destroy_canister` for each product canister (the Cycles page's *Destroy*,
-   or the CLI). It drains the canister into the conductor's treasury first and
-   refuses to delete if the drain fails, so nothing is ever burned.
-2. `casals treasury-send --to <successor conductor id> --all` (controller or
-   multisig): the treasury, above its reserve, lands in the orchestra that
-   takes over.
-3. Delete the now-empty conductor canisters and multisig with the deployer
-   (`icp canister delete`). Only the dust below the reserve and the drain fees
-   (a few billion cycles per canister) are lost.
+1. If the deployer is not a controller of the conductor (prod: only the
+   multisig is), it is added through a `SetCanisterControllers` proposal
+   (the deployer must be a signer).
+2. Every product canister goes through the conductor's `destroy_canister`:
+   drain into the treasury, then delete. A failed drain stops everything.
+3. The conductor canisters themselves (frontend, store, multisig, backend
+   last) are `icp canister delete`'d: each balance, including the treasury,
+   returns to the **deployer's cycles-ledger account**.
 
-An orchestra whose only controller is its multisig does each step through a
-multisig proposal; the signers approve them in that same order.
+Only drain fees plus a few billion cycles of dust are lost. To move a
+treasury without deleting the old conductor: `casals treasury-send --to
+<id> --all`.
 
 ### Stands created at runtime
 

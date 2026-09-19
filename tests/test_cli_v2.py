@@ -692,3 +692,60 @@ class TestAdoptLiveConductor:
         b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
         _adopt_live_conductor(ic, b, "backend-live")
         assert b.conductor == {}
+
+
+class TestIcClientNetwork:
+    def test_production_env_is_mainnet(self):
+        ic = IcClient(env="production")
+        assert ic.network_url == "https://icp0.io"
+        assert ic._base_flags()[:2] == ["-n", "ic"]
+        assert ic._base_flags(env=False)[:1] != ["-n"]
+
+
+class TestDestroy:
+    def test_drains_managed_then_deletes_conductor(self):
+        from argparse import Namespace
+        from casals_cli.commands import cmd_destroy
+
+        ic = RecordingIc(env="production")
+        ic.deployer = "deployer"
+        ic.controllers["backend-id"] = ["deployer"]
+        ic.controllers["frontend-id"] = ["deployer"]
+        ic.controllers["product-id"] = ["backend-id"]
+        ic.queries[("backend-id", "casals_metadata")] = {
+            "casals_frontend_canister_id": "frontend-id",
+            "wasm_store_canister_id": "",
+        }
+        ic.queries[("backend-id", "get_bindings")] = {"ok": True, "bindings": {}}
+        ic.queries[("backend-id", "get_tree")] = {
+            "sections": [{"stands": [{"canisters": [
+                {"name": "widget", "canister_id": "product-id"},
+                {"name": "casals-frontend", "canister_id": "frontend-id"},
+            ]}]}]
+        }
+        ic.queries[("backend-id", "list_pool")] = {"canisters": []}
+        ic.updates[("backend-id", "destroy_canister")] = {"ok": True, "cycles_reclaimed": 1}
+
+        args = Namespace(env="production", sheet_name="", conductor="backend-id",
+                         confirm_destructive=True, all=True)
+        cmd_destroy(ic, args)
+
+        updates = [c for c in ic.calls if c[0] == "call_update"]
+        assert updates[0][1][1] == "destroy_canister"
+        deleted = [c[1][0] for c in ic.calls if c[0] == "delete_canister"]
+        assert deleted == ["frontend-id", "backend-id"]
+        assert "product-id" not in deleted
+
+    def test_refuses_when_deployer_is_not_a_controller_and_there_is_no_multisig(self):
+        from argparse import Namespace
+        from casals_cli.commands import cmd_destroy
+
+        ic = RecordingIc(env="production")
+        ic.deployer = "deployer"
+        ic.controllers["backend-id"] = ["someone-else"]
+        ic.queries[("backend-id", "casals_metadata")] = {}
+        ic.queries[("backend-id", "get_bindings")] = {"ok": True, "bindings": {}}
+        args = Namespace(env="production", sheet_name="", conductor="backend-id",
+                         confirm_destructive=True, all=True)
+        with pytest.raises(RuntimeError, match="no multisig"):
+            cmd_destroy(ic, args)

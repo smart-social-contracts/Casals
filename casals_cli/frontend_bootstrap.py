@@ -90,7 +90,7 @@ def write_icp_project(
         dest = os.path.join(project_dir, f"{icp_name}_dist")
         shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(target, dest)
-    root_key = "mainnet" if env == "ic" else "fetch"
+    root_key = "mainnet" if env in ("ic", "production") or "icp0.io" in (network_url or "") else "fetch"
     settings = ""
     canisters = ""
     for spec in ASSET_CANISTERS.values():
