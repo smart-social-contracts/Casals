@@ -232,6 +232,33 @@ def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash
             _progress(f"  applied upgrade_code → {name} (as deployer, via multisig control)")
 
 
+def _adopt_live_conductor(ic, bindings, backend_id: str) -> None:
+    """`up --conductor <id>` on a machine without bindings for that orchestra
+    (an environment first deployed elsewhere, or with an older tool): learn the
+    conductor's canister ids from the conductor itself so the bootstrap upgrades
+    them in place instead of creating a second conductor next to the live one.
+    Ids the bindings already carry win; only gaps are filled."""
+    backend_id = (backend_id or "").strip()
+    if not backend_id or not ic.read_module_hash(backend_id):
+        return
+    live: dict[str, str] = {CONDUCTOR_NAMES["backend"]: backend_id}
+    meta = ic.query(backend_id, "casals_metadata")
+    if isinstance(meta, dict):
+        if meta.get("casals_frontend_canister_id"):
+            live[CONDUCTOR_NAMES["frontend"]] = str(meta["casals_frontend_canister_id"])
+        if meta.get("wasm_store_canister_id"):
+            live[CONDUCTOR_NAMES["wasms"]] = str(meta["wasm_store_canister_id"])
+    res = ic.query(backend_id, "get_bindings")
+    for name in (MULTISIG_NAME,):
+        cid = (((res or {}).get("bindings") or {}).get(name, "") if isinstance(res, dict) else "")
+        if cid:
+            live[name] = str(cid)
+    adopted = {k: v for k, v in live.items() if v and not bindings.conductor.get(k)}
+    if adopted:
+        bindings.conductor.update(adopted)
+        _progress("  adopting the live conductor: " + ", ".join(f"{k}={v}" for k, v in adopted.items()))
+
+
 def multisig_id(ic, backend_id: str) -> str:
     if not backend_id or not ic.read_module_hash(backend_id):
         return ""  # created but never installed (an earlier `up` failed mid-way)
@@ -346,6 +373,7 @@ def run_up(
     )
     if conductor_override:
         bindings.backend_id = conductor_override
+        _adopt_live_conductor(ic, bindings, conductor_override)
 
     # 2. fund
     _step(2)

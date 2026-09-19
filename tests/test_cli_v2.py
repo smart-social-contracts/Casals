@@ -619,3 +619,48 @@ class TestGovernedUpgrade:
         ic = TestMultisigPaths._ic(self)
         deployer_items(ic, self._plan("ab" * 32), "deployer", "ms-id")  # `casals apply` has no sheet
         assert not [c for c in ic.calls if c[0] in ("install_wasm", "icp")]
+
+
+# ── up --conductor <id> without bindings adopts the live conductor ──────────
+
+class TestAdoptLiveConductor:
+    def _ic(self) -> RecordingIc:
+        ic = RecordingIc(env="production")
+        ic.module_hashes["backend-live"] = "aa" * 32
+        ic.queries[("backend-live", "casals_metadata")] = {
+            "casals_frontend_canister_id": "frontend-live",
+            "wasm_store_canister_id": "",  # pre-store conductor: no casals-wasms yet
+        }
+        ic.queries[("backend-live", "get_bindings")] = {"ok": True, "bindings": {"multisig": "ms-live"}}
+        return ic
+
+    def test_fills_gaps_from_the_conductor(self):
+        from casals_cli.bindings import Bindings
+        from casals_cli.up import _adopt_live_conductor
+
+        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
+        _adopt_live_conductor(self._ic(), b, "backend-live")
+        assert b.conductor == {
+            "casals-backend": "backend-live",
+            "casals-frontend": "frontend-live",
+            "multisig": "ms-live",
+        }
+        assert "casals-wasms" not in b.conductor  # left for the bootstrap to create
+
+    def test_existing_bindings_win(self):
+        from casals_cli.bindings import Bindings
+        from casals_cli.up import _adopt_live_conductor
+
+        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={"casals-frontend": "frontend-mine"}, backend_id="backend-live")
+        _adopt_live_conductor(self._ic(), b, "backend-live")
+        assert b.conductor["casals-frontend"] == "frontend-mine"
+        assert b.conductor["casals-backend"] == "backend-live"
+
+    def test_uninstalled_conductor_is_left_alone(self):
+        from casals_cli.bindings import Bindings
+        from casals_cli.up import _adopt_live_conductor
+
+        ic = RecordingIc(env="production")  # no module hash: created, never installed
+        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
+        _adopt_live_conductor(ic, b, "backend-live")
+        assert b.conductor == {}

@@ -126,6 +126,27 @@ def test_assets_stat_read_and_list(passthrough, monkeypatch):
         _drive(wasm_store.stat_file("wasm", "missing"))
 
 
+def test_assets_empty_file_is_an_asset_not_a_wasm(passthrough, monkeypatch):
+    """A zero-byte frontend asset (`.gitkeep`) syncs as b""; the same file read
+    as a WASM is the failed-upload error."""
+    _use_assets(monkeypatch, {"/frontend/x/custom/.gitkeep": b""})
+
+    assert _drive(wasm_store.read_file("frontend", "x/custom/.gitkeep")) == b""
+
+    pieces = []
+
+    def on_piece(p):
+        pieces.append(p)
+        return
+        yield
+
+    with pytest.raises(Exception, match="no bytes"):
+        _drive(wasm_store.iter_file("frontend", "x/custom/.gitkeep", on_piece))
+    with pytest.raises(Exception, match="no bytes"):
+        _drive(wasm_store.stat_file("frontend", "x/custom/.gitkeep"))
+    assert pieces == []
+
+
 def test_assets_opt_blob_shapes():
     digest = hashlib.sha256(b"x").digest()
     assert wasm_store._opt_blob_hex(None) == ""

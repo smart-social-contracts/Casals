@@ -64,10 +64,30 @@ def sh(*argv: str, check: bool = True, timeout: int = 1800, **env) -> subprocess
     return res
 
 
+def _absolutize_local_sources(sheet: dict, sheet_dir: str) -> None:
+    """The CLI resolves a relative `local:` source against the sheet's own
+    directory, then the Casals checkout. Scenarios write edited copies of the
+    sheet under $CASALS_HOME, so a product sheet's `local:.basilisk/...` or
+    `local:../realms/...` would stop resolving there: pin those to the original
+    sheet's directory up front (Casals-relative paths are left as they are)."""
+    registry = sheet.get("registry") or {}
+    for entry in [*(registry.get("wasms") or []), *(registry.get("publish") or [])]:
+        src = entry.get("source") if isinstance(entry, dict) else None
+        if not isinstance(src, str) or not src.startswith("local:"):
+            continue
+        rel = src[len("local:"):]
+        if os.path.isabs(rel):
+            continue
+        here = os.path.join(sheet_dir, rel)
+        if os.path.exists(here) and not os.path.exists(os.path.join(REPO, rel)):
+            entry["source"] = "local:" + os.path.abspath(here)
+
+
 class Orchestra:
     def __init__(self, name: str, sheet_path: str, home: str):
         self.name, self.sheet_path, self.home = name, sheet_path, home
         self.sheet = json.load(open(sheet_path))
+        _absolutize_local_sources(self.sheet, os.path.dirname(os.path.abspath(sheet_path)))
         self.adopt_foreign_code()
 
     def adopt_foreign_code(self) -> None:

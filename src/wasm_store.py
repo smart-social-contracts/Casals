@@ -102,13 +102,17 @@ def stat_file(namespace: str, path: str):
 # ── streaming read ───────────────────────────────────────────────────────────
 
 
-def iter_file(namespace: str, path: str, on_piece):
+def iter_file(namespace: str, path: str, on_piece, *, allow_empty: bool = False):
     """Generator: stream a file to ``on_piece(bytes)`` (a generator itself, so it
     may make inter-canister calls) and return the total byte count.
 
     ``get`` returns chunk 0 plus the total; every later chunk comes from
     ``get_chunk`` and has the size of chunk 0. Callers batch pieces as they
     need (``_pull_and_install`` fills 1 MiB chunk-store entries).
+
+    A zero-length file is an error for a WASM (a failed upload looks exactly
+    like that) but a legitimate frontend asset (a `.gitkeep`, an empty
+    placeholder): ``allow_empty`` returns 0 for it without calling ``on_piece``.
     """
     key = store_key(namespace, path)
     svc = _assets()
@@ -122,6 +126,8 @@ def iter_file(namespace: str, path: str, on_piece):
     sha_hex = _opt_blob_hex(_field(got, "sha256"))
     sha_opt = bytes.fromhex(sha_hex) if sha_hex else None  # pins the encoding across chunk reads
     encoding = str(_field(got, "content_encoding", "identity") or "identity")
+    if total <= 0 and allow_empty:
+        return 0
     if total <= 0 or not first:
         raise Exception(f"wasm store returned no bytes for {namespace}/{path} (size=0; re-seed it)")
     yield from on_piece(first)
@@ -139,7 +145,8 @@ def iter_file(namespace: str, path: str, on_piece):
 
 
 def read_file(namespace: str, path: str) -> bytes:
-    """Generator: whole file in memory (frontend assets and bundle files, not WASMs)."""
+    """Generator: whole file in memory (frontend assets and bundle files, not
+    WASMs). An empty asset reads as ``b""``."""
     parts: list = []
 
     def collect(piece):
@@ -147,7 +154,7 @@ def read_file(namespace: str, path: str) -> bytes:
         return
         yield  # a generator, like the callers iter_file expects
 
-    yield from iter_file(namespace, path, collect)
+    yield from iter_file(namespace, path, collect, allow_empty=True)
     return b"".join(parts)
 
 

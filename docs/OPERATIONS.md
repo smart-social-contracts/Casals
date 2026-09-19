@@ -113,6 +113,25 @@ done without touching the sheet from the Operator access page (*Assign* →
 to the conductor. To revoke, remove the alias (or the claimed commander) and
 `up` — the usual path.
 
+### Moving a pre-store environment onto casals-wasms
+
+An environment deployed before the wasm store (its conductor block still had
+`file_registry` / `file_registry_frontend`) is migrated by the same `up`,
+with a sheet that declares `conductor.wasms` and `sha256` pins:
+
+```bash
+casals pin casals.json                       # build, write each artifact's sha256; review, commit
+casals up -e production casals.json --conductor <casals-backend id>
+```
+
+`--conductor` is needed on any machine that has no bindings for the
+environment (the original deploy ran elsewhere, or with the old tooling):
+`up` asks the live conductor for its canister ids and upgrades those in
+place — only the store is new. On the conductor's side the retired
+file-registry pair is re-homed if the sheet still declares a canister under
+that name in a section (GaaS keeps its registry, with its data, as a product
+canister) and pooled otherwise. `plan` before `up` shows exactly that.
+
 ### Stands created at runtime
 
 Products mint stands from a section's `stand_template` with `create_stand`
