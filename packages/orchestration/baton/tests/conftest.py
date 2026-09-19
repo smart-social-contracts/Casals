@@ -26,10 +26,20 @@ REGISTRY_V1_PATH = "managed_v1.wasm"
 REGISTRY_V2_PATH = "managed_v2.wasm"
 
 
+# The deployer identity for calls that name none. Defaults to icp's default
+# identity; set this on workstations whose default is a hardware (HSM) key so
+# the suite signs with a plaintext local identity instead.
+DEFAULT_IDENTITY = os.environ.get("CASALS_TEST_IDENTITY") or None
+
+
 def icp(args, cwd=CASALS_ROOT, check=True, timeout=300, identity=None):
     cmd = ["icp"] + args
-    if identity:
-        cmd.extend(["--identity", identity])
+    # Only subcommands that sign take --identity (`identity`, `build`, `network`
+    # do not); everything else runs as the given (or default test) identity.
+    if args and args[0] not in ("identity", "build", "network"):
+        identity = identity or DEFAULT_IDENTITY
+        if identity and "--identity" not in args:
+            cmd.extend(["--identity", identity])
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -125,6 +135,7 @@ def call(canister: str, method: str, arg=None, cwd=CASALS_ROOT, identity=None):
 
 def identity_principal(identity=None) -> str:
     args = ["identity", "principal"]
+    identity = identity or DEFAULT_IDENTITY
     if identity:
         args.extend(["--identity", identity])
     out = icp(args).stdout.strip()
@@ -180,7 +191,7 @@ def upload_store_file(store_id: str, namespace: str, path: str, file_path: str) 
     with open(file_path, "rb") as f:
         data = f.read()
     sha = hashlib.sha256(data).hexdigest()
-    _ws.upload_bytes(IcClient(env="local", project_root=CASALS_ROOT), store_id, namespace, path, data, sha, "application/wasm")
+    _ws.upload_bytes(IcClient(env="local", identity=DEFAULT_IDENTITY, project_root=CASALS_ROOT), store_id, namespace, path, data, sha, "application/wasm")
     return sha
 
 
@@ -331,6 +342,13 @@ def baton_env(replica, deploy_principal, registry_env):
         "bake_window_seconds": 0,
         "install_cycles_buffer": 1_000_000_000,
         "wasm_store_canister_id": registry_env["registry_id"],
+    })))
+    # The top commander gets no approval bypass (approval_policy.is_approval_eligible):
+    # like a sheet's `baton.commanders: ["$self", ...]`, the deployer is registered
+    # as a weight-1 voter so the 1-of default policy passes on its own approval.
+    ok(call(baton_id, "add_commander", json.dumps({
+        "principal": deploy_principal,
+        "capabilities": ["propose:managed_upgrade", "submit_approval:managed_upgrade"],
     })))
     approver = "approver-principal-001"
     ok(call(baton_id, "add_commander", json.dumps({

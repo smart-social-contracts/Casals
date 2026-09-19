@@ -17,6 +17,22 @@ python3 -m pytest tests/test_unit.py -v
 python3 -m pytest tests/test_integration.py -v   # requires icp-cli + local replica
 ```
 
+The integration suite signs with icp's default identity. On a workstation whose
+default is a hardware key, point it at a plaintext one:
+`CASALS_TEST_IDENTITY=local-dev python3 -m pytest tests/test_integration.py`.
+
+## Pipeline execution
+
+Once quorum is met the baton drives itself: every phase arms a 0 s resume timer
+(the bake window is the one longer wait). `execute_action` can still be called
+to pump a phase by hand, but only one executor runs a phase of an action at a
+time — a concurrent call (or a timer tick racing an operator) gets
+`action <id> is already in progress` and nothing is done twice. Arming a resume
+timer cancels the previous one, so a hand-pumped phase does not leave a second
+timer ticking next to its own. (1.5.1: before this guard two executors could
+run the UPGRADE step at once; the second found the chunk store the first one
+had already cleared and the action was reverted.)
+
 ## Health probe contract
 
 Managed canisters should expose:

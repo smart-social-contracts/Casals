@@ -125,6 +125,15 @@ _post_upgrade_hook = None
 
 _active_timer = None
 
+# One pipeline phase of an action runs at a time. Each phase arms a resume
+# timer, and an operator (or a test loop) may call execute_action meanwhile;
+# without this guard two executors run the same phase concurrently — the second
+# UPGRADE step then finds the chunk store the first one already cleared. The
+# marker is in main memory only (a trapped phase must not wedge the action
+# forever), and it expires so a lost reply cannot either.
+_inflight: dict[str, int] = {}
+INFLIGHT_TTL_NS = 5 * 60 * 1_000_000_000
+
 
 def _caller() -> str:
     return ic.caller().to_str()
@@ -198,7 +207,28 @@ def _arm_resume_timer(action_id: str, delay_secs: int = 0) -> None:
         except Exception as exc:  # pragma: no cover - defensive
             _log.error(f"resume {action_id} failed: {exc}")
 
+    # One pending resume at a time: a phase driven by an external call would
+    # otherwise arm a second timer next to the one the previous phase armed.
+    if _active_timer is not None:
+        try:
+            ic.clear_timer(_active_timer)
+        except Exception:  # pragma: no cover - already fired or cleared
+            pass
     _active_timer = ic.set_timer(Duration(secs), _tick)
+
+
+def _phase_begin(action_id: str) -> bool:
+    """Claim the action for one phase; False when another executor holds it."""
+    now = _now()
+    until = _inflight.get(action_id)
+    if until is not None and until > now:
+        return False
+    _inflight[action_id] = now + INFLIGHT_TTL_NS
+    return True
+
+
+def _phase_end(action_id: str) -> None:
+    _inflight.pop(action_id, None)
 
 
 def _execute_action_gen(action_id: str) -> Async[text]:
@@ -212,6 +242,16 @@ def _execute_action_gen(action_id: str) -> Async[text]:
     if is_terminal(record.get("status", "")):
         return _ok(action_id=action_id, status=record["status"])
 
+    if not _phase_begin(action_id):
+        return _err(f"action {action_id} is already in progress")
+    try:
+        return (yield from _run_phase_gen(action_id, record))
+    finally:
+        _phase_end(action_id)
+
+
+def _run_phase_gen(action_id: str, record: dict) -> Async[text]:
+    """Drive exactly one pipeline phase of a non-terminal action (caller holds the guard)."""
     action_type = record.get("action_type") or ACTION_TYPE_MANAGED_UPGRADE
     if action_type == ACTION_TYPE_ASSET_PROVISION:
         return (yield from _execute_asset_provision_gen(action_id, record))

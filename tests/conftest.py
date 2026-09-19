@@ -22,6 +22,11 @@ import time
 import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# `casals_cli` is a plain package at the repo root (not pip-installed); the
+# store helpers below import it, so put the root on the path before any of
+# them run — the CI jobs invoke pytest with the tests dir as the only rootdir.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 CANISTER_NAME = "casals_backend"
 
 # The WASM store (`casals-wasms`) is a stock certified-assets canister; the
@@ -199,10 +204,9 @@ def _create_detached() -> str:
 
 def _store_client():
     """The CLI's IC client for the local replica (binary Candid calls to the store)."""
-    sys.path.insert(0, REPO_ROOT)
     from casals_cli.ic import IcClient
 
-    return IcClient(env="local", project_root=REPO_ROOT)
+    return IcClient(env="local", identity=os.environ.get("CASALS_TEST_IDENTITY") or None, project_root=REPO_ROOT)
 
 
 def store_put(store_id: str, namespace: str, path: str, data: bytes, content_type: str = "application/wasm") -> str:

@@ -94,8 +94,8 @@
       },
       {
         "family": "orchestration-baton",
-        "version": "1.5.0",
-        "source": "local:seed/templates/orchestration-baton@1.5.0.wasm.gz"
+        "version": "1.5.1",
+        "source": "local:seed/templates/orchestration-baton@1.5.1.wasm.gz"
       },
       {
         "family": "hello-world-rust",
@@ -154,7 +154,7 @@
               "name": "rust-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.5.0",
+              "wasm": "orchestration-baton@1.5.1",
               "install_arg": {
                 "top_commander": "$self"
               },

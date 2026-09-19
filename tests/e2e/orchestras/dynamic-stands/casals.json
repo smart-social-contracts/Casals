@@ -64,7 +64,7 @@
       { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
       { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" },
       { "family": "orchestration-multisig", "version": "1.6.0", "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz" },
-      { "family": "orchestration-baton", "version": "1.5.0", "source": "local:seed/templates/orchestration-baton@1.5.0.wasm.gz" }
+      { "family": "orchestration-baton", "version": "1.5.1", "source": "local:seed/templates/orchestration-baton@1.5.1.wasm.gz" }
     ]
   },
   "sections": [
@@ -102,7 +102,7 @@
             "name": "{stand}-baton",
             "mode": "managed",
             "kind": "backend",
-            "wasm": "orchestration-baton@1.5.0",
+            "wasm": "orchestration-baton@1.5.1",
             "install_arg": { "top_commander": "$self" },
             "controllers": ["$multisig"]
           },
