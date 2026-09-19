@@ -390,15 +390,42 @@ class TestFundCheck:
         assert len(topups) == 1
         assert topups[0][1] == ("be", 6_900_000_000_000)  # balance minus the 0.1 TC keep
 
-    def test_fund_conductor_refuses_when_the_floor_is_out_of_reach(self):
+    def test_fund_conductor_refuses_when_the_floor_is_out_of_reach_on_a_fresh_deploy(self):
         from casals_cli.up import fund_conductor
 
         ic = RecordingIc(env="production")
         ic.cycles["__deployer__"] = 1_440_000_000_000
         ic.queries[("be", "get_status")] = {"cycles": 1_470_000_000_000}
         with pytest.raises(RuntimeError, match="nothing was spent"):
-            fund_conductor(ic, self._SHEET, "production", "be")
+            fund_conductor(ic, self._SHEET, "production", "be", strict=True)
         assert not [c for c in ic.calls if c[0] == "top_up"]
+
+    def test_resume_pours_what_the_deployer_can_spare(self):
+        """GaaS prod resume: treasury 3.26 TC under the 5 TC floor, deployer
+        0.90 TC, no creates left — the run must go on, not demand +10 TC."""
+        from casals_cli.bindings import Bindings
+        from casals_cli.up import check_funds, fund_conductor
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 900_000_000_000
+        ic.module_hashes["be"] = "hash"
+        ic.queries[("be", "get_status")] = {"cycles": 3_260_000_000_000}
+        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep",
+                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-wasms": "ws"}, backend_id="be")
+        sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 14}}})
+        need = check_funds(ic, sheet, "production", "dep", b)   # warns, does not raise
+        assert need["strict"] is False and need["creates"] == []
+        fund_conductor(ic, sheet, "production", "be", strict=need["strict"])
+        topups = [c for c in ic.calls if c[0] == "top_up"]
+        assert topups == [("top_up", ("be", 800_000_000_000), {})]
+
+    def test_fresh_deploy_short_of_the_top_up_is_refused(self):
+        from casals_cli.up import check_funds
+
+        ic = RecordingIc(env="production")
+        ic.cycles["__deployer__"] = 7_000_000_000_000   # covers the 3 deposits, not the treasury
+        with pytest.raises(RuntimeError, match="shortfall"):
+            check_funds(ic, self._SHEET, "production", "dep", None)
 
 
 # ── oracle ───────────────────────────────────────────────────────────────────
