@@ -193,7 +193,12 @@ def run_oracle(
         family, version = wasm_ref(str(canister.get("wasm") or ""))
         entry = next((e for e in (sheet.get("registry") or {}).get("wasms") or []
                       if e.get("family") == family and (not version or e.get("version") == version)), {})
-        expected_hash = (entry.get("sha256") or registry_hashes.get(registry_path(family, entry.get("version") or version)) or "")
+        pinned = (entry.get("sha256") or "").strip()
+        in_store = registry_hashes.get(registry_path(family, entry.get("version") or version)) or ""
+        # Same pin policy as `up`: production installs the pinned artifact, so
+        # the pin is what must be live; elsewhere the build `up` uploaded wins
+        # over a pin that has gone stale (pins are enforced in production only).
+        expected_hash = (pinned or in_store) if env == "production" else (in_store or pinned)
         if mode == "managed" and expected_hash:
             if live_hash and live_hash.lower() == expected_hash.lower():
                 report.add(cname, "module_hash", "PASS", live_hash)

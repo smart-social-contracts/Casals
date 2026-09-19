@@ -490,6 +490,34 @@ class TestOracle:
         assert not report.passed
         assert any(r.field.startswith(field.split("[")[0]) or field in r.field for r in report.rows if r.result == "FAIL")
 
+    def test_stale_pin_is_enforced_in_production_only(self):
+        """Same pin policy as `up`: a laptop's build is what the store holds and
+        what is live, so a stale sheet pin is not drift there; in production
+        the pin is what must be live."""
+        ic = RecordingIc()
+        with open(CORPUS, encoding="utf-8") as f:
+            sheet = json.load(f)
+        bindings = {
+            "casals-backend": "backend-id",
+            "casals-wasms": "store-id",
+            "file-registry": "fr-id",
+            "file-registry-frontend": "fr-fe-id",
+            "casals-frontend": "fe-id",
+            "multisig": "ms-id",
+            "motoko-backend": "motoko-id",
+        }
+        _governed_live(ic, sheet, bindings)
+        entry = next(e for e in sheet["registry"]["wasms"] if e["family"] == "hello-world-motoko")
+        entry["sha256"] = "c" * 64  # pinned before the artifact was rebuilt
+        sheet["environments"]["production"] = sheet["environments"]["local"]  # the corpus has no production block
+
+        def hash_row(env):
+            return next(r for r in run_oracle(sheet, env, bindings, ic).rows
+                        if r.canister == "motoko-backend" and r.field == "module_hash")
+
+        assert hash_row("local").result == "PASS"
+        assert hash_row("production").result == "FAIL"
+
 
 # ── show / graph ─────────────────────────────────────────────────────────────
 
