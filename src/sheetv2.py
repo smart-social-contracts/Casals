@@ -906,8 +906,6 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
         for field in ("family", "version", "source"):
             if not isinstance(entry.get(field), str):
                 errors.append(f"{path}.{field} is required")
-        if env == "production" and not entry.get("sha256"):
-            errors.append(f"{path}.sha256 is required for production")
     publish = registry.get("publish", [])
     if not isinstance(publish, list):
         errors.append("registry.publish must be a list")
@@ -1034,26 +1032,23 @@ def _validate_placeholders_for_env(
                 )
         elif isinstance(value, dict):
             for k, v in value.items():
+                if _is_comment_key(k):
+                    continue
                 check(v, f"{path}.{k}", stand, in_canister)
         elif isinstance(value, list):
             for i, item in enumerate(value):
                 check(item, f"{path}[{i}]", stand, in_canister)
 
+    # Conductor and governance blocks are yielded by _iter_named_canisters too
+    # (on their synthetic stands), so this is the one walk over every canister.
     for section, stand, cname, canister in _iter_named_canisters(sheet):
         base = names.get(cname, cname)
         _walk_for_placeholders(canister, base, stand, check)
     conductor = sheet.get("conductor")
     if isinstance(conductor, dict):
-        for key in CONDUCTOR_KEYS:
-            block = conductor.get(key)
-            if isinstance(block, dict):
-                _walk_for_placeholders(block, f"conductor.{key}", None, check)
         for field in ("commanders", "settings"):
             if field in conductor:
                 check(conductor[field], f"conductor.{field}", None)
-    governance = sheet.get("governance")
-    if isinstance(governance, dict) and isinstance(governance.get("multisig"), dict):
-        _walk_for_placeholders(governance["multisig"], "governance.multisig", None, check)
     if isinstance(sheet.get("domains"), list):
         check(sheet["domains"], "domains", None)
     if isinstance(sheet.get("cycles"), dict):
@@ -1089,10 +1084,17 @@ def _validate_placeholders_for_env(
                 check(tmpl["commanders"], f"sections[{si}].stand_template.commanders", sample)
 
 
+def _is_comment_key(key: Any) -> bool:
+    """`$comment` (and `$comment_*`) entries are prose, not configuration."""
+    return isinstance(key, str) and key.startswith("$comment")
+
+
 def _walk_for_placeholders(obj: Any, path: str, stand: dict | None, check) -> None:
     """Placeholders inside one canister block (`$this` is legal only here)."""
     if isinstance(obj, dict):
         for k, v in obj.items():
+            if _is_comment_key(k):
+                continue
             check(v, f"{path}.{k}", stand, True)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):

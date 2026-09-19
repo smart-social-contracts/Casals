@@ -391,6 +391,7 @@ def run_up(
         project_root=project_root,
         store_id=store_id,
         progress=_progress,
+        strict_pins=(env == "production"),
     )
 
     # bind_conductor

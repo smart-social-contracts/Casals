@@ -114,6 +114,72 @@ def test_migrates_legacy_layout_and_is_idempotent(db, monkeypatch):
     assert second == {"rehomed": [], "orphans": []}
 
 
+def test_legacy_registry_row_is_kept_when_the_sheet_declares_it_as_a_product(db, monkeypatch):
+    """GaaS keeps a file registry of its own (branding, extension packages):
+    once the migrated sheet declares `Infra/file-registry/file-registry`, the
+    conductor's old `file-registry` row moves there — same canister, no pool."""
+    import bootstrap
+    from models import Canister
+
+    sheet = {
+        "version": 2,
+        "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+        "sections": [{"name": "Infra", "stands": [{"name": "file-registry", "canisters": [
+            {"name": "file-registry"}, {"name": "file-registry-frontend"},
+        ]}]}],
+    }
+    monkeypatch.setattr(bootstrap, "load_sheet_doc", lambda: (sheet, "production", "h"))
+    pooled = []
+    monkeypatch.setattr(bootstrap, "_pool_free", lambda cid: pooled.append(cid))
+
+    be = Canister(name="casals-backend")
+    be.canister_id = SELF
+    fr = Canister(name="file-registry")
+    fr.canister_id = "ccccc-cc"
+    bootstrap.ensure_core_layout()  # legacy rows on the conductor stand
+    fr.stand = bootstrap.ensure_core_stand(bootstrap.CORE_STAND)
+    frf = Canister(name="file-registry-frontend")  # never declared as a product → pooled
+    frf.canister_id = "ddddd-dd"
+
+    out = bootstrap.ensure_core_layout()
+    assert "file-registry" in out["rehomed"]
+    assert pooled == []
+    list(Canister.instances())
+    assert Canister["file-registry"].canister_id == "ccccc-cc"
+    assert _layout(_tree())["Infra"] == {"file-registry": ["file-registry", "file-registry-frontend"]}
+
+
+def test_legacy_registry_rows_wait_for_the_migrated_sheet(db, monkeypatch):
+    """At post_upgrade the stored sheet is still the old one (it declares
+    conductor.file_registry): nothing is pooled or moved until `set_sheet`."""
+    import bootstrap
+    from models import Canister
+
+    old_sheet = {"version": 2, "conductor": {"backend": {}, "frontend": {}, "file_registry": {}, "file_registry_frontend": {}}}
+    monkeypatch.setattr(bootstrap, "load_sheet_doc", lambda: (old_sheet, "production", "h"))
+    pooled = []
+    monkeypatch.setattr(bootstrap, "_pool_free", lambda cid: pooled.append(cid))
+
+    be = Canister(name="casals-backend")
+    be.canister_id = SELF
+    fr = Canister(name="file-registry")
+    fr.canister_id = "ccccc-cc"
+    fr.stand = bootstrap.ensure_core_stand(bootstrap.CORE_STAND)
+
+    bootstrap.ensure_core_layout()
+    assert pooled == []
+    list(Canister.instances())
+    assert Canister["file-registry"] is not None
+
+    # The migrated sheet arrives without a product file registry: now it is pooled.
+    new_sheet = {"version": 2, "conductor": {"backend": {}, "frontend": {}, "wasms": {}}, "sections": []}
+    monkeypatch.setattr(bootstrap, "load_sheet_doc", lambda: (new_sheet, "production", "h2"))
+    bootstrap.ensure_core_layout()
+    assert pooled == ["ccccc-cc"]
+    list(Canister.instances())
+    assert Canister["file-registry"] is None
+
+
 def test_orphans_are_homed_by_sheet_or_reported(db, monkeypatch):
     import bootstrap
     from models import Canister

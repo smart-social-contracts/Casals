@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 
@@ -38,6 +39,51 @@ def cmd_plan(ic, args, project_root: str) -> None:
             print_plan_table(res.get("plan") or {})
         else:
             emit_json(res)
+
+
+def cmd_pin(args, project_root: str) -> None:
+    """Resolve every `registry.wasms` source (building `build:` targets) and write
+    each artifact's sha256 into the sheet file. Production validation refuses a
+    row without a pin, so the deploy recipe is: build, `casals pin`, review the
+    diff, commit, `casals up -e production`. `--check` only compares: exit 1 when
+    a pinned row no longer matches what its source builds to (or has no pin)."""
+    from casals_cli.registry import resolve_source
+
+    path = args.sheet
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    sheet = json.loads(raw)
+    sheet_dir = os.path.dirname(os.path.abspath(path))
+    rows: list[dict] = []
+    drift = 0
+    for entry in (sheet.get("registry") or {}).get("wasms") or []:
+        if not isinstance(entry, dict):
+            continue
+        family, version = str(entry.get("family") or ""), str(entry.get("version") or "")
+        before = (entry.get("sha256") or "").strip().lower()
+        _data, digest = resolve_source(str(entry.get("source") or ""), sheet_dir=sheet_dir, project_root=project_root)
+        state = "unchanged" if before == digest else ("unpinned" if not before else "changed")
+        if state != "unchanged":
+            drift += 1
+            if not getattr(args, "check", False):
+                entry["sha256"] = digest
+        rows.append({"family": family, "version": version, "sha256": digest, "was": before or None, "state": state})
+    if drift and not getattr(args, "check", False):
+        indent = 2 if "\n  " in raw else None
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(sheet, f, indent=indent, ensure_ascii=False)
+            f.write("\n")
+    if getattr(args, "json", False):
+        emit_json({"ok": not (drift and getattr(args, "check", False)), "written": bool(drift) and not getattr(args, "check", False), "rows": rows})
+    else:
+        for r in rows:
+            print(f"  {r['family']}@{r['version']:<12} {r['sha256']}  {r['state']}")
+        if getattr(args, "check", False):
+            print(f"{'ok: every pin matches' if not drift else f'{drift} row(s) drift from their pins'}")
+        else:
+            print(f"{path}: {drift} pin(s) written" if drift else f"{path}: pins up to date")
+    if drift and getattr(args, "check", False):
+        sys.exit(1)
 
 
 def cmd_apply(ic, args) -> None:

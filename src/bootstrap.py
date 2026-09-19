@@ -28,6 +28,7 @@ from pool import _pool_free
 from sheet_storage import load_sheet_doc
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    LEGACY_CONDUCTOR_KEYS,
     LEGACY_CONDUCTOR_NAMES,
     MULTISIG_NAME,
     SYNTHETIC_SECTION_CONDUCTOR,
@@ -199,6 +200,14 @@ def _declared_homes() -> dict[str, tuple[str, str]]:
     return out
 
 
+def _stored_sheet_declares_legacy_registry() -> bool:
+    """True while the stored sheet still carries `conductor.file_registry*`
+    (a sheet from before the casals-wasms store)."""
+    sheet, _env, _sh = load_sheet_doc()
+    conductor = (sheet or {}).get("conductor")
+    return isinstance(conductor, dict) and any(k in conductor for k in LEGACY_CONDUCTOR_KEYS)
+
+
 def _home_on(st, sname: str, dname: str) -> bool:
     """Attach `st` to `sname/dname`, creating the rows when missing."""
     list(Section.instances())
@@ -237,14 +246,30 @@ def ensure_core_layout() -> dict:
     moved = []
     conductor_ids = _conductor_ids()
 
-    # 0. the retired file-registry pair → back to the pool (the canisters are
-    #    controlled by Casals, so a later stand reuses them instead of paying
-    #    for a create). The casals-wasms store holds the artifacts now.
+    # 0. the retired file-registry pair. The casals-wasms store holds Casals'
+    #    artifacts now, but a product may keep a file registry of its own with
+    #    live data in it (GaaS: realm branding, extension packages): when the
+    #    sheet declares a section canister under the same name, the row is
+    #    re-homed on that stand — same canister id, state untouched, later
+    #    reconciled like any other member. Otherwise it goes back to the pool
+    #    (controlled by Casals, so a later stand reuses it instead of paying
+    #    for a create). While the stored sheet is still the old one (this runs
+    #    at post_upgrade, before `casals up` sets the migrated sheet) the rows
+    #    are left alone: the decision belongs to the sheet that replaces it.
+    homes = _declared_homes()
     pooled = []
     for st in list(Canister.instances()):
         name = (st.name or "").strip()
-        if name not in LEGACY_REGISTRY_NAMES:
+        if name not in LEGACY_REGISTRY_NAMES or _stored_sheet_declares_legacy_registry():
             continue
+        if is_core_stand(st.stand) or st.stand is None:
+            if name in homes and homes[name][0] != CORE_SECTION:
+                if _home_on(st, *homes[name]):
+                    moved.append(name)
+                    _log.info(f"core layout: '{name}' is a product canister in the sheet; kept as {homes[name]}")
+                continue
+        else:
+            continue  # already on a product stand: the sheet's business
         cid = (st.canister_id or "").strip()
         _pool_free(cid)
         st.delete()
@@ -302,7 +327,6 @@ def ensure_core_layout() -> dict:
             _append_event("stand_deleted", "", {"name": LEGACY_CORE_STAND, "core_migration": True})
 
     # 4. every other stand-less row: the stand the sheet declares for it
-    homes = _declared_homes()
     for st in orphan_canisters():
         name = (st.name or "").strip()
         if name in homes and _home_on(st, *homes[name]):

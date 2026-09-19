@@ -91,6 +91,46 @@ def test_ensure_uploads_seeds_the_store(ic, tmp_path):
     assert [(r["store"], r["action"]) for r in rows] == [("wasm store", "skipped")]
 
 
+def test_stale_pin_is_an_error_in_production_only(ic, tmp_path):
+    wasm = tmp_path / "hello.wasm"
+    wasm.write_bytes(b"\0asm v2")
+    digest = hashlib.sha256(b"\0asm v2").hexdigest()
+    sheet = {"registry": {"wasms": [{"family": "hello", "version": "main", "source": f"local:{wasm}", "sha256": "ab" * 32}]}}
+    sheet_path = str(tmp_path / "casals.json")
+
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        ensure_registry_uploads(ic, sheet, sheet_path=sheet_path, project_root=str(tmp_path), store_id=STORE)
+
+    notes = []
+    rows = ensure_registry_uploads(ic, sheet, sheet_path=sheet_path, project_root=str(tmp_path), store_id=STORE,
+                                   strict_pins=False, progress=notes.append)
+    assert sheet["registry"]["wasms"][0]["sha256"] == digest, "re-pinned to what was built"
+    assert rows[0]["sha256"] == digest and rows[0]["action"] == "uploaded"
+    assert any("pinned abababababab" in n and "enforced in production only" in n for n in notes)
+
+
+def test_pin_command_writes_and_checks(tmp_path, capsys):
+    from types import SimpleNamespace
+    from casals_cli.commands import cmd_pin
+
+    wasm = tmp_path / "hello.wasm"
+    wasm.write_bytes(b"\0asm pinned")
+    digest = hashlib.sha256(b"\0asm pinned").hexdigest()
+    sheet_path = tmp_path / "casals.json"
+    sheet_path.write_text(json.dumps({"registry": {"wasms": [
+        {"family": "hello", "version": "1.0.0", "source": f"local:{wasm}"},
+    ]}}, indent=2) + "\n")
+
+    with pytest.raises(SystemExit):
+        cmd_pin(SimpleNamespace(sheet=str(sheet_path), check=True, json=False), str(tmp_path))
+    assert "sha256" not in sheet_path.read_text(), "--check never writes"
+
+    cmd_pin(SimpleNamespace(sheet=str(sheet_path), check=False, json=False), str(tmp_path))
+    assert json.loads(sheet_path.read_text())["registry"]["wasms"][0]["sha256"] == digest
+    cmd_pin(SimpleNamespace(sheet=str(sheet_path), check=True, json=False), str(tmp_path))  # now clean
+    assert "every pin matches" in capsys.readouterr().out
+
+
 def test_ensure_uploads_requires_a_store(ic, tmp_path):
     with pytest.raises(RuntimeError, match="no WASM store bound"):
         ensure_registry_uploads(ic, {"registry": {"wasms": []}}, sheet_path=str(tmp_path / "s.json"),

@@ -223,11 +223,17 @@ def ensure_registry_uploads(
     store_id: str,
     namespace: str = WASM_NAMESPACE,
     progress=None,
+    strict_pins: bool = True,
 ) -> list[dict]:
     """Upload missing/changed wasms to the store and pin each entry's ``sha256``
     in ``sheet`` to the artifact actually uploaded: what the conductor then
     plans against is exactly this build. Returns summary rows (one per
-    artifact)."""
+    artifact).
+
+    A row's ``sha256`` is what production must install: with ``strict_pins`` a
+    source that builds to anything else is an error. Non-production runs pass
+    ``strict_pins=False`` — a laptop or CI builds its own artifacts, so a stale
+    pin is reported and the row is re-pinned to what was actually built."""
     if not (store_id or "").strip():
         raise RuntimeError("no WASM store bound: the casals-wasms canister has no id (declare conductor.wasms)")
     targets = [StoreTarget(ic, store_id)]
@@ -246,10 +252,13 @@ def ensure_registry_uploads(
             source,
             sheet_dir=sheet_dir,
             project_root=project_root,
-            expected_sha256=expected,
+            expected_sha256=expected if strict_pins else None,
         )
-        if not expected:
-            entry["sha256"] = digest
+        if expected and expected.lower() != digest:
+            if progress:
+                progress(f"  {family}@{version}: pinned {expected[:12]}… but the source builds to {digest[:12]}…; "
+                         f"using the build (pins are enforced in production only)")
+        entry["sha256"] = digest
         resolved.append((entry, family, version, registry_path(family, version), data, digest))
 
     for target in targets:

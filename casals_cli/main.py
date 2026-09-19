@@ -45,6 +45,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         sub.add_parser(name, help=help_text).add_argument("sheet", nargs="?", help="path to casals.json")
 
+    pin_p = sub.add_parser("pin", help="write each registry.wasms artifact's sha256 into the sheet")
+    pin_p.add_argument("sheet", help="path to casals.json")
+    pin_p.add_argument("--check", action="store_true", help="only compare; exit 1 on unpinned or drifted rows")
+
     apply_p = sub.add_parser("apply", help="execute plan items")
     apply_p.add_argument("sheet", nargs="?", help="path to casals.json")
     apply_p.add_argument("--confirm-destructive", action="store_true")
@@ -122,6 +126,8 @@ def main(argv: list[str] | None = None) -> None:
             emit_json(result)
         elif cmd == "plan":
             commands.cmd_plan(ic, args, REPO_ROOT)
+        elif cmd == "pin":
+            commands.cmd_pin(args, REPO_ROOT)
         elif cmd == "apply":
             commands.cmd_apply(ic, args)
         elif cmd == "verify":

@@ -200,7 +200,8 @@ python3 scripts/casals.py <command>
 make cli ARGS="<command>"
 ```
 
-Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`, `verify`,
+Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`, `pin`
+(write/check `registry.wasms[].sha256`; offline), `verify`,
 `export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
 `graph`, `oracle`, `destroy`, `register`, `code new` (mint a commander access
 code; offline), and the legacy `orchestra destroy --preserve <name>` (batched
@@ -351,9 +352,22 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   default) and `store_size` (bytes vs. the 1.5 GiB pre-upgrade serialization
   budget, warning from 1 GiB) — all on `/wasms`, controller-only for the sweep. `src/store_uploads.py`.
 - **Retired `file-registry`.** The Basilisk file-registry pair is gone (issue
-  #48): sheets may not declare `conductor.file_registry*` (validation error),
-  `bind_conductor` ignores those keys, and `ensure_core_layout` pools the old
-  canister rows on the next upgrade so a stand can reuse them.
+  #48): sheets may not declare `conductor.file_registry*` (validation error)
+  and `bind_conductor` ignores those keys. What `ensure_core_layout` does with
+  the old canister rows depends on the sheet: while the stored sheet is still
+  the pre-store one (post_upgrade runs before `casals up` sets the migrated
+  sheet) they are left alone; once the migrated sheet is stored, a row whose
+  name the sheet declares as a *section* canister is re-homed on that stand
+  under the same canister id (GaaS keeps its `file-registry` as a product
+  canister: realm branding, extension packages live in it), and any other
+  legacy row is pooled so a stand can reuse the canister.
+- **Production pins.** `validate(sheet, "production")` refuses a
+  `registry.wasms` row without `sha256`. `casals pin <sheet>` resolves every
+  source (building `build:` targets) and writes the digests into the file;
+  `casals pin --check` exits 1 on drift. `casals up -e production` errors on a
+  row whose source no longer builds to its pin; every other environment
+  re-pins to what was actually built and says so (`strict_pins`). Deploy
+  recipe: build → `casals pin` → review the diff → commit → `up -e production`.
 - Bindings: `casals_metadata().wasm_store_canister_id`; CLI bindings file key
   `conductor["casals-wasms"]`. Baton reads the same id via its
   `wasm_store_canister_id` config (`orchestration_bridge` propagates it).
