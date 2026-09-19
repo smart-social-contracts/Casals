@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Protocol
@@ -18,6 +19,28 @@ NETWORK_URLS = {
     "local": "http://127.0.0.1:8000",
     "ic": "https://icp0.io",
 }
+
+# Mainnet answers a long `up` with the occasional 502 from the boundary node, a
+# `read_state` that never comes back, or an ingress expiry ("The request timed
+# out"). Those are retried, with backoff, for the operations that are safe to
+# repeat: calls (a repeated `apply` meets the conductor's stale-plan check),
+# status reads, settings updates (idempotent), balance reads. Never `canister
+# create` (a second create is another 2 TC deposit), `top-up`, `install` or
+# `cycles transfer`.
+RETRYABLE_OPS = frozenset({("canister", "call"), ("canister", "status"), ("canister", "settings"), ("cycles", "balance")})
+TRANSIENT_ATTEMPTS = 5
+_TRANSIENT_MARKERS = (
+    "502", "503", "504", "bad gateway", "service unavailable", "gateway timeout",
+    "timed out", "error sending request", "error reading a body", "connection reset",
+    "connection closed", "read_state", "temporarily unavailable", "operation was canceled",
+    "no route to host", "dns error",
+)
+
+
+def is_transient_ic_error(text: str) -> bool:
+    t = (text or "").lower()
+    return any(m in t for m in _TRANSIENT_MARKERS)
+
 
 _PIN_FILES: list[str] = []
 
@@ -133,19 +156,32 @@ class IcClient:
 
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True, env: bool = True) -> subprocess.CompletedProcess[str]:
         cmd = ["icp"] + argv + self._base_flags(env) + self._project_root_flag()
-        result = subprocess.run(
-            cmd,
-            cwd=self.project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if check and result.returncode != 0:
+        attempts = TRANSIENT_ATTEMPTS if tuple(argv[:2]) in RETRYABLE_OPS else 1
+        for attempt in range(1, attempts + 1):
+            result = subprocess.run(
+                cmd,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0 or not check:
+                return result
+            if attempt < attempts and is_transient_ic_error(result.stderr + result.stdout):
+                delay = min(60, 5 * 2 ** (attempt - 1))
+                first = next((ln.strip() for ln in (result.stderr or result.stdout).splitlines() if ln.strip()), "")
+                print(
+                    f"  icp {' '.join(argv[:4])}: transient IC error ({first[:120]}); "
+                    f"retry {attempt}/{attempts - 1} in {delay}s",
+                    file=sys.stderr, flush=True,
+                )
+                time.sleep(delay)
+                continue
             raise RuntimeError(
                 f"icp {' '.join(argv)} failed:\n"
                 f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
             )
-        return result
+        return result  # unreachable
 
     def _agent_client(self):
         if self._agent is None:

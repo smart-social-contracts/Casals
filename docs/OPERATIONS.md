@@ -53,6 +53,18 @@ stores the sheet (`set_sheet`), then runs `plan` → `apply` until the plan is
 empty. It is safe to interrupt and re-run at any point: the next `up` continues
 from whatever the IC already has.
 
+On mainnet, transient boundary-node errors (502/503, `read_state` not coming
+back, "The request timed out") are retried with backoff — five attempts — for
+the operations that are safe to repeat (calls, status, settings, balance);
+never for `canister create`, `top-up`, `install` or a cycles transfer. A plan
+item the conductor reports applied that comes back three rounds in a row with
+the same current and desired state stops the run with the item named: the
+target does not take the change (typically a wasm built with the wrong
+variant), and looping would only spend cycles. When the deployer's last item
+hands the conductor's controllers to the multisig, the refused plan that
+follows (`caller is not a commander`) is read as converged: bindings are
+saved, `verify` is skipped with the conductor's new controllers printed.
+
 Cycles: the deployer pays 2 TC per conductor canister it creates (`icp canister
 create`'s default deposit; the IC keeps 0.5 TC of it as the creation fee) and
 then tops the conductor treasury up to `environments.<env>.cycles.budget_tc`

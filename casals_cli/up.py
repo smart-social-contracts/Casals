@@ -348,17 +348,49 @@ def multisig_id(ic, backend_id: str) -> str:
     return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
 
 
+# An item the conductor reports as applied, that comes back in the next plan
+# with the same current and desired state, this many rounds in a row is not
+# converging: the live canister does not take the change (a wasm built with
+# the wrong variant answering `config_call` with the old value, a setting the
+# target does not persist, …). `sync_assets` is not caught by this: its
+# `desired.keys` shrink every round it makes progress.
+STUCK_ROUNDS = 3
+
+
+def _item_fingerprint(item: dict) -> str:
+    target = item.get("target") or {}
+    return json.dumps(
+        [item.get("kind"), target.get("name"), target.get("canister_id"), item.get("current"), item.get("desired")],
+        sort_keys=True, default=str,
+    )
+
+
+def _is_unauthorized(res: Any) -> bool:
+    err = str((res or {}).get("error") or "").lower() if isinstance(res, dict) else ""
+    return "not a commander" in err or "unauthorized" in err
+
+
 def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int, wasm_by_hash=None) -> dict:
     """plan → apply until the plan is empty. Returns the (empty) final plan.
     Each round the conductor applies what it can, then the deployer does the
-    controller changes only it can; a round that changes nothing is an error."""
+    controller changes only it can; a round that changes nothing is an error.
+    The deployer's last act may be handing the conductor to the multisig: the
+    plan after that is refused (`caller is not a commander`), which counts as
+    converged from where the deployer stands (``handed_off`` in the result)."""
     last_hash = None
     round_no = 0
+    applied_prev: set[str] = set()   # fingerprints the conductor applied in the previous round
+    stuck: dict[str, int] = {}       # fingerprint → consecutive rounds applied yet back unchanged
+    handed_off = False
     while True:
         round_no += 1
         _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
         plan_res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
+            if handed_off and _is_unauthorized(plan_res):
+                _progress("  the conductor now answers to the multisig only; the deployer cannot plan any more — "
+                          "nothing else was pending, converged")
+                return {"hash": last_hash, "items": [], "handed_off": True}
             raise RuntimeError(f"plan failed: {plan_res}")
         plan = plan_res.get("plan") or {}
         items = plan.get("items") or []
@@ -368,6 +400,19 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
         if plan.get("hash") == last_hash:
             emit_error("orchestra not converged: a plan/apply round changed nothing", plan=plan)
         last_hash = plan.get("hash")
+        fps = {_item_fingerprint(i): i for i in items}
+        stuck = {fp: stuck.get(fp, 0) + 1 for fp in fps if fp in applied_prev}
+        for fp, n in stuck.items():
+            if n >= STUCK_ROUNDS:
+                it = fps[fp]
+                emit_error(
+                    f"orchestra not converged: {it.get('kind')} → {(it.get('target') or {}).get('name')} was applied "
+                    f"{n} rounds in a row and comes back unchanged ({it.get('reason')}). The live canister does not take "
+                    f"the change — check the wasm it runs (build variant, version) and the value it reports; "
+                    f"stopping so the loop does not keep spending cycles.",
+                    item=it, plan=plan,
+                )
+        applied_prev = set()
         if any(i.get("destructive") for i in items) and not yes:
             raise RuntimeError("plan has destructive items; pass --yes to continue")
         if any((i.get("requires") or "self") == "self" for i in items):
@@ -392,8 +437,14 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                 continue
             if not (isinstance(apply_res, dict) and apply_res.get("ok")):
                 raise RuntimeError(f"apply failed: {apply_res}")
+            applied_keys = set()
             for row in apply_res.get("applied") or []:
                 _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
+                applied_keys.add((row.get("kind"), (row.get("target") or {}).get("name")))
+            applied_prev = {
+                fp for fp, i in fps.items()
+                if (i.get("kind"), (i.get("target") or {}).get("name")) in applied_keys
+            }
             failed = apply_res.get("failed")
             if failed:
                 raise RuntimeError(
@@ -401,6 +452,15 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                     f"{failed.get('error')}"
                 )
             continue
+        # Only deployer items left. Handing the conductor's own controllers to
+        # the multisig ends the deployer's reach: remember it, so the refusal
+        # the next plan gets is read as "done", not as a failure.
+        handed_off = handed_off or any(
+            i.get("kind") == "set_controllers"
+            and (i.get("target") or {}).get("canister_id") == backend_id
+            and deployer not in ((i.get("desired") or {}).get("controllers") or [])
+            for i in items
+        )
         deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
 
 
@@ -534,10 +594,20 @@ def run_up(
     # 9. domains + verify
     _step(7)
     domain_rows = reconcile_domains(sheet, env, bindings)
-    verify_res = ic.call_update(backend_id, "verify", "{}")
     bindings.save()
-    conv = isinstance(verify_res, dict) and verify_res.get("converged")
-    _progress("  verify: live state equals the sheet" if conv else f"  verify: NOT converged — {verify_res}")
+    if plan.get("handed_off"):
+        # The deployer's last item gave the conductor to the multisig; `verify`
+        # is a commander call it may no longer make. The public facts are
+        # still checkable: the controllers it just set.
+        ctls = ic.read_controllers(backend_id) or []
+        verify_res = {"ok": True, "converged": None, "skipped": "deployer is no longer a commander",
+                      "conductor_controllers": ctls}
+        _progress(f"  verify: skipped — the deployer handed the conductor over (controllers now {ctls}); "
+                  f"run `casals verify` as a commander, or check the Orchestra page")
+    else:
+        verify_res = ic.call_update(backend_id, "verify", "{}")
+        conv = isinstance(verify_res, dict) and verify_res.get("converged")
+        _progress("  verify: live state equals the sheet" if conv else f"  verify: NOT converged — {verify_res}")
     _progress(f"done in {_elapsed()}: {sheet_name} → {env}, conductor {backend_id}, bindings saved")
 
     return {

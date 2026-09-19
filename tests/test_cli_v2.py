@@ -872,3 +872,140 @@ class TestDestroy:
                          confirm_destructive=True, all=True)
         with pytest.raises(RuntimeError, match="no multisig"):
             cmd_destroy(ic, args)
+
+
+# ── converge: stuck items, hand-off, transient IC errors ─────────────────────
+
+class _ScriptedIc(RecordingIc):
+    """RecordingIc whose `plan` answers come from a list, one per round."""
+
+    def __init__(self, plans: list, apply_result=None, **kw):
+        super().__init__(**kw)
+        self.plans = list(plans)
+        self.apply_result = apply_result
+
+    def call_update(self, canister_id, method, text_arg=None, *, timeout=300):
+        self.record("call_update", canister_id, method, text_arg)
+        if method == "plan":
+            return self.plans.pop(0) if self.plans else {"ok": True, "plan": {"hash": "end", "items": []}}
+        if method == "apply" and self.apply_result is not None:
+            return self.apply_result
+        return super().call_update(canister_id, method, text_arg, timeout=timeout)
+
+
+def _config_item(seq_hash: str, extra_items=()):
+    item = {"seq": 0, "kind": "config_call", "target": {"name": "demo-backend", "canister_id": "demo"},
+            "reason": "configure build_variant", "requires": "self", "destructive": False,
+            "current": {"build_variant": "test"}, "desired": {"build_variant": "production"}}
+    return {"ok": True, "plan": {"hash": seq_hash, "items": [item, *extra_items]}}
+
+
+class TestConvergeGuards:
+    def test_item_applied_but_back_unchanged_stops_after_three_rounds(self):
+        """Realms prod, 2026-09-19: a test-variant wasm answered `config_call`
+        with the old value forever; the loop re-applied it for 16 rounds
+        because a shrinking sync_assets kept the plan hash moving."""
+        from casals_cli.up import converge
+
+        def sync(n):
+            return {"seq": 1, "kind": "sync_assets", "target": {"name": "demo-frontend", "canister_id": "fe"},
+                    "reason": f"sync {n} asset(s)", "requires": "self", "destructive": False,
+                    "current": {}, "desired": {"keys": [f"k{i}" for i in range(n)]}}
+
+        plans = [_config_item(f"h{i}", [sync(40 - 10 * i)]) for i in range(6)]
+        applied = {"ok": True, "applied": [
+            {"kind": "config_call", "target": {"name": "demo-backend"}},
+            {"kind": "sync_assets", "target": {"name": "demo-frontend"}},
+        ], "failed": None, "remaining": 0}
+        ic = _ScriptedIc(plans, applied, env="production")
+        with pytest.raises(SystemExit):
+            converge(ic, "be", "dep", "", yes=True, max_items=5)
+        rounds = [c for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"]
+        assert len(rounds) == 4  # applied in rounds 1-3, refused at round 4
+
+    def test_progressing_items_are_not_flagged(self):
+        from casals_cli.up import converge
+
+        def only_sync(n, h):
+            return {"ok": True, "plan": {"hash": h, "items": [
+                {"seq": 0, "kind": "sync_assets", "target": {"name": "fe", "canister_id": "fe"}, "reason": "sync",
+                 "requires": "self", "destructive": False, "current": {}, "desired": {"keys": list(range(n))}}]}}
+
+        plans = [only_sync(30, "a"), only_sync(20, "b"), only_sync(10, "c"), only_sync(5, "d"),
+                 {"ok": True, "plan": {"hash": "e", "items": []}}]
+        applied = {"ok": True, "applied": [{"kind": "sync_assets", "target": {"name": "fe"}}], "failed": None}
+        ic = _ScriptedIc(plans, applied, env="production")
+        plan = converge(ic, "be", "dep", "", yes=True, max_items=5)
+        assert plan["items"] == []
+
+    def test_handing_the_conductor_over_ends_as_converged(self):
+        """Realms prod: after set_controllers casals-backend → [multisig] the
+        next plan was refused (`caller is not a commander`) and `up` exited 1
+        on a finished orchestra."""
+        from casals_cli.up import converge
+
+        handoff = {"ok": True, "plan": {"hash": "h1", "items": [
+            {"seq": 0, "kind": "set_controllers", "target": {"name": "casals-backend", "canister_id": "be"},
+             "reason": "controllers", "requires": "multisig", "destructive": True,
+             "current": {"controllers": ["dep"]}, "desired": {"controllers": ["ms"]}}]}}
+        refused = {"ok": False, "error": "unauthorized: caller is not a commander"}
+        ic = _ScriptedIc([handoff, refused], env="production")
+        ic.controllers["be"] = ["dep"]
+        plan = converge(ic, "be", "dep", "ms", yes=True, max_items=5)
+        assert plan["handed_off"] is True and plan["items"] == []
+        assert any(c[0] == "settings_update" and c[1][0] == "be" for c in ic.calls)
+
+    def test_unauthorized_without_a_hand_off_is_still_an_error(self):
+        from casals_cli.up import converge
+
+        ic = _ScriptedIc([{"ok": False, "error": "unauthorized: caller is not a commander"}], env="production")
+        with pytest.raises(RuntimeError, match="not a commander"):
+            converge(ic, "be", "dep", "ms", yes=True, max_items=5)
+
+
+class TestTransientRetry:
+    def _client(self, monkeypatch, outcomes):
+        import subprocess as sp
+        import casals_cli.ic as icmod
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            code, err = outcomes.pop(0)
+            return sp.CompletedProcess(cmd, code, "ok\n" if code == 0 else "", err)
+
+        monkeypatch.setattr(icmod.subprocess, "run", fake_run)
+        monkeypatch.setattr(icmod.time, "sleep", lambda s: None)
+        monkeypatch.delenv("DFX_HSM_PIN", raising=False)
+        return IcClient(env="production"), calls
+
+    def test_call_retries_a_502_then_succeeds(self, monkeypatch):
+        ic, calls = self._client(monkeypatch, [
+            (1, "Error: The replica returned an HTTP Error: Http Error: status 502 Bad Gateway"),
+            (1, "Error: direct update call failed: The request timed out."),
+            (0, ""),
+        ])
+        out = ic.icp(["canister", "call", "be", "plan", "()"])
+        assert out.returncode == 0 and len(calls) == 3
+
+    def test_call_gives_up_after_the_attempts(self, monkeypatch):
+        from casals_cli.ic import TRANSIENT_ATTEMPTS
+
+        ic, calls = self._client(monkeypatch, [(1, "status 502 Bad Gateway")] * TRANSIENT_ATTEMPTS)
+        with pytest.raises(RuntimeError, match="502"):
+            ic.icp(["canister", "call", "be", "plan", "()"])
+        assert len(calls) == TRANSIENT_ATTEMPTS
+
+    def test_non_transient_error_is_not_retried(self, monkeypatch):
+        ic, calls = self._client(monkeypatch, [(1, "Error: unauthorized: caller is not a commander")])
+        with pytest.raises(RuntimeError):
+            ic.icp(["canister", "call", "be", "plan", "()"])
+        assert len(calls) == 1
+
+    def test_create_is_never_retried(self, monkeypatch):
+        """A repeated `canister create` is another 2 TC deposit."""
+        ic, calls = self._client(monkeypatch, [(1, "status 502 Bad Gateway")])
+        with pytest.raises(RuntimeError):
+            ic.icp(["canister", "create", "--detached"])
+        assert len(calls) == 1
