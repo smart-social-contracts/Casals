@@ -87,7 +87,8 @@ class Orchestra:
     def __init__(self, name: str, sheet_path: str, home: str):
         self.name, self.sheet_path, self.home = name, sheet_path, home
         self.sheet = json.load(open(sheet_path))
-        _absolutize_local_sources(self.sheet, os.path.dirname(os.path.abspath(sheet_path)))
+        self.sheet_dir = os.path.dirname(os.path.abspath(sheet_path))  # the product checkout, for local: sources
+        _absolutize_local_sources(self.sheet, self.sheet_dir)
         self.adopt_foreign_code()
 
     def adopt_foreign_code(self) -> None:
@@ -276,9 +277,23 @@ def stale_plan(o: Orchestra) -> None:
         return
     backend = o.bindings()["conductor"]["casals-backend"]
     arg = json.dumps({"plan_hash": old, "max_items": 5})
-    res = o.icp("canister", "call", backend, "apply", f'("{arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
+    # With `reconcile_interval_secs` the conductor's own timer may be applying
+    # the very drift we just caused; `busy` is that lock, not a verdict — the
+    # CLI retries it too. The stale-hash verdict comes from the next free apply.
+    deadline = time.time() + 120
+    while True:
+        res = o.icp("canister", "call", backend, "apply", f'("{arg.replace(chr(34), chr(92) + chr(34))}")', check=False)
+        if "busy:" not in res.stdout or time.time() > deadline:
+            break
+        time.sleep(5)
     if "stale plan" not in res.stdout:
-        raise Fail(f"apply with old hash was not rejected: {res.stdout[-300:]}")
+        # The timer may have healed the drift already: then the plan is back
+        # to the converged one whose hash we hold, and the apply is legitimately
+        # not stale (and applied nothing). Anything else is a real failure.
+        if o.reconcile_interval() and '"ok":true' in res.stdout.replace(" ", "") and not o.plan_items():
+            print("    (the reconcile timer healed the drift before the stale apply ran)")
+        else:
+            raise Fail(f"apply with old hash was not rejected: {res.stdout[-300:]}")
     o.casals("up", o.sheet_path, "--yes")
     o.oracle()
 
@@ -286,6 +301,9 @@ def stale_plan(o: Orchestra) -> None:
 def export_roundtrip(o: Orchestra) -> None:
     exported = o.casals("export", o.sheet_path)
     sheet = exported.get("sheet") or exported
+    # The conductor stores the sheet as handed over, relative `local:` sources
+    # included; written under $CASALS_HOME those need the product checkout again.
+    _absolutize_local_sources(sheet, o.sheet_dir)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, dir=o.home) as f:
         json.dump(sheet, f)
     try:
