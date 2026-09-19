@@ -22,6 +22,7 @@
   let canisterId = $state('');
   let loading = $state(true);
   let error = $state('');
+  let noCommittee = $state(false);
   let signers = $state<string[]>([]);
   let threshold = $state(0);
   let proposals = $state<MultisigProposal[]>([]);
@@ -65,11 +66,12 @@
   async function load() {
     loading = true;
     error = '';
+    noCommittee = false;
     try {
       const id = await resolveMultisigCanisterId($page.url.searchParams.get('id'));
       canisterId = id;
       if (!id) {
-        error = 'No multisig canister found in this orchestra.';
+        noCommittee = true;
         return;
       }
       const snap = await multisigLoadSnapshot(id);
@@ -138,11 +140,11 @@
   <title>Platform committee · Casals</title>
 </svelte:head>
 
-<div class="mx-auto max-w-2xl space-y-6">
+<div class="space-y-6 animate-fade-in">
   <header class="flex flex-wrap items-start justify-between gap-3">
     <div class="space-y-2">
-      <h1 class="text-xl font-semibold text-primary-900">Platform committee</h1>
-      <p class="text-sm text-primary-500 max-w-xl">
+      <h1 class="text-2xl font-bold text-primary-900">Platform committee</h1>
+      <p class="text-sm text-primary-500 max-w-2xl">
         On-chain multisig acting as IC controller for structural platform actions (controllers, destroy, Baton admin).
         Separate from <a href="/commanders" class="underline">operator access</a> on Casals.
       </p>
@@ -187,6 +189,16 @@
 
   {#if loading}
     <p class="text-sm text-primary-400">Loading…</p>
+  {:else if noCommittee}
+    <div class="text-sm text-primary-600 border border-[var(--color-border-primary)] bg-primary-50 rounded-lg px-4 py-3 space-y-1">
+      <p class="font-medium text-primary-800">This orchestra has no platform committee.</p>
+      <p class="text-xs text-primary-500">
+        None of its stands runs an <span class="font-mono">orchestration-multisig</span> canister, so structural actions
+        (controllers, destroy, Baton admin) are taken directly by the Casals controllers. To govern them by proposal,
+        declare a multisig stand in the sheet and reference it as <span class="font-mono">$multisig</span> in the
+        controllers of the canisters it should guard — the <span class="font-mono">governed</span> e2e orchestra is the template.
+      </p>
+    </div>
   {:else if error}
     <p class="text-sm text-red-700">{error}</p>
   {:else}

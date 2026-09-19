@@ -33,8 +33,7 @@ def _ctx(sheet: dict, **ids) -> sv2.ResolveContext:
     bindings = {
         "casals-backend": SELF,
         "casals-frontend": "fe-id",
-        "file-registry": "fr-id",
-        "file-registry-frontend": "fr-fe-id",
+        "casals-wasms": "store-id",
         "multisig": MS,
         "hello-backend": "hello-id",
         "motoko-backend": "motoko-id",

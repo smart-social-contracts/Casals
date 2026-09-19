@@ -8,6 +8,7 @@ from basilisk import ic
 
 from applier import apply_plan_gen
 from audit import _append_event
+from bootstrap import attach_conductor_canister, ensure_core_layout
 from helpers import _caller, _settings
 from live_state import collect_live_state_gen, _bindings_map, live_stands
 from models import Canister
@@ -21,6 +22,8 @@ from sheet_storage import (
 )
 from sheetv2 import (
     CONDUCTOR_NAMES,
+    LEGACY_CONDUCTOR_KEYS,
+    LEGACY_CONDUCTOR_NAMES,
     MULTISIG_NAME,
     apply_requires_proposal,
     ResolveContext,
@@ -60,6 +63,8 @@ def set_sheet_impl(args: dict) -> dict:
         list(Canister.instances())
         st = Canister[name] or Canister(name=name)
         st.canister_id = cid.strip()
+    # Pre-bound rows have no stand yet: home them where the sheet declares them.
+    ensure_core_layout()
     _append_event("sheet_set", "", {"env": env, "sheet_hash": sh})
     return {"sheet_hash": sh, "env": env, "warnings": []}
 
@@ -80,8 +85,14 @@ def bind_conductor_impl(args: dict) -> dict:
     if not isinstance(bindings_in, dict):
         raise ValueError("bindings must be an object")
     bound = {}
+    ignored = []
     for key, cid in bindings_in.items():
         if key == "bindings":
+            continue
+        if key in LEGACY_CONDUCTOR_KEYS or key in LEGACY_CONDUCTOR_NAMES:
+            # The file-registry pair is retired (issue #48): an old CLI still
+            # sending its ids must not create rows the store made pointless.
+            ignored.append(key)
             continue
         name = CONDUCTOR_NAMES.get(key, key)
         cid = (cid or "").strip()
@@ -92,21 +103,26 @@ def bind_conductor_impl(args: dict) -> dict:
         if st is None:
             st = Canister(name=name)
         st.canister_id = cid
+        if name in CONDUCTOR_NAMES.values():
+            attach_conductor_canister(st, name)  # every canister lives on a stand
         if name == CONDUCTOR_NAMES["backend"]:
             s = _settings()
             s.casals_frontend_canister_id = bindings_in.get(
                 "frontend", bindings_in.get("casals-frontend", s.casals_frontend_canister_id or "")
             ) or s.casals_frontend_canister_id
-            s.file_registry_canister_id = bindings_in.get(
-                "file_registry", bindings_in.get("file-registry", s.file_registry_canister_id or "")
-            ) or s.file_registry_canister_id
-            s.file_registry_frontend_canister_id = bindings_in.get(
-                "file_registry_frontend",
-                bindings_in.get("file-registry-frontend", s.file_registry_frontend_canister_id or ""),
-            ) or s.file_registry_frontend_canister_id
+            s.wasm_store_canister_id = bindings_in.get(
+                "wasms", bindings_in.get("casals-wasms", s.wasm_store_canister_id or "")
+            ) or s.wasm_store_canister_id
+            # The file-registry pair is retired; forget any id an older build bound.
+            s.file_registry_canister_id = ""
+            s.file_registry_frontend_canister_id = ""
         bound[name] = cid
         _append_event("conductor_bound", cid, {"name": name})
-    return {"bindings": bound}
+    layout = ensure_core_layout()
+    out = {"bindings": bound, "rehomed": layout.get("rehomed") or []}
+    if ignored:
+        out["ignored"] = ignored
+    return out
 
 
 def _declared_world(env: str, sheet: dict) -> dict:

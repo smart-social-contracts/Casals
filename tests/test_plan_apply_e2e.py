@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from conftest import REPO_ROOT, call_canister, canister_controllers_live, registry_store
+from conftest import REPO_ROOT, call_canister, canister_controllers_live, store_put
 
 SHEET_PATH = os.path.join(REPO_ROOT, "tests/e2e/orchestras/minimal/casals.json")
 
@@ -30,7 +30,7 @@ def minimal_env(registry, canister):
     wasm_path = os.path.join(REPO_ROOT, "seed/templates/hello-world-rust.wasm.gz")
     with gzip.open(wasm_path, "rb") as fh:
         data = fh.read()
-    sha = registry_store(registry.id, "wasm", "hello-world-rust/1.0.0.wasm", data)
+    sha = store_put(registry.id, "wasm", "hello-world-rust/1.0.0.wasm", data)
     _ok("add_authorized_wasm", {
         "key": "hello-world-rust@1.0.0",
         "registry_namespace": "wasm",
@@ -40,10 +40,9 @@ def minimal_env(registry, canister):
     })
     from conftest import _icp
     self_id = _icp(["canister", "id", "casals_backend"], check=True).stdout.strip()
-    fr_id = registry.id
     _ok("bind_conductor", {
         "backend": self_id,
-        "file_registry": fr_id,
+        "wasms": registry.id,
     })
     sheet = _load_minimal_sheet()
     for entry in sheet.get("registry", {}).get("wasms", []):

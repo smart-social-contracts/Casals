@@ -17,18 +17,33 @@ SCHEMA_VERSION = 2
 MODES = frozenset({"managed", "adopted"})
 KINDS = frozenset({"backend", "frontend"})
 UPGRADES = frozenset({"upgrade", "reinstall"})
-CONDUCTOR_KEYS = ("backend", "frontend", "file_registry", "file_registry_frontend")
+# `conductor.wasms` is the WASM store: a certified-assets canister holding every
+# artifact Casals installs (issue #48). It replaced the Basilisk file-registry
+# pair (`file_registry` / `file_registry_frontend`), which a sheet may no longer
+# declare — validation names the replacement.
+CONDUCTOR_KEYS = ("backend", "frontend", "wasms")
+REQUIRED_CONDUCTOR_KEYS = ("backend", "frontend", "wasms")
+STORE_CONDUCTOR_KEY = "wasms"
+LEGACY_CONDUCTOR_KEYS = ("file_registry", "file_registry_frontend")
 CONDUCTOR_NAMES = {
     "backend": "casals-backend",
     "frontend": "casals-frontend",
-    "file_registry": "file-registry",
-    "file_registry_frontend": "file-registry-frontend",
+    "wasms": "casals-wasms",
 }
+# Canister names of the retired file-registry pair; `ensure_core_layout` pools
+# any rows still carrying them so the canisters are recycled, not leaked.
+LEGACY_CONDUCTOR_NAMES = ("file-registry", "file-registry-frontend")
+# Every canister lives on a stand. The sheet's top-level `conductor` and
+# `governance` blocks are homed on one synthetic infra section (`Casals`) with
+# two stands: `conductor` (casals-backend/-frontend, casals-wasms) and
+# `governance` (multisig).
+# `conductor.commanders` are kept on the section.
 SYNTHETIC_SECTION_CONDUCTOR = "Casals"
 TEMPLATE_STAND: dict = {"__template__": True}  # stand context marker: `$stand.*` stays a token
 SYNTHETIC_STAND_CONDUCTOR = "conductor"
-SYNTHETIC_SECTION_GOVERNANCE = "System"
+SYNTHETIC_SECTION_GOVERNANCE = SYNTHETIC_SECTION_CONDUCTOR
 SYNTHETIC_STAND_GOVERNANCE = "governance"
+SYNTHETIC_STANDS = frozenset({SYNTHETIC_STAND_CONDUCTOR, SYNTHETIC_STAND_GOVERNANCE})
 MULTISIG_NAME = "multisig"
 _NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _ENV_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")
@@ -132,12 +147,27 @@ def find_placeholders(value: Any) -> set[str]:
     return found
 
 
-WASM_NAMESPACE = "wasm"  # file-registry namespace for every wasm; shared by CLI and canister
+WASM_NAMESPACE = "wasm"  # store namespace for every wasm; shared by CLI and canister
 
 
 def registry_path(family: str, version: str | None) -> str:
-    """File-registry path of a wasm inside WASM_NAMESPACE: one rule, shared by CLI and canister."""
+    """Path of a wasm inside WASM_NAMESPACE: one rule, shared by CLI and canister."""
     return f"{family}@{version or 'main'}.wasm.gz"
+
+
+def store_key(namespace: str, path: str) -> str:
+    """Asset key of a (namespace, path) pair in the `casals-wasms` store. The
+    registry's two-level address maps onto one key, so catalog rows keep their
+    `registry_namespace` / `registry_path` whichever store serves them."""
+    ns = (namespace or "").strip().strip("/")
+    p = (path or "").strip().lstrip("/")
+    return f"/{ns}/{p}" if ns else f"/{p}"
+
+
+def store_namespace_prefix(namespace: str) -> str:
+    """Key prefix under which every file of ``namespace`` lives in the store."""
+    ns = (namespace or "").strip().strip("/")
+    return f"/{ns}/" if ns else "/"
 
 
 def wasm_ref(s: str) -> tuple[str, str | None]:
@@ -454,13 +484,26 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
         for key in CONDUCTOR_KEYS:
             path = f"conductor.{key}"
             block = conductor.get(key)
+            if block is None and key not in REQUIRED_CONDUCTOR_KEYS:
+                continue
             if not isinstance(block, dict):
-                errors.append(f"{path} must be an object")
+                errors.append(
+                    f"{path} must be an object"
+                    + (" (the casals-wasms WASM store; see issue #48)" if key == STORE_CONDUCTOR_KEY else "")
+                )
                 continue
             cname = CONDUCTOR_NAMES[key]
             _register_name(names, cname, path, errors)
             _validate_canister(block, path, errors, in_sections=False)
             _check_raw_principals(block, path, errors)
+        if isinstance(conductor.get("wasms"), dict) and (conductor["wasms"].get("kind") or "frontend") != "frontend":
+            errors.append("conductor.wasms.kind must be frontend (a certified-assets canister)")
+        for key in LEGACY_CONDUCTOR_KEYS:
+            if key in conductor:
+                errors.append(
+                    f"conductor.{key} is no longer supported: the file-registry was replaced by the "
+                    "casals-wasms store (conductor.wasms); remove the block and its registry.wasms row"
+                )
 
     governance = sheet.get("governance")
     if governance is not None:

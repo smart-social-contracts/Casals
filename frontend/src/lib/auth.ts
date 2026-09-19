@@ -1,8 +1,8 @@
 import { AuthClient } from '@dfinity/auth-client';
-import { get, writable } from 'svelte/store';
+import { derived, get, writable, type Readable } from 'svelte/store';
 import type { Identity } from '@dfinity/agent';
 import { checkIsCanisterController } from './controllerAccess';
-import { checkIsCommander } from './commanderAccess';
+import { checkCommanderAccess, holdsPermission } from './commanderAccess';
 import { claimCommander, type ClaimedSlot } from './api';
 
 export const identity = writable<Identity | null>(null);
@@ -12,6 +12,18 @@ export const principal = writable('');
 export const isController = writable<boolean | null>(null);
 /** null while checking; true/false once resolved for the current session. */
 export const isCommander = writable<boolean | null>(null);
+/** Permission keys the session's commander grants add up to (`'*'` = all);
+ * null while checking. Controllers are not commanders: check `isController` too. */
+export const myPermissions = writable<Set<string> | '*' | null>(null);
+/** True when the session may call an endpoint guarded by `key` — a controller,
+ * or a commander whose grants include it. null while access is still resolving. */
+export function canDo(key: string): Readable<boolean | null> {
+  return derived([isController, myPermissions], ([ctrl, perms]) => {
+    if (ctrl === true) return true;
+    if (holdsPermission(perms, key)) return true;
+    return ctrl === null || perms === null ? null : false;
+  });
+}
 export interface AccessDeniedInfo {
   message: string;
   principal: string;
@@ -74,6 +86,7 @@ function _clearSession() {
   principal.set('');
   isController.set(false);
   isCommander.set(false);
+  myPermissions.set(new Set());
 }
 
 function _applyIdentity(id: Identity) {
@@ -86,14 +99,17 @@ async function _verifyLoginAccess(id: Identity, backendCanisterId?: string): Pro
   const caller = id.getPrincipal().toText();
   isCommander.set(null);
   isController.set(null);
+  myPermissions.set(null);
 
-  const [commander, controller] = await Promise.all([
-    checkIsCommander(caller),
+  const [access, controller] = await Promise.all([
+    checkCommanderAccess(caller),
     backendCanisterId ? checkIsCanisterController(id, backendCanisterId) : Promise.resolve(false),
   ]);
+  const commander = access.commander;
 
   isCommander.set(commander);
   isController.set(controller);
+  myPermissions.set(access.permissions);
 
   if (!commander && !controller) {
     // Keep the II delegation alive (no logout yet): the dialog lets the user
@@ -171,6 +187,7 @@ export async function loginInternetIdentity(): Promise<boolean> {
         _applyIdentity(client.getIdentity());
         isCommander.set(null);
         isController.set(null);
+        myPermissions.set(null);
         accessDenied.set(null);
         resolve(true);
       },

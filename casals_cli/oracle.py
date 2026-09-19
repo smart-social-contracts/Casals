@@ -13,7 +13,6 @@ from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions, _parse_permissions
 from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
-    CONDUCTOR_NAMES,
     HAND_OFF_SOLE,
     MULTISIG_NAME,
     WASM_NAMESPACE,
@@ -32,7 +31,7 @@ from sheetv2 import _iter_named_canisters  # noqa: PLC2701 — name is not on co
 
 from casals_cli.bindings import live_stands
 from casals_cli.multisig import multisig_signers
-from casals_cli.registry import registry_file_hashes
+from casals_cli.registry import bound_store_hashes
 from casals_cli.replica import canister_http_url
 from casals_cli.util import cycles_to_tc, tc_to_cycles
 
@@ -69,17 +68,17 @@ def _resolve_controllers(cname: str, ctx: ResolveContext, resolved: dict) -> set
     return set()
 
 
-def _grade_assets(report: OracleReport, ic, registry_id: str, cname: str, cid: str, canister: dict, env: str) -> None:
+def _grade_assets(report: OracleReport, ic, bindings: dict, cname: str, cid: str, canister: dict, env: str) -> None:
     """Fetch every declared asset over HTTP (what a browser sees) and compare its
-    sha256 with the registry / rendered text; when the dist ships
+    sha256 with the WASM store / rendered text; when the dist ships
     `.ic-assets.json5`, every header it prescribes must be served too."""
     if env != "local":
         report.add(cname, "assets", "SKIP", "http probe is local only")
         return
     ns = canister.get("content") or ""
-    published = {"/" + p.lstrip("/"): sha for p, sha in registry_file_hashes(ic, registry_id, ns).items()} if ns else {}
+    published = {"/" + p.lstrip("/"): sha for p, sha in bound_store_hashes(ic, bindings, ns).items()} if ns else {}
     if ns and not published:
-        report.add(cname, "assets", "FAIL", f"registry namespace {ns} is empty")
+        report.add(cname, "assets", "FAIL", f"store namespace {ns} is empty")
         return
     want = dict(published)
     files = canister.get("files") or {}
@@ -164,10 +163,9 @@ def run_oracle(
     )
     tree = ic.query(backend_id, "get_tree") if backend_id else {}
     resolved = resolve(materialize(sheet, live_stands(tree)), env, ctx)
-    # Expected module hashes come from the file registry (what `casals up` uploaded),
+    # Expected module hashes come from the WASM store (what `casals up` uploaded),
     # or from the sheet when pinned — never from the conductor's catalog.
-    registry_id = bindings.get(CONDUCTOR_NAMES["file_registry"], "")
-    registry_hashes = registry_file_hashes(ic, registry_id, WASM_NAMESPACE) if registry_id else {}
+    registry_hashes = bound_store_hashes(ic, bindings, WASM_NAMESPACE)
 
     # commanders: Casals' own state (get_tree) is the truth for its own permissions
     tree_secs = {sec.get("name"): sec for sec in (tree.get("sections") or []) if isinstance(sec, dict)}
@@ -258,7 +256,7 @@ def run_oracle(
                     report.add(cname, f"health[{i}]", "FAIL", str(exc))
 
         if canister.get("content") or canister.get("files"):
-            _grade_assets(report, ic, registry_id, cname, cid, canister, env)
+            _grade_assets(report, ic, bindings, cname, cid, canister, env)
 
         for i, cfg in enumerate(canister.get("config") or []):
             cw = cfg.get("converged_when")

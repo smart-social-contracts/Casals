@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,22 +54,14 @@ jobs:
           cp .basilisk/casals_backend/casals_backend.wasm.gz ./casals_conductor.wasm.gz
           cp casals_backend.did ./casals_conductor.did
 
-      - name: Build file-registry WASM
-        run: |
-          export PATH="$PWD/.venv-basilisk/bin:$PATH"
-          test -f file_registry/src/main.py
-          export CANISTER_CANDID_PATH="$(pwd)/file_registry/ic_file_registry.did"
-          python -m basilisk ic_file_registry file_registry/src/main.py
-          gzip -kf .basilisk/ic_file_registry/ic_file_registry.wasm
-          cp .basilisk/ic_file_registry/ic_file_registry.wasm.gz ./file_registry.wasm.gz
-          cp .basilisk/ic_file_registry/ic_file_registry.wasm.gz ./ic_file_registry.wasm.gz
-
       - name: Stage orchestration template WASMs
         run: |
           # gaas new / realms seed fetch these from the GitHub release instead of
           # a local Casals checkout. Committed artifacts under seed/templates/.
-          cp seed/templates/orchestration-baton@1.4.0.wasm.gz ./orchestration-baton@1.4.0.wasm.gz
-          cp seed/templates/orchestration-multisig@1.2.0.wasm.gz ./orchestration-multisig@1.2.0.wasm.gz
+          cp seed/templates/orchestration-baton@1.5.0.wasm.gz ./orchestration-baton@1.5.0.wasm.gz
+          cp seed/templates/orchestration-multisig@1.5.0.wasm.gz ./orchestration-multisig@1.5.0.wasm.gz
+          # The WASM store every orchestra runs (conductor.wasms).
+          cp seed/templates/certified-assets@0.3.0.wasm.gz ./certified-assets@0.3.0.wasm.gz
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -90,9 +80,8 @@ jobs:
           echo "# SHA-256 checksums for release assets" > checksums.txt
           for f in casals_backend.wasm.gz casals_backend.did \
                    casals_conductor.wasm.gz casals_conductor.did \
-                   casals_frontend.tar.gz \
-                   file_registry.wasm.gz ic_file_registry.wasm.gz \
-                   orchestration-baton@1.4.0.wasm.gz orchestration-multisig@1.2.0.wasm.gz; do
+                   casals_frontend.tar.gz certified-assets@0.3.0.wasm.gz \
+                   orchestration-baton@1.5.0.wasm.gz orchestration-multisig@1.5.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
           cat checksums.txt
@@ -109,8 +98,7 @@ jobs:
             casals_conductor.wasm.gz
             casals_conductor.did
             casals_frontend.tar.gz
-            file_registry.wasm.gz
-            ic_file_registry.wasm.gz
-            orchestration-baton@1.4.0.wasm.gz
-            orchestration-multisig@1.2.0.wasm.gz
+            certified-assets@0.3.0.wasm.gz
+            orchestration-baton@1.5.0.wasm.gz
+            orchestration-multisig@1.5.0.wasm.gz
             checksums.txt

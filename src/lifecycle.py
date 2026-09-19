@@ -1,15 +1,16 @@
 """Async lifecycle helpers — generators that drive canister provisioning,
 WASM installation, asset upload, and retirement via the IC management
-canister and the Casals file-registry.
+canister and the WASM store (``wasm_store``: the casals-wasms canister).
 
 All public symbols are generator functions (``yield from`` compatible);
 none carries a Basilisk decorator.  The decorated endpoints that call these
 helpers live in ``main.py``.
 """
 
-import base64
 import json
+import re
 
+import wasm_store
 from basilisk import Principal, ic
 from basilisk.canisters.management import management_canister
 from ic_python_logging import get_logger
@@ -24,7 +25,6 @@ from subnets import assert_subnet_allowed
 from helpers import (
     ANONYMOUS,
     _caller,
-    _file_registry,
     _find_canister_by_id,
     _nat64s_in,
     _principals_in,
@@ -49,10 +49,8 @@ CREATE_CYCLES = 2_000_000_000_000  # 2T
 # set must be truncated to this size.
 MAX_CONTROLLERS = 10
 
-# Per-chunk read size when pulling a WASM from the file-registry (matches the
-# registry's get_file_chunk cap).
+# Size of the chunk-store entries a pulled WASM is uploaded in.
 PULL_CHUNK_BYTES = 1024 * 1024  # chunk store: 100 entries max, so 1 MiB chunks reach the 100 MiB wasm limit
-REGISTRY_READ_BYTES = 128 * 1024  # file-registry get_file_chunk_icc cap
 
 # Candid encoding of ``(null)`` — a single null-typed argument.  Used as the
 # install arg for the certified-assets canister, whose init is
@@ -69,7 +67,7 @@ CMC_CANISTER_ID = "rkp4c-7iaaa-aaaaa-aaaca-cai"
 # Default /canister_ids.js template when AuthorizedWasm.canister_ids_template is empty.
 DEFAULT_CANISTER_IDS_TEMPLATE = (
     '{"backend":"$BACKEND","internet_identity":"$INTERNET_IDENTITY",'
-    '"file_registry":"$FILE_REGISTRY"}'
+    '"wasm_store":"$WASM_STORE"}'
 )
 INTERNET_IDENTITY_DEFAULT = "https://identity.ic0.app"
 
@@ -168,7 +166,7 @@ def _resolve_install_arg(install_arg_spec, w) -> bytes:
     return ic.candid_encode(arg_text)
 
 
-# ── File-registry pull helpers ────────────────────────────────────────────────
+# ── WASM-store pull helpers ───────────────────────────────────────────────────
 
 def _candid_blob(data: bytes) -> str:
     return '"' + "".join(f"\\{b:02x}" for b in (data or b"")) + '"'
@@ -217,24 +215,16 @@ def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex:
 
 def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
                       install_mode, init_arg: bytes = b"", wasm_type: str = ""):
-    """Generator: pull a WASM from the file-registry into the target's chunk
-    store and install it via install_chunked_code.
+    """Generator: pull a WASM from the casals-wasms store into the target's
+    chunk store and install it via install_chunked_code.
 
     ``init_arg`` is the (already candid-encoded) install argument; defaults
     to the empty arg ``()``.
     """
-    fr = _file_registry()
-    size_res = yield fr.get_file_size_icc(namespace, path)
-    size_json = json.loads(unwrap_call_result(size_res))
-    if "error" in size_json:
-        raise Exception(f"file-registry: {size_json['error']}")
-    total = int(size_json["size"])
-    if total <= 0:
-        raise Exception(
-            f"file-registry returned no bytes for {namespace}/{path} "
-            f"(size=0; re-seed the template)"
-        )
-    _append_event("wasm_download_start", target_id, {"path": path, "size_bytes": total})
+    info = yield from wasm_store.stat_file(namespace, path)
+    total = int(info["size"])
+    _append_event("wasm_download_start", target_id,
+                  {"path": path, "size_bytes": total, "store": wasm_store.store_backend()})
 
     target = Principal.from_str(target_id)
     try:  # an interrupted earlier attempt leaves the store full (100 entries max)
@@ -242,45 +232,37 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
     except Exception:
         pass
     chunk_hashes = []
-    offset = 0
-    chunk_num = 0
-    buf = b""
+    state = {"offset": 0, "pieces": 0, "buf": b""}
 
     def _upload(data):
         up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": data})
         up = unwrap_call_result(up_res)
         chunk_hashes.append({"hash": up.get("hash") if isinstance(up, dict) else getattr(up, "hash", up)})
         _append_event("wasm_chunk_uploaded", target_id,
-                      {"chunk": len(chunk_hashes), "bytes_so_far": offset, "total_bytes": total,
-                       "pct": int(offset * 100 // total)})
+                      {"chunk": len(chunk_hashes), "bytes_so_far": state["offset"], "total_bytes": total,
+                       "pct": int(state["offset"] * 100 // total)})
 
-    # The registry serves at most REGISTRY_READ_BYTES per call; the chunk store
-    # takes 100 entries, so reads are batched into PULL_CHUNK_BYTES uploads.
-    while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(REGISTRY_READ_BYTES))
-        chunk_json = json.loads(unwrap_call_result(chunk_res))
-        if "error" in chunk_json:
-            raise Exception(f"file-registry: {chunk_json['error']}")
-        data = base64.b64decode(chunk_json["content_b64"])
-        if not data:
-            break
-        buf += data
-        offset += len(data)
-        chunk_num += 1
-        if len(buf) >= PULL_CHUNK_BYTES or offset >= total or chunk_json.get("eof"):
-            yield from _upload(buf)
-            buf = b""
-        if chunk_json.get("eof"):
-            break
-    if buf:
-        yield from _upload(buf)
+    # The store hands back pieces of whatever size the uploader used (1 MiB
+    # from the CLI and the browser); the chunk store takes 100 entries, so
+    # pieces are batched into PULL_CHUNK_BYTES uploads.
+    def _on_piece(data):
+        state["buf"] += data
+        state["offset"] += len(data)
+        state["pieces"] += 1
+        if len(state["buf"]) >= PULL_CHUNK_BYTES or state["offset"] >= total:
+            yield from _upload(state["buf"])
+            state["buf"] = b""
+
+    yield from wasm_store.iter_file(namespace, path, _on_piece)
+    if state["buf"]:
+        yield from _upload(state["buf"])
 
     if not chunk_hashes:
         raise Exception(
-            f"file-registry returned no bytes for {namespace}/{path} "
+            f"wasm store returned no bytes for {namespace}/{path} "
             f"(size=0; re-seed the template)"
         )
-    _append_event("wasm_installing", target_id, {"chunks": chunk_num, "total_bytes": total})
+    _append_event("wasm_installing", target_id, {"chunks": state["pieces"], "total_bytes": total})
     yield from _install_chunked_code_raw(
         target_id, chunk_hashes, expected_hash_hex, init_arg, install_mode, wasm_type)
     try:
@@ -290,27 +272,10 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
 
 
 def _pull_registry_bytes(namespace: str, path: str):
-    """Generator: download a (small) file from the file-registry into memory
-    and return its bytes. Used for frontend assets, not WASMs."""
-    fr = _file_registry()
-    size_res = yield fr.get_file_size_icc(namespace, path)
-    size_json = json.loads(unwrap_call_result(size_res))
-    if "error" in size_json:
-        raise Exception(f"file-registry: {size_json['error']}")
-    total = int(size_json["size"])
-    buf = b""
-    offset = 0
-    while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
-        chunk_json = json.loads(unwrap_call_result(chunk_res))
-        if "error" in chunk_json:
-            raise Exception(f"file-registry: {chunk_json['error']}")
-        data = base64.b64decode(chunk_json["content_b64"])
-        buf += data
-        offset += len(data)
-        if chunk_json.get("eof"):
-            break
-    return buf
+    """Generator: download a (small) file from the store into memory and
+    return its bytes. Used for frontend assets, not WASMs."""
+    data = yield from wasm_store.read_file(namespace, path)
+    return data
 
 
 # ── Asset provisioning ────────────────────────────────────────────────────────
@@ -344,10 +309,12 @@ def _backend_cid_for_stand(frontend_cid: str, stand=None) -> str:
 
 
 def _render_canister_ids_js(template_str: str, *, backend_cid: str = "",
-                            file_registry_cid: str = "") -> str:
+                            wasm_store_cid: str = "") -> str:
     """Render ``globalThis.__CANISTER_IDS=…;`` from a JSON template with placeholders.
 
-    Placeholders: ``$BACKEND``, ``$FILE_REGISTRY``, ``$INTERNET_IDENTITY``.
+    Placeholders: ``$BACKEND``, ``$WASM_STORE``, ``$INTERNET_IDENTITY``. Any
+    other ``$…`` placeholder (e.g. one an old template still carries) renders
+    empty, so that key is simply dropped.
     Keys whose substituted value is empty are omitted from the output object.
     Returns "" when the result would be empty (e.g. no backend for a $BACKEND slot).
     """
@@ -361,7 +328,7 @@ def _render_canister_ids_js(template_str: str, *, backend_cid: str = "",
 
     repl = {
         "$BACKEND": (backend_cid or "").strip(),
-        "$FILE_REGISTRY": (file_registry_cid or "").strip(),
+        "$WASM_STORE": (wasm_store_cid or "").strip(),
         "$INTERNET_IDENTITY": INTERNET_IDENTITY_DEFAULT,
     }
     out = {}
@@ -372,6 +339,7 @@ def _render_canister_ids_js(template_str: str, *, backend_cid: str = "",
         rendered = val
         for placeholder, replacement in repl.items():
             rendered = rendered.replace(placeholder, replacement)
+        rendered = re.sub(r"\$[A-Z][A-Z0-9_]*", "", rendered)  # unknown / retired placeholders
         if rendered:
             out[key] = rendered
     if not out:
@@ -395,9 +363,9 @@ def write_canister_ids_js(asset_canister_principal: str, stand_name: str, templa
     backend_cid = _backend_cid_for_stand(asset_canister_principal, stand)
     if not backend_cid:
         return
-    fr = (_settings().file_registry_canister_id or "").strip()
+    store = (getattr(_settings(), "wasm_store_canister_id", "") or "").strip()
     js = _render_canister_ids_js(
-        template_str, backend_cid=backend_cid, file_registry_cid=fr,
+        template_str, backend_cid=backend_cid, wasm_store_cid=store,
     )
     if not js:
         return
@@ -506,22 +474,18 @@ def _provision_assets(canister_id: str, w, stand=None):
 
 
 def _list_registry_files(namespace: str):
-    """Generator: list the files in a file-registry namespace.
+    """Generator: list the files in a store namespace.
 
     Returns a list of {path, size, content_type, sha256} dicts (empty for an
     unknown namespace).
     """
-    fr = _file_registry()
-    res = yield fr.list_files_icc(namespace)
-    parsed = json.loads(unwrap_call_result(res))
-    if isinstance(parsed, dict) and "error" in parsed:
-        raise Exception(f"file-registry: {parsed['error']}")
-    return parsed if isinstance(parsed, list) else []
+    files = yield from wasm_store.list_files(namespace)
+    return files
 
 
 def _upload_bundle(canister_id: str, namespace: str, offset: int = 0, limit: int = 0,
                    stand=None, template_str: str = ""):
-    """Generator: upload a multi-file frontend bundle from the file-registry
+    """Generator: upload a multi-file frontend bundle from the WASM store
     into a certified-assets canister. Returns (uploaded_in_batch, total_files).
 
     Uploading every file in a single update call does not fit the ingress
@@ -619,7 +583,7 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
         else:
             meta = listing.get(key)
             if not meta:
-                raise Exception(f"file-registry {namespace}: no file for {key}")
+                raise Exception(f"wasm store {namespace}: no file for {key}")
             content = yield from _pull_registry_bytes(namespace, meta["path"])
             content_type = (meta.get("content_type") or "application/octet-stream").strip()
         store_res = yield asset.store({
@@ -1562,6 +1526,10 @@ def _destroy_stand_gen(params: dict):
         dk = _find_stand_for_canister(backend_id)
     if dk is None and frontend_id:
         dk = _find_stand_for_canister(frontend_id)
+    if dk is not None:
+        from bootstrap import is_core_stand
+        if is_core_stand(dk):
+            raise Exception(f"destroy_stand: '{dk.section.name}/{dk.name}' is a Casals core stand")
 
     destroyed = []
     errors = []

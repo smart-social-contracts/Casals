@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   NAV_SECTIONS,
+  visibleNavSections,
   ORCHESTRA_SECTION,
   assignableSections,
   describeOperatorAccess,
@@ -127,4 +128,15 @@ test('describeMultisigSignerStatus', () => {
   const signers = ['aaaaa-aa', 'bbbbbb-bb', 'cccccc-cc'];
   assert.match(describeMultisigSignerStatus('aaaaa-aa', signers, 2), /Platform committee signer/);
   assert.match(describeMultisigSignerStatus('zzzzzz-zz', signers, 2), /Not a platform committee signer/);
+});
+
+test('visibleNavSections drops Platform committee when the orchestra has no multisig', () => {
+  const without = visibleNavSections(NAV_SECTIONS, { multisig: false });
+  const gov = without.find((s) => s.id === 'governance');
+  assert.ok(gov);
+  assert.deepEqual(gov!.links.map((l) => l.href), ['/commanders']);
+  const withIt = visibleNavSections(NAV_SECTIONS, { multisig: true });
+  assert.ok(withIt.find((s) => s.id === 'governance')!.links.some((l) => l.href === '/multisig'));
+  // Operate / Platform links never depend on a facility.
+  assert.equal(without.find((s) => s.id === 'operate')!.links.length, NAV_SECTIONS.find((s) => s.id === 'operate')!.links.length);
 });

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -18,7 +17,7 @@ import pytest
 BATON_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CASALS_ROOT = os.path.abspath(os.path.join(BATON_ROOT, "..", "..", ".."))
 MULTISIG_ROOT = os.path.abspath(os.path.join(BATON_ROOT, "..", "multisig"))
-FILE_REGISTRY_ROOT = os.path.abspath(os.path.join(CASALS_ROOT, "file_registry"))
+WASM_STORE_TEMPLATE = os.path.join(CASALS_ROOT, "seed", "templates", "certified-assets@0.3.0.wasm.gz")
 FIXTURES = os.path.join(BATON_ROOT, "tests", "fixtures")
 MANAGED_V1 = os.path.join(FIXTURES, "managed_canister", ".icp", "cache", "artifacts", "managed_canister")
 MANAGED_V2 = os.path.join(FIXTURES, "managed_canister_v2", ".icp", "cache", "artifacts", "managed_canister_v2")
@@ -154,40 +153,34 @@ def build_baton():
     return os.path.join(BATON_ROOT, ".basilisk", "baton", "baton.wasm")
 
 
-def build_file_registry():
-    env = os.environ.copy()
-    env["CANISTER_CANDID_PATH"] = os.path.join(FILE_REGISTRY_ROOT, "ic_file_registry.did")
-    r = subprocess.run(
-        ["python3", "-m", "basilisk", "ic_file_registry", "src/main.py"],
-        cwd=FILE_REGISTRY_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=900,
-        env=env,
-    )
-    if r.returncode != 0:
-        pytest.fail(f"file registry build failed:\n{r.stderr[-1200:]}")
-    return os.path.join(FILE_REGISTRY_ROOT, ".basilisk", "ic_file_registry", "ic_file_registry.wasm")
+def install_wasm_store() -> str:
+    """Deploy a casals-wasms store (stock certified-assets) on the local replica."""
+    import gzip
 
-
-def install_file_registry() -> str:
-    wasm = build_file_registry()
+    with open(WASM_STORE_TEMPLATE, "rb") as f:
+        wasm = gzip.decompress(f.read())
+    tmp = tempfile.NamedTemporaryFile(prefix="casals-wasms-", suffix=".wasm", delete=False)
+    tmp.write(wasm)
+    tmp.close()
     cid = create_detached()
-    icp(["canister", "install", cid, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"])
+    try:
+        icp(["canister", "install", cid, "--wasm", tmp.name, "--mode", "install", "-n", "local", "-y"])
+    finally:
+        os.unlink(tmp.name)
     return cid
 
 
-def upload_registry_file(registry_id: str, namespace: str, path: str, file_path: str) -> str:
+def upload_store_file(store_id: str, namespace: str, path: str, file_path: str) -> str:
+    """Put a file into the store at /<namespace>/<path> through the batch API
+    (Casals' CLI client); return its sha256 hex."""
+    sys.path.insert(0, CASALS_ROOT)
+    from casals_cli import wasm_store as _ws
+    from casals_cli.ic import IcClient
+
     with open(file_path, "rb") as f:
         data = f.read()
     sha = hashlib.sha256(data).hexdigest()
-    res = call(registry_id, "store_file", json.dumps({
-        "namespace": namespace,
-        "path": path,
-        "content_b64": base64.b64encode(data).decode("ascii"),
-        "content_type": "application/wasm",
-    }))
-    assert isinstance(res, dict) and res.get("ok"), res
+    _ws.upload_bytes(IcClient(env="local", project_root=CASALS_ROOT), store_id, namespace, path, data, sha, "application/wasm")
     return sha
 
 
@@ -316,10 +309,10 @@ def deploy_principal(replica):
 
 @pytest.fixture(scope="session")
 def registry_env(replica):
-    """File registry with test fixture WASMs uploaded."""
-    registry_id = install_file_registry()
-    v1_hash = upload_registry_file(registry_id, REGISTRY_NS, REGISTRY_V1_PATH, MANAGED_V1)
-    v2_hash = upload_registry_file(registry_id, REGISTRY_NS, REGISTRY_V2_PATH, MANAGED_V2)
+    """casals-wasms store with test fixture WASMs uploaded."""
+    registry_id = install_wasm_store()
+    v1_hash = upload_store_file(registry_id, REGISTRY_NS, REGISTRY_V1_PATH, MANAGED_V1)
+    v2_hash = upload_store_file(registry_id, REGISTRY_NS, REGISTRY_V2_PATH, MANAGED_V2)
     return {
         "registry_id": registry_id,
         "namespace": REGISTRY_NS,
@@ -337,7 +330,7 @@ def baton_env(replica, deploy_principal, registry_env):
     ok(call(baton_id, "set_config", json.dumps({
         "bake_window_seconds": 0,
         "install_cycles_buffer": 1_000_000_000,
-        "file_registry_canister_id": registry_env["registry_id"],
+        "wasm_store_canister_id": registry_env["registry_id"],
     })))
     approver = "approver-principal-001"
     ok(call(baton_id, "add_commander", json.dumps({

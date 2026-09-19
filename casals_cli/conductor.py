@@ -1,8 +1,21 @@
-"""Conductor bootstrap: create/install the four core canisters."""
+"""Conductor bootstrap: create/install the core canisters the sheet declares.
+
+Three shapes of conductor canister:
+
+- the Basilisk wasm built from this checkout (`backend`): installed from
+  ``.basilisk/...`` (``WASM_PATHS``);
+- the UI (`frontend`): an asset canister deployed and synced from a built
+  dist through a private icp project;
+- the `wasms` store: an asset canister installed from the certified-assets
+  wasm the sheet's ``registry.wasms`` names for it (e.g.
+  ``certified-assets@0.3.0`` → ``local:seed/templates/...``). It has no dist:
+  `casals up` fills it in the store-upload step.
+"""
 
 from __future__ import annotations
 
 import os
+import tempfile
 
 from sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
 
@@ -19,12 +32,12 @@ from casals_cli.registry import WASM_PATHS, resolve_source
 ICP_CANISTER_MAP = {
     "backend": "casals_backend",
     "frontend": "casals_frontend",
-    "file_registry": "ic_file_registry",
-    "file_registry_frontend": "ic_file_registry_frontend",
+    "wasms": "casals_wasms",
 }
 
-WASM_KEYS = frozenset({"backend", "file_registry"})
-ASSET_KEYS = frozenset({"frontend", "file_registry_frontend"})
+WASM_KEYS = frozenset({"backend"})    # Basilisk wasm built here
+STORE_KEYS = frozenset({"wasms"})     # asset canister from a registry.wasms artifact
+ASSET_KEYS = frozenset({"frontend"})  # asset canister synced from a built dist
 
 
 def _wasm_path_for_key(key: str, project_root: str) -> str:
@@ -33,6 +46,32 @@ def _wasm_path_for_key(key: str, project_root: str) -> str:
     if rel:
         return os.path.join(project_root, rel)
     raise FileNotFoundError(f"no wasm path for conductor.{key}")
+
+
+def _store_wasm_path(key: str, sheet: dict, *, sheet_dir: str, project_root: str) -> tuple[str, str]:
+    """(path, sha256) of the store canister's own wasm: the `registry.wasms`
+    entry for the family `conductor.<key>.wasm` names, resolved to a temp file
+    the installer can read."""
+    block = (sheet.get("conductor") or {}).get(key) or {}
+    wasm_ref = str(block.get("wasm") or "")
+    family = wasm_ref.split("@")[0] if wasm_ref else ""
+    version = wasm_ref.split("@")[1] if "@" in wasm_ref else "main"
+    entry = _find_registry_entry(sheet, family, version)
+    if not entry:
+        raise ValueError(
+            f"conductor.{key}: wasm {wasm_ref!r} has no registry.wasms entry "
+            f"(declare the certified-assets wasm, e.g. local:seed/templates/certified-assets@0.3.0.wasm.gz)"
+        )
+    data, digest = resolve_source(
+        str(entry.get("source") or ""),
+        sheet_dir=sheet_dir,
+        project_root=project_root,
+        expected_sha256=(entry.get("sha256") or "").strip() or None,
+    )
+    tmp = tempfile.NamedTemporaryFile(prefix=f"{CONDUCTOR_NAMES[key]}-", suffix=".wasm", delete=False)
+    tmp.write(data)
+    tmp.close()
+    return tmp.name, digest
 
 
 def conductor_alive(ic, canister_id: str, expected_hash: str | None) -> bool:
@@ -61,6 +100,7 @@ def _bootstrap_wasm_canister(
     multisig_id: str,
     project_root: str,
     progress=None,
+    wasm_path: str | None = None,
 ) -> None:
     live_hash = ic.read_module_hash(existing_id) if existing_id else None
     if existing_id and live_hash is None and not ic.canister_exists(existing_id):
@@ -78,7 +118,7 @@ def _bootstrap_wasm_canister(
         bindings.conductor_module_hashes[name] = live_hash
         return
 
-    wasm_path = _wasm_path_for_key(key, project_root)
+    wasm_path = wasm_path or _wasm_path_for_key(key, project_root)
     if existing_id and has_code:
         if progress:
             progress(f"  conductor {name}: upgrade {existing_id}")
@@ -123,13 +163,13 @@ def bootstrap_conductor(
     project_dir = bindings.icp_project_dir or icp_project_dir(sheet_name, bindings.env)
     bindings.icp_project_dir = project_dir
 
+    declared = [key for key in CONDUCTOR_KEYS if isinstance(conductor.get(key), dict)]
     casals_dist = ensure_asset_build("frontend", project_root, progress=progress)
-    registry_dist = ensure_asset_build("file_registry_frontend", project_root, progress=progress)
-    for key in CONDUCTOR_KEYS:
+    for key in declared:
         name = CONDUCTOR_NAMES[key]
         # Regenerate the private icp project each round so a UI deployed now sees
         # the backend ids created in earlier rounds.
-        write_icp_project(project_dir, casals_dist, registry_dist, bindings.env, ic.network_url, bindings.conductor)
+        write_icp_project(project_dir, casals_dist, bindings.env, ic.network_url, bindings.conductor)
         existing_id = bindings.conductor.get(name, "")
         if key in ASSET_KEYS:
             bootstrap_asset_canister(
@@ -137,40 +177,52 @@ def bootstrap_conductor(
                 bindings,
                 key=key,
                 project_dir=project_dir,
-                dist_path=casals_dist if key == "frontend" else registry_dist,
+                dist_path=casals_dist,
                 deployer=deployer,
                 multisig_id=multisig_id,
                 progress=progress,
             )
             continue
 
-        wasm_ref = str((conductor.get(key) or {}).get("wasm") or "")
-        family = wasm_ref.split("@")[0] if wasm_ref else ""
-        version = wasm_ref.split("@")[1] if "@" in wasm_ref else "main"
-        registry_entry = _find_registry_entry(sheet, family, version)
-        expected_hash = None
-        if registry_entry:
-            source = str(registry_entry.get("source") or "")
-            expected = (registry_entry.get("sha256") or "").strip() or None
-            _data, expected_hash = resolve_source(
-                source,
-                sheet_dir=sheet_dir,
-                project_root=project_root,
-                expected_sha256=expected,
-            )
+        wasm_path = None
+        if key in STORE_KEYS:
+            wasm_path, expected_hash = _store_wasm_path(key, sheet, sheet_dir=sheet_dir, project_root=project_root)
+        else:
+            wasm_ref = str((conductor.get(key) or {}).get("wasm") or "")
+            family = wasm_ref.split("@")[0] if wasm_ref else ""
+            version = wasm_ref.split("@")[1] if "@" in wasm_ref else "main"
+            registry_entry = _find_registry_entry(sheet, family, version)
+            expected_hash = None
+            if registry_entry:
+                source = str(registry_entry.get("source") or "")
+                expected = (registry_entry.get("sha256") or "").strip() or None
+                _data, expected_hash = resolve_source(
+                    source,
+                    sheet_dir=sheet_dir,
+                    project_root=project_root,
+                    expected_sha256=expected,
+                )
 
-        _bootstrap_wasm_canister(
-            ic,
-            bindings,
-            key=key,
-            name=name,
-            existing_id=existing_id,
-            expected_hash=expected_hash,
-            deployer=deployer,
-            multisig_id=multisig_id,
-            project_root=project_root,
-            progress=progress,
-        )
+        try:
+            _bootstrap_wasm_canister(
+                ic,
+                bindings,
+                key=key,
+                name=name,
+                existing_id=existing_id,
+                expected_hash=expected_hash,
+                deployer=deployer,
+                multisig_id=multisig_id,
+                project_root=project_root,
+                progress=progress,
+                wasm_path=wasm_path,
+            )
+        finally:
+            if key in STORE_KEYS and wasm_path:
+                try:
+                    os.unlink(wasm_path)
+                except OSError:
+                    pass
 
     bindings.backend_id = bindings.conductor.get(CONDUCTOR_NAMES["backend"], bindings.backend_id)
     bindings.deployer = deployer

@@ -18,8 +18,8 @@ _SHA_STAMP = "COMMIT_HASH_PLACEHOLDER"
 _BUILT_AT_STAMP = "BUILT_AT_ISO_PLACEHOLDER"
 
 # Static canister name. This WASM is the Casals conductor only
-# (``casals_backend``). file_registry and marketplace_backend are
-# separate codebases — one implementation does not cover those three.
+# (``casals_backend``). marketplace_backend and other Basilisk canisters are
+# separate codebases with their own version endpoints.
 _CANISTER_NAME = "casals_backend"
 
 

@@ -7,7 +7,7 @@ The orchestra metaphor, persisted via ic_python_db entities:
 Plus the supporting governance/operational records:
 
     AuthorizedWasm   — per-section list of WASMs a stand's canisters may run
-    Settings         — singleton: open-access toggle, file-registry
+    Settings         — singleton: open-access toggle, WASM store binding
     OrchestrationEvent — append-only, ICRC-3 / ICRC-121-style audit log
 """
 
@@ -219,7 +219,7 @@ class AuthorizedWasm(Entity, TimestampedMixin):
 
     The list is governed: adding/removing an entry represents an approved
     decision (e.g. a project community voting in a new release). The bytes
-    live in the file-registry, addressed by (namespace, path) and pinned by
+    live in the casals-wasms store, addressed by (namespace, path) and pinned by
     sha256 — which is also the module hash verified after install.
     """
 
@@ -244,21 +244,21 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     added_by = String(max_length=64, default="")
     # Optional asset to upload into canisters built from this WASM (for frontend
     # certified-assets canisters, which install empty). The bytes live in the
-    # file-registry at (asset_namespace, asset_path); Casals uploads them via the
+    # store at (asset_namespace, asset_path); Casals uploads them via the
     # asset canister's `store` after install so the canister serves a real page.
     asset_namespace = String(max_length=256, default="")
     asset_path = String(max_length=256, default="")
     asset_content_type = String(max_length=128, default="text/html")
     # For a frontend (certified-assets) WASM whose canister should serve a whole
     # multi-file static bundle (e.g. a compiled single-page web-app build), this is
-    # the file-registry namespace holding every file. When set, Casals uploads the
+    # the store namespace holding every file. When set, Casals uploads the
     # entire bundle into the freshly installed asset canister (see _upload_bundle)
     # instead of a single `asset_path`. Each deployment gets its own frontend
     # canister, so the bundle is uploaded per canister; speed is addressed by the
     # batch-commit API, and incremental (changed-file-only) upgrades.
     bundle_namespace = String(max_length=256, default="")
     # JSON template for per-deployment /canister_ids.js (frontend WASMs). Placeholders:
-    # $BACKEND, $FILE_REGISTRY, $INTERNET_IDENTITY. Empty => Casals default template.
+    # $BACKEND, $WASM_STORE, $INTERNET_IDENTITY. Empty => Casals default template.
     canister_ids_template = String(max_length=512, default="")
 
 
@@ -270,9 +270,14 @@ class Settings(Entity):
     # 0 = only Casals controllers may add sections/stands; 1 = anyone with II
     # may (deployer can flip this for experimentation / dev / demo).
     open_access = Integer(default=0)
+    # The WASM store: a certified-assets canister (`casals-wasms`) holding every
+    # artifact Casals installs, addressed by key `/<namespace>/<path>`
+    # (see wasm_store.py). Bound by `bind_conductor` from the sheet.
+    wasm_store_canister_id = String(max_length=64, default="")
+    # Retired: the Basilisk file-registry pair the store replaced (issue #48).
+    # No code reads these any more; the columns stay so settings rows written
+    # by older builds still deserialize, and `bind_conductor` blanks them.
     file_registry_canister_id = String(max_length=64, default="")
-    # Optional browse UI for the registry (separate asset canister; bundled as
-    # ic_file_registry_frontend in standalone Casals deployments).
     file_registry_frontend_canister_id = String(max_length=64, default="")
     # Asset canister serving this Casals SPA (for off-chain cycle monitoring).
     casals_frontend_canister_id = String(max_length=64, default="")
@@ -367,6 +372,23 @@ class PrincipalAlias(Entity, TimestampedMixin):
     name = String(min_length=1, max_length=64)
     description = String(max_length=256, default="")
     created_by = String(max_length=64, default="")
+
+
+class StoreUploadGrant(Entity, TimestampedMixin):
+    """A just-in-time ``Commit`` grant on the `casals-wasms` store.
+
+    ``begin_upload`` grants the caller ``Commit`` so the browser can stream a
+    WASM straight into the store; ``end_upload`` revokes it. Rows outlive
+    their ``expires_at`` only when a client never called ``end_upload`` —
+    the next begin/end sweeps them (revoke + delete), so a lost tab cannot
+    leave a standing publisher behind.
+    """
+
+    __alias__ = "principal"
+    principal = String(min_length=1, max_length=64)
+    expires_at = Integer(default=0)            # unix seconds
+    granted_by = String(max_length=64, default="")
+    key_prefix = String(max_length=256, default="")
 
 
 class SheetDocument(Entity):

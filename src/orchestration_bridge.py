@@ -175,19 +175,21 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
     "weight"?} dicts; a weight is what the commander's approval counts for
     against the policy threshold. ``remove`` names commanders to drop.
 
-    Also propagates Casals' file-registry canister id into the Baton config
-    (when set and not yet configured) so the Baton can pull registry-backed
-    WASMs and asset bundles for managed actions.
+    Also propagates Casals' `casals-wasms` store id into the Baton config
+    (``wasm_store_canister_id``, written once when the Baton does not have it
+    yet) so the Baton can pull store-backed WASMs and asset bundles for
+    managed actions.
     """
     baton_id = baton_st.canister_id
 
-    registry_id = (_settings().file_registry_canister_id or "").strip()
-    if registry_id:
+    store_id = (getattr(_settings(), "wasm_store_canister_id", "") or "").strip()
+    if store_id:
         cfg_raw = yield from _baton_query(baton_id, "get_config")
         cfg = _parse_baton_json_reply(cfg_raw) or {}
-        if not (isinstance(cfg, dict) and (cfg.get("file_registry_canister_id") or "").strip()):
+        cfg = cfg if isinstance(cfg, dict) else {}
+        if not (cfg.get("wasm_store_canister_id") or "").strip():
             reply = yield from _call_text_method(baton_id, "set_config", json.dumps({
-                "file_registry_canister_id": registry_id,
+                "wasm_store_canister_id": store_id,
             }))
             _parse_baton_reply(reply)
 

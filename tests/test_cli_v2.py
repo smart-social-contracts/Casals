@@ -168,8 +168,10 @@ class TestUpSequencing:
         monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
             bindings.conductor.setdefault("casals-backend", "backend-id")
-            bindings.conductor.setdefault("file-registry", "fr-id")
+            bindings.conductor.setdefault("casals-wasms", "store-id")
             bindings.backend_id = bindings.conductor["casals-backend"]
+            # bootstrap leaves the deployer controlling the fresh store
+            ic.controllers["store-id"] = ["deployer-principal"]
             return bindings
 
         monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
@@ -195,8 +197,7 @@ class TestUpSequencing:
             conductor={
                 "casals-backend": "cond-backend",
                 "casals-frontend": "cond-fe",
-                "file-registry": "cond-fr",
-                "file-registry-frontend": "cond-fr-fe",
+                "casals-wasms": "cond-store",
             },
         )
         b.save()
@@ -388,6 +389,8 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
             ic.controllers[cid] = [bindings["casals-backend"], bindings["multisig"]]
         elif cname in ("file-registry", "file-registry-frontend"):
             ic.controllers[cid] = [bindings["casals-backend"]]
+        elif cname == "casals-wasms":
+            ic.controllers[cid] = [bindings["casals-backend"], ic.deployer]
         elif cname in ("casals-backend", "casals-frontend"):
             ic.controllers[cid] = [bindings["multisig"]]
         elif cname == "multisig":
@@ -399,6 +402,15 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     ic.updates[(bindings["file-registry"], "list_files")] = [
         {"path": "hello-world-motoko@1.0.0.wasm.gz", "sha256": "a" * 64},
     ]
+    if "casals-wasms" in bindings:
+        # The oracle reads expected hashes from the store when one is bound; the
+        # fake holds the same listing (a fixed sha256 needs no matching bytes).
+        from casals_cli.wasm_store import FakeAssetStore
+        store = FakeAssetStore()
+        store.files["/wasm/hello-world-motoko@1.0.0.wasm.gz"] = (b"motoko", "application/wasm")
+        ic.candid.update(store.handlers())
+        if "motoko-backend" in bindings:
+            ic.module_hashes[bindings["motoko-backend"]] = hashlib.sha256(b"motoko").hexdigest()
     signer_vec = " ".join(f'principal "{s}";' for s in signers)
     ic.icp_outputs = {("canister", "call", bindings["multisig"], "list_signers"):
                       f'(record {{ threshold = 1 : nat; signers = vec {{ {signer_vec} }}; }})'}
@@ -411,6 +423,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
+            "casals-wasms": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -430,6 +443,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
+            "casals-wasms": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -463,6 +477,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
+            "casals-wasms": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -542,3 +557,65 @@ class TestMultisigPaths:
         ic.icp_outputs[("canister", "call", "ms-id", "get_proposal")] = "(opt record { status = variant { pending }; })"
         with pytest.raises(RuntimeError, match="#7 .* is pending"):
             set_controllers_via_multisig(ic, "ms-id", "deployer", "c-id", ["deployer", "ms-id"])
+
+
+class TestGovernedUpgrade:
+    """`upgrade_code requires=multisig` (the multisig's own build bump): the
+    conductor is not a controller, so the CLI takes control through the
+    multisig, installs the sheet's declared build and leaves the controller
+    cleanup to the next plan round."""
+
+    def _plan(self, want: str) -> dict:
+        return {"items": [{
+            "kind": "upgrade_code", "requires": "multisig",
+            "target": {"name": "multisig", "canister_id": "ms-id"},
+            "desired": {"module_hash": want},
+        }]}
+
+    def _sheet(self, tmp_path, data: bytes) -> tuple[dict, str]:
+        import gzip
+        (tmp_path / "ms.wasm.gz").write_bytes(gzip.compress(data))
+        (tmp_path / "other.wasm").write_bytes(b"\0asm other")
+        sheet = {"registry": {"wasms": [
+            {"family": "orchestration-multisig", "version": "1.6.0", "source": "local:ms.wasm.gz"},
+            {"family": "hello", "version": "1", "source": "local:other.wasm"},
+            {"family": "built", "version": "main", "source": "build:casals_backend"},  # never resolved
+        ]}}
+        return sheet, str(tmp_path)
+
+    def test_installs_declared_build_via_multisig_control(self, tmp_path):
+        import hashlib
+        from casals_cli.up import deployer_items, registry_wasm_by_hash
+
+        data = b"\0asm multisig 1.6.0"
+        want = hashlib.sha256(data).hexdigest()
+        sheet, sheet_dir = self._sheet(tmp_path, data)
+        ic = TestMultisigPaths._ic(self)
+        ic.controllers["ms-id"] = ["ms-id"]  # handed over: only the multisig controls itself
+        lookup = registry_wasm_by_hash(sheet, sheet_dir=sheet_dir, project_root=sheet_dir)
+
+        deployer_items(ic, self._plan(want), "deployer", "ms-id", lookup)
+
+        proposal = next(c[1][0] for c in ic.calls if c[0] == "icp" and c[1][0][3:4] == ("propose",))
+        assert 'SetCanisterControllers = record { canister_id = principal "ms-id"' in proposal[4]
+        assert 'principal "deployer"' in proposal[4]  # deployer added, existing controller kept
+        install = next(c for c in ic.calls if c[0] == "install_wasm")
+        assert install[1][0] == "ms-id" and install[2] == {"mode": "upgrade"}
+        assert hashlib.sha256(open(install[1][1], "rb").read()).hexdigest() == want  # gunzipped bytes
+
+    def test_unknown_hash_is_reported_not_installed(self, tmp_path):
+        from casals_cli.up import deployer_items, registry_wasm_by_hash
+
+        sheet, sheet_dir = self._sheet(tmp_path, b"\0asm x")
+        ic = TestMultisigPaths._ic(self)
+        lookup = registry_wasm_by_hash(sheet, sheet_dir=sheet_dir, project_root=sheet_dir)
+        deployer_items(ic, self._plan("ff" * 32), "deployer", "ms-id", lookup)
+        assert not [c for c in ic.calls if c[0] == "install_wasm"]
+        assert not [c for c in ic.calls if c[0] == "icp"]  # no proposal either
+
+    def test_without_sheet_nothing_happens(self):
+        from casals_cli.up import deployer_items
+
+        ic = TestMultisigPaths._ic(self)
+        deployer_items(ic, self._plan("ab" * 32), "deployer", "ms-id")  # `casals apply` has no sheet
+        assert not [c for c in ic.calls if c[0] in ("install_wasm", "icp")]

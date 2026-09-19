@@ -50,7 +50,7 @@
   let bakeWindow = $state('');
   let accelerantDays = $state('');
   let cyclesBuffer = $state('');
-  let fileRegistryId = $state('');
+  let wasmStoreId = $state('');
   let approvalThreshold = $state('1');
   let eligibleApprovers = $state<Record<string, boolean>>({});
   let requiredApprovers = $state<Record<string, boolean>>({});
@@ -104,7 +104,7 @@
     accelerantDays = config.accelerant_days != null ? String(config.accelerant_days) : '';
     cyclesBuffer =
       config.install_cycles_buffer != null ? String(config.install_cycles_buffer) : '';
-    fileRegistryId = config.file_registry_canister_id ?? '';
+    wasmStoreId = config.wasm_store_canister_id ?? '';
     const ap = config.upgrade_approval_policy;
     approvalThreshold = ap?.threshold != null ? String(ap.threshold) : '1';
     const eligibleSet = new Set((ap?.eligible ?? []).map((p) => p.toLowerCase()));
@@ -121,8 +121,8 @@
     );
     void casalsMetadata()
       .then((m) => {
-        if (!fileRegistryId.trim() && m.file_registry_canister_id) {
-          fileRegistryId = m.file_registry_canister_id;
+        if (!wasmStoreId.trim() && m.wasm_store_canister_id) {
+          wasmStoreId = m.wasm_store_canister_id;
         }
       })
       .catch(() => {});
@@ -177,17 +177,17 @@
         bake_window_seconds?: number;
         accelerant_days?: number;
         install_cycles_buffer?: number;
-        file_registry_canister_id?: string;
+        wasm_store_canister_id?: string;
         upgrade_approval_policy?: BatonUpgradeApprovalPolicy;
       } = {};
       const bw = String(bakeWindow ?? '').trim();
       const ad = String(accelerantDays ?? '').trim();
       const cb = String(cyclesBuffer ?? '').trim();
-      const fr = String(fileRegistryId ?? '').trim();
+      const ws = String(wasmStoreId ?? '').trim();
       if (bw) args.bake_window_seconds = Math.max(0, parseInt(bw, 10) || 0);
       if (ad) args.accelerant_days = Math.max(0, parseInt(ad, 10) || 0);
       if (cb) args.install_cycles_buffer = Math.max(0, parseInt(cb, 10) || 0);
-      if (fr) args.file_registry_canister_id = fr;
+      if (ws) args.wasm_store_canister_id = ws;
       args.upgrade_approval_policy = buildApprovalPolicy();
       if (!Object.keys(args).length) {
         error = 'Change at least one field';
@@ -417,15 +417,15 @@
             <input id="baton-buffer" class="input" type="number" min="0" bind:value={cyclesBuffer} />
           </div>
           <div>
-            <label class="label" for="baton-registry">File registry canister</label>
+            <label class="label" for="baton-store">WASM store canister</label>
             <input
-              id="baton-registry"
+              id="baton-store"
               class="input font-mono text-xs"
-              bind:value={fileRegistryId}
+              bind:value={wasmStoreId}
               placeholder="aaaaa-aa"
             />
             <p class="text-xs text-primary-400 mt-1">
-              Required for managed upgrades — Baton pulls WASM from the registry at execute time.
+              Required for managed upgrades — Baton pulls the WASM from the casals-wasms store at execute time.
             </p>
           </div>
           <div class="pt-2 border-t border-primary-200 space-y-3">

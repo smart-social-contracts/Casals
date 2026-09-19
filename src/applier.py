@@ -10,7 +10,7 @@ from basilisk.canisters.management import management_canister
 from audit import _append_event
 from commanders import persist_commanders
 from config_call import call_text_method_gen, config_text_arg
-from helpers import _settings, unwrap_call_result
+from helpers import unwrap_call_result
 from lifecycle import (
     CANDID_NULL_ARG,
     _allocate_canister,
@@ -33,9 +33,9 @@ from orchestration_bridge import (
     _multisig_configure_gen,
     _parse_baton_reply,
 )
+import wasm_store
 from pool import _pool_mark_in_use
-from services import FileRegistryService
-from sheetv2 import WASM_NAMESPACE, registry_path
+from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, WASM_NAMESPACE, registry_path
 from wasm_types import wasm_type_of_wasm
 
 
@@ -120,6 +120,10 @@ def _precondition_holds_gen(item: dict, live_state: dict, self_id: str):
 
 def _ensure_stand(section: str, stand: str | None):
     """Section (and stand) records exist; return the stand, or the section when no stand is given."""
+    if section == SYNTHETIC_SECTION_CONDUCTOR:
+        # Casals/conductor and Casals/governance: one home, described consistently.
+        from bootstrap import ensure_core_section, ensure_core_stand
+        return ensure_core_stand(stand) if stand else ensure_core_section()
     list(Section.instances())
     sec = Section[section]
     if sec is None:
@@ -146,15 +150,18 @@ def _execute_item(item: dict, sheet: dict):
         key = f"{family}@{version}" if version else family
         path = registry_path(family, version)
         ns = WASM_NAMESPACE
-        fr = FileRegistryService(_settings().file_registry_canister_id)
-        size_res = yield fr.get_file_size_icc(ns, path)
-        info = json.loads(unwrap_call_result(size_res))
-        if info.get("error") or not int(info.get("size") or 0):
-            raise Exception(f"registry missing {ns}/{path} for {key}")
+        try:
+            info = yield from wasm_store.stat_file(ns, path)
+        except Exception as exc:
+            raise Exception(f"wasm store missing {ns}/{path} for {key}: {exc}")
+        # The asset store hashes on commit (authoritative); the registry stores
+        # whatever the uploader declared.
         registry_sha = (info.get("sha256") or "").lower()
         sha = (entry.get("sha256") or "").strip().lower() or registry_sha
-        if sha != registry_sha:
-            raise Exception(f"{key}: sheet pins sha256 {sha} but registry holds {registry_sha}")
+        if not sha:
+            raise Exception(f"{key}: neither the sheet nor the store reports a sha256 for {ns}/{path}")
+        if registry_sha and sha != registry_sha:
+            raise Exception(f"{key}: sheet pins sha256 {sha} but the store holds {registry_sha}")
         list(AuthorizedWasm.instances())
         w = AuthorizedWasm[key]
         if w is None:
@@ -175,7 +182,7 @@ def _execute_item(item: dict, sheet: dict):
         _ensure_stand((target.get("section") or "").strip(), name)
         return
     if kind == "create_canister":
-        # Synthetic stands (Casals/conductor, System/governance) are never registered by a plan item.
+        # Synthetic stands (Casals/conductor, Casals/governance) are never registered by a plan item.
         dk = _ensure_stand((target.get("section") or "").strip(), (target.get("stand") or "").strip())
         reuse = bool((item.get("desired") or {}).get("reuse_pool"))
         subnet, subnet_type = _target_subnet(dk)

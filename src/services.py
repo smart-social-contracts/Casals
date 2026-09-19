@@ -1,10 +1,10 @@
 """Inter-canister Basilisk Service definitions.
 
-These thin wrappers tell Basilisk how to call three external canisters:
+These thin wrappers tell Basilisk how to call two external canisters:
 
-  FileRegistryService        — reads WASM bytes from the file-registry
-  AssetCanisterService       — grants permission + uploads assets to a
-                               certified-assets frontend canister
+  AssetCanisterService       — the certified-assets canister: the casals-wasms
+                               WASM store (reads, permissions, housekeeping)
+                               and every frontend canister (asset uploads)
   BasiliskIntrospectionService — relays __browse__ / __shell__ calls to
                                managed canisters for the dashboard
 """
@@ -23,27 +23,6 @@ from basilisk import (
     text,
     void,
 )
-
-
-# ── File-registry ─────────────────────────────────────────────────────────
-
-class FileRegistryService(Service):
-    """Pulls authorized WASM bytes from the file-registry canister."""
-
-    @service_query
-    def get_file_size_icc(self, namespace: text, path: text) -> text: ...
-
-    @service_query
-    def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text: ...
-
-    @service_update
-    def list_files_icc(self, namespace: text) -> text: ...
-
-    @service_update
-    def grant_publish(self, args: text) -> text: ...
-
-    @service_update
-    def revoke_publish(self, args: text) -> text: ...
 
 
 # ── Certified-assets canister ─────────────────────────────────────────────
@@ -91,15 +70,64 @@ class AssetEntry(Record):
     encodings: Vec[AssetEncoding]
 
 
+# Read side, used against the `casals-wasms` store (see wasm_store.py). `get`
+# returns the whole content when it fits in one chunk, else chunk 0 plus
+# `total_length`; every chunk but the last has the size of chunk 0.
+
+class GetArg(Record):
+    key: text
+    accept_encodings: Vec[text]
+
+
+class EncodedAsset(Record):
+    content: blob
+    content_type: text
+    content_encoding: text
+    sha256: Opt[blob]
+    total_length: nat
+
+
+class GetChunkArg(Record):
+    key: text
+    content_encoding: text
+    index: nat
+    sha256: Opt[blob]
+
+
+class ChunkContent(Record):
+    content: blob
+
+
+class RevokePermissionArg(Record):
+    of_principal: Principal
+    permission: AssetPermission
+
+
+class DeleteAssetArg(Record):
+    key: text
+
+
 class AssetCanisterService(Service):
     @service_update
     def grant_permission(self, arg: GrantPermissionArg) -> void: ...
 
     @service_update
+    def revoke_permission(self, arg: RevokePermissionArg) -> void: ...
+
+    @service_update
     def store(self, arg: StoreArg) -> void: ...
+
+    @service_update
+    def delete_asset(self, arg: DeleteAssetArg) -> void: ...
 
     @service_query
     def list(self, arg: ListArgs) -> Vec[AssetEntry]: ...
+
+    @service_query
+    def get(self, arg: GetArg) -> EncodedAsset: ...
+
+    @service_query
+    def get_chunk(self, arg: GetChunkArg) -> ChunkContent: ...
 
 
 # ── Basilisk introspection relay ──────────────────────────────────────────

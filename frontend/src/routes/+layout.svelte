@@ -4,12 +4,13 @@
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied, claimAccessCode } from '$lib/auth';
-  import { backendCanisterId, casalsMetadata, initLocalNetworkHints } from '$lib/api';
+  import { backendCanisterId, casalsMetadata, getTree, initLocalNetworkHints } from '$lib/api';
   import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
   import BuildFooter from '$lib/components/BuildFooter.svelte';
-  import { NAV_SECTIONS } from '$lib/governanceUx';
+  import { NAV_SECTIONS, visibleNavSections } from '$lib/governanceUx';
+  import { findMultisigCanister } from '$lib/orchestraGovernance';
 
   let { children } = $props();
 
@@ -17,6 +18,19 @@
   let isDesktop = $state(false);
   let orchestraName = $state('');
   let currentPath = $derived($page.url.pathname);
+  // Facilities the sidebar depends on: a Platform committee entry only makes
+  // sense when a multisig canister exists. Re-checked on every navigation so
+  // an `apply` that adds one shows up without a reload.
+  let hasMultisig = $state(false);
+  let navSections = $derived(visibleNavSections(NAV_SECTIONS, { multisig: hasMultisig }));
+
+  async function refreshFacilities() {
+    try {
+      hasMultisig = !!findMultisigCanister(await getTree());
+    } catch {
+      /* keep the last known state */
+    }
+  }
   let mobileSidebarOpen = $derived(sidebarOpen && !isDesktop);
 
   function toggleSidebar() {
@@ -39,6 +53,11 @@
     toasts.success(where ? `Access granted on ${where}` : 'Access granted');
     return claimed;
   }
+
+  $effect(() => {
+    void currentPath;
+    void refreshFacilities();
+  });
 
   $effect(() => {
     if (!mobileSidebarOpen) return;
@@ -76,7 +95,7 @@
 
 {#snippet sidebarNav()}
   <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-5">
-    {#each NAV_SECTIONS as section (section.id)}
+    {#each navSections as section (section.id)}
       <div>
         <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-primary-400">
           {section.title}

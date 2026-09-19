@@ -203,7 +203,7 @@ def drift_controller(o: Orchestra) -> None:
     reach (directly or through the multisig); expect exactly one item, healed by up."""
     touched = 0
     ids = o.ids()
-    sample = ["casals-backend", "multisig", next((n for n in ids if not n.startswith("casals-") and n not in ("multisig", "file-registry", "file-registry-frontend")), "")]
+    sample = ["casals-backend", "multisig", next((n for n in ids if not n.startswith("casals-") and n != "multisig"), "")]
     for name in [n for n in sample if n in ids]:
         cid = ids[name]
         if not o.add_controller(cid, FOREIGN):
@@ -537,9 +537,11 @@ def proposal_only(o: Orchestra) -> None:
     if not rep.get("ok"):
         raise Fail("oracle on the gated sheet: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
     o.casals("up", o.sheet_path, "--yes")  # back to the declared sheet
+    # When the declared sheet manages this stand's commanders, that `up` already
+    # removed the foreign one (set_commanders); otherwise drop it here.
     res = o.icp("canister", "call", backend, "remove_commander",
                 f'("{remove_arg.replace(chr(34), chr(92) + chr(34))}")')
-    if '\\"ok\\":true' not in res.stdout:
+    if '\\"ok\\":true' not in res.stdout and "is not assigned to stand" not in res.stdout:
         raise Fail(f"could not remove the foreign commander again: {res.stdout[-300:]}")
     o.oracle()
 

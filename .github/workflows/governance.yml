@@ -39,9 +39,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          # file_registry/ is required by tests/conftest.py (Casals create path).
-          submodules: recursive
 
       - uses: actions/setup-python@v6
         with:
@@ -67,7 +64,7 @@ jobs:
           pytest --version
 
       # tests/conftest.py starts the replica, builds + deploys casals_backend
-      # and the file-registry; each module then builds the Motoko multisig
+      # and the casals-wasms store; each module then builds the Motoko multisig
       # from packages/orchestration.
       # The modules are ordered test_01..test_0N and share module-scoped
       # fixtures, so ordering must stay deterministic.

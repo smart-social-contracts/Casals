@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
-  import { candidUiUrl, getTree, refreshControllersCache, type Tree } from '$lib/api';
+  import { candidUiUrl, getTree, refreshControllersCache, backendCanisterId, frontendCanisterId, type Tree } from '$lib/api';
+  import { hydrateTreeControllers } from '$lib/controllerAccess';
   import {
     batonLoadSnapshot,
     batonSubmitApproval,
@@ -113,18 +114,20 @@
       managed = snap.managed;
       actions = snap.actions.sort((a, b) => (b.proposed_at ?? 0) - (a.proposed_at ?? 0));
       policy = snap.policy;
-      tree = treeData;
-      if (treeData && snap.managed.length) {
-        const stale = snap.managed.some((mid) => {
+      if (treeData) {
+        const extra = [backendCanisterId(), frontendCanisterId(), canisterId, ...snap.managed].filter(Boolean);
+        const stale = extra.some((mid) => {
           const c = treeData.sections.flatMap((s) => s.stands).flatMap((st) => st.canisters)
             .find((x) => x.canister_id === mid);
-          return c && !(c.controllers?.length);
+          return !c || !(c.controllers?.length);
         });
         if (stale) {
-          tree = await refreshControllersCache()
-            .then(() => getTree())
-            .catch(() => treeData);
+          await refreshControllersCache().catch(() => undefined);
         }
+        const fresh = stale ? await getTree().catch(() => treeData) : treeData;
+        tree = (await hydrateTreeControllers(fresh, extra, { force: stale })).tree;
+      } else {
+        tree = treeData;
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);

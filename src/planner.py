@@ -9,6 +9,7 @@ from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions
 from commanders import reconcile_claimed
 from sheetv2 import (
+    CONDUCTOR_KEYS,
     CONDUCTOR_NAMES,
     HAND_OFF_SOLE,
     baton_commanders,
@@ -202,7 +203,7 @@ class _PlanContext:
             )
             self._plan_multisig_config(ms)
         conductor = self.sheet.get("conductor") or {}
-        for ci, key in enumerate(("backend", "frontend", "file_registry", "file_registry_frontend")):
+        for ci, key in enumerate(CONDUCTOR_KEYS):
             block = conductor.get(key)
             if isinstance(block, dict):
                 self._plan_canister(

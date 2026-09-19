@@ -29,6 +29,18 @@ module {
       max_items : Nat;
     };
     #CallCanister : { canister : Principal; method : Text; arg_json : Text };
+    /// Upgrade a canister this multisig controls with a module streamed from
+    /// the ``casals-wasms`` store (``store``/``key``). ``sha256`` pins the
+    /// module the committee approved; ``install_chunked_code`` refuses anything
+    /// else. ``wasm_memory_keep`` is the EOP switch (Motoko yes, Rust/Basilisk no).
+    #UpgradeCanister : {
+      canister_id : Principal;
+      store : Principal;
+      key : Text;
+      sha256 : Blob;
+      arg : Blob;
+      wasm_memory_keep : Bool;
+    };
   };
 
   public type ProposalStatus = { #pending; #executed; #rejected; #failed; #expired };

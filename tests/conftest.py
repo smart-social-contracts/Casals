@@ -10,7 +10,7 @@ Run with:
 (requires icp-cli + ic-wasm on PATH and `pip install -r requirements-dev.txt`)
 """
 
-import base64
+import sys
 import hashlib
 import json
 import os
@@ -24,20 +24,18 @@ import pytest
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CANISTER_NAME = "casals_backend"
 
-# The file-registry is part of the Casals core, vendored as the `file_registry`
-# git submodule. The end-to-end tests build and deploy it from this same repo —
-# no sibling checkout or committed fixture needed.
-FILE_REGISTRY_CANISTER = "ic_file_registry"
-FILE_REGISTRY_ENTRY = "file_registry/src/main.py"
-FILE_REGISTRY_DID = "file_registry/ic_file_registry.did"
+# The WASM store (`casals-wasms`) is a stock certified-assets canister; the
+# end-to-end tests deploy the committed template and seed it the way `casals
+# up` does (casals_cli.wasm_store).
+WASM_STORE_TEMPLATE = os.path.join("seed", "templates", "certified-assets@0.3.0.wasm.gz")
 # Cycles topped into casals_backend so it can fund freshly created canisters.
 CASALS_TOPUP = os.environ.get("CASALS_TOPUP", "50t")
-# The registry is session-scoped and every module stores multi-MB wasms in it,
+# The store is session-scoped and every module stores multi-MB wasms in it,
 # so its memory (and thus its cycle burn) grows with the number of modules in
 # the run. Left on the default create allocation it dies with IC0532
 # ("cannot grow memory ... due to insufficient cycles") partway through a
 # full-directory run, which surfaces as unrelated modules erroring en masse.
-FILE_REGISTRY_TOPUP = os.environ.get("FILE_REGISTRY_TOPUP", "100t")
+WASM_STORE_TOPUP = os.environ.get("WASM_STORE_TOPUP", "100t")
 
 
 def _icp(args, cwd=REPO_ROOT, check=True, timeout=300):
@@ -187,7 +185,7 @@ def canister(replica):
     yield CANISTER_NAME
 
 
-# ── End-to-end environment: a real file-registry wired into Casals ────────────
+# ── End-to-end environment: a real casals-wasms store wired into Casals ──────
 
 
 def _create_detached() -> str:
@@ -199,55 +197,21 @@ def _create_detached() -> str:
     return m.group(1)
 
 
-def registry_store(fr_id: str, namespace: str, path: str, data: bytes) -> str:
-    """Store bytes in the file-registry; return the registry-computed sha256.
+def _store_client():
+    """The CLI's IC client for the local replica (binary Candid calls to the store)."""
+    sys.path.insert(0, REPO_ROOT)
+    from casals_cli.ic import IcClient
 
-    Always uses ``--args-file`` so the payload never lands on the OS argv
-    (inline ``store_file`` hits E2BIG for Motoko / template WASMs).
-    """
-    res = _registry_call_with_file(fr_id, "store_file", json.dumps({
-        "namespace": namespace,
-        "path": path,
-        "content_b64": base64.b64encode(data).decode("ascii"),
-        "content_type": "application/wasm",
-    }))
-    assert isinstance(res, dict) and res.get("ok") is True, res
-    return res["sha256"]
+    return IcClient(env="local", project_root=REPO_ROOT)
 
 
-def _registry_call_with_file(fr_id: str, method: str, json_arg: str):
-    """Call a file-registry method with a large candid arg via --args-file (the
-    OS argv limit forbids passing multi-hundred-KB args inline)."""
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".candid", delete=False, encoding="utf-8")
-    tmp.write(_candid_text_arg(json_arg))
-    tmp.close()
-    try:
-        return _parse(_icp([
-            "canister", "call", fr_id, method,
-            "--args-file", tmp.name, "--args-format", "candid", "-n", "local",
-        ]).stdout)
-    finally:
-        os.unlink(tmp.name)
+def store_put(store_id: str, namespace: str, path: str, data: bytes, content_type: str = "application/wasm") -> str:
+    """Upload bytes into the store at /<namespace>/<path> (chunked batch, the
+    canister verifies the sha256); return that sha256."""
+    from casals_cli import wasm_store as _ws
 
-
-def registry_store_chunked(fr_id: str, namespace: str, path: str, data: bytes,
-                           chunk: int = 1024 * 1024) -> str:
-    """Chunk-upload bytes into the file-registry (for artifacts too big to pass
-    inline); return the locally computed sha256."""
-    total = (len(data) + chunk - 1) // chunk
-    for i in range(total):
-        part = data[i * chunk:(i + 1) * chunk]
-        res = _registry_call_with_file(fr_id, "store_file_chunk", json.dumps({
-            "namespace": namespace, "path": path, "chunk_index": i,
-            "total_chunks": total, "data_b64": base64.b64encode(part).decode("ascii"),
-            "content_type": "application/octet-stream",
-        }))
-        assert isinstance(res, dict) and res.get("ok"), res
     digest = hashlib.sha256(data).hexdigest()
-    res = _registry_call_with_file(fr_id, "finalize_chunked_file", json.dumps({
-        "namespace": namespace, "path": path, "sha256": digest,
-    }))
-    assert isinstance(res, dict) and res.get("ok"), res
+    _ws.upload_bytes(_store_client(), store_id, namespace, path, data, digest, content_type)
     return digest
 
 
@@ -308,41 +272,50 @@ EMPTY_WASM_V2 = EMPTY_WASM + bytes([0x00, 0x02, 0x01, 0x78])  # trailing custom 
 
 
 class RegistryEnv:
-    def __init__(self, fr_id):
-        self.id = fr_id
+    """The casals-wasms store of the test session. ``store`` / ``store_chunked``
+    keep the names the module tests use; both stream through the batch API."""
+
+    def __init__(self, store_id):
+        self.id = store_id
 
     def store(self, namespace, path, data):
-        return registry_store(self.id, namespace, path, data)
+        return store_put(self.id, namespace, path, data)
 
     def store_chunked(self, namespace, path, data):
-        return registry_store_chunked(self.id, namespace, path, data)
-
-
-def _resolve_file_registry_wasm() -> str:
-    """Build the in-repo file-registry (Casals core) and return its WASM path."""
-    return _build_basilisk(
-        REPO_ROOT, FILE_REGISTRY_CANISTER, FILE_REGISTRY_DID, entry=FILE_REGISTRY_ENTRY
-    )
+        return store_put(self.id, namespace, path, data, content_type="application/octet-stream")
 
 
 @pytest.fixture(scope="session")
 def registry(canister):
-    """Deploy a real file-registry on the same replica and wire Casals to it.
+    """Deploy a real casals-wasms store (certified-assets) on the same replica
+    and wire Casals to it. Also tops up casals_backend so it can fund the
+    canisters it creates."""
+    import gzip
 
-    Also tops up casals_backend so it can fund the canisters it creates.
-    """
-    wasm = _resolve_file_registry_wasm()
-    assert os.path.exists(wasm), f"file-registry wasm not found at {wasm}"
+    gz = os.path.join(REPO_ROOT, WASM_STORE_TEMPLATE)
+    assert os.path.exists(gz), f"certified-assets template not found at {gz}"
+    tmp = tempfile.NamedTemporaryFile(prefix="casals-wasms-", suffix=".wasm", delete=False)
+    with open(gz, "rb") as f:
+        tmp.write(gzip.decompress(f.read()))
+    tmp.close()
 
-    fr_id = _create_detached()
-    _icp(["canister", "install", fr_id, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"], timeout=300)
-    _icp(["canister", "top-up", fr_id, "--amount", FILE_REGISTRY_TOPUP])
+    store_id = _create_detached()
+    try:
+        _icp(["canister", "install", store_id, "--wasm", tmp.name, "--mode", "install", "-n", "local", "-y"], timeout=300)
+    finally:
+        os.unlink(tmp.name)
+    _icp(["canister", "top-up", store_id, "--amount", WASM_STORE_TOPUP])
+    # Casals grants itself / uploaders Commit and sweeps the store: it must be a controller.
+    out = _icp(["canister", "status", CANISTER_NAME, "-n", "local"], check=False).stdout
+    m = re.search(r"Canister Id:\s*([a-z0-9-]+)", out)
+    if m:
+        _icp(["canister", "settings", "update", store_id, "-f", "--add-controller", m.group(1), "-n", "local"], check=False)
 
     # Fund Casals so create_canister can provision new canisters with cycles.
     _icp(["canister", "top-up", CANISTER_NAME, "--amount", CASALS_TOPUP])
 
-    # Point Casals at the registry (caller is the controller deployer).
-    res = call_canister("set_settings", json.dumps({"file_registry_canister_id": fr_id}))
+    # Point Casals at the store (caller is the controller deployer).
+    res = call_canister("set_settings", json.dumps({"wasm_store_canister_id": store_id}))
     assert isinstance(res, dict) and res.get("ok") is True, res
 
-    yield RegistryEnv(fr_id)
+    yield RegistryEnv(store_id)

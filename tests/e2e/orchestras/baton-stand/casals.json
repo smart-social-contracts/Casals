@@ -42,21 +42,12 @@
         "$multisig"
       ]
     },
-    "file_registry": {
-      "wasm": "file-registry",
-      "kind": "backend",
-      "mode": "managed",
-      "controllers": [
-        "$self"
-      ]
-    },
-    "file_registry_frontend": {
-      "wasm": "file-registry-frontend",
+    "wasms": {
+      "$comment": "WASM store: a certified-assets canister holding every artifact Casals installs (issue #48). $deployer stays a controller so `casals up` can upload into it.",
+      "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": [
-        "$self"
-      ]
+      "controllers": ["$self", "$deployer"]
     },
     "commanders": [
       {
@@ -71,7 +62,7 @@
   },
   "governance": {
     "multisig": {
-      "wasm": "orchestration-multisig@1.5.0",
+      "wasm": "orchestration-multisig@1.6.0",
       "kind": "backend",
       "mode": "managed",
       "signers": [
@@ -92,19 +83,19 @@
         "source": "build:casals_backend"
       },
       {
-        "family": "file-registry",
-        "version": "main",
-        "source": "build:ic_file_registry"
+        "family": "certified-assets",
+        "version": "0.3.0",
+        "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz"
       },
       {
         "family": "orchestration-multisig",
-        "version": "1.5.0",
-        "source": "local:seed/templates/orchestration-multisig@1.5.0.wasm.gz"
+        "version": "1.6.0",
+        "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz"
       },
       {
         "family": "orchestration-baton",
-        "version": "1.4.0",
-        "source": "local:seed/templates/orchestration-baton@1.4.0.wasm.gz"
+        "version": "1.5.0",
+        "source": "local:seed/templates/orchestration-baton@1.5.0.wasm.gz"
       },
       {
         "family": "hello-world-rust",
@@ -163,7 +154,7 @@
               "name": "rust-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.4.0",
+              "wasm": "orchestration-baton@1.5.0",
               "install_arg": {
                 "top_commander": "$self"
               },

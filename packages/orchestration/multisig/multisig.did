@@ -26,6 +26,16 @@ type BatonAction = variant {
     max_items : nat;
   };
   CallCanister : record { canister : principal; method : text; arg_json : text };
+  // Upgrade a controlled canister with a module streamed from the casals-wasms
+  // store; sha256 pins the approved module (install_chunked_code verifies it).
+  UpgradeCanister : record {
+    canister_id : principal;
+    store : principal;
+    key : text;
+    sha256 : blob;
+    arg : blob;
+    wasm_memory_keep : bool;
+  };
 };
 
 type ProposalStatus = variant { pending; executed; rejected; failed; expired };

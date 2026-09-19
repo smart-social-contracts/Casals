@@ -20,10 +20,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-        with:
-          # file_registry/ is a submodule; the baton suite builds and installs
-          # it on the replica (packages/orchestration/baton/tests/conftest.py).
-          submodules: recursive
 
       - uses: actions/setup-python@v6
         with:

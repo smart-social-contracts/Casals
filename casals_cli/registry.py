@@ -1,38 +1,40 @@
-"""Registry WASM/source resolution and chunked upload to the file registry."""
+"""`registry.wasms` source resolution and chunked upload to the WASM store.
+
+The sheet's ``registry`` block names the artifacts (family, version, source);
+`casals up` resolves each one (local file, `build:` target, URL, GitHub
+release), gunzips it, and seeds the raw module into the `casals-wasms`
+certified-assets canister (``casals_cli.wasm_store``) at
+``/<namespace>/<family>@<version>.wasm.gz`` — the same (namespace, path) the
+conductor's install path (``src/wasm_store.py``) reads."""
 
 from __future__ import annotations
 
-import base64
 import gzip
 import hashlib
-import json
 import mimetypes
 import os
 
-from sheetv2 import WASM_NAMESPACE, registry_path
+from sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, store_namespace_prefix
 import re
 import subprocess
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+
+from casals_cli import wasm_store as _store
 
 CHUNK_BYTES = 1024 * 1024
-FINALIZE_BATCH_CHUNKS = 8
 RELEASE_RE = re.compile(r"^release:([^/]+)/([^@]+)@([^:]+):(.+)$")
 
 BUILD_TARGETS = {
     "casals_backend": ("make", "build-backend"),
-    "ic_file_registry": ("make", "build-registry"),
 }
 
 WASM_PATHS = {
     "casals_backend": ".basilisk/casals_backend/casals_backend.wasm",
-    "ic_file_registry": ".basilisk/ic_file_registry/ic_file_registry.wasm",
 }
 
 SOURCE_DIRS = {  # a build is skipped while its wasm is newer than everything here
     "casals_backend": ["src", "casals_backend.did"],
-    "ic_file_registry": ["file_registry/src", "file_registry/ic_file_registry.did"],
 }
 
 
@@ -170,96 +172,46 @@ def iter_registry_entries(sheet: dict) -> list[ResolvedArtifact]:
                 sha256=digest,
                 path=registry_path(family, version),
                 wasm_type=entry.get("wasm_type"),
-                is_frontend_asset=icp_name in ("casals_frontend", "ic_file_registry_frontend"),
+                is_frontend_asset=icp_name == "casals_frontend",
                 icp_canister=icp_name,
             )
         )
     return out
 
 
-def registry_file_hashes(ic, registry_id: str, namespace: str) -> dict[str, str]:
-    res = ic.call_update(registry_id, "list_files", json.dumps({"namespace": namespace}))
-    if isinstance(res, list):
-        return {
-            item.get("path"): item.get("sha256", "")
-            for item in res
-            if isinstance(item, dict) and item.get("path")
-        }
-    return {}
+def bound_store_hashes(ic, bindings: dict, namespace: str) -> dict[str, str]:
+    """path → sha256 for ``namespace`` from the bound casals-wasms store; {}
+    when the bindings carry no store id."""
+    store_id = (bindings.get(CONDUCTOR_NAMES["wasms"]) or "").strip()
+    return _store.store_file_hashes(ic, store_id, namespace) if store_id else {}
 
 
-def upload_bytes(
-    ic,
-    registry_id: str,
-    namespace: str,
-    path: str,
-    data: bytes,
-    sha256: str,
-    content_type: str = "application/wasm",
-) -> str:
-    """Chunk-upload bytes; return recorded sha256. An empty file is one empty chunk."""
-    total = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
-    for i in range(total):
-        chunk = data[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES]
-        res = ic.call_update(
-            registry_id,
-            "store_file_chunk",
-            json.dumps({
-                "namespace": namespace,
-                "path": path,
-                "chunk_index": i,
-                "total_chunks": total,
-                "data_b64": base64.b64encode(chunk).decode("ascii"),
-                "content_type": content_type,
-            }),
-            timeout=600,
-        )
-        if not (isinstance(res, dict) and res.get("ok")):
-            raise RuntimeError(f"chunk {i}/{total} upload failed: {res}")
-    try:
-        return _finalize_upload(ic, registry_id, namespace, path, sha256)
-    except RuntimeError:
-        # A retried finalize (the agent re-sends on a transient error) finds no
-        # active upload: the registry listing is the truth about what landed.
-        if registry_file_hashes(ic, registry_id, namespace).get(path) == sha256:
-            return sha256
-        raise
+# ── upload target ────────────────────────────────────────────────────────────
 
 
-def _finalize_upload(ic, registry_id: str, namespace: str, path: str, sha256: str) -> str:
-    payload = json.dumps({
-        "namespace": namespace,
-        "path": path,
-        "expected_sha256": sha256,
-        "batch_size": FINALIZE_BATCH_CHUNKS,
-    })
-    processed = -1
-    res: Any = None
-    while True:
-        try:
-            res = ic.call_update(registry_id, "finalize_chunked_file_step", payload, timeout=600)
-        except RuntimeError as exc:
-            text = str(exc).lower()
-            if "ic0536" not in text and "no update method" not in text:
-                raise
-            res = ic.call_update(
-                registry_id,
-                "finalize_chunked_file",
-                json.dumps({"namespace": namespace, "path": path, "sha256": sha256}),
-                timeout=600,
-            )
-            break
-        if not (isinstance(res, dict) and res.get("ok")):
-            raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
-        if res.get("done"):
-            break
-        done_now = int(res.get("processed", 0) or 0)
-        if done_now <= processed:
-            raise RuntimeError(f"finalize stalled for {namespace}/{path}")
-        processed = done_now
-    if not (isinstance(res, dict) and res.get("ok")):
-        raise RuntimeError(f"finalize failed for {namespace}/{path}: {res}")
-    return str(res.get("sha256") or sha256)
+class StoreTarget:
+    """The `casals-wasms` certified-assets store (binary Candid batch API)."""
+
+    label = "wasm store"
+
+    def __init__(self, ic, canister_id: str) -> None:
+        self.ic = ic
+        self.canister_id = canister_id
+        self._keys: set[str] | None = None
+
+    def file_hashes(self, namespace: str) -> dict[str, str]:
+        entries = _store.list_entries(self.ic, self.canister_id)
+        self._keys = {e["key"] for e in entries}
+        prefix = store_namespace_prefix(namespace)
+        return {e["key"][len(prefix):]: e["sha256"] for e in entries if e["key"].startswith(prefix) and len(e["key"]) > len(prefix)}
+
+    def upload(self, namespace: str, path: str, data: bytes, sha256: str, content_type: str = "application/wasm") -> str:
+        key = store_key(namespace, path)
+        exists = (key in self._keys) if self._keys is not None else None
+        digest = _store.upload_bytes(self.ic, self.canister_id, namespace, path, data, sha256, content_type, exists=exists)
+        if self._keys is not None:
+            self._keys.add(key)
+        return digest
 
 
 def ensure_registry_uploads(
@@ -268,17 +220,21 @@ def ensure_registry_uploads(
     *,
     sheet_path: str,
     project_root: str,
-    registry_id: str,
+    store_id: str,
     namespace: str = WASM_NAMESPACE,
     progress=None,
 ) -> list[dict]:
-    """Upload missing/changed wasms and pin each entry's ``sha256`` in ``sheet`` to
-    the artifact actually uploaded: what the conductor then plans against is
-    exactly this build. Returns summary rows."""
+    """Upload missing/changed wasms to the store and pin each entry's ``sha256``
+    in ``sheet`` to the artifact actually uploaded: what the conductor then
+    plans against is exactly this build. Returns summary rows (one per
+    artifact)."""
+    if not (store_id or "").strip():
+        raise RuntimeError("no WASM store bound: the casals-wasms canister has no id (declare conductor.wasms)")
+    targets = [StoreTarget(ic, store_id)]
     sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
-    existing = registry_file_hashes(ic, registry_id, namespace)
     rows: list[dict] = []
     registry = sheet.get("registry") or {}
+    resolved: list[tuple[dict, str, str, str, bytes, str]] = []
     for entry in registry.get("wasms") or []:
         if not isinstance(entry, dict):
             continue
@@ -286,7 +242,6 @@ def ensure_registry_uploads(
         version = str(entry.get("version") or "")
         source = str(entry.get("source") or "")
         expected = (entry.get("sha256") or "").strip() or None
-        path = registry_path(family, version)
         data, digest = resolve_source(
             source,
             sheet_dir=sheet_dir,
@@ -295,31 +250,37 @@ def ensure_registry_uploads(
         )
         if not expected:
             entry["sha256"] = digest
-        reg_hash = existing.get(path, "")
-        chunks = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
-        if reg_hash == digest:
+        resolved.append((entry, family, version, registry_path(family, version), data, digest))
+
+    for target in targets:
+        existing = target.file_hashes(namespace)
+        for _entry, family, version, path, data, digest in resolved:
+            chunks = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
+            row = {"family": family, "version": version, "path": path, "sha256": digest, "store": target.label}
+            if existing.get(path, "") == digest:
+                if progress:
+                    progress(f"  {family}@{version}: already in the {target.label} (sha256 {digest[:12]}…), skipped")
+                rows.append({**row, "action": "skipped"})
+                continue
             if progress:
-                progress(f"  {family}@{version}: already in the registry (sha256 {digest[:12]}…), skipped")
-            rows.append({"family": family, "version": version, "path": path, "action": "skipped", "sha256": digest})
-            continue
-        if progress:
-            progress(f"  {family}@{version}: uploading {len(data) / 1_048_576:.1f} MB in {chunks} chunk(s) "
-                     f"(sha256 {digest[:12]}…)")
-        upload_bytes(ic, registry_id, namespace, path, data, digest)
-        rows.append({"family": family, "version": version, "path": path, "action": "uploaded", "sha256": digest})
-    for entry in registry.get("publish") or []:
-        published = publish_directory(ic, registry_id, entry, sheet_dir=sheet_dir, project_root=project_root)
-        if progress:
-            n_up = sum(1 for r in published if r["action"] == "uploaded")
-            progress(f"  publish {entry.get('path')}: {len(published)} file(s), {n_up} uploaded, {len(published) - n_up} unchanged")
-        rows.extend(published)
+                progress(f"  {family}@{version}: uploading {len(data) / 1_048_576:.1f} MB in {chunks} chunk(s) "
+                         f"to the {target.label} (sha256 {digest[:12]}…)")
+            target.upload(namespace, path, data, digest)
+            rows.append({**row, "action": "uploaded"})
+        for entry in registry.get("publish") or []:
+            published = publish_directory(target, entry, sheet_dir=sheet_dir, project_root=project_root)
+            if progress:
+                n_up = sum(1 for r in published if r["action"] == "uploaded")
+                progress(f"  publish {entry.get('path')} → {target.label}: {len(published)} file(s), "
+                         f"{n_up} uploaded, {len(published) - n_up} unchanged")
+            rows.extend(published)
     return rows
 
 
-def publish_directory(ic, registry_id: str, entry: dict, *, sheet_dir: str, project_root: str) -> list[dict]:
+def publish_directory(target, entry: dict, *, sheet_dir: str, project_root: str) -> list[dict]:
     """`registry.publish` entry: every file under `source` (a `local:` directory)
-    lands at `<path>/<relative file path>`; files already there with the same
-    sha256 are skipped."""
+    lands at `<path>/<relative file path>` in ``target``; files already there
+    with the same sha256 are skipped."""
     ns = str(entry.get("path") or "")
     src = str(entry.get("source") or "")
     if not src.startswith("local:"):
@@ -329,7 +290,7 @@ def publish_directory(ic, registry_id: str, entry: dict, *, sheet_dir: str, proj
     root = next((c for c in candidates if os.path.isdir(c)), None)
     if root is None:
         raise FileNotFoundError(f"publish source directory not found: {' or '.join(candidates)}")
-    existing = registry_file_hashes(ic, registry_id, ns)
+    existing = target.file_hashes(ns)
     rows = []
     for dirpath, _dirs, files in os.walk(root):
         for fn in sorted(files):
@@ -341,7 +302,8 @@ def publish_directory(ic, registry_id: str, entry: dict, *, sheet_dir: str, proj
             action = "skipped"
             if existing.get(path) != digest:
                 ctype = mimetypes.guess_type(fn)[0] or "application/octet-stream"
-                upload_bytes(ic, registry_id, ns, path, data, digest, content_type=ctype)
+                target.upload(ns, path, data, digest, content_type=ctype)
                 action = "uploaded"
-            rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action, "sha256": digest})
+            rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action,
+                         "sha256": digest, "store": target.label})
     return rows

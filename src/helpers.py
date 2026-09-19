@@ -11,7 +11,7 @@ import json
 
 from basilisk import CallResult, Principal, ic
 from models import Settings
-from services import BasiliskIntrospectionService, FileRegistryService
+from services import BasiliskIntrospectionService
 
 # ── Application constants ─────────────────────────────────────────────────
 
@@ -237,14 +237,6 @@ def _orchestra_identity() -> tuple:
 
 
 # ── Inter-canister service factories ─────────────────────────────────────────
-
-def _file_registry() -> FileRegistryService:
-    s = _settings()
-    fr = (s.file_registry_canister_id or "").strip()
-    if not fr:
-        raise Exception("file_registry_canister_id is not configured (see set_settings)")
-    return FileRegistryService(Principal.from_str(fr))
-
 
 def _canister_call(canister_id: str, method: str, arg: str):
     """Generator: relay a single text-in/text-out call to a canister's

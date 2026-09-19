@@ -48,6 +48,14 @@ Includes baton/controller actions plus **`DestroyCanisters`** (one proposal, man
 
 `ApplySheet` record: `{ casals_backend, plan_hash, confirm_destructive, max_items }`.
 
+**v1.6 — upgrade from the WASM store:**
+
+| Action | Purpose |
+|--------|---------|
+| **`UpgradeCanister`** | `{ canister_id, store, key, sha256, arg, wasm_memory_keep }`. The multisig streams `key` out of the `casals-wasms` certified-assets store (`get` / `get_chunk`), feeds the IC chunk store of the target (`upload_chunk`, ≤ 1 MiB each) and calls `install_chunked_code` in upgrade mode with `wasm_module_hash = sha256`, so nothing but the approved module can land. `wasm_memory_keep` is the EOP switch (Motoko `keep`; Rust/Basilisk default). No inline blob, so it is not bound by the 2 MiB ingress limit that makes `UpgradeBaton` unusable from a browser for large modules. |
+
+`UpgradeCanister` needs the multisig to be an IC controller of the target — that is the conductor canisters and the Batons, not the stand members handed to a Baton (those go through the Baton's managed upgrade, which the multisig approves via `CallCanister submit_approval`). The multisig refuses to upgrade itself (open call context); bump its version in the sheet and let `casals up` do it.
+
 On execution the multisig sends this JSON on every iteration (UTF-8 text argument to `apply`):
 
 ```json

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -30,6 +31,7 @@ class IcAccess(Protocol):
     def canister_exists(self, canister_id: str) -> bool: ...
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any: ...
     def call_update(self, canister_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any: ...
+    def call_candid(self, canister_id: str, method: str, arg: bytes, *, query: bool = False, timeout: int = 300) -> bytes: ...
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
     def deployer_cycles_balance(self) -> int | None: ...
     def icp_project(self, project_dir: str, argv: list[str], *, timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess[str]: ...
@@ -180,6 +182,27 @@ class IcClient:
     def call_conductor(self, backend_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any:
         return self.call_update(backend_id, method, text_arg, timeout=timeout)
 
+    def call_candid(self, canister_id: str, method: str, arg: bytes, *, query: bool = False, timeout: int = 300) -> bytes:
+        """Binary Candid in, binary Candid out — for canisters with a typed
+        interface (the asset store): a 1 MiB blob goes through as bytes, not as
+        a 4 MB text escape. The reply is the raw response, for the caller to
+        decode with the types it knows."""
+        cmd = ["canister", "call", canister_id, method, "--args-format", "bin", "--json"]
+        if query:
+            cmd.append("--query")
+        tmp = tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False)
+        tmp.write(arg)
+        tmp.close()
+        try:
+            out = self.icp(cmd + ["--args-file", tmp.name], timeout=timeout).stdout
+        finally:
+            os.unlink(tmp.name)
+        try:
+            payload = json.loads(out.strip().splitlines()[-1])
+            return bytes.fromhex(payload["response_bytes"])
+        except (ValueError, KeyError, IndexError) as exc:
+            raise RuntimeError(f"icp canister call {method}: unexpected reply {out[-400:]!r}") from exc
+
     def deployer_principal(self) -> str:
         out = self.icp(["identity", "principal"], env=False).stdout.strip()
         return out.split()[-1] if out else ""
@@ -279,6 +302,7 @@ class RecordingIc:
         self.queries: dict[tuple[str, str], Any] = {}
         self.updates: dict[tuple[str, str], Any] = {}
         self.cycles: dict[str, int] = {}
+        self.candid: dict[Any, Any] = {}
         self.deployer = "aaaaa-aa"
         self.converged = False
 
@@ -319,6 +343,16 @@ class RecordingIc:
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any:
         self.record("query", canister_id, method, text_arg)
         return self.queries.get((canister_id, method), {"ok": True})
+
+    def call_candid(self, canister_id: str, method: str, arg: bytes, *, query: bool = False, timeout: int = 300) -> bytes:
+        """Typed calls go to a scripted handler: ``self.candid[(canister_id, method)]``
+        or ``self.candid[method]`` is called with the raw argument bytes and
+        returns the raw reply bytes (see casals_cli.wasm_store.FakeAssetStore)."""
+        self.record("call_candid", canister_id, method, len(arg), query)
+        handler = getattr(self, "candid", {}).get((canister_id, method)) or getattr(self, "candid", {}).get(method)
+        if handler is None:
+            raise RuntimeError(f"RecordingIc: no candid handler for {method} on {canister_id}")
+        return handler(arg)
 
     def call_update(self, canister_id: str, method: str, text_arg: str | None = None, *, timeout: int = 300) -> Any:
         self.record("call_update", canister_id, method, text_arg)

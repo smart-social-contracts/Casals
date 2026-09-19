@@ -529,8 +529,53 @@ class TestMultisigV150Source:
         assert "IC.call" in main
         assert 'apply : shared Text -> async Text' in main
         assert "result : ?Text" in types
-        assert 'VERSION : Text = "1.5.0"' in main
+        assert 'transient let CODE_VERSION : Text = "1.6.0"' in main  # persistent actor: a plain let is stable (frozen)
         assert "ApplySheet" in did
         assert "CallCanister" in did
         assert "result : opt text" in did
         assert "version : () -> (text) query" in did
+
+
+class TestMultisigV160UpgradeCanister:
+    """1.6.0: the committee upgrades canisters it controls straight from the
+    casals-wasms store (chunked, sha256-pinned) — no inline blob, so it is not
+    bound by the 2 MiB ingress limit the way UpgradeBaton is."""
+
+    def test_source_shape(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        types = (root / "src" / "types.mo").read_text()
+        main = (root / "src" / "main.mo").read_text()
+        did = (root / "multisig.did").read_text()
+        assert "#UpgradeCanister" in types
+        for field in ("canister_id", "store", "key", "sha256", "arg", "wasm_memory_keep"):
+            assert field in did.split("UpgradeCanister", 1)[1].split("};", 1)[0], field
+        assert "executeUpgradeCanister" in main
+        # Streams the store and installs via the IC chunk store, pinned by hash.
+        assert "get_chunk" in main
+        assert "upload_chunk" in main
+        assert "install_chunked_code" in main
+        assert "wasm_module_hash = a.sha256" in main
+        # EOP switch and the self-upgrade refusal (open call context).
+        assert "wasm_memory_persistence = persistence" in main
+        assert "Principal.fromActor(Self)" in main.split("executeUpgradeCanister", 1)[1]
+        assert "IC_CHUNK_BYTES : Nat = 1_048_576" in main
+
+    def test_legacy_stable_constants_are_kept(self):
+        """<= 1.5.0 declared VERSION / MAX_APPLY_ITERATIONS / SWEEP_RESERVES as
+        plain `let` inside a `persistent actor`, which made them stable. moc
+        refuses to drop a stable field without a migration function (M0169), so
+        they must stay declared (as plain, non-transient `let`) or a 1.5.0
+        canister traps with 'Memory-incompatible program upgrade'."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        main = (root / "src" / "main.mo").read_text()
+        for legacy in ("VERSION : Text", "MAX_APPLY_ITERATIONS : Nat", "SWEEP_RESERVES : [Nat]"):
+            assert f"private let {legacy}" in main, legacy
+            assert f"transient let {legacy}" not in main, legacy
+        # ...and the code reads the transient twins, so a new build reports itself.
+        assert "CODE_VERSION;" in main.split("func version()", 1)[1]
+        assert "SWEEP_RESERVE_LADDER.vals()" in main
+        assert "APPLY_ITERATION_CAP" in main

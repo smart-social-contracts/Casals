@@ -1,5 +1,11 @@
 import type { Identity } from '@dfinity/agent';
+import type { Tree } from './api';
 import { createHttpAgent } from './asyncAgent';
+import {
+  allControllerLookupIds,
+  applyControllerMapToTree,
+  missingControllerIds,
+} from './controllerTree';
 import { icHost, isLocalHost } from './ic-host';
 
 const CONTROLLER_FETCH_TIMEOUT_MS = 15_000;
@@ -127,6 +133,35 @@ export async function resolveCanisterControllers(
     // Casals cannot read status unless it is a controller.
   }
   throw new Error('Could not load current controllers from the IC.');
+}
+
+export { allControllerLookupIds, applyControllerMapToTree, coalesceControllers, missingControllerIds } from './controllerTree';
+
+export async function fetchControllersMap(ids: string[]): Promise<Map<string, string[]>> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  const pairs = await Promise.all(
+    unique.map(async (id) => {
+      try {
+        return [id, await listCanisterControllers(id)] as const;
+      } catch {
+        return [id, []] as const;
+      }
+    }),
+  );
+  return new Map(pairs);
+}
+
+/** Public IC reads for every canister that should show controllers on a card. */
+export async function hydrateTreeControllers(
+  tree: Tree,
+  extraIds: string[] = [],
+  opts: { force?: boolean } = {},
+): Promise<{ tree: Tree; byId: Map<string, string[]> }> {
+  const ids = opts.force
+    ? allControllerLookupIds(tree, extraIds)
+    : missingControllerIds(tree, extraIds);
+  const byId = await fetchControllersMap(ids);
+  return { tree: applyControllerMapToTree(tree, byId, opts), byId };
 }
 
 /** True when `identity` is an IC controller of `canisterId`. */

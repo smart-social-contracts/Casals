@@ -49,7 +49,8 @@ export interface BatonConfig {
   bake_window_seconds?: number;
   accelerant_days?: number;
   install_cycles_buffer?: number;
-  file_registry_canister_id?: string;
+  /** The casals-wasms store Baton pulls WASMs from. */
+  wasm_store_canister_id?: string;
   upgrade_approval_policy?: BatonUpgradeApprovalPolicy;
 }
 
@@ -242,7 +243,7 @@ export async function batonSetConfig(
     bake_window_seconds?: number;
     accelerant_days?: number;
     install_cycles_buffer?: number;
-    file_registry_canister_id?: string;
+    wasm_store_canister_id?: string;
     upgrade_approval_policy?: BatonUpgradeApprovalPolicy;
   },
   identity: Identity,

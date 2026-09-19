@@ -74,8 +74,14 @@ function isBatonCanister(c: Pick<Canister, 'wasm_key'>): boolean {
   return isBatonWasm(c.wasm_key);
 }
 
+const CASALS_CANISTER_NAMES = new Set([
+  'casals-backend',
+  'casals-frontend',
+  'casals-wasms',
+]);
+
 function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {
-  return c.name === 'casals-backend' || c.name === 'casals-frontend';
+  return CASALS_CANISTER_NAMES.has(c.name);
 }
 
 /** Canisters whose cached IC controllers include the baton. */

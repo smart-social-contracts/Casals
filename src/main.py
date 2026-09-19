@@ -65,10 +65,17 @@ from commanders import (
     section_commander_can,
 )
 from cycle_sweep import return_cycles_gen
-from bootstrap import _is_retire_protected
+from bootstrap import (  # noqa: F401 — `_is_retire_protected` re-exported for callers
+    _is_retire_protected,
+    ensure_core_layout,
+    is_core_section,
+    is_core_stand,
+    orphan_canisters,
+)
 from orchestration_bridge import _multisig_configure_gen
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
+import store_uploads as _store_uploads
 from cycles import (
     FX_MIN_REFRESH_SECS,
     FX_SUPPORTED_CURRENCIES,
@@ -114,7 +121,6 @@ from helpers import (
     _canister_call,
     _canister_name_taken,
     _err,
-    _file_registry,
     _is_controller,
     _nat64s_in,
     _ok,
@@ -174,6 +180,7 @@ from models import (
     PrincipalAlias,
     Section,
     Settings,
+    StoreUploadGrant,
     Canister,
     CanisterKind,
     CanisterStatus,
@@ -386,6 +393,7 @@ except RuntimeError:
 def _bootstrap() -> None:
     try:
         _settings()
+        ensure_core_layout()  # every canister on a stand; migrate older layouts
         _arm_autopilot()
         _arm_cycle_sampler()
         _arm_sheet_reconcile()
@@ -602,50 +610,6 @@ def _require_subnet_whitelist_auth() -> None:
         raise Exception("unauthorized: caller lacks subnet.whitelist permission")
 
 
-def _caller_can_manage_registry_publishers() -> bool:
-    """Controllers, or a section/stand commander holding ``registry.publish.grant``."""
-    if _is_controller():
-        return True
-    list(Section.instances())
-    for sec in Section.instances():
-        if _section_commander_can(sec, "registry.publish.grant"):
-            return True
-    list(Stand.instances())
-    for stand in Stand.instances():
-        if entity_has_permission(stand, _caller(), "registry.publish.grant"):
-            return True
-    return False
-
-
-def _require_registry_publisher_auth() -> None:
-    if not _caller_can_manage_registry_publishers():
-        raise Exception("unauthorized: caller lacks registry.publish.grant permission")
-
-
-def _parse_registry_publisher_args(args: text) -> tuple:
-    """Validate grant/revoke publisher args; return (namespace, principal)."""
-    params = json.loads(args) if args else {}
-    namespace = (params.get("namespace") or "").strip()
-    if not namespace:
-        raise Exception("namespace is required")
-    principal = _validate_principal_text(params.get("principal", ""))
-    if principal == ANONYMOUS:
-        raise Exception("anonymous principal is not allowed")
-    return namespace, principal
-
-
-def _relay_registry_publish(method: str, args: text):
-    """Generator: relay grant_publish / revoke_publish to the file-registry."""
-    namespace, principal = _parse_registry_publisher_args(args)
-    fr = _file_registry()
-    relay_arg = json.dumps({"namespace": namespace, "principal": principal})
-    res = yield getattr(fr, method)(relay_arg)
-    reply = json.loads(unwrap_call_result(res))
-    if reply.get("error"):
-        raise Exception(reply["error"])
-    return namespace, principal
-
-
 def _require_can_add_in_section(sec, permission: str) -> None:
     """Authorize a structural add (stand / canister registration) scoped to a
     section. Allowed for: Casals controllers; open-access authenticated callers;
@@ -750,8 +714,7 @@ def casals_metadata() -> text:
     return json.dumps({
         "version": VERSION,
         "open_access": bool(s.open_access),
-        "file_registry_canister_id": s.file_registry_canister_id,
-        "file_registry_frontend_canister_id": s.file_registry_frontend_canister_id,
+        "wasm_store_canister_id": s.wasm_store_canister_id,
         "casals_frontend_canister_id": s.casals_frontend_canister_id,
         "delegated_destroy_principals": _parse_delegated_destroy_principals(),
         "monitor_enabled": bool(s.monitor_enabled),
@@ -799,11 +762,30 @@ def get_tree() -> text:
     list(Stand.instances())
     list(Canister.instances())
     sections = [_section_view(s) for s in Section.instances()]
-    sections.sort(key=lambda x: x["name"])
+    sections.sort(key=lambda x: (not is_core_section_name(x["name"]), x["name"]))
     return json.dumps({
         "sections": sections,
+        # Invariant: every canister lives on a stand. Anything listed here is
+        # a row `ensure_core_layout` could not home (no sheet declares it).
+        "orphans": [_canister_view(s) for s in orphan_canisters()],
         "principal_aliases": _principal_aliases_map(),
     })
+
+
+def is_core_section_name(name: str) -> bool:
+    return (name or "").strip() == SYNTHETIC_SECTION_CONDUCTOR
+
+
+def _require_not_core_stand(dk, action: str) -> None:
+    """The `Casals` stands hold the conductor and its governance; they are
+    declared by the sheet's `conductor`/`governance` blocks, not edited by hand."""
+    if is_core_stand(dk):
+        raise Exception(f"{action}: '{dk.section.name}/{dk.name}' is a Casals core stand")
+
+
+def _require_not_core_section(sec, action: str) -> None:
+    if is_core_section(sec):
+        raise Exception(f"{action}: '{sec.name}' is the Casals core section")
 
 
 @query
@@ -863,6 +845,11 @@ def list_authorized_wasms(args: text) -> text:
             "asset_content_type": w.asset_content_type,
             "bundle_namespace": w.bundle_namespace,
             "canister_ids_template": w.canister_ids_template,
+            # Basilisk TimestampedMixin is milliseconds. The store's own
+            # `modified_ns` (shown as Uploaded in the UI) is the upload time;
+            # these are when the catalog row was pinned / last updated.
+            "authorized_at_ms": int(getattr(w, "_timestamp_created", 0) or 0),
+            "updated_at_ms": int(getattr(w, "_timestamp_updated", 0) or 0),
         })
     # Group by family, newest version first within each family.
     out.sort(key=lambda x: (x["family"], [-c for c in _ver_tuple(x["version"])]))
@@ -1134,8 +1121,7 @@ def get_bindings() -> text:
 @update
 def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
-    {open_access: bool, file_registry_canister_id: str,
-     file_registry_frontend_canister_id: str,
+    {open_access: bool, wasm_store_canister_id: str,
      casals_frontend_canister_id: str,
      delegated_destroy_principals: [str],
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
@@ -1151,12 +1137,8 @@ def set_settings(args: text) -> text:
         s = _settings()
         if "open_access" in params:
             s.open_access = 1 if params["open_access"] else 0
-        if "file_registry_canister_id" in params:
-            s.file_registry_canister_id = (params["file_registry_canister_id"] or "").strip()
-        if "file_registry_frontend_canister_id" in params:
-            s.file_registry_frontend_canister_id = (
-                params["file_registry_frontend_canister_id"] or ""
-            ).strip()
+        if "wasm_store_canister_id" in params:
+            s.wasm_store_canister_id = (params["wasm_store_canister_id"] or "").strip()
         if "casals_frontend_canister_id" in params:
             s.casals_frontend_canister_id = (
                 params["casals_frontend_canister_id"] or ""
@@ -1344,6 +1326,8 @@ def rename_section(args: text) -> text:
         sec = Section[old_name] or next((s for s in sections if s.name == old_name), None)
         if sec is None:
             return _err(f"unknown section '{old_name}'")
+        if new_name != old_name:
+            _require_not_core_section(sec, "rename_section")
         if new_name != old_name and Section[new_name] is not None:
             return _err(f"section '{new_name}' already exists")
         sec.name = new_name
@@ -1368,6 +1352,7 @@ def rename_stand(args: text) -> text:
         dk = Stand[old_name] or next((d for d in stands if d.name == old_name), None)
         if dk is None:
             return _err(f"unknown stand '{old_name}'")
+        _require_not_core_stand(dk, "rename_stand")
         _require_commander(dk, "stand.rename")
         if new_name != old_name and Stand[new_name] is not None:
             return _err(f"stand '{new_name}' already exists")
@@ -1393,6 +1378,7 @@ def rename_canister(args: text) -> text:
         st = Canister[old_name]
         if st is None:
             return _err(f"unknown canister '{old_name}'")
+        _require_not_core_stand(st.stand, "rename_canister")
         _require_commander(st.stand, "canister.rename")
         if new_name != old_name and _canister_name_taken(new_name, exclude_id=st._id):
             return _err(f"canister '{new_name}' already exists")
@@ -1444,6 +1430,7 @@ def delete_section(args: text) -> text:
         sec = Section[sec_name]
         if sec is None:
             return _err(f"unknown section '{sec_name}'")
+        _require_not_core_section(sec, "delete_section")
         for dk in list(sec.stands or []):
             for st in list(dk.canisters or []):
                 _pool_free(st.canister_id)
@@ -1505,6 +1492,7 @@ def delete_stand(args: text) -> text:
         dk = Stand[stand_name] or next((d for d in stands if d.name == stand_name), None)
         if dk is None:
             return _err(f"unknown stand '{stand_name}'")
+        _require_not_core_stand(dk, "delete_stand")
         _require_commander(dk, "stand.delete")
         for st in list(dk.canisters or []):
             _pool_free(st.canister_id)
@@ -1529,6 +1517,7 @@ def delete_canister(args: text) -> text:
         st = Canister[canister_name] or next((s for s in canisters if s.name == canister_name), None)
         if st is None:
             return _err(f"unknown canister '{canister_name}'")
+        _require_not_core_stand(st.stand, "delete_canister")
         _require_commander(st.stand, "canister.delete")
         cid = st.canister_id
         _pool_free(cid)
@@ -1564,6 +1553,7 @@ def destroy_canister(args: text) -> Async[text]:
                 return _err(f"unknown canister '{canister_name}'")
             if not st.canister_id:
                 return _err(f"canister '{canister_name}' has no canister_id")
+            _require_not_core_stand(st.stand, "destroy_canister")
             result = yield from _destroy_canister_gen(st)
             return _ok(**result)
         if raw_id:
@@ -1588,7 +1578,7 @@ def destroy_stand(args: text) -> Async[text]:
     try:
         _require_admin_or_delegated_destroy()
         params = json.loads(args)
-        result = yield from _destroy_stand_gen(params)
+        result = yield from _destroy_stand_gen(params)  # refuses Casals core stands
         yield from _sync_treasury_baseline_gen()
         removed = [
             (d.get("canister_id") or "").strip()
@@ -1960,26 +1950,26 @@ def register_canister(args: text) -> Async[text]:
 
 @update
 def add_authorized_wasm(args: text) -> text:
-    """Controller only — represents an approved decision to authorize a WASM.
-    Args (JSON):
+    """Controllers or operators holding ``wasm.authorize`` — represents an
+    approved decision to let canisters run this WASM. Args (JSON):
     {key, section?, registry_namespace?, registry_path, wasm_hash, kind?, wasm_type?,
      description?, asset_namespace?, asset_path?, asset_content_type?, bundle_namespace?,
      canister_ids_template?}.
 
     `canister_ids_template` (frontend WASMs): JSON object string with placeholders
-    $BACKEND, $FILE_REGISTRY, $INTERNET_IDENTITY for per-deployment /canister_ids.js.
+    $BACKEND, $WASM_STORE, $INTERNET_IDENTITY for per-deployment /canister_ids.js.
 
-    `bundle_namespace` (frontend WASMs): the file-registry namespace holding a
+    `bundle_namespace` (frontend WASMs): the store namespace holding a
     whole multi-file static bundle to upload into each canister built from this
     WASM (takes precedence over a single `asset_path`).
 
     Upsert: re-authorizing an existing key updates its registry pointer, hash and
     metadata. This is essential for idempotent re-seeding after a template is
     rebuilt (its bytes/hash change) — otherwise the authorized hash would drift
-    from the bytes actually stored in the file-registry and installs would be
+    from the bytes actually stored in the WASM store and installs would be
     rejected for a module-hash mismatch."""
     try:
-        _require_admin()
+        _require_wasm_authorize_auth()
         params = json.loads(args)
         raw_key = params["key"].strip()
         # Family/version may be encoded in the key ("foo@1.2.0") or passed
@@ -2029,9 +2019,9 @@ def add_authorized_wasm(args: text) -> text:
 
 @update
 def remove_authorized_wasm(args: text) -> text:
-    """Controller only. Args (JSON): {key}."""
+    """Controllers or operators holding ``wasm.authorize``. Args (JSON): {key}."""
     try:
-        _require_admin()
+        _require_wasm_authorize_auth()
         params = json.loads(args)
         key = params["key"].strip()
         list(AuthorizedWasm.instances())
@@ -2145,36 +2135,146 @@ def set_subnet_whitelist(args: text) -> Async[text]:
         return _err(str(e))
 
 
-@update
-def grant_registry_publisher(args: text) -> Async[text]:
-    """Grant file-registry publish access. Args (JSON): {namespace, principal}.
+# ── WASM store: browser uploads + housekeeping (issue #48 steps 2–3) ─────────
 
-    Authorized for Casals controllers or a section/stand commander holding
-    ``registry.publish.grant``. Relays to the configured file-registry canister."""
+
+def _caller_holds_platform_permission(permission: str) -> bool:
+    """Controllers, or a conductor / section / stand commander holding
+    ``permission``. The WASM store and catalog are orchestra-wide, so any rung
+    that was granted the key may act (same shape as ``subnet.whitelist``)."""
+    if _is_controller():
+        return True
+    if _conductor_commander_can(permission):
+        return True
+    list(Section.instances())
+    for sec in Section.instances():
+        if _section_commander_can(sec, permission):
+            return True
+    list(Stand.instances())
+    for stand in Stand.instances():
+        if entity_has_permission(stand, _caller(), permission):
+            return True
+    return False
+
+
+def _caller_can_upload_wasm() -> bool:
+    return _caller_holds_platform_permission("wasm.upload")
+
+
+def _require_wasm_upload_auth() -> None:
+    if _caller() == ANONYMOUS or not _caller_can_upload_wasm():
+        raise Exception("unauthorized: caller lacks wasm.upload permission")
+
+
+def _require_wasm_authorize_auth() -> None:
+    """Pinning or revoking a catalog row: controllers, or an operator holding
+    ``wasm.authorize``. Deliberately a different key from ``wasm.upload`` so that
+    putting bytes in the store never equals approving them."""
+    if _caller() == ANONYMOUS or not _caller_holds_platform_permission("wasm.authorize"):
+        raise Exception("unauthorized: caller lacks wasm.authorize permission")
+
+
+@update
+def begin_upload(args: text) -> Async[text]:
+    """Start a browser upload into the casals-wasms store. Args (JSON, optional):
+    {key_prefix?}.
+
+    Grants the caller ``Commit`` on the store for UPLOAD_GRANT_TTL_S and
+    returns {store_canister_id, namespace, key_prefix, chunk_bytes, expires_at}.
+    The browser then streams the file with create_batch / create_chunk /
+    commit_batch straight to the store and calls end_upload. Expired grants
+    of other principals are swept on the way. Authorized for controllers or a
+    commander holding ``wasm.upload``."""
     try:
-        _require_registry_publisher_auth()
-        namespace, principal = yield from _relay_registry_publish("grant_publish", args)
-        _append_event(
-            "registry_publisher_granted", "", {"namespace": namespace, "principal": principal},
-        )
-        return _ok(namespace=namespace, principal=principal)
+        _require_wasm_upload_auth()
+        params = json.loads(args) if args else {}
+        res = yield from _store_uploads.begin_upload(_caller(), params.get("key_prefix") or "")
+        _append_event("store_upload_begun", "", {
+            "principal": _caller(), "key_prefix": res["key_prefix"], "expires_at": res["expires_at"],
+        })
+        return _ok(**res)
     except Exception as e:
         return _err(str(e))
 
 
 @update
-def revoke_registry_publisher(args: text) -> Async[text]:
-    """Revoke file-registry publish access. Args (JSON): {namespace, principal}.
+def end_upload(args: text) -> Async[text]:
+    """Finish a browser upload. Args (JSON, optional): {namespace?, path?}.
 
-    Authorized for Casals controllers or a section/stand commander holding
-    ``registry.publish.grant``. Relays to the configured file-registry canister."""
+    Revokes the caller's ``Commit`` on the store; with ``path`` also stats the
+    uploaded file and returns its on-chain {key, size, sha256, content_type}
+    so the Authorize form is filled from what the store holds."""
     try:
-        _require_registry_publisher_auth()
-        namespace, principal = yield from _relay_registry_publish("revoke_publish", args)
-        _append_event(
-            "registry_publisher_revoked", "", {"namespace": namespace, "principal": principal},
+        _require_wasm_upload_auth()
+        params = json.loads(args) if args else {}
+        res = yield from _store_uploads.end_upload(
+            _caller(), params.get("namespace") or "", params.get("path") or "",
         )
-        return _ok(namespace=namespace, principal=principal)
+        _append_event("store_upload_ended", "", {
+            "principal": _caller(), "key": res.get("key", ""), "sha256": res.get("sha256", ""),
+            "size": res.get("size", 0),
+        })
+        return _ok(**res)
+    except Exception as e:
+        return _err(str(e))
+
+
+@query
+def list_upload_grants() -> text:
+    """Open Commit grants on the store: [{principal, expires_at, granted_by, key_prefix}]."""
+    try:
+        list(StoreUploadGrant.instances())
+        return json.dumps([_store_uploads.grant_view(g) for g in StoreUploadGrant.instances()])
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def list_store_files(args: text) -> Async[text]:
+    """Every file in the casals-wasms store with an ``authorized`` flag (is
+    some catalog row pointing at it?). Args (JSON, optional): {namespace?}.
+    Inter-canister, hence an update. Authorized like begin_upload."""
+    try:
+        _require_wasm_upload_auth()
+        params = json.loads(args) if args else {}
+        rows = yield from _store_uploads.catalog_view(params.get("namespace") or "")
+        return json.dumps(rows)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def store_retention(args: text) -> Async[text]:
+    """Controller only. Delete store files no catalog row references once
+    they are older than ``keep_days``. Args (JSON, optional):
+    {namespace?="wasm", keep_days?=7, dry_run?=true}. Dry-run returns the
+    candidates without deleting."""
+    try:
+        _require_admin()
+        params = json.loads(args) if args else {}
+        res = yield from _store_uploads.retention_sweep(
+            namespace=(params.get("namespace") or "wasm").strip(),
+            keep_days=int(params.get("keep_days", _store_uploads.RETENTION_DEFAULT_DAYS)),
+            dry_run=bool(params.get("dry_run", True)),
+        )
+        if res["deleted"]:
+            _append_event("store_retention_swept", "", {
+                "namespace": res["namespace"], "deleted": res["deleted"], "keep_days": res["keep_days"],
+            })
+        return _ok(**res)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def store_size(args: text) -> Async[text]:
+    """Bytes held by the casals-wasms store against its upgrade budget:
+    {files, bytes, unauthorized_files, unauthorized_bytes, warn_bytes,
+    limit_bytes, warn, over_limit}. Authorized like begin_upload."""
+    try:
+        _require_wasm_upload_auth()
+        res = yield from _store_uploads.size_report()
+        return _ok(**res)
     except Exception as e:
         return _err(str(e))
 
@@ -2243,7 +2343,7 @@ def refresh_fx() -> Async[text]:
 @update
 def provision_assets(args: text) -> Async[text]:
     """(Re)upload the authorized WASM's asset (e.g. index.html) into frontend
-    canisters, pulling the current bytes from the file-registry.
+    canisters, pulling the current bytes from the WASM store.
 
     Lets you refresh the page a certified-assets canister serves *without*
     reinstalling its WASM. Deploying a new sheet only provisions assets on

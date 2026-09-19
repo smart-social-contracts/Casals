@@ -10,6 +10,7 @@ import {
 } from './batonClient';
 import { createHttpAgent } from './asyncAgent';
 import { icHost, isLocalHost } from './ic-host';
+import { upgradeMemoryKeepForWasm } from './wasmStorePath';
 
 export async function fetchCanisterModuleHash(
   canisterId: string,
@@ -35,30 +36,28 @@ export async function fetchCanisterModuleHash(
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('').toLowerCase();
 }
 
-async function ensureBatonFileRegistry(
+async function ensureBatonWasmStore(
   batonId: string,
   identity: Identity,
 ): Promise<void> {
   const meta = await casalsMetadata();
-  const registryId = (meta.file_registry_canister_id || '').trim();
-  if (!registryId) {
-    throw new Error('File registry not configured on Casals — set it in Settings first');
+  const storeId = (meta.wasm_store_canister_id || '').trim();
+  if (!storeId) {
+    throw new Error('WASM store not bound on Casals — run `casals up` (conductor.wasms) first');
   }
   const cfg = await batonGetConfig(batonId);
-  if ((cfg.file_registry_canister_id || '').trim() === registryId) return;
-  const res = await batonSetConfig(batonId, { file_registry_canister_id: registryId }, identity);
+  if ((cfg.wasm_store_canister_id || '').trim() === storeId) return;
+  const res = await batonSetConfig(batonId, { wasm_store_canister_id: storeId }, identity);
   if (!res.ok) {
     throw new Error(
       res.error ||
-        'Could not set file_registry_canister_id on Baton (top commander only)',
+        'Could not set wasm_store_canister_id on Baton (top commander only)',
     );
   }
 }
 
-function upgradeMemoryKeepForWasm(wasm: AuthorizedWasm): boolean {
-  const t = (wasm.wasm_type || '').toLowerCase();
-  return t !== 'basilisk' && t !== 'baton';
-}
+// The EOP `keep` rule lives with the other pure catalog helpers (tested there).
+export { upgradeMemoryKeepForWasm };
 
 export function wasmCatalogFamily(key: string): string {
   const i = key.indexOf('@');
@@ -141,8 +140,8 @@ export async function prepareBatonManagedUpgrade(args: {
       : `upgrade-stand-${crypto.randomUUID().slice(0, 8)}`
   );
 
-  onStep?.('Ensuring file registry is configured on Baton…');
-  await ensureBatonFileRegistry(batonId, identity);
+  onStep?.('Ensuring the WASM store is configured on Baton…');
+  await ensureBatonWasmStore(batonId, identity);
 
   const payloadTargets: BatonManagedUpgradeTarget[] = [];
 

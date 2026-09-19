@@ -1,5 +1,5 @@
-"""Managed asset provisioning — stream a frontend bundle from the file
-registry into a certified-assets canister the Baton controls.
+"""Managed asset provisioning — stream a frontend bundle from the casals-wasms
+store into a certified-assets canister the Baton controls.
 
 Unlike managed_upgrade this pipeline never stops or snapshots the target:
 `store` on the asset canister is additive and idempotent, so a re-run of the
@@ -18,7 +18,7 @@ from models import append_phase_log, phase_entry
 from registry import list_registry_files_gen, pull_registry_file_gen
 
 # Per-execute work budget: files uploaded per execute_action call. Files are
-# pulled fully into memory (registry chunks) then stored in one call, so keep
+# pulled fully into memory (store chunks) then stored in one call, so keep
 # this small to stay inside the per-message instruction cap.
 FILES_PER_EXECUTE = 4
 
@@ -117,7 +117,7 @@ def asset_provision_step_gen(
     asset = AssetCanisterService(Principal.from_str(cid))
 
     # First batch for this target: grant permissions + snapshot the file list
-    # so the plan is stable even if the registry namespace changes mid-run.
+    # so the plan is stable even if the store namespace changes mid-run.
     if state.get("paths") is None:
         grant_res = yield asset.grant_permission({
             "to_principal": ic.id(),

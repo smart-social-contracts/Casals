@@ -48,7 +48,7 @@ under `CASALS_HOME`; replica state lives in `$CASALS_HOME/.replica`.
 
 `up` validates the sheet, funds the deployer if the sheet's
 `environments.local.cycles.budget_tc` asks for it, bootstraps the conductor's
-four canisters (backend, frontend, file registry, registry frontend) if they
+three canisters (backend, frontend, `casals-wasms` store) if they
 are not bound yet, uploads the wasms and content the `registry` block names,
 stores the sheet (`set_sheet`), then runs `plan` → `apply` until the plan is
 empty. It is safe to interrupt and re-run at any point: the next `up` continues

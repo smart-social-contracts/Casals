@@ -3,6 +3,7 @@ import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
 import { icHost, isLocalHost } from './ic-host';
+import { CANDID_EMPTY_ARG } from './wasmStorePath';
 
 const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
   const Capability = I.Text;
@@ -61,6 +62,14 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
       canister: I.Principal,
       method: I.Text,
       arg_json: I.Text,
+    }),
+    UpgradeCanister: I.Record({
+      canister_id: I.Principal,
+      store: I.Principal,
+      key: I.Text,
+      sha256: I.Vec(I.Nat8),
+      arg: I.Vec(I.Nat8),
+      wasm_memory_keep: I.Bool,
     }),
   });
   const ProposalStatus = I.Variant({
@@ -162,6 +171,11 @@ function actionSummary(action: Record<string, unknown>): string {
       return `Apply sheet ${String(payload?.plan_hash ?? '').slice(0, 12) || '—'}`;
     case 'CallCanister':
       return `Call ${String(payload?.method ?? '—')} on ${fmtPrincipal(payload?.canister)}`;
+    case 'UpgradeCanister': {
+      const key = String(payload?.key ?? '');
+      const file = key.slice(key.lastIndexOf('/') + 1) || '—';
+      return `Upgrade ${fmtPrincipal(payload?.canister_id)} to ${file}`;
+    }
     default:
       return key;
   }
@@ -263,7 +277,18 @@ export type MultisigActionType =
   | 'UpdateBatonSettings'
   | 'DestroyStand'
   | 'DestroyCanister'
-  | 'DestroyCanisters';
+  | 'DestroyCanisters'
+  | 'UpgradeCanister';
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.trim().toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]*$/.test(clean) || clean.length % 2) {
+    throw new Error('sha256 must be an even-length hex string');
+  }
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
 
 /** Merge add/remove into a full IC controller list (update_settings replaces). */
 export function mergeControllerList(
@@ -445,6 +470,27 @@ export function buildMultisigAction(
         DestroyCanisters: {
           canister_ids: texts.map((p) => Principal.fromText(p)),
           casals_backend: Principal.fromText(casals),
+        },
+      };
+    }
+    case 'UpgradeCanister': {
+      const target = fieldStr(fields.target_canister);
+      const store = fieldStr(fields.store);
+      const key = fieldStr(fields.store_key);
+      const sha = hexToBytes(fieldStr(fields.sha256));
+      if (!target) throw new Error('Target canister id is required');
+      if (!store) throw new Error('WASM store canister id is unknown — run `casals up` first');
+      if (!key) throw new Error('Pick a WASM from the catalog');
+      if (sha.length !== 32) throw new Error('Catalog entry has no 32-byte sha256');
+      const arg = fields.arg instanceof Uint8Array ? fields.arg : CANDID_EMPTY_ARG;
+      return {
+        UpgradeCanister: {
+          canister_id: Principal.fromText(target),
+          store: Principal.fromText(store),
+          key,
+          sha256: sha,
+          arg,
+          wasm_memory_keep: Boolean(fields.wasm_memory_keep),
         },
       };
     }

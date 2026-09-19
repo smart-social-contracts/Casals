@@ -1,7 +1,10 @@
 import Array "mo:core/Array";
+import Blob "mo:core/Blob";
 import Cycles "mo:core/Cycles";
+import Error "mo:core/Error";
 import IC "mo:core/InternetComputer";
 import Nat "mo:core/Nat";
+import Nat8 "mo:core/Nat8";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
@@ -20,8 +23,16 @@ persistent actor Self {
   type ExecuteResult = Types.ExecuteResult;
   type Timestamp = Types.Timestamp;
 
-  private let VERSION : Text = "1.5.0";
-  private let MAX_APPLY_ITERATIONS : Nat = 50;
+  // `persistent actor` makes every top-level `let` implicitly stable. These
+  // two (and SWEEP_RESERVES below) shipped that way in <= 1.5.0, so on upgrade
+  // they are restored from the old memory (VERSION reads "1.5.0" forever) and
+  // moc refuses to drop them without a migration function (M0169). They stay,
+  // unused, so plain upgrades remain compatible; the code reads the transient
+  // constants that follow. Drop them with a migration in a later major.
+  private let VERSION : Text = "1.6.0"; // frozen legacy stable — do not read
+  private let MAX_APPLY_ITERATIONS : Nat = 50; // frozen legacy stable — do not read
+  private transient let CODE_VERSION : Text = "1.6.0";
+  private transient let APPLY_ITERATION_CAP : Nat = 50;
 
   private stable var signers : [Principal] = [];
   private stable var threshold : Nat = 1;
@@ -112,7 +123,15 @@ persistent actor Self {
 
   /// Escalating headroom left on a doomed canister while it deposits to
   /// the treasury. Same ladder as Casals ``DESTROY_SWEEP_RESERVES``.
-  private let SWEEP_RESERVES : [Nat] = [
+  private let SWEEP_RESERVES : [Nat] = [ // frozen legacy stable — do not read
+    8_000_000_000,
+    16_000_000_000,
+    32_000_000_000,
+    64_000_000_000,
+    128_000_000_000,
+    256_000_000_000,
+  ];
+  private transient let SWEEP_RESERVE_LADDER : [Nat] = [
     8_000_000_000,
     16_000_000_000,
     32_000_000_000,
@@ -190,7 +209,7 @@ persistent actor Self {
       sweep : shared (Principal, Nat) -> async ();
     };
     var lastErr : Text = "sweep failed";
-    for (reserve in SWEEP_RESERVES.vals()) {
+    for (reserve in SWEEP_RESERVE_LADDER.vals()) {
       let st = try {
         await ic00.canister_status({ canister_id = cid });
       } catch (_) {
@@ -298,7 +317,7 @@ persistent actor Self {
     var total_applied : Nat = 0;
     var last_remaining : Nat = 0;
     var last_next : ?Text = null;
-    label apply_loop while (iterations < MAX_APPLY_ITERATIONS) {
+    label apply_loop while (iterations < APPLY_ITERATION_CAP) {
       iterations += 1;
       let payload = applySheetPayload(plan_hash, a.max_items, a.confirm_destructive);
       let resp = try {
@@ -352,7 +371,7 @@ persistent actor Self {
         total_applied,
         last_remaining,
         last_next,
-        "error=iteration cap " # Nat.toText(MAX_APPLY_ITERATIONS),
+        "error=iteration cap " # Nat.toText(APPLY_ITERATION_CAP),
       ),
     );
   };
@@ -374,8 +393,173 @@ persistent actor Self {
     };
   };
 
+  /// IC ``upload_chunk`` accepts at most 1 MiB per chunk. A protocol limit,
+  /// so it may stay an (implicitly stable) plain `let` like the ones above.
+  private let IC_CHUNK_BYTES : Nat = 1_048_576;
+
+  private func hexOf(b : Blob) : Text {
+    let digits = "0123456789abcdef";
+    let chars = Text.toArray(digits);
+    var out = "";
+    for (byte in b.vals()) {
+      let n = Nat8.toNat(byte);
+      out := out # Text.fromChar(chars[n / 16]) # Text.fromChar(chars[n % 16]);
+    };
+    out;
+  };
+
+  /// Split a store chunk into ``IC_CHUNK_BYTES`` pieces. Casals uploaders
+  /// already write 1 MiB chunks, so this is normally the identity.
+  private func splitChunk(b : Blob) : [Blob] {
+    if (b.size() <= IC_CHUNK_BYTES) { return [b] };
+    let bytes = Blob.toArray(b);
+    var out : [Blob] = [];
+    var from = 0;
+    while (from < bytes.size()) {
+      let to = Nat.min(from + IC_CHUNK_BYTES, bytes.size());
+      out := Array.concat(out, [Blob.fromArray(Array.sliceToArray(bytes, from, to))]);
+      from := to;
+    };
+    out;
+  };
+
+  /// Stream ``key`` out of the certified-assets store into the target's IC
+  /// chunk store, then ``install_chunked_code`` pinned to ``sha256``. The
+  /// multisig must be an IC controller of the target. Members handed to a
+  /// Baton are upgraded through that Baton, not here. Self-upgrade is refused:
+  /// the outstanding proposal call would leave an open call context.
+  private func executeUpgradeCanister(a : {
+    canister_id : Principal;
+    store : Principal;
+    key : Text;
+    sha256 : Blob;
+    arg : Blob;
+    wasm_memory_keep : Bool;
+  }) : async ExecuteResult {
+    if (a.canister_id == Principal.fromActor(Self)) {
+      return #err("refusing to upgrade the committee itself; bump its version in the sheet and run `casals up`");
+    };
+    if (a.sha256.size() != 32) { return #err("sha256 must be 32 bytes") };
+    let store = actor (Principal.toText(a.store)) : actor {
+      get : shared query { key : Text; accept_encodings : [Text] } -> async {
+        content : Blob;
+        content_type : Text;
+        content_encoding : Text;
+        sha256 : ?Blob;
+        total_length : Nat;
+      };
+      get_chunk : shared query {
+        key : Text;
+        content_encoding : Text;
+        index : Nat;
+        sha256 : ?Blob;
+      } -> async { content : Blob };
+    };
+    let ic00 = actor ("aaaaa-aa") : actor {
+      upload_chunk : shared { canister_id : Principal; chunk : Blob } -> async { hash : Blob };
+      clear_chunk_store : shared { canister_id : Principal } -> async ();
+      install_chunked_code : shared {
+        mode : {
+          #install;
+          #reinstall;
+          #upgrade : ?{
+            skip_pre_upgrade : ?Bool;
+            wasm_memory_persistence : ?{ #keep; #replace };
+          };
+        };
+        target_canister : Principal;
+        store_canister : ?Principal;
+        chunk_hashes_list : [{ hash : Blob }];
+        wasm_module_hash : Blob;
+        arg : Blob;
+        sender_canister_version : ?Nat64;
+      } -> async ();
+    };
+
+    let first = try {
+      await store.get({ key = a.key; accept_encodings = ["identity"] });
+    } catch (_) {
+      return #err("store get failed: " # a.key);
+    };
+    switch (first.sha256) {
+      case (?h) {
+        if (h != a.sha256) {
+          return #err("store sha256 " # hexOf(h) # " != proposed " # hexOf(a.sha256) # " for " # a.key);
+        };
+      };
+      case null {};
+    };
+    if (first.content.size() == 0 or first.total_length == 0) {
+      return #err("empty module in store: " # a.key);
+    };
+
+    try {
+      await ic00.clear_chunk_store({ canister_id = a.canister_id });
+    } catch (_) {
+      return #err("clear_chunk_store failed (is the committee a controller of " # Principal.toText(a.canister_id) # "?)");
+    };
+
+    var hashes : [{ hash : Blob }] = [];
+    var received : Nat = 0;
+    var index : Nat = 0;
+    var piece : Blob = first.content;
+    label pull loop {
+      for (part in splitChunk(piece).vals()) {
+        let up = try {
+          await ic00.upload_chunk({ canister_id = a.canister_id; chunk = part });
+        } catch (_) {
+          return #err("upload_chunk failed at chunk " # Nat.toText(hashes.size()));
+        };
+        hashes := Array.concat(hashes, [up]);
+      };
+      received += piece.size();
+      if (received >= first.total_length) { break pull };
+      index += 1;
+      let next = try {
+        await store.get_chunk({
+          key = a.key;
+          content_encoding = first.content_encoding;
+          index;
+          sha256 = first.sha256;
+        });
+      } catch (_) {
+        return #err("store get_chunk " # Nat.toText(index) # " failed: " # a.key);
+      };
+      if (next.content.size() == 0) {
+        return #err("short read from store at chunk " # Nat.toText(index));
+      };
+      piece := next.content;
+    };
+    if (received != first.total_length) {
+      return #err("store length mismatch: " # Nat.toText(received) # " != " # Nat.toText(first.total_length));
+    };
+
+    let persistence : ?{ #keep; #replace } = if (a.wasm_memory_keep) { ?#keep } else { null };
+    try {
+      await ic00.install_chunked_code({
+        mode = #upgrade(?{ skip_pre_upgrade = null; wasm_memory_persistence = persistence });
+        target_canister = a.canister_id;
+        store_canister = null;
+        chunk_hashes_list = hashes;
+        wasm_module_hash = a.sha256;
+        arg = a.arg;
+        sender_canister_version = null;
+      });
+    } catch (e) {
+      try { await ic00.clear_chunk_store({ canister_id = a.canister_id }) } catch (_) {};
+      return #err("install_chunked_code failed: " # Error.message(e));
+    };
+    try { await ic00.clear_chunk_store({ canister_id = a.canister_id }) } catch (_) {};
+    log("upgraded", Principal.toText(a.canister_id) # " " # a.key);
+    #ok(?("upgraded " # Principal.toText(a.canister_id) # " to " # a.key # " sha256=" # hexOf(a.sha256) #
+      " chunks=" # Nat.toText(hashes.size())));
+  };
+
   private func executeAction(action : BatonAction) : async ExecuteResult {
     switch (action) {
+      case (#UpgradeCanister(a)) {
+        await executeUpgradeCanister(a);
+      };
       case (#UpgradeBaton(a)) {
         let ic = actor ("aaaaa-aa") : actor {
           install_code : shared {
@@ -620,6 +804,6 @@ persistent actor Self {
   };
 
   public query func version() : async Text {
-    VERSION;
+    CODE_VERSION;
   };
 };

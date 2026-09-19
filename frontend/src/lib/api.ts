@@ -71,6 +71,8 @@ export interface Permission {
 
 export interface Tree {
   sections: Section[];
+  /** Canister rows the backend could not home on any stand (should be empty). */
+  orphans?: Canister[];
   /** Persisted friendly names for IC principals (principal → alias). */
   principal_aliases?: Record<string, string>;
 }
@@ -99,8 +101,8 @@ export interface Metadata {
   orchestra_name?: string;
   orchestra_description?: string;
   open_access: boolean;
-  file_registry_canister_id: string;
-  file_registry_frontend_canister_id?: string;
+  /** The WASM store (`casals-wasms`, a certified-assets canister) every install reads from. */
+  wasm_store_canister_id?: string;
   casals_frontend_canister_id?: string;
   /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
    * and history from monitor_service_url instead of calling the conductor. */
@@ -158,6 +160,9 @@ export interface AuthorizedWasm {
   asset_namespace?: string;
   asset_path?: string;
   asset_content_type?: string;
+  /** Catalog-row pin time (ms). Store `modified_ns` is the upload time. */
+  authorized_at_ms?: number;
+  updated_at_ms?: number;
 }
 
 export interface OrchestrationEvent {
@@ -565,7 +570,9 @@ export function frontendCanisterId(): string {
     const host = window.location.hostname;
     const m =
       host.match(/^([a-z0-9-]+)\.icp0\.io$/i) ??
-      host.match(/^([a-z0-9-]+)\.icp\.net$/i);
+      host.match(/^([a-z0-9-]+)\.icp\.net$/i) ??
+      host.match(/^([a-z0-9-]+)\.localhost$/i) ??
+      host.match(/^([a-z0-9-]+)\.local\.localhost$/i);
     if (m) return m[1];
   }
   return '';
@@ -1201,8 +1208,7 @@ export interface SettingsPatch {
   orchestra_name?: string;
   orchestra_description?: string;
   open_access?: boolean;
-  file_registry_canister_id?: string;
-  file_registry_frontend_canister_id?: string;
+  wasm_store_canister_id?: string;
   casals_frontend_canister_id?: string;
   monitor_enabled?: boolean;
   monitor_principal?: string;
@@ -1257,28 +1263,6 @@ export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResul
   return _parseUpdate(
     await (await _actor(true)).set_subnet_whitelist(JSON.stringify({ subnets })),
   ) as UpdateResult & { subnet_whitelist?: string[] };
-}
-
-export async function grantRegistryPublisher(
-  namespace: string,
-  principal: string,
-): Promise<UpdateResult & { namespace?: string; principal?: string }> {
-  return _parseUpdate(
-    await (await _actor(true)).grant_registry_publisher(
-      JSON.stringify({ namespace, principal }),
-    ),
-  ) as UpdateResult & { namespace?: string; principal?: string };
-}
-
-export async function revokeRegistryPublisher(
-  namespace: string,
-  principal: string,
-): Promise<UpdateResult & { namespace?: string; principal?: string }> {
-  return _parseUpdate(
-    await (await _actor(true)).revoke_registry_publisher(
-      JSON.stringify({ namespace, principal }),
-    ),
-  ) as UpdateResult & { namespace?: string; principal?: string };
 }
 
 // Refresh (and cache, server-side) the cycles→currency rate for the configured
@@ -1455,6 +1439,93 @@ export async function addAuthorizedWasm(args: {
 
 export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).remove_authorized_wasm(JSON.stringify({ key })));
+}
+
+// ---------------------------------------------------------------------------
+// casals-wasms store: browser uploads + housekeeping
+// ---------------------------------------------------------------------------
+
+export interface UploadTicket {
+  store_canister_id: string;
+  namespace: string;
+  key_prefix: string;
+  chunk_bytes: number;
+  expires_at: number;
+  swept: string[];
+}
+
+export interface UploadReceipt {
+  revoked: string;
+  key?: string;
+  namespace?: string;
+  path?: string;
+  size?: number;
+  sha256?: string;
+  content_type?: string;
+}
+
+export interface StoreFile {
+  key: string;
+  namespace: string;
+  path: string;
+  size: number;
+  sha256: string;
+  content_type: string;
+  modified_ns: number;
+  authorized: boolean;
+}
+
+export interface StoreRetentionResult {
+  namespace: string;
+  keep_days: number;
+  dry_run: boolean;
+  candidates: { key: string; size: number; sha256: string; modified_ns: number }[];
+  deleted: string[];
+}
+
+export interface StoreSizeReport {
+  store_canister_id: string;
+  files: number;
+  bytes: number;
+  unauthorized_files: number;
+  unauthorized_bytes: number;
+  warn_bytes: number;
+  limit_bytes: number;
+  warn: boolean;
+  over_limit: boolean;
+}
+
+/** Grant the caller a just-in-time Commit on the store; returns where to upload. */
+export async function beginUpload(keyPrefix = ''): Promise<UploadTicket> {
+  return _parseUpdate<UploadTicket>(
+    await (await _actor(true)).begin_upload(JSON.stringify(keyPrefix ? { key_prefix: keyPrefix } : {})),
+  );
+}
+
+/** Revoke the caller's Commit; with a path, also return the on-chain size + sha256. */
+export async function endUpload(path = '', namespace = ''): Promise<UploadReceipt> {
+  const args: Record<string, string> = {};
+  if (path) args.path = path;
+  if (namespace) args.namespace = namespace;
+  return _parseUpdate<UploadReceipt>(await (await _actor(true)).end_upload(JSON.stringify(args)));
+}
+
+export async function listStoreFiles(namespace = ''): Promise<StoreFile[]> {
+  return _parseQuery<StoreFile[]>(
+    await (await _actor(true)).list_store_files(JSON.stringify(namespace ? { namespace } : {})),
+  );
+}
+
+export async function storeRetention(args: {
+  namespace?: string;
+  keep_days?: number;
+  dry_run?: boolean;
+} = {}): Promise<StoreRetentionResult> {
+  return _parseUpdate<StoreRetentionResult>(await (await _actor(true)).store_retention(JSON.stringify(args)));
+}
+
+export async function storeSize(): Promise<StoreSizeReport> {
+  return _parseUpdate<StoreSizeReport>(await (await _actor(true)).store_size('{}'));
 }
 
 // ---------------------------------------------------------------------------

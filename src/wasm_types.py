@@ -27,7 +27,7 @@ def infer_wasm_type(wasm_key: str) -> str:
         return MULTISIG
     if k.startswith("orchestration-baton") or "baton" in k:
         return BATON
-    if "basilisk" in k:
+    if "basilisk" in k or k.startswith("casals-backend"):
         return BASILISK
     if "motoko" in k:
         return MOTOKO
@@ -35,6 +35,8 @@ def infer_wasm_type(wasm_key: str) -> str:
         return RUST
     if "frontend" in k or k.startswith("hello-world-frontend"):
         return ASSETS
+    if k.startswith("certified-assets") or k == "casals-wasms":
+        return ASSETS  # the store and the conductor frontend run the asset canister
     return ""
 
 

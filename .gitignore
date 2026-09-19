@@ -4,7 +4,6 @@ node_modules/
 dist/
 # corpus frontends are fixtures, not build output
 !tests/e2e/orchestras/*/dist/
-file_registry_dist/
 .svelte-kit/
 build/
 __pycache__/

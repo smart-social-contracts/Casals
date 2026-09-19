@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Tree } from '$lib/api';
-  import { backendCanisterId, getTree } from '$lib/api';
+  import type { AuthorizedWasm, Tree } from '$lib/api';
+  import { backendCanisterId, casalsMetadata, getTree, listAuthorizedWasms } from '$lib/api';
   import { get } from 'svelte/store';
   import { identity } from '$lib/auth';
   import { resolveCanisterControllers } from '$lib/controllerAccess';
@@ -11,6 +11,8 @@
   } from '$lib/multisigClient';
   import { batonForStand } from '$lib/orchestraGovernance';
   import { findStandForCanister } from '$lib/orchestrationNav';
+  import { upgradeMemoryKeepForWasm } from '$lib/batonUpgrade';
+  import { catalogForTarget, defaultInstallArg, storeKey } from '$lib/wasmStorePath';
 
   interface Props {
     canisterId: string;
@@ -49,25 +51,74 @@
   let controllersError = $state('');
   let knownControllersText = $state('');
 
+  // Upgrade canister: catalog + store come from Casals; the committee only
+  // streams what an operator already authorized.
+  let catalog = $state<AuthorizedWasm[]>([]);
+  let catalogLoading = $state(false);
+  let storeId = $state('');
+  let wasmKey = $state('');
+
   const isControllerAction = $derived(
     actionType === 'SetCanisterControllers' ||
       actionType === 'AddCanisterControllers' ||
       actionType === 'RemoveCanisterControllers',
   );
+  const isUpgradeAction = $derived(actionType === 'UpgradeCanister');
+  /** Actions that call the IC management canister: the committee must be a controller. */
+  const needsControl = $derived(isControllerAction || isUpgradeAction);
 
-  const canisterOptions = $derived.by(() => {
+  interface CanisterOption {
+    id: string;
+    label: string;
+    controllers?: string[];
+    /** true / false from the tree's cached controllers; undefined when unknown. */
+    controlled?: boolean;
+    wasm_key?: string;
+    wasm_type?: string;
+    wasm_hash?: string;
+  }
+
+  function isSelf(p: string): boolean {
+    return p.toLowerCase() === canisterId.toLowerCase();
+  }
+
+  const canisterOptions = $derived.by((): CanisterOption[] => {
     const src = loadedTree ?? tree;
     if (!src) return [];
-    const out: { id: string; label: string }[] = [];
+    const out: CanisterOption[] = [];
     for (const sec of src.sections) {
       for (const stand of sec.stands) {
         for (const c of stand.canisters) {
-          if (c.canister_id) out.push({ id: c.canister_id, label: c.name });
+          if (!c.canister_id) continue;
+          const ctrls = c.controllers;
+          out.push({
+            id: c.canister_id,
+            label: c.name,
+            controllers: ctrls,
+            controlled: ctrls && ctrls.length ? ctrls.some(isSelf) : undefined,
+            wasm_key: c.wasm_key,
+            wasm_type: c.wasm_type,
+            wasm_hash: c.wasm_hash,
+          });
         }
       }
     }
     return out;
   });
+
+  /** Targets the committee can act on via the management canister (unknown = allowed, checked at submit). */
+  const controlledOptions = $derived(canisterOptions.filter((o) => o.controlled !== false));
+  const uncontrolledOptions = $derived(canisterOptions.filter((o) => o.controlled === false));
+
+  const selectedOption = $derived(canisterOptions.find((o) => o.id === targetCanister));
+  const upgradeTargets = $derived(controlledOptions.filter((o) => !isSelf(o.id)));
+  // Strict: same family as the target, else same type — never the whole catalog
+  // for a known target. A wrong module is rolled back by the IC when its
+  // post_upgrade traps, but it should not be one click away.
+  const wasmOptions = $derived(
+    selectedOption ? catalogForTarget(selectedOption, catalog) : catalog,
+  );
+  const selectedWasm = $derived(wasmOptions.find((w) => w.key === wasmKey));
 
   const cachedControllers = $derived.by(() => {
     const src = loadedTree ?? tree;
@@ -106,7 +157,8 @@
     busy ||
       (controllersLoading &&
         (actionType === 'AddCanisterControllers' ||
-          actionType === 'RemoveCanisterControllers')),
+          actionType === 'RemoveCanisterControllers')) ||
+      (isUpgradeAction && (catalogLoading || !selectedWasm || !storeId || !targetCanister)),
   );
 
   function patchTreeControllers(canisterId: string, controllers: string[]) {
@@ -172,8 +224,44 @@
     }
   }
 
+  async function ensureCatalog() {
+    if (catalog.length && storeId) return;
+    catalogLoading = true;
+    try {
+      const [wasms, meta] = await Promise.all([
+        listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
+        casalsMetadata().catch(() => null),
+      ]);
+      catalog = wasms;
+      storeId = (meta?.wasm_store_canister_id || '').trim();
+    } finally {
+      catalogLoading = false;
+    }
+  }
+
+  function syncWasmKey() {
+    if (!isUpgradeAction) return;
+    const current = (selectedOption?.wasm_key || '').trim();
+    wasmKey = wasmOptions.some((w) => w.key === current) ? current : wasmOptions[0]?.key ?? '';
+  }
+
+  /** Controller and upgrade actions default to a canister the committee controls. */
+  function pickDefaultTarget() {
+    const pool = isUpgradeAction ? upgradeTargets : needsControl ? controlledOptions : canisterOptions;
+    if (!pool.some((o) => o.id === targetCanister)) {
+      targetCanister = pool[0]?.id ?? '';
+    }
+  }
+
   async function onActionTypeChange() {
+    pickDefaultTarget();
     syncControllersTextForAction();
+    if (isUpgradeAction) {
+      clearControllerFetchState();
+      await ensureCatalog();
+      syncWasmKey();
+      return;
+    }
     if (isControllerAction) {
       await loadLiveControllers();
     } else {
@@ -183,6 +271,10 @@
 
   async function onCanisterChange() {
     syncControllersTextForAction();
+    if (isUpgradeAction) {
+      syncWasmKey();
+      return;
+    }
     await loadLiveControllers();
   }
 
@@ -202,17 +294,20 @@
     const standBaton = standLoc ? batonForStand(treeSrc, standLoc.stand) : null;
     const controllerList = controllers.length ? controllers.join(', ') : 'unknown';
 
+    const call = isUpgradeAction ? '`install_chunked_code`' : '`update_settings`';
     let message =
-      'This multisig is not an IC controller of the target, so `update_settings` will fail. ' +
+      `This committee is not an IC controller of the target, so ${call} will fail. ` +
       `Current controllers: ${controllerList}.`;
 
     if (standBaton?.canister_id) {
       const batonLabel = standBaton.name
         ? `${standBaton.canister_id} (${standBaton.name})`
         : standBaton.canister_id;
-      message +=
-        ` After baton hand-off, this stand is controlled by baton ${batonLabel}.` +
-        ' Add this multisig via an existing controller first, or use that controller directly.';
+      message += isUpgradeAction
+        ? ` This stand is handed to baton ${batonLabel}: upgrade it from the stand page (Baton managed upgrade),` +
+          ' or bump the version in the sheet and let `casals up` file the Baton proposal for the committee to approve.'
+        : ` After baton hand-off, this stand is controlled by baton ${batonLabel}.` +
+          ' Add this committee via an existing controller first, or use that controller directly.';
     }
 
     return new Error(message);
@@ -233,7 +328,9 @@
 
   function resetFields() {
     error = '';
-    targetCanister = canisterOptions[0]?.id ?? '';
+    targetCanister = '';
+    pickDefaultTarget();
+    wasmKey = '';
     controllersText = '';
     addSigners = '';
     removeSigners = '';
@@ -269,14 +366,24 @@
     busy = true;
     try {
       let controllers = currentControllers;
-      if (isControllerAction) {
+      if (needsControl) {
         controllers = await resolveControllersForSubmit(id);
         if (!multisigControlsTarget(controllers)) {
           throw multisigNotControllerError(controllers);
         }
       }
+      if (isUpgradeAction && !selectedWasm) {
+        throw new Error('Pick a WASM from the catalog');
+      }
 
       const action = buildMultisigAction(actionType, {
+        store: storeId,
+        store_key: selectedWasm
+          ? storeKey(selectedWasm.registry_namespace, selectedWasm.registry_path)
+          : '',
+        sha256: selectedWasm?.wasm_hash ?? '',
+        arg: selectedWasm ? defaultInstallArg(selectedWasm, selectedOption ?? {}) : undefined,
+        wasm_memory_keep: selectedWasm ? upgradeMemoryKeepForWasm(selectedWasm) : false,
         add_signers: addSigners,
         remove_signers: removeSigners,
         new_threshold: newThreshold,
@@ -325,6 +432,7 @@
         <option value="SetCanisterControllers">Set controllers</option>
         <option value="AddCanisterControllers">Add controllers</option>
         <option value="RemoveCanisterControllers">Remove controllers</option>
+        <option value="UpgradeCanister">Upgrade canister</option>
         <option value="ManageSigners">Manage signers</option>
         <option value="AddCommander">Add baton commander</option>
         <option value="RemoveCommander">Remove baton commander</option>
@@ -333,7 +441,8 @@
         <option value="DestroyCanisters">Destroy canisters (batch)</option>
       </select>
 
-      {#if isControllerAction}
+      {#if needsControl}
+        {@const pool = isUpgradeAction ? upgradeTargets : controlledOptions}
         <label class="label" for="ms-target">Canister</label>
         {#if canisterOptions.length}
           <select
@@ -342,10 +451,30 @@
             bind:value={targetCanister}
             onchange={onCanisterChange}
           >
-            {#each canisterOptions as opt (opt.id)}
-              <option value={opt.id}>{opt.label}</option>
+            {#each pool as opt (opt.id)}
+              <option value={opt.id}>
+                {opt.label}{opt.controlled === undefined ? ' (controllers unknown)' : ''}
+              </option>
             {/each}
+            {#if uncontrolledOptions.length}
+              <optgroup label="Not controlled by this committee">
+                {#each uncontrolledOptions as opt (opt.id)}
+                  <option value={opt.id} disabled>{opt.label}</option>
+                {/each}
+              </optgroup>
+            {/if}
           </select>
+          {#if !pool.length}
+            <p class="text-xs text-[var(--color-text-secondary)]">
+              This committee is not an IC controller of any canister in the orchestra. Stands handed to
+              a Baton are upgraded through that Baton; add the committee as a controller first for the rest.
+            </p>
+          {:else if uncontrolledOptions.length}
+            <p class="text-xs text-[var(--color-text-secondary)]">
+              Greyed-out canisters have other controllers (usually a stand Baton), so the committee cannot
+              act on them directly.
+            </p>
+          {/if}
         {:else}
           <input
             id="ms-target"
@@ -355,7 +484,44 @@
             onchange={onCanisterChange}
           />
         {/if}
+      {/if}
 
+      {#if isUpgradeAction}
+        <label class="label" for="ms-wasm">WASM (authorized catalog)</label>
+        {#if catalogLoading}
+          <p class="text-xs text-[var(--color-text-secondary)]">Loading catalog…</p>
+        {:else if wasmOptions.length}
+          <select id="ms-wasm" class="input text-xs font-mono" bind:value={wasmKey}>
+            {#each wasmOptions as w (w.key)}
+              <option value={w.key}>{w.key} · {w.wasm_hash.slice(0, 8)}</option>
+            {/each}
+          </select>
+        {:else}
+          <p class="text-xs text-red-700">
+            No authorized WASM matches this canister's family or type. Upload and authorize one on the
+            WASMs page first.
+          </p>
+        {/if}
+        {#if selectedOption}
+          <p class="text-xs text-[var(--color-text-secondary)] font-mono break-all">
+            Now: {selectedOption.wasm_key || '—'}
+            {selectedOption.wasm_hash ? ` · ${selectedOption.wasm_hash.slice(0, 8)}` : ''}
+          </p>
+        {/if}
+        {#if selectedWasm}
+          <p class="text-xs text-[var(--color-text-secondary)]">
+            The committee streams {storeKey(selectedWasm.registry_namespace, selectedWasm.registry_path)}
+            from the WASM store into the target and installs it in upgrade mode, pinned to
+            sha256 {selectedWasm.wasm_hash.slice(0, 12)}…
+            {upgradeMemoryKeepForWasm(selectedWasm) ? ' (Motoko: main memory kept).' : '.'}
+            {#if !storeId}
+              <span class="text-red-700">WASM store id unknown — run `casals up` first.</span>
+            {/if}
+          </p>
+        {/if}
+      {/if}
+
+      {#if isControllerAction}
         <p class="label">Current controllers</p>
         {#if controllersLoading}
           <p class="text-xs text-[var(--color-text-secondary)]">Loading current controllers…</p>
@@ -396,6 +562,8 @@
           <label class="label" for="ms-rem-ctls">Principals to remove (one per line)</label>
           <textarea id="ms-rem-ctls" class="input text-xs font-mono min-h-[72px]" bind:value={controllersText}></textarea>
         {/if}
+      {:else if isUpgradeAction}
+        <!-- fields rendered above -->
       {:else if actionType === 'ManageSigners'}
         <label class="label" for="ms-add">Add signers</label>
         <textarea id="ms-add" class="input text-xs font-mono min-h-[56px]" bind:value={addSigners}></textarea>

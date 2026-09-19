@@ -557,7 +557,11 @@ def list_managed_canisters() -> text:
 
 @update
 def set_config(args: text) -> text:
-    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?, file_registry_canister_id?, upgrade_approval_policy?}."""
+    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?,
+    wasm_store_canister_id?, upgrade_approval_policy?}.
+
+    ``wasm_store_canister_id`` is Casals' `casals-wasms` certified-assets store,
+    the source of every WASM / bundle Baton installs."""
     try:
         require_top_commander(_caller(), _config)
         params = json.loads(args)
@@ -570,12 +574,12 @@ def set_config(args: text) -> text:
                 "upgrade_approval_policy",
                 json.dumps(policy, separators=(",", ":")),
             )
-        if "file_registry_canister_id" in params:
-            fr = (params.get("file_registry_canister_id") or "").strip()
-            if fr:
-                _config.insert("file_registry_canister_id", fr)
-            elif _config.contains_key("file_registry_canister_id"):
-                _config.remove("file_registry_canister_id")
+        if "wasm_store_canister_id" in params:
+            val = (params.get("wasm_store_canister_id") or "").strip()
+            if val:
+                _config.insert("wasm_store_canister_id", val)
+            elif _config.contains_key("wasm_store_canister_id"):
+                _config.remove("wasm_store_canister_id")
         return _ok(config={k: _config.get(k) for k in _config.keys()})
     except AuthError as e:
         return _err(str(e))
@@ -595,7 +599,7 @@ def get_config() -> text:
         "bake_window_seconds": _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS),
         "accelerant_days": _cfg_int("accelerant_days", DEFAULT_ACCELERANT_DAYS),
         "install_cycles_buffer": _cfg_int("install_cycles_buffer", DEFAULT_INSTALL_CYCLES_BUFFER),
-        "file_registry_canister_id": _config.get("file_registry_canister_id"),
+        "wasm_store_canister_id": _config.get("wasm_store_canister_id"),
         "upgrade_approval_policy": approval_policy,
     })
 

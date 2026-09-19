@@ -43,6 +43,7 @@
     frontendCanisterId,
     listBackendControllers,
   } from '$lib/api';
+  import { hydrateTreeControllers } from '$lib/controllerAccess';
   import {
     browserTreeStorage,
     orchestraOpenPlan,
@@ -235,12 +236,31 @@
     return [...ids];
   }
 
+  async function hydrateDisplayedControllers(fresh: Tree, force = false): Promise<Tree> {
+    const extra = [backendCanisterId(), frontendCanisterId()].filter(Boolean);
+    const { tree: hydrated, byId } = await hydrateTreeControllers(fresh, extra, { force });
+    const backend = byId.get(backendCanisterId());
+    const frontend = byId.get(frontendCanisterId());
+    casalsControllers = {
+      backend: backend?.length ? backend : casalsControllers.backend,
+      frontend: frontend?.length ? frontend : casalsControllers.frontend,
+    };
+    if (!casalsControllers.backend?.length) {
+      const backendCtrls = await listBackendControllers().catch(() => []);
+      if (backendCtrls.length) {
+        casalsControllers = { ...casalsControllers, backend: backendCtrls };
+      }
+    }
+    return hydrated;
+  }
+
   async function refreshControllersAndTree(): Promise<void> {
     controllersRefreshing = true;
     try {
-      const [, fresh] = await Promise.all([refreshControllersCache(), getTree()]);
-      tree = fresh;
-      writeCachedTree(backendCanisterId(), fresh, browserTreeStorage());
+      await refreshControllersCache().catch(() => undefined);
+      const fresh = await getTree();
+      tree = await hydrateDisplayedControllers(fresh, true);
+      writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
     } catch (e: any) {
       toasts.error(e?.message ?? String(e));
     } finally {
@@ -253,8 +273,8 @@
       controlAutoRefreshDone = false;
       return;
     }
-    if (!tree || controlAutoRefreshDone || controllersRefreshing) return;
-    if (treeMissingControllerCount(tree) === 0) return;
+    if (!displayTree || controlAutoRefreshDone || controllersRefreshing) return;
+    if (treeMissingControllerCount(displayTree) === 0) return;
     controlAutoRefreshDone = true;
     void refreshControllersAndTree();
   });
@@ -285,19 +305,12 @@
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
         getPlan().catch(() => null),
       ]);
+      tree = await hydrateDisplayedControllers(tree);
       writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
       orchestraName = (status?.orchestra_name ?? '').trim();
       if (!orchestraName) {
         const meta = await casalsMetadata().catch(() => null);
         orchestraName = (meta?.orchestra_name ?? '').trim();
-      }
-      try {
-        const backendCtrls = await listBackendControllers();
-        if (backendCtrls.length) {
-          casalsControllers = { ...casalsControllers, backend: backendCtrls };
-        }
-      } catch {
-        /* open query; ignore */
       }
       void warmSubnetGeoCache(collectSubnetIds(tree));
     } catch (e: any) {
@@ -342,6 +355,7 @@
     if (plan.tree) {
       tree = plan.tree as Tree;
       loading = false;
+      void hydrateDisplayedControllers(tree).then((t) => { tree = t; });
       void load({ background: true });
     } else {
       void load();
@@ -1083,6 +1097,7 @@
     <div class="space-y-4">
       {#each filteredTree.sections as section, si (`${section.name}|${si}`)}
         {@const secKey = sectionKey(section.name, si)}
+        {@const coreSection = isOrchestraSectionName(section.name)}
         <div class="card overflow-hidden">
           <!-- Section header -->
           <div class="flex items-start justify-between gap-3 p-4 bg-primary-50/60">
@@ -1190,6 +1205,8 @@
                     </button>
                     {#if $isAuthenticated}
                       <div class="flex items-center gap-0.5 shrink-0">
+                        <!-- Casals core stands are declared by the sheet's conductor/governance blocks: no add/register/rename/delete. -->
+                        {#if !coreSection}
                         <button class="icon-btn" aria-label="Add canister" onclick={() => openCreateCanister(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
                         </button>
@@ -1199,15 +1216,18 @@
                         <button class="icon-btn" aria-label="Deploy all canisters in stand" onclick={() => openUpgradeStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
                         </button>
+                        {/if}
                         <button class="icon-btn" aria-label="Add commander" onclick={() => openAddCommander({ stand: stand.name })}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0zM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
                         </button>
+                        {#if !coreSection}
                         <button class="icon-btn" aria-label="Rename stand" onclick={() => openRenameStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                         </button>
                         <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete stand" onclick={() => openDeleteStand(stand)}>
                           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                         </button>
+                        {/if}
                       </div>
                     {/if}
                   </div>
@@ -1308,10 +1328,12 @@
                                 <button class="icon-btn" aria-label="Start canister" onclick={() => runCanisterAction('Start', () => startCanister(canister.name))}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"/></svg>
                                 </button>
-                                <!-- Rename -->
+                                <!-- Rename (core canisters are named by the sheet) -->
+                                {#if !coreSection}
                                 <button class="icon-btn" aria-label="Rename canister" onclick={() => openRenameCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487a2.25 2.25 0 1 1 3.182 3.182L7.5 21H3v-4.5L16.862 4.487z"/></svg>
                                 </button>
+                                {/if}
                                 {#if canTagCanister(displayTree, $principal, canister.name)}
                                   <button class="icon-btn" aria-label="Edit canister tags" title="Edit tags" onclick={() => openEditCanisterTags(canister)}>
                                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1320,10 +1342,12 @@
                                     </svg>
                                   </button>
                                 {/if}
-                                <!-- Delete (retire to pool) -->
+                                <!-- Delete (retire to pool); never for Casals core canisters -->
+                                {#if !coreSection}
                                 <button class="icon-btn text-red-400 hover:text-red-600 hover:bg-red-50" aria-label="Delete canister (return to pool)" onclick={() => openDeleteCanister(canister)}>
                                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
                                 </button>
+                                {/if}
                               {/if}
                             </div>
                           </div>
@@ -1467,6 +1491,28 @@
           {/if}
         </div>
       {/each}
+      {#if displayTree?.orphans?.length}
+        <!-- Invariant: every canister lives on a stand. The backend lists here what it could not home. -->
+        <div class="card overflow-hidden border-amber-200">
+          <div class="p-4 bg-amber-50/70">
+            <div class="font-semibold text-amber-900">Canisters without a stand</div>
+            <div class="text-xs text-amber-700 mt-0.5">
+              Registered with Casals but declared by no sheet stand. Add them to a stand in the sheet and run <span class="font-mono">casals up</span>.
+            </div>
+          </div>
+          <div class="px-4 py-3 space-y-1.5">
+            {#each displayTree.orphans as canister (canister.canister_id || canister.name)}
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span class="font-medium text-primary-900">{canister.name}</span>
+                <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{canister.kind}</span>
+                <button class="text-xs font-mono text-primary-600 hover:text-primary-900" title="Copy canister id" onclick={() => copy(canister.canister_id)}>
+                  {canister.canister_id || '—'}
+                </button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
     {/if}
   {/if}

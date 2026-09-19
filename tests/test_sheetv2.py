@@ -33,8 +33,7 @@ def _ctx(sheet: dict, **overrides) -> sv2.ResolveContext:
     ids = {
         "casals-backend": "backend-id",
         "casals-frontend": "frontend-id",
-        "file-registry": "registry-id",
-        "file-registry-frontend": "registry-fe-id",
+        "casals-wasms": "store-id",
         "multisig": "multisig-id",
         "hello-backend": "hello-id",
         "motoko-backend": "motoko-be",

@@ -1,14 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, canisterUrl, getTree } from '$lib/api';
+  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree } from '$lib/api';
   import type { Metadata, SettingsPatch } from '$lib/api';
   import { isAuthenticated, principal, isController } from '$lib/auth';
   import { get } from 'svelte/store';
   import { ensureFx } from '$lib/fx.svelte';
   import { canManageSubnetWhitelist } from '$lib/subnetAccess';
-  import { canManageRegistryPublishers } from '$lib/registryPublisherAccess';
   import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
-  import RegistryPublishersPanel from '$lib/components/RegistryPublishersPanel.svelte';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
   import { formatCommitDatetime, shortSha } from '$lib/buildIdentity';
@@ -34,8 +32,6 @@
   let openAccess = $state(false);
   let orchestraName = $state('');
   let orchestraDescription = $state('');
-  let fileRegistryId = $state('');
-  let fileRegistryFrontendId = $state('');
   /** Where balance sampling + refresh run: on the conductor or an external monitor. */
   type CycleMode = 'onchain' | 'offchain';
   let cycleMode = $state<CycleMode>('onchain');
@@ -54,7 +50,6 @@
   let openHelp = $state<string | null>(null);
   let subnetWhitelist = $state<string[]>([]);
   let canEditSubnetWhitelist = $state(false);
-  let canManagePublishers = $state(false);
 
   const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
 
@@ -70,24 +65,6 @@
 
   function toggleHelp(id: string) {
     openHelp = openHelp === id ? null : id;
-  }
-
-  async function refreshPublisherAccess() {
-    if (!get(isAuthenticated)) {
-      canManagePublishers = false;
-      return;
-    }
-    const caller = get(principal);
-    if (!caller) {
-      canManagePublishers = false;
-      return;
-    }
-    if (get(isController) === true) {
-      canManagePublishers = true;
-      return;
-    }
-    const tree = await getTree().catch(() => null);
-    canManagePublishers = canManageRegistryPublishers(tree, caller);
   }
 
   async function refreshSubnetEditAccess() {
@@ -117,8 +94,6 @@
       orchestraName = meta.orchestra_name ?? '';
       orchestraDescription = meta.orchestra_description ?? '';
       openAccess = meta.open_access;
-      fileRegistryId = meta.file_registry_canister_id ?? '';
-      fileRegistryFrontendId = meta.file_registry_frontend_canister_id ?? '';
       cycleMode = meta.monitor_enabled ? 'offchain' : 'onchain';
       monitorServiceUrl = meta.monitor_service_url ?? '';
       monitorPrincipal = meta.monitor_principal ?? '';
@@ -132,7 +107,6 @@
       displayCurrency = meta.display_currency || 'USD';
       subnetWhitelist = meta.subnet_whitelist ?? [];
       await refreshSubnetEditAccess();
-      await refreshPublisherAccess();
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -146,10 +120,8 @@
   $effect(() => {
     if ($isAuthenticated && $principal) {
       void refreshSubnetEditAccess();
-      void refreshPublisherAccess();
     } else {
       canEditSubnetWhitelist = false;
-      canManagePublishers = false;
     }
   });
 
@@ -165,8 +137,6 @@
         orchestra_name: orchestraName.trim(),
         orchestra_description: orchestraDescription.trim(),
         open_access: openAccess,
-        file_registry_canister_id: fileRegistryId.trim(),
-        file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
         cycles_autopilot: cycleMode === 'offchain' ? false : cyclesAutopilot,
         cycles_icp_autoconvert: cyclesIcpAutoconvert,
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
@@ -209,8 +179,6 @@
           orchestra_name: orchestraName.trim(),
           orchestra_description: orchestraDescription.trim(),
           open_access: openAccess,
-          file_registry_canister_id: fileRegistryId.trim(),
-          file_registry_frontend_canister_id: fileRegistryFrontendId.trim(),
           monitor_enabled: cycleMode === 'offchain',
           monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
           monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta.monitor_principal ?? ''),
@@ -329,32 +297,18 @@
           </dd>
         </div>
         <div class="flex justify-between gap-3 sm:col-span-2">
-          <dt class="text-primary-500 shrink-0">File registry (backend)</dt>
-          <dd class="font-mono text-primary-900 truncate min-w-0" title={meta.file_registry_canister_id}>
-            {meta.file_registry_canister_id || '—'}
-          </dd>
-        </div>
-        <div class="flex justify-between gap-3 sm:col-span-2">
-          <dt class="text-primary-500 shrink-0">File registry (frontend)</dt>
+          <dt class="text-primary-500 shrink-0">WASM store</dt>
           <dd class="flex items-center gap-2 min-w-0">
-            {#if meta.file_registry_frontend_canister_id}
-              <span
-                class="font-mono text-primary-900 truncate"
-                title={meta.file_registry_frontend_canister_id}
-              >
-                {meta.file_registry_frontend_canister_id}
+            {#if meta.wasm_store_canister_id}
+              <span class="font-mono text-primary-900 truncate" title={meta.wasm_store_canister_id}>
+                {meta.wasm_store_canister_id}
               </span>
               <a
-                href={canisterUrl(meta.file_registry_frontend_canister_id)}
-                target="_blank"
-                rel="noopener noreferrer"
+                href="/wasms"
                 class="shrink-0 inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-900 transition-colors"
-                title="Browse files in registry"
+                title="Catalog and store contents"
               >
-                Browse
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
-                </svg>
+                WASMs
               </a>
             {:else}
               <span class="font-mono text-primary-900">—</span>
@@ -438,51 +392,6 @@
             <span class="text-sm font-medium text-primary-700">Open access</span>
             <span class="text-xs text-primary-400">— let any logged-in principal add sections/stands</span>
           </label>
-
-          <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
-            <div>
-              <h3 class="text-sm font-semibold text-primary-800">File registry</h3>
-              <p class="text-xs text-primary-400 mt-0.5">WASM and frontend asset storage for installs and upgrades.</p>
-            </div>
-
-            <div>
-              <label class="label" for="fileRegistry">Backend canister id</label>
-              <input
-                id="fileRegistry"
-                type="text"
-                class="input font-mono"
-                placeholder="aaaaa-aa"
-                bind:value={fileRegistryId}
-              />
-              <p class="text-xs text-primary-400 mt-1">Casals pulls WASM bundles and assets from here when deploying canisters.</p>
-            </div>
-
-            <div>
-              <label class="label" for="fileRegistryFrontend">Frontend canister id</label>
-              <input
-                id="fileRegistryFrontend"
-                type="text"
-                class="input font-mono"
-                placeholder="aaaaa-aa"
-                bind:value={fileRegistryFrontendId}
-              />
-              {#if fileRegistryFrontendId.trim()}
-                <a
-                  href={canisterUrl(fileRegistryFrontendId.trim())}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 mt-1.5 text-xs text-primary-600 hover:text-primary-900 transition-colors"
-                >
-                  Browse files in registry
-                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
-                  </svg>
-                </a>
-              {:else}
-                <p class="text-xs text-primary-400 mt-1">Optional browse UI — leave blank if the backend serves HTTP directly.</p>
-              {/if}
-            </div>
-          </div>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
             <div>
@@ -799,15 +708,5 @@
         }}
       />
     </div>
-
-    {#if canManagePublishers}
-      <div class="card p-5 pb-0 w-full">
-        <RegistryPublishersPanel
-          registryCanisterId={meta?.file_registry_canister_id ?? fileRegistryId}
-          registryFrontendCanisterId={meta?.file_registry_frontend_canister_id ?? fileRegistryFrontendId}
-          canEdit={canManagePublishers}
-        />
-      </div>
-    {/if}
   {/if}
 </div>

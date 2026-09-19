@@ -2,7 +2,8 @@
 
 import type { Permission } from '$lib/api';
 
-export type NavLink = { href: string; label: string; description?: string };
+/** `requires` hides the link until the orchestra has the named facility. */
+export type NavLink = { href: string; label: string; description?: string; requires?: 'multisig' };
 
 export type NavSection = { id: string; title: string; links: NavLink[] };
 
@@ -33,6 +34,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: '/multisig',
         label: 'Platform committee',
         description: 'On-chain multisig for IC controller actions',
+        requires: 'multisig',
       },
     ],
   },
@@ -42,6 +44,19 @@ export const NAV_SECTIONS: NavSection[] = [
     links: [{ href: '/settings', label: 'Settings' }],
   },
 ];
+
+export interface OrchestraFacilities {
+  /** True when some stand runs an `orchestration-multisig` canister. */
+  multisig: boolean;
+}
+
+/** NAV_SECTIONS with the links whose facility the orchestra lacks removed
+ * (an orchestra without a multisig has no Platform committee to show). */
+export function visibleNavSections(sections: NavSection[], have: OrchestraFacilities): NavSection[] {
+  return sections
+    .map((s) => ({ ...s, links: s.links.filter((l) => !l.requires || have[l.requires]) }))
+    .filter((s) => s.links.length > 0);
+}
 
 export type OperatorAccessTab = 'roles' | 'reference';
 
@@ -220,6 +235,12 @@ export const MULTISIG_PROPOSAL_REFERENCE: ReferenceEntry[] = [
     id: 'SetPolicy / UpdateBatonSettings',
     label: 'Baton policy & settings',
     description: 'Update Baton commander policy or controller settings.',
+  },
+  {
+    id: 'UpgradeCanister',
+    label: 'Upgrade canister',
+    description:
+      'Stream an authorized WASM from the casals-wasms store into a canister the committee controls and install it (sha256-pinned, chunked). Stands handed to a Baton are upgraded through that Baton instead.',
   },
   {
     id: 'UpgradeBaton',

@@ -1,48 +1,115 @@
-"""Pull authorized WASM from the Casals file registry and install via chunked code."""
+"""Pull authorized WASM from Casals' WASM store and install via chunked code.
 
-import base64
-import json
+The store is the `casals-wasms` certified-assets canister (``wasm_store_canister_id``
+in Baton's config). A Casals catalog row's (namespace, path) pair maps to the
+asset key ``/<namespace>/<path>``; the canister streams raw blobs through
+``get`` / ``get_chunk`` and reports the sha256 it computed on commit, which is
+checked against the authorized hash before anything is installed.
+"""
 
-from basilisk import Async, Principal, Service, ic, service_query, text
+from basilisk import Async, Opt, Principal, Record, Service, Vec, blob, ic, nat, service_query, text
 from basilisk.canisters.management import management_canister
 
-PULL_CHUNK_BYTES = 128 * 1024
-# Limit registry→upload_chunk work per execute_action (IC message instruction cap).
-CHUNKS_PER_EXECUTE = 6
+# Limit store→upload_chunk work per execute_action (IC message instruction cap).
+# The store hands back whole 1 MiB chunks; two of them fit the budget comfortably.
+STORE_CHUNKS_PER_EXECUTE = 2
+CHUNKS_PER_EXECUTE = STORE_CHUNKS_PER_EXECUTE
 
 
-class FileRegistryService(Service):
+# certified-assets read side (mirrors assets.did)
+
+class GetArg(Record):
+    key: text
+    accept_encodings: Vec[text]
+
+
+class EncodedAsset(Record):
+    content: blob
+    content_type: text
+    content_encoding: text
+    sha256: Opt[blob]
+    total_length: nat
+
+
+class GetChunkArg(Record):
+    key: text
+    content_encoding: text
+    index: nat
+    sha256: Opt[blob]
+
+
+class ChunkContent(Record):
+    content: blob
+
+
+class ListArgs(Record):
+    start: Opt[nat]
+    length: Opt[nat]
+
+
+class AssetEncoding(Record):
+    content_encoding: text
+    sha256: Opt[blob]
+    length: nat
+    modified: int  # Candid int, as Casals' services.py declares it
+
+
+class AssetEntry(Record):
+    key: text
+    content_type: text
+    encodings: Vec[AssetEncoding]
+
+
+class AssetStoreService(Service):
     @service_query
-    def get_file_size_icc(self, namespace: text, path: text) -> text:
-        ...
+    def get(self, arg: GetArg) -> EncodedAsset: ...
 
     @service_query
-    def get_file_chunk_icc(self, namespace: text, path: text, offset: text, length: text) -> text:
-        ...
+    def get_chunk(self, arg: GetChunkArg) -> ChunkContent: ...
 
     @service_query
-    def list_files_icc(self, namespace: text) -> text:
-        ...
+    def list(self, arg: ListArgs) -> Vec[AssetEntry]: ...
 
 
-def registry_canister_id(config_store) -> str:
-    raw = config_store.get("file_registry_canister_id")
+def store_key(namespace: str, path: str) -> str:
+    """Asset key of a (namespace, path) pair — the same rule as Casals' sheetv2.store_key."""
+    ns = (namespace or "").strip().strip("/")
+    p = (path or "").strip().lstrip("/")
+    return f"/{ns}/{p}" if ns else f"/{p}"
+
+
+def store_canister_id(config_store) -> str:
+    """The casals-wasms store principal from Baton's config (set via set_config)."""
+    raw = config_store.get("wasm_store_canister_id")
     if not raw or not str(raw).strip():
-        raise ValueError("file_registry_canister_id is not configured (use set_config)")
+        raise ValueError("wasm_store_canister_id is not configured (use set_config)")
     return str(raw).strip()
 
 
-def _unwrap_text(res) -> str:
-    if isinstance(res, dict):
-        if "Ok" in res:
-            return res["Ok"]
-        if "Err" in res:
-            raise RuntimeError(str(res["Err"]))
-    if hasattr(res, "Ok"):
-        return res.Ok
-    if hasattr(res, "Err"):
-        raise RuntimeError(str(res.Err))
-    return res if isinstance(res, str) else str(res)
+def _field(obj, name, default=None):
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _blob_bytes(v) -> bytes:
+    if v is None:
+        return b""
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v)
+    return bytes(v)
+
+
+def _opt_blob_hex(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        if not v:
+            return ""
+        v = v[0]
+    if v is None:
+        return ""
+    return _blob_bytes(v).hex()
 
 
 def _unwrap(res):
@@ -123,7 +190,7 @@ def registry_install_step_gen(
     memory_keep: bool = False,
     max_chunks: int = CHUNKS_PER_EXECUTE,
 ) -> Async[tuple[str, dict]]:
-    """Stream WASM from file registry into target chunk store; install when complete.
+    """Stream a WASM from the store into the target's chunk store; install when complete.
 
     Returns (phase, state):
       - ("loading", state) — more chunks remain; call again with returned state
@@ -137,63 +204,73 @@ def registry_install_step_gen(
     if not expected:
         raise ValueError("wasm_hash is required")
 
-    state = dict(load_state or {})
-    offset = int(state.get("offset") or 0)
+    target = Principal.from_str(target_id)
+    return (yield from _store_install_step_gen(
+        config_store, target, target_id, namespace, path, expected, dict(load_state or {}), init_arg, memory_keep,
+    ))
+
+
+def _store_install_step_gen(
+    config_store, target, target_id: str, namespace: str, path: str, expected: str,
+    state: dict, init_arg: bytes, memory_keep: bool,
+) -> Async[tuple[str, dict]]:
+    """``get`` yields chunk 0 and the total; every later chunk comes from
+    ``get_chunk`` at the size of chunk 0. Each piece goes straight into the
+    target's chunk store."""
+    store = AssetStoreService(Principal.from_str(store_canister_id(config_store)))
+    key = store_key(namespace, path)
+    index = int(state.get("index") or 0)
     chunk_hashes = list(state.get("chunk_hashes") or [])
     total = int(state.get("total") or 0)
+    offset = int(state.get("offset") or 0)
+    chunk_size = int(state.get("chunk_size") or 0)
+    sha_hex = str(state.get("sha256") or "")
 
-    fr = FileRegistryService(Principal.from_str(registry_canister_id(config_store)))
-    target = Principal.from_str(target_id)
-
-    if offset == 0 and not chunk_hashes:
+    uploaded = 0
+    if index == 0 and not chunk_hashes:
         try:
             yield management_canister.clear_chunk_store({"canister_id": target})
         except Exception:
             pass
-        size_res = yield fr.get_file_size_icc(namespace, path)
-        size_raw = _unwrap_text(size_res)
-        size_json = json.loads(size_raw)
-        if size_json.get("error"):
-            raise ValueError(f"file-registry: {size_json['error']}")
-        total = int(size_json.get("size") or 0)
+        got = _unwrap((yield store.get({"key": key, "accept_encodings": ["identity"]})))
+        total = int(_field(got, "total_length", 0) or 0)
         if total <= 0:
-            raise ValueError(f"empty file {namespace}/{path}")
-        state["total"] = total
+            raise ValueError(f"empty file {namespace}/{path} in the wasm store")
+        first = _blob_bytes(_field(got, "content"))
+        chunk_size = len(first)
+        sha_hex = _opt_blob_hex(_field(got, "sha256"))
+        if sha_hex and sha_hex != expected:
+            raise ValueError(f"wasm store sha256 {sha_hex[:12]}… != authorized {expected[:12]}… for {namespace}/{path}")
+        up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": first})
+        chunk_hashes.append({"hash": _chunk_hash(up_res).hex()})
+        offset = len(first)
+        index = 1
+        uploaded = 1
 
-    uploaded = 0
-    eof = False
-    while offset < total and uploaded < max_chunks:
-        chunk_res = yield fr.get_file_chunk_icc(
-            namespace, path, str(offset), str(PULL_CHUNK_BYTES)
-        )
-        chunk_raw = _unwrap_text(chunk_res)
-        chunk_json = json.loads(chunk_raw)
-        if chunk_json.get("error"):
-            raise ValueError(f"file-registry: {chunk_json['error']}")
-        b64 = chunk_json.get("content_b64") or ""
-        if not b64:
-            eof = True
-            break
-        data = base64.b64decode(b64)
+    while offset < total and uploaded < STORE_CHUNKS_PER_EXECUTE:
+        sha_opt = [bytes.fromhex(sha_hex)] if sha_hex else []
+        res = _unwrap((yield store.get_chunk({
+            "key": key, "content_encoding": "identity", "index": index, "sha256": sha_opt,
+        })))
+        data = _blob_bytes(_field(res, "content"))
+        if not data:
+            raise ValueError(f"wasm store returned an empty chunk {index} for {namespace}/{path}")
         up_res = yield management_canister.upload_chunk({"canister_id": target, "chunk": data})
         chunk_hashes.append({"hash": _chunk_hash(up_res).hex()})
         offset += len(data)
+        index += 1
         uploaded += 1
-        eof = bool(chunk_json.get("eof")) or offset >= total
 
-    state["offset"] = offset
-    state["chunk_hashes"] = chunk_hashes
-    state["total"] = total
-
-    if offset < total and not eof:
+    state.update({
+        "offset": offset, "index": index, "chunk_hashes": chunk_hashes, "total": total,
+        "chunk_size": chunk_size, "sha256": sha_hex,
+    })
+    if offset < total:
         return "loading", state
-
     if not chunk_hashes:
-        raise ValueError(f"file-registry returned no bytes for {namespace}/{path}")
+        raise ValueError(f"wasm store returned no bytes for {namespace}/{path}")
 
-    yield from _install_chunked_code_raw(
-        target_id, chunk_hashes, expected, init_arg, memory_keep
-    )
+    yield from _install_chunked_code_raw(target_id, chunk_hashes, expected, init_arg, memory_keep)
     try:
         yield management_canister.clear_chunk_store({"canister_id": target})
     except Exception:
@@ -201,38 +278,64 @@ def registry_install_step_gen(
     return "installed", {}
 
 
-def list_registry_files_gen(config_store, namespace: str) -> Async[list]:
-    """List files in a file-registry namespace: [{path, size, content_type, sha256}]."""
-    fr = FileRegistryService(Principal.from_str(registry_canister_id(config_store)))
-    res = yield fr.list_files_icc((namespace or "").strip())
-    parsed = json.loads(_unwrap_text(res))
-    if isinstance(parsed, dict) and parsed.get("error"):
-        raise ValueError(f"file-registry: {parsed['error']}")
-    return parsed if isinstance(parsed, list) else []
+def _store_list_gen(config_store, namespace: str) -> Async[list]:
+    store = AssetStoreService(Principal.from_str(store_canister_id(config_store)))
+    ns = (namespace or "").strip().strip("/")
+    prefix = f"/{ns}/" if ns else "/"
+    out = []
+    start = 0
+    while True:  # the fork's `list` caps a reply at 100 entries
+        entries = _unwrap((yield store.list({"start": start, "length": 100}))) or []
+        for e in entries:
+            key = str(_field(e, "key", "") or "")
+            if not key.startswith(prefix) or len(key) <= len(prefix):
+                continue
+            identity = None
+            for enc in _field(e, "encodings", []) or []:
+                if str(_field(enc, "content_encoding", "")) == "identity":
+                    identity = enc
+                    break
+            if identity is None:
+                continue
+            out.append({
+                "path": key[len(prefix):],
+                "size": int(_field(identity, "length", 0) or 0),
+                "sha256": _opt_blob_hex(_field(identity, "sha256")),
+                "content_type": str(_field(e, "content_type", "") or ""),
+            })
+        if len(entries) < 100:
+            return out
+        start += len(entries)
 
 
-def pull_registry_file_gen(config_store, namespace: str, path: str) -> Async[bytes]:
-    """Download a full file from the file registry into memory."""
-    namespace = (namespace or "").strip()
-    path = (path or "").strip().lstrip("/")
-    fr = FileRegistryService(Principal.from_str(registry_canister_id(config_store)))
-    size_res = yield fr.get_file_size_icc(namespace, path)
-    size_json = json.loads(_unwrap_text(size_res))
-    if size_json.get("error"):
-        raise ValueError(f"file-registry: {size_json['error']}")
-    total = int(size_json.get("size") or 0)
-    buf = b""
-    offset = 0
-    while offset < total:
-        chunk_res = yield fr.get_file_chunk_icc(namespace, path, str(offset), str(PULL_CHUNK_BYTES))
-        chunk_json = json.loads(_unwrap_text(chunk_res))
-        if chunk_json.get("error"):
-            raise ValueError(f"file-registry: {chunk_json['error']}")
-        data = base64.b64decode(chunk_json.get("content_b64") or "")
+def _store_pull_gen(config_store, namespace: str, path: str) -> Async[bytes]:
+    store = AssetStoreService(Principal.from_str(store_canister_id(config_store)))
+    key = store_key(namespace, path)
+    got = _unwrap((yield store.get({"key": key, "accept_encodings": ["identity"]})))
+    total = int(_field(got, "total_length", 0) or 0)
+    buf = _blob_bytes(_field(got, "content"))
+    sha_hex = _opt_blob_hex(_field(got, "sha256"))
+    index = 1
+    while len(buf) < total:
+        sha_opt = [bytes.fromhex(sha_hex)] if sha_hex else []
+        res = _unwrap((yield store.get_chunk({
+            "key": key, "content_encoding": "identity", "index": index, "sha256": sha_opt,
+        })))
+        data = _blob_bytes(_field(res, "content"))
         if not data:
             break
         buf += data
-        offset += len(data)
-        if chunk_json.get("eof"):
-            break
+        index += 1
     return buf
+
+
+def list_registry_files_gen(config_store, namespace: str) -> Async[list]:
+    """List files in a store namespace: [{path, size, content_type, sha256}]."""
+    return (yield from _store_list_gen(config_store, namespace))
+
+
+def pull_registry_file_gen(config_store, namespace: str, path: str) -> Async[bytes]:
+    """Download a full file from the store into memory."""
+    namespace = (namespace or "").strip()
+    path = (path or "").strip().lstrip("/")
+    return (yield from _store_pull_gen(config_store, namespace, path))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import os
 import sys
@@ -12,8 +13,8 @@ from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, validate
 
 from casals_cli.bindings import Bindings, load_bindings
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
-from casals_cli.multisig import apply_via_multisig, set_controllers_via_multisig
-from casals_cli.registry import ensure_registry_uploads
+from casals_cli.multisig import apply_via_multisig, ensure_control, set_controllers_via_multisig
+from casals_cli.registry import ensure_registry_uploads, resolve_source
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
 
 
@@ -30,11 +31,12 @@ STEPS: list[tuple[str, str]] = [
     ("fund",
      "read the deployer's cycles balance and require environments.<env>.cycles.budget_tc"),
     ("conductor bootstrap",
-     "create or upgrade the four conductor canisters (casals-backend, casals-frontend, file-registry, "
-     "file-registry-frontend) and top the conductor up; slow on a fresh replica: two 7 MB Python wasms to install"),
-    ("registry upload",
-     "upload every wasm in registry.wasms (chunked update calls) and every published dist into the file-registry; "
-     "entries whose sha256 already matches are skipped"),
+     "create or upgrade the conductor canisters the sheet declares (casals-backend, casals-frontend and the "
+     "casals-wasms store) and top the conductor up; slow on a fresh replica: a 7 MB Python wasm to install "
+     "for casals-backend"),
+    ("store upload",
+     "upload every wasm in registry.wasms (chunked batch uploads) and every published dist into the "
+     "casals-wasms store; entries whose sha256 already matches are skipped"),
     ("set_sheet",
      "bind the conductor canister ids and hand the sheet to casals-backend, which owns it from here on"),
     ("plan/apply",
@@ -146,36 +148,88 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str) -> None:
     ic.top_up(backend_id, budget - have)
 
 
-def fund_file_registry(ic, sheet: dict, registry_id: str) -> None:
-    """The registry stores every wasm and published dist before the conductor
-    can plan a top-up for it: keep it at its declared `cycles.min_balance_tc`
-    floor (falling back to the sheet-wide one) from the deployer."""
-    block = (sheet.get("conductor") or {}).get("file_registry") or {}
+def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
+    """The store (`conductor.wasms`) takes every wasm and published dist before
+    the conductor can plan a top-up for it: keep it at its declared
+    `cycles.min_balance_tc` floor (falling back to the sheet-wide one) from the
+    deployer."""
+    block = (sheet.get("conductor") or {}).get(key) or {}
     floor_tc = float((block.get("cycles") or {}).get("min_balance_tc") or (sheet.get("cycles") or {}).get("min_balance_tc") or 0)
-    have = ic.canister_cycles(registry_id)
+    have = ic.canister_cycles(canister_id)
     if not floor_tc or have is None or have >= tc_to_cycles(floor_tc):
         return
-    _progress(f"  funding file-registry: +{floor_tc - cycles_to_tc(have):.2f} TC (below {floor_tc:.1f} TC floor)")
-    ic.top_up(registry_id, tc_to_cycles(floor_tc) - have)
+    _progress(f"  funding {CONDUCTOR_NAMES[key]}: +{floor_tc - cycles_to_tc(have):.2f} TC (below {floor_tc:.1f} TC floor)")
+    ic.top_up(canister_id, tc_to_cycles(floor_tc) - have)
 
 
-def deployer_items(ic, plan: dict, deployer: str, multisig_id: str) -> None:
-    """Controller changes the conductor cannot make itself (its own controllers,
-    the multisig's): the CLI does them as deployer while it is a controller, or
-    through the multisig when the deployer is a signer."""
+
+def registry_wasm_by_hash(sheet: dict, *, sheet_dir: str, project_root: str):
+    """``module_hash -> path`` over the sheet's ``registry.wasms`` ``local:``
+    sources, so the CLI can install a governed canister's declared build (the
+    multisig's own upgrade) without the conductor being a controller. Lazy:
+    each source is hashed once, on first miss."""
+    cache: dict[str, str] = {}
+    pending = [
+        str(w.get("source") or "")
+        for w in (sheet.get("registry") or {}).get("wasms") or []
+        if str(w.get("source") or "").startswith("local:")
+    ]
+
+    def lookup(module_hash: str) -> str | None:
+        want = (module_hash or "").lower()
+        if not want:
+            return None
+        while want not in cache and pending:
+            src = pending.pop(0)
+            try:
+                data, digest = resolve_source(src, sheet_dir=sheet_dir, project_root=project_root)
+            except (OSError, ValueError):
+                continue
+            with tempfile.NamedTemporaryFile("wb", suffix=".wasm", delete=False) as f:
+                f.write(data)
+            cache[digest] = f.name
+        return cache.get(want)
+
+    return lookup
+
+
+def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash=None) -> None:
+    """Items the conductor cannot apply itself because it is not a controller
+    (its own controllers, everything about the multisig): the CLI does them as
+    deployer while it is a controller, or through the multisig when the deployer
+    is a signer. ``upgrade_code`` needs the declared build on disk
+    (``wasm_by_hash``, from the sheet): the deployer is made a controller through
+    the multisig, installs, and the next plan round removes it again."""
     for item in plan.get("items") or []:
-        if item.get("kind") != "set_controllers" or (item.get("requires") or "self") == "self":
+        kind = item.get("kind")
+        if (item.get("requires") or "self") == "self":
             continue
         cid = (item.get("target") or {}).get("canister_id")
-        desired = (item.get("desired") or {}).get("controllers")
-        if not cid or not isinstance(desired, list):
-            continue
-        if deployer in (ic.read_controllers(cid) or []):
-            ic.settings_update(cid, set_controllers=desired)
-            _progress(f"  applied set_controllers → {item['target'].get('name')} (as deployer)")
-        elif multisig_id:
-            set_controllers_via_multisig(ic, multisig_id, deployer, cid, desired)
-            _progress(f"  applied set_controllers → {item['target'].get('name')} (multisig proposal)")
+        name = (item.get("target") or {}).get("name")
+        if kind == "set_controllers":
+            desired = (item.get("desired") or {}).get("controllers")
+            if not cid or not isinstance(desired, list):
+                continue
+            if deployer in (ic.read_controllers(cid) or []):
+                ic.settings_update(cid, set_controllers=desired)
+                _progress(f"  applied set_controllers → {name} (as deployer)")
+            elif multisig_id:
+                set_controllers_via_multisig(ic, multisig_id, deployer, cid, desired)
+                _progress(f"  applied set_controllers → {name} (multisig proposal)")
+        elif kind == "upgrade_code":
+            want = str((item.get("desired") or {}).get("module_hash") or "")
+            if not cid or not want:
+                continue
+            path = wasm_by_hash(want) if wasm_by_hash else None
+            if not path:
+                _progress(
+                    f"  cannot upgrade {name}: no registry.wasms local: source with sha256 {want[:12]}…"
+                    + ("" if wasm_by_hash else " (run `casals up <sheet>`, which knows the registry)")
+                )
+                continue
+            ensure_control(ic, cid, deployer, multisig_id)
+            ic.install_wasm(cid, path, mode="upgrade")
+            _progress(f"  applied upgrade_code → {name} (as deployer, via multisig control)")
 
 
 def multisig_id(ic, backend_id: str) -> str:
@@ -185,7 +239,7 @@ def multisig_id(ic, backend_id: str) -> str:
     return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
 
 
-def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int) -> dict:
+def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int, wasm_by_hash=None) -> dict:
     """plan → apply until the plan is empty. Returns the (empty) final plan.
     Each round the conductor applies what it can, then the deployer does the
     controller changes only it can; a round that changes nothing is an error."""
@@ -238,7 +292,7 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                     f"{failed.get('error')}"
                 )
             continue
-        deployer_items(ic, plan, deployer, multisig_id)  # last: handing the conductor over ends the deployer's reach
+        deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
 
 
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
@@ -318,21 +372,26 @@ def run_up(
     if not dry_run:
         fund_conductor(ic, sheet, env, backend_id)
 
-    registry_id = bindings.conductor.get(CONDUCTOR_NAMES["file_registry"], "")
-    bindings.conductor.get(CONDUCTOR_NAMES["file_registry_frontend"], "")
+    store_id = bindings.conductor.get(CONDUCTOR_NAMES["wasms"], "")
+    if not store_id:
+        raise RuntimeError("no casals-wasms store id after bootstrap (the sheet must declare conductor.wasms)")
 
-    # 4. registry upload (CLI uploads bytes; authorize via apply)
+    # 4. store upload (CLI uploads bytes into the store; authorize via apply)
     _step(4)
-    if registry_id:
-        if not dry_run:
-            fund_file_registry(ic, sheet, registry_id)
-        ensure_registry_uploads(
-            ic, sheet,
-            sheet_path=sheet_path,
-            project_root=project_root,
-            registry_id=registry_id,
-            progress=_progress,
-        )
+    if not dry_run:
+        fund_store(ic, sheet, "wasms", store_id)
+        # Writing to the asset store takes Commit permission; controllers
+        # have it. The deployer is one at bootstrap and after a plan only
+        # when the sheet lists $deployer — otherwise borrow it through the
+        # multisig like any conductor change (the next plan removes it).
+        ensure_control(ic, store_id, deployer, multisig_id(ic, backend_id))
+    ensure_registry_uploads(
+        ic, sheet,
+        sheet_path=sheet_path,
+        project_root=project_root,
+        store_id=store_id,
+        progress=_progress,
+    )
 
     # bind_conductor
     bind_map = {k: v for k, v in bindings.conductor.items() if v}
@@ -354,7 +413,12 @@ def run_up(
 
     # 6-8. plan → apply until empty
     _step(6)
-    plan = converge(ic, backend_id, deployer, multisig_id(ic, backend_id), yes=yes, max_items=max_items)
+    plan = converge(
+        ic, backend_id, deployer, multisig_id(ic, backend_id), yes=yes, max_items=max_items,
+        wasm_by_hash=registry_wasm_by_hash(
+            sheet, sheet_dir=os.path.dirname(os.path.abspath(sheet_path)), project_root=project_root,
+        ),
+    )
 
     # 9. domains + verify
     _step(7)

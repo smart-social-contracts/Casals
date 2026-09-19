@@ -12,8 +12,8 @@ deploy their own conductor instances and supply sheets from their own repos.
 ## Declarative model
 
 One `casals.json` sheet describes an environment; `python -m casals_cli.main -e <env> up <sheet> --yes`
-makes the IC match it. `up` bootstraps the conductor (backend, frontend, file
-registry, registry frontend) if it is not bound yet, publishes the wasms the
+makes the IC match it. `up` bootstraps the conductor (backend, frontend,
+`casals-wasms` store) if it is not bound yet, publishes the wasms the
 `registry` block names, stores the sheet (`set_sheet`), then runs the conductor's
 `plan` → `apply` until the plan is empty. With
 `conductor.settings.reconcile_interval_secs` set, the conductor re-plans and
@@ -50,13 +50,14 @@ src/util.py          — pure helpers (audit hash, canister URL, cycle policy)
 casals_cli/          — CLI package (`python -m casals_cli.main`)
 casals_backend.did   — Candid interface (reference copy; regenerated on build)
 pyproject.toml       — package metadata; entry point casals = casals_cli.main:main
-icp.yaml             — icp-cli deploy config (backend + registry + asset frontends)
+icp.yaml             — icp-cli deploy config (backend + asset frontend)
 Makefile             — build / test / cli targets
 frontend/            — SvelteKit UI (see Frontend pages below)
-file_registry/       — git submodule: the file-registry canister (WASM store)
 templates/           — hello-world template sources (basilisk / rust / motoko)
 seed/templates/      — committed, gzipped template WASMs; sheets reference them as
-                       local:seed/templates/<file>; rebuild with `make build-templates`
+                       local:seed/templates/<file>; rebuild with `make build-templates`.
+                       Also holds certified-assets@0.3.0.wasm.gz — the `casals-wasms`
+                       store itself (built from smart-social-contracts/certified-assets)
 seed/sheets/         — sheets (desired orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
 scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
@@ -64,17 +65,6 @@ scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
 tests/               — pytest unit + integration suites (incl. test_cli_unit.py); tests/e2e/ corpus
 .icp/data/           — committed icp-cli canister-ID mappings (do NOT delete)
 dist/                  — SvelteKit static build output (repo root; consumed by icp.yaml)
-```
-
-`file_registry` is a **git submodule** of the public
-[file-registry](https://github.com/smart-social-contracts/file-registry) repo —
-the canonical source for the registry. Clone Casals with submodules, or init
-after the fact:
-
-```bash
-git clone --recurse-submodules <casals-url>
-# or, in an existing checkout:
-git submodule update --init
 ```
 
 ## Frontend pages
@@ -105,7 +95,6 @@ controllers) may authenticate.
 ### Full local setup (from scratch)
 
 ```bash
-git submodule update --init          # populate file_registry/
 pip install -r requirements-dev.txt  # ic-basilisk-toolkit + pytest
 npm --prefix frontend install        # frontend deps (one-time)
 
@@ -118,9 +107,9 @@ icp network start -e local
 python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
 ```
 
-`casals up <sheet>` is the only deploy path (builds the conductor + file-registry
-WASMs, publishes referenced WASMs, then `set_sheet` → `plan` → `apply`).
-Re-run it after code changes.
+`casals up <sheet>` is the only deploy path (builds the conductor WASMs, creates
+the `casals-wasms` store, uploads every `registry.wasms` entry into it, then
+`set_sheet` → `plan` → `apply`). Re-run it after code changes.
 
 ### Known quirks
 
@@ -153,7 +142,7 @@ identity copy was provisioned. The symptom is: `curl` (identity) shows the new
 build, a real browser shows the old one.
 Fix: run the rollout with `--mode reinstall` to wipe the asset canister before
 provisioning. This is safe for frontend canisters because their entire state is the
-asset bundle, which Casals re-uploads from the file-registry immediately after the
+asset bundle, which Casals re-uploads from the WASM store immediately after the
 wipe.
 
 **Frontend shows local data, not the demo deployment.**
@@ -178,8 +167,8 @@ python tests/e2e/run_e2e.py                    # the corpus: every orchestra, ev
 ## Deploy to IC mainnet
 
 Follow `docs/OPERATIONS.md`: the same `casals up <sheet>` with `-e ic` and the
-environment's deployer identity. The conductor itself (backend, frontend, file
-registry, registry frontend) is created by `up`'s bootstrap when the sheet is not
+environment's deployer identity. The conductor itself (backend, frontend,
+`casals-wasms` store) is created by `up`'s bootstrap when the sheet is not
 bound yet.
 
 ## Open access
@@ -228,7 +217,7 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | Method | Purpose |
 |--------|---------|
 | `get_status` | version + object counts |
-| `get_tree` | full Section → Stand → Canister tree |
+| `get_tree` | full Section → Stand → Canister tree; every canister is on a stand — the conductor lives on `Casals/conductor`, the multisig on `Casals/governance`; `orphans` lists any row that could not be homed (expected empty) |
 | `list_sections` | section summaries |
 | `casals_metadata` / `get_settings` | settings snapshot (incl. `subnet_whitelist`, fx) |
 | `get_events` | append-only audit log |
@@ -317,6 +306,58 @@ The pool (`PooledCanister` entity, stable memory) is the list of every canister
 Casals has ever created. Because creation is expensive, canisters are recycled,
 not discarded.
 
+### WASM store (`casals-wasms`)
+
+Every WASM a sheet can install lives in the **`casals-wasms`** canister — a
+[certified-assets](https://github.com/smart-social-contracts/certified-assets)
+fork (asset canister with pinned directories, chunked upload, on-chain sha256).
+It is a conductor canister declared in the sheet's `conductor.wasms` block
+(`kind: frontend`, wasm `certified-assets@0.3.0`, controllers `["$self", "$deployer"]`)
+and is homed on the `Casals/conductor` stand like the rest of the conductor.
+
+- **Paths.** A catalog row's `(namespace, path)` address maps onto one asset key,
+  `/<namespace>/<path>` (`sheetv2.store_key` / `store_namespace_prefix`); the
+  row fields are still called `registry_namespace` / `registry_path`.
+  `registry.wasms` key `<name>@<version>` → `/wasm/<name>@<version>.wasm.gz`
+  (`WASM_NAMESPACE = "wasm"`, `registry_path`); a `registry.publish` directory
+  `<ns>` → `/<ns>/<relative file path>`.
+- **Seeding (CLI, `casals up` step 4).** `casals_cli/registry.py::ensure_registry_uploads`
+  computes the sha256 of each local artifact, lists the store (`list` query),
+  skips entries whose `sha256` encoding hash already matches and uploads the rest
+  with the batch API (`create_batch` → `create_chunk`×n → `commit_batch`). The
+  deployer needs `Commit` on the store; `up` grants it via `ensure_control` right
+  after the store is created. The Candid client lives in `casals_cli/wasm_store.py`
+  (it carries its own `_BlobClass` — ic-py's stock `Vec(Nat8)` decode is ~20 s/MiB).
+- **Reading (backend).** `src/wasm_store.py` is the only read path:
+  `stat_file` (size + sha256 from `get`), `iter_file` (`get` then `get_chunk`
+  per 1 MiB chunk, verified against the sha256 the store returns), `list_files`.
+  `lifecycle._pull_and_install` streams from it into `install_chunked_code`;
+  `applier.authorize_wasm` stats it. Audit events carry `"store": "assets"`.
+- **Browser uploads.** `/wasms` → *Upload WASM* streams a file straight into the
+  store from the browser (`frontend/src/lib/wasmStoreClient.ts`, batch API, 1 MiB
+  chunks, sha256 computed client-side and verified against the store's).
+  `begin_upload` grants the caller `Commit` on the store just in time
+  (`StoreUploadGrant`, 30 min TTL, swept on the next call); `end_upload` revokes
+  it. Permission `wasm.upload` (or controller). Gzipped files are inflated
+  before upload; the store always holds raw bytes under a `.wasm.gz` key. The
+  browser refuses anything without the `\0asm` header.
+- **Authorizing is a separate key.** `add_authorized_wasm` / `remove_authorized_wasm`
+  take `wasm.authorize` (controllers, or a conductor / section / stand commander
+  holding it). Uploading never equals approving: an operator with only
+  `wasm.upload` leaves the file under *Files not in the catalog* for someone
+  with `wasm.authorize` to pin. Both keys live in `auth.PERMISSIONS` ("Platform").
+- **Housekeeping.** `list_store_files` (store contents vs. the catalog),
+  `store_retention` (delete unauthorized files older than N days, dry-run by
+  default) and `store_size` (bytes vs. the 1.5 GiB pre-upgrade serialization
+  budget, warning from 1 GiB) — all on `/wasms`, controller-only for the sweep. `src/store_uploads.py`.
+- **Retired `file-registry`.** The Basilisk file-registry pair is gone (issue
+  #48): sheets may not declare `conductor.file_registry*` (validation error),
+  `bind_conductor` ignores those keys, and `ensure_core_layout` pools the old
+  canister rows on the next upgrade so a stand can reuse them.
+- Bindings: `casals_metadata().wasm_store_canister_id`; CLI bindings file key
+  `conductor["casals-wasms"]`. Baton reads the same id via its
+  `wasm_store_canister_id` config (`orchestration_bridge` propagates it).
+
 ### Baton-governed stands (`baton.hand_off`)
 
 A stand may declare a `baton` block (`packages/orchestration/baton`, an N-of-M
@@ -343,6 +384,46 @@ or `"*"` (every member but the baton). `hand_off`:
 Baton controllers must be `[$multisig]` (the orchestra multisig can unbrick).
 `hand_off: "sole"` lets Casals only reach a member through `canister_info`; the
 oracle and `live_state` fall back to the baton for status/cycles.
+
+### Platform committee (multisig) as upgrader
+
+Who can change code on which canister, by controller:
+
+- **Conductor canisters and Batons** (`controllers: ["$multisig"]`): the
+  committee. `orchestration-multisig@1.6.0` adds **`UpgradeCanister`**
+  `{canister_id, store, key, sha256, arg, wasm_memory_keep}`: the multisig
+  streams `key` out of `casals-wasms` (`get`/`get_chunk`), fills the target's IC
+  chunk store and calls `install_chunked_code` (upgrade mode) with
+  `wasm_module_hash = sha256`, so only the module the signers approved can land.
+  No inline blob, so it works for the 7 MB backend from a browser. The
+  `/multisig` page's **Propose → Upgrade canister** offers only targets the
+  committee controls and only catalog rows of the target's family/type;
+  `wasm_memory_keep` is strictly opt-in — true only for `motoko`/`multisig`
+  rows (`wasmStorePath.upgradeMemoryKeepForWasm`, same rule as
+  `wasm_types.upgrade_uses_memory_keep`); any other or untyped row sends
+  false, because `Keep` on a non-EOP module makes the IC reject the upgrade
+  ("requires that the new canister module supports enhanced orthogonal
+  persistence"). The arg is `(null)` for asset canisters and `()` otherwise
+  (`lifecycle._install_arg_for` rule).
+- **Members handed to a Baton**: that Baton. `casals up` files the Baton
+  proposal on a `wasm` bump; the committee approves with `CallCanister
+  submit_approval` (weight 2 in the e2e sheets). `UpgradeCanister` on such a
+  member fails at `clear_chunk_store` (not a controller) — the UI greys them out.
+- **The committee itself**: never through its own proposal (the call would leave
+  an open call context). Bump `governance.multisig.wasm` in the sheet; the plan
+  shows `upgrade_code multisig requires=multisig` and `casals up` resolves it:
+  `ensure_control` (a `SetCanisterControllers` proposal adding the deployer),
+  `icp canister install --mode upgrade` with the `registry.wasms` `local:` build
+  whose sha256 matches the plan, then the next round removes the deployer again
+  (`casals_cli.up.deployer_items` / `registry_wasm_by_hash`).
+
+Motoko gotcha (bit 1.5.0 → 1.6.0): in a `persistent actor` every top-level `let`
+is stable. `VERSION`, `MAX_APPLY_ITERATIONS`, `SWEEP_RESERVES` therefore survive
+upgrades frozen at their first-install values and cannot be dropped without a
+migration function (`moc --stable-compatible` M0169). They stay declared (unused);
+the code reads `transient` twins (`CODE_VERSION`, …). Check compatibility with
+`moc --stable-types` on both versions + `moc --stable-compatible old.most new.most`
+before shipping a new multisig.
 
 ### Manual pool assign (`assign_pool_canister`)
 
@@ -419,7 +500,7 @@ Operators / the GaaS installer can also call `grant_stand_backend_commit`
 `{"canister": "<frontend name or id>"}` to repair a missing grant without
 re-uploading the bundle. This lets the backend write assets to its own frontend
 after a reinstall (which wipes the asset canister and its permissions) — e.g. a
-consumer backend pulling deployment-specific assets from the file-registry and
+consumer backend pulling deployment-specific assets from the WASM store and
 `store`-ing them. On the final batch Casals also
 writes a deployment-specific `/canister_ids.js` wiring the SPA to its backend.
 

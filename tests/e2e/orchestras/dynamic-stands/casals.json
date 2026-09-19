@@ -9,6 +9,7 @@
       "flags": { "test_mode": true, "ii_bypass": true },
       "principals": {
         "operator": "$deployer",
+        "casals_ii": "7mx7e-iesva-6xdkj-yrrrb-bwfyl-qmwmm-unfhg-zi74g-q3oyl-lz42d-dqe",
         "$comment": "access-code slots (`casals code new`): admin=casals (everything), platform_operator=casals-platform (deploys, runs and tops up the installer), realms_operator=casals-realms (creates, renames, deletes and keeps alive the stands the installer mints under Realms)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
         "platform_operator": "sha256:d36cff64938b358015571bc697b8eb14d311d3be486c3ef7ca57244e795151a6",
@@ -30,17 +31,12 @@
       "mode": "managed",
       "controllers": ["$multisig"]
     },
-    "file_registry": {
-      "wasm": "file-registry",
-      "kind": "backend",
-      "mode": "managed",
-      "controllers": ["$self"]
-    },
-    "file_registry_frontend": {
-      "wasm": "file-registry-frontend",
+    "wasms": {
+      "$comment": "WASM store: a certified-assets canister holding every artifact Casals installs (issue #48). $deployer stays a controller so `casals up` can upload into it.",
+      "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": ["$self", "$deployer"]
     },
     "settings": { "reconcile_interval_secs": 20 },
     "commanders": [
@@ -51,10 +47,10 @@
   "governance": {
     "multisig": {
       "$comment": "The one key that can reinstall a stand's baton. One signer at threshold 1 on a laptop; staging and production need real signers and a threshold >= 2 for 'the multisig guards the baton' to mean anything.",
-      "wasm": "orchestration-multisig@1.5.0",
+      "wasm": "orchestration-multisig@1.6.0",
       "kind": "backend",
       "mode": "managed",
-      "signers": ["$principal:operator"],
+      "signers": ["$principal:operator", "$principal:casals_ii"],
       "threshold": 1,
       "controllers": ["$multisig"]
     }
@@ -63,12 +59,12 @@
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
     "wasms": [
       { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
-      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
+      { "family": "certified-assets", "version": "0.3.0", "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz" },
       { "family": "hello-world-basilisk", "version": "1.0.0", "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz" },
       { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
       { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" },
-      { "family": "orchestration-multisig", "version": "1.5.0", "source": "local:seed/templates/orchestration-multisig@1.5.0.wasm.gz" },
-      { "family": "orchestration-baton", "version": "1.4.0", "source": "local:seed/templates/orchestration-baton@1.4.0.wasm.gz" }
+      { "family": "orchestration-multisig", "version": "1.6.0", "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz" },
+      { "family": "orchestration-baton", "version": "1.5.0", "source": "local:seed/templates/orchestration-baton@1.5.0.wasm.gz" }
     ]
   },
   "sections": [
@@ -106,7 +102,7 @@
             "name": "{stand}-baton",
             "mode": "managed",
             "kind": "backend",
-            "wasm": "orchestration-baton@1.4.0",
+            "wasm": "orchestration-baton@1.5.0",
             "install_arg": { "top_commander": "$self" },
             "controllers": ["$multisig"]
           },

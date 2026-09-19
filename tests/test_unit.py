@@ -521,6 +521,13 @@ def test_permission_keys_match_permissions_table():
     assert len(auth.PERMISSION_KEYS) > 0
 
 
+def test_wasm_group_expands_to_upload_and_authorize():
+    # Uploading and authorizing are distinct keys; "wasm.*" grants both.
+    stored = auth._normalize_permissions(["wasm.*"])
+    assert set(auth._parse_permissions(stored)) == {"wasm.upload", "wasm.authorize"}
+    assert auth._parse_permissions(auth._normalize_permissions(["wasm.upload"])) == ["wasm.upload"]
+
+
 def test_all_expected_permission_keys_present():
     keys = set(auth.PERMISSION_KEYS)
     for expected in [
@@ -529,6 +536,7 @@ def test_all_expected_permission_keys_present():
         "canister.topup", "canister.shell", "canister.tag",
         "stand.create", "stand.rename", "stand.delete",
         "commander.assign", "subnet.whitelist",
+        "wasm.upload", "wasm.authorize",
     ]:
         assert expected in keys, f"missing key: {expected}"
 
@@ -1273,21 +1281,40 @@ def test_install_mode_candid_basilisk_uses_plain_upgrade():
 
 
 def test_pull_and_install_raises_on_zero_size(monkeypatch):
-    class FakeFR:
-        def get_file_size_icc(self, namespace, path):
-            return "size_call"
+    import wasm_store
 
-    monkeypatch.setattr(lifecycle, "_file_registry", lambda: FakeFR())
-    monkeypatch.setattr(lifecycle, "unwrap_call_result", lambda _res: '{"size": 0}')
+    class FakeStore:
+        def get(self, arg):
+            return {"content": b"", "content_type": "application/wasm", "content_encoding": "identity",
+                    "sha256": None, "total_length": 0}
+
+    class _S:
+        wasm_store_canister_id = "aaaaa-aa"
+
+    monkeypatch.setattr(wasm_store, "_settings", lambda: _S)
+    monkeypatch.setattr(wasm_store, "_assets", lambda: FakeStore())
+    monkeypatch.setattr(wasm_store, "unwrap_call_result", lambda res: res)
     monkeypatch.setattr(lifecycle, "_append_event", lambda *a, **k: None)
 
     gen = lifecycle._pull_and_install(
         "cid", "casals-templates", "orchestration-baton@1.3.0.wasm",
         "abc123", {"install": None},
     )
-    next(gen)
-    with pytest.raises(Exception, match=r"size=0; re-seed the template"):
-        gen.send(None)
+    first = next(gen)
+    with pytest.raises(Exception, match=r"size=0; re-seed"):
+        gen.send(first)
+
+
+def test_render_canister_ids_js_drops_retired_placeholders():
+    import json as _json
+
+    tpl = '{"backend":"$BACKEND","registry":"$FILE_REGISTRY","store":"$WASM_STORE","ii":"$INTERNET_IDENTITY"}'
+    out = lifecycle._render_canister_ids_js(tpl, backend_cid="be-id", wasm_store_cid="store-id")
+    assert out.startswith("globalThis.__CANISTER_IDS=") and out.endswith(";")
+    ids = _json.loads(out[len("globalThis.__CANISTER_IDS="):-1])
+    assert ids == {"backend": "be-id", "store": "store-id", "ii": lifecycle.INTERNET_IDENTITY_DEFAULT}
+    # A $BACKEND slot with no backend renders nothing at all.
+    assert lifecycle._render_canister_ids_js(tpl, wasm_store_cid="store-id") == ""
 
 
 def test_install_mode_candid_motoko_requests_memory_keep():

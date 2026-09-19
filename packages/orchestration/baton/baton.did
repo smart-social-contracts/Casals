@@ -94,9 +94,17 @@ type AssetPermission = variant { Commit; Prepare; ManagePermissions };
 type GrantPermissionArg = record { to_principal : principal; permission : AssetPermission };
 type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
 type InitArgs = record { top_commander : principal };
+type GetArg = record { key : text; accept_encodings : vec text };
+type EncodedAsset = record { content : blob; content_type : text; content_encoding : text; sha256 : opt blob; total_length : nat };
+type GetChunkArg = record { key : text; content_encoding : text; index : nat; sha256 : opt blob };
+type ChunkContent = record { content : blob };
+type ListArgs = record { start : opt nat; length : opt nat };
+type AssetEncoding = record { content_encoding : text; sha256 : opt blob; length : nat; modified : int };
+type AssetEntry = record { key : text; content_type : text; encodings : vec AssetEncoding };
 type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
 type _HealthSvc = service { health_check : () -> (text) query };
 type FileRegistryService = service { get_file_size_icc : (text, text) -> (text) query; get_file_chunk_icc : (text, text, text, text) -> (text) query; list_files_icc : (text) -> (text) query };
+type AssetStoreService = service { get : (GetArg) -> (EncodedAsset) query; get_chunk : (GetChunkArg) -> (ChunkContent) query; list : (ListArgs) -> (vec AssetEntry) query };
 
 service : (InitArgs) -> {
   "set_commander_policy" : (text) -> (text);

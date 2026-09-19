@@ -8,8 +8,11 @@ import {
   batonConsoleUrl,
   multisigConsoleUrl,
 } from './orchestrationNav';
+import { coalesceControllers } from './controllerTree';
 import { controllerLabel } from './controllerLabels';
 import { isOrchestraSectionName } from './governanceUx';
+
+export { coalesceControllers };
 
 export interface LocatedCanister extends Canister {
   section: string;
@@ -157,8 +160,26 @@ export function countGovernanceCanisters(tree: Tree | null | undefined): {
   return { multisig, batons, total };
 }
 
+// ── Casals core section ──────────────────────────────────────────────────────
+//
+// The backend homes its own canisters on one synthetic section, `Casals`, with
+// two stands: `conductor` (casals-backend, casals-frontend, casals-wasms)
+// and `governance` (multisig). `augmentTreeWithCasals`
+// only hoists that section to the top and merges live controllers into it.
+// The synthesis below is a fallback for cached trees from older backends that
+// did not put the conductor canisters on a stand.
+
+export const CASALS_CONDUCTOR_STAND = 'conductor';
+export const CASALS_GOVERNANCE_STAND = 'governance';
+
+const CASALS_CANISTER_NAMES = new Set([
+  'casals-backend',
+  'casals-frontend',
+  'casals-wasms',
+]);
+
 export function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {
-  return c.name === 'casals-backend' || c.name === 'casals-frontend';
+  return CASALS_CANISTER_NAMES.has(c.name);
 }
 
 /** @deprecated Use isCasalsCanister */
@@ -186,111 +207,16 @@ function canisterMatches(a: Canister, b: Canister): boolean {
   return false;
 }
 
-function sectionHasCanister(section: Section, canister: Canister): boolean {
-  return section.stands.some((stand) => stand.canisters.some((c) => canisterMatches(c, canister)));
+type CoreRole = 'backend' | 'frontend' | 'multisig' | null;
+
+function coreRole(c: Canister, backendId: string, frontendId: string): CoreRole {
+  if ((backendId && c.canister_id === backendId) || c.name === 'casals-backend') return 'backend';
+  if ((frontendId && c.canister_id === frontendId) || c.name === 'casals-frontend') return 'frontend';
+  if (isMultisigCanister(c)) return 'multisig';
+  return null;
 }
 
-function sectionHasMultisig(section: Section): boolean {
-  return section.stands.some((stand) => stand.canisters.some((c) => isMultisigCanister(c)));
-}
-
-function peelCasalsCanisters(
-  canisters: Canister[],
-  backendId: string,
-  frontendId: string,
-  found: { backend: Canister | null; frontend: Canister | null },
-): Canister[] {
-  const kept = [];
-  for (const c of canisters) {
-    if ((backendId && c.canister_id === backendId) || c.name === 'casals-backend') {
-      if (!found.backend) found.backend = c;
-      continue;
-    }
-    if ((frontendId && c.canister_id === frontendId) || c.name === 'casals-frontend') {
-      if (!found.frontend) found.frontend = c;
-      continue;
-    }
-    kept.push(c);
-  }
-  return kept;
-}
-
-/** Pull multisig and Casals front/back out of the tree for re-homing under Casals. */
-function extractCasalsCanisters(
-  tree: Tree,
-  backendId: string,
-  frontendId: string,
-): {
-  multisig: Canister | null;
-  backend: Canister | null;
-  frontend: Canister | null;
-  existingCasals: Section | null;
-  rest: Tree;
-} {
-  let multisig: Canister | null = null;
-  let backend: Canister | null = null;
-  let frontend: Canister | null = null;
-  let existingCasals: Section | null = null;
-
-  const sections = [];
-  for (const sec of tree.sections) {
-    if (isCasalsSectionName(sec.name)) {
-      const stands = [];
-      for (const stand of sec.stands) {
-        const found = { backend, frontend };
-        const canisters = peelCasalsCanisters(stand.canisters, backendId, frontendId, found);
-        backend = found.backend;
-        frontend = found.frontend;
-        for (const c of canisters) {
-          if (isMultisigCanister(c) && !multisig) multisig = c;
-        }
-        if (canisters.length) stands.push({ ...stand, canisters });
-      }
-      if (stands.length) existingCasals = { ...sec, stands };
-      continue;
-    }
-
-    const stands = [];
-    for (const stand of sec.stands) {
-      const canisters = [];
-      for (const c of stand.canisters) {
-        if (isMultisigCanister(c)) {
-          if (!multisig) multisig = c;
-          continue;
-        }
-        if ((backendId && c.canister_id === backendId) || c.name === 'casals-backend') {
-          if (!backend) backend = c;
-          continue;
-        }
-        if ((frontendId && c.canister_id === frontendId) || c.name === 'casals-frontend') {
-          if (!frontend) frontend = c;
-          continue;
-        }
-        canisters.push(c);
-      }
-      if (canisters.length) stands.push({ ...stand, canisters });
-    }
-    if (stands.length) sections.push({ ...sec, stands });
-  }
-
-  return {
-    multisig,
-    backend,
-    frontend,
-    existingCasals,
-    rest: { sections, principal_aliases: tree.principal_aliases },
-  };
-}
-
-function resolveCasalsBackend(
-  fromTree: Canister | null,
-  backendId: string,
-  controllers?: string[],
-): Canister | null {
-  if (fromTree) {
-    return { ...fromTree, controllers: fromTree.controllers ?? controllers };
-  }
-  if (!backendId) return null;
+function syntheticCasalsBackend(backendId: string, controllers?: string[]): Canister {
   return {
     name: 'casals-backend',
     canister_id: backendId,
@@ -305,15 +231,7 @@ function resolveCasalsBackend(
   };
 }
 
-function resolveCasalsFrontend(
-  fromTree: Canister | null,
-  frontendId: string,
-  controllers?: string[],
-): Canister | null {
-  if (fromTree) {
-    return { ...fromTree, controllers: fromTree.controllers ?? controllers };
-  }
-  if (!frontendId) return null;
+function syntheticCasalsFrontend(frontendId: string, controllers?: string[]): Canister {
   return {
     name: 'casals-frontend',
     canister_id: frontendId,
@@ -328,93 +246,123 @@ function resolveCasalsFrontend(
   };
 }
 
-function mergeCanistersIntoStand(stand: Stand, additions: Canister[]): Stand {
-  const merged = [...stand.canisters];
-  for (const c of additions) {
-    if (!merged.some((existing) => canisterMatches(existing, c))) merged.push(c);
+function withStandCanisters(section: Section, standName: string, description: string, add: Canister[]): Section {
+  if (!add.length) return section;
+  const idx = section.stands.findIndex((s) => s.name === standName);
+  if (idx >= 0) {
+    const stands = section.stands.map((s, i) => {
+      if (i !== idx) return s;
+      const merged = [...s.canisters];
+      for (const c of add) if (!merged.some((x) => canisterMatches(x, c))) merged.push(c);
+      return { ...s, canisters: sortCanistersForDisplay(merged) };
+    });
+    return { ...section, stands };
   }
-  return { ...stand, canisters: sortCanistersForDisplay(merged) };
-}
-
-/** Merge extracted governance canisters into an existing Casals section. */
-function augmentExistingCasalsSection(
-  section: Section,
-  multisig: Canister | null,
-  backend: Canister | null,
-  frontend: Canister | null,
-): Section {
-  const additions: Canister[] = [];
-  if (multisig && !sectionHasMultisig(section) && !sectionHasCanister(section, multisig)) {
-    additions.push(multisig);
-  }
-  if (backend && !sectionHasCanister(section, backend)) additions.push(backend);
-  if (frontend && !sectionHasCanister(section, frontend)) additions.push(frontend);
-  if (!additions.length) return section;
-
-  if (!section.stands.length) {
-    return {
-      ...section,
-      stands: [{
-        name: 'System',
-        description: 'Multisig, backend, and frontend',
-        commander_principal: '',
-        canisters: sortCanistersForDisplay(additions),
-      }],
-    };
-  }
-
-  const systemIdx = section.stands.findIndex((stand) => stand.name === 'System');
-  const targetIdx = systemIdx >= 0 ? systemIdx : 0;
-  const stands = section.stands.map((stand, idx) =>
-    idx === targetIdx ? mergeCanistersIntoStand(stand, additions) : stand,
-  );
+  const stand: Stand = {
+    name: standName,
+    description,
+    commander_principal: '',
+    canisters: sortCanistersForDisplay(add),
+  };
+  const stands = standName === CASALS_CONDUCTOR_STAND ? [stand, ...section.stands] : [...section.stands, stand];
   return { ...section, stands };
 }
 
-/** Prepend Casals section (multisig + front/back) above Deployments, Infra, etc. */
+/**
+ * Casals section first, its canisters carrying live controllers.
+ *
+ * With a current backend the tree already contains `Casals/conductor` and
+ * `Casals/governance`; this only coalesces `controllers` onto the backend and
+ * frontend rows and moves the section to the top. Older trees (conductor rows
+ * without a stand, multisig on `System/governance`) are re-homed client-side.
+ */
 export function augmentTreeWithCasals(
   tree: Tree,
   backendId: string,
   frontendId: string,
   controllers: { backend?: string[]; frontend?: string[] } = {},
 ): Tree {
-  const {
-    multisig,
-    backend: backendFromTree,
-    frontend: frontendFromTree,
-    existingCasals,
-    rest,
-  } = extractCasalsCanisters(tree, backendId, frontendId);
+  let casals: Section | null = null;
+  const rest: Section[] = [];
+  let backend: Canister | null = null;
+  let frontend: Canister | null = null;
+  let multisig: Canister | null = null;
+  let casalsHasMultisig = false;
 
-  const backend = resolveCasalsBackend(backendFromTree, backendId, controllers.backend);
-  const frontend = resolveCasalsFrontend(frontendFromTree, frontendId, controllers.frontend);
-
-  if (existingCasals) {
-    const casalsSection = augmentExistingCasalsSection(existingCasals, multisig, backend, frontend);
-    return { sections: [casalsSection, ...rest.sections], principal_aliases: tree.principal_aliases };
-  }
-
-  const casalsCanisters: Canister[] = [];
-  if (multisig) casalsCanisters.push(multisig);
-  if (backend) casalsCanisters.push(backend);
-  if (frontend) casalsCanisters.push(frontend);
-
-  if (!casalsCanisters.length) return tree;
-
-  const casalsSection = {
-    name: 'Casals',
-    description: 'Casals orchestrator and orchestration governance',
-    commander_principal: '',
-    stands: [{
-      name: 'casals',
-      description: 'Multisig, backend, and frontend',
-      commander_principal: '',
-      canisters: sortCanistersForDisplay(casalsCanisters),
-    }],
+  const patch = (c: Canister): Canister => {
+    const role = coreRole(c, backendId, frontendId);
+    if (role === 'backend') {
+      const p = { ...c, controllers: coalesceControllers(c.controllers, controllers.backend) };
+      backend ??= p;
+      return p;
+    }
+    if (role === 'frontend') {
+      const p = { ...c, controllers: coalesceControllers(c.controllers, controllers.frontend) };
+      frontend ??= p;
+      return p;
+    }
+    return c;
   };
 
-  return { sections: [casalsSection, ...rest.sections], principal_aliases: tree.principal_aliases };
+  for (const sec of tree.sections) {
+    if (isCasalsSectionName(sec.name)) {
+      const stands = sec.stands.map((stand) => {
+        const canisters = stand.canisters.map(patch);
+        if (canisters.some((c) => isMultisigCanister(c))) casalsHasMultisig = true;
+        return { ...stand, canisters };
+      });
+      casals = casals ? { ...casals, stands: [...casals.stands, ...stands] } : { ...sec, stands };
+      continue;
+    }
+    // Legacy trees: core canisters parked on other sections are pulled out.
+    const stands: Stand[] = [];
+    for (const stand of sec.stands) {
+      const canisters: Canister[] = [];
+      for (const c of stand.canisters) {
+        const role = coreRole(c, backendId, frontendId);
+        if (role === 'multisig') {
+          multisig ??= c;
+          continue;
+        }
+        if (role) {
+          patch(c);
+          continue;
+        }
+        canisters.push(c);
+      }
+      if (canisters.length || !stand.canisters.length) stands.push({ ...stand, canisters });
+    }
+    if (stands.length || !sec.stands.length) rest.push({ ...sec, stands });
+  }
+
+  const inCasals = (c: Canister | null) =>
+    !!c && !!casals && casals.stands.some((s) => s.canisters.some((x) => canisterMatches(x, c)));
+
+  const conductorAdd: Canister[] = [];
+  const be = backend ?? (backendId ? syntheticCasalsBackend(backendId, controllers.backend) : null);
+  const fe = frontend ?? (frontendId ? syntheticCasalsFrontend(frontendId, controllers.frontend) : null);
+  if (be && !inCasals(be)) conductorAdd.push(be);
+  if (fe && !inCasals(fe)) conductorAdd.push(fe);
+  const governanceAdd: Canister[] = multisig && !casalsHasMultisig ? [multisig] : [];
+
+  if (!casals && !conductorAdd.length && !governanceAdd.length) return tree;
+
+  let section: Section = casals ?? {
+    name: 'Casals',
+    description: 'Casals system canisters',
+    commander_principal: '',
+    stands: [],
+  };
+  section = withStandCanisters(
+    section, CASALS_CONDUCTOR_STAND, 'Conductor: backend, frontend and WASM store', conductorAdd,
+  );
+  section = withStandCanisters(
+    section, CASALS_GOVERNANCE_STAND, 'Orchestration governance: multisig', governanceAdd,
+  );
+
+  return { ...tree, sections: [section, ...rest] };
 }
 
 /** @deprecated Use augmentTreeWithCasals */
 export const augmentTreeWithConductor = augmentTreeWithCasals;
+

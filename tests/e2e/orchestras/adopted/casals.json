@@ -31,17 +31,12 @@
       "mode": "managed",
       "controllers": ["$deployer"]
     },
-    "file_registry": {
-      "wasm": "file-registry",
-      "kind": "backend",
-      "mode": "managed",
-      "controllers": ["$self"]
-    },
-    "file_registry_frontend": {
-      "wasm": "file-registry-frontend",
+    "wasms": {
+      "$comment": "WASM store: a certified-assets canister holding every artifact Casals installs (issue #48). $deployer stays a controller so `casals up` can upload into it.",
+      "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
       "mode": "managed",
-      "controllers": ["$self"]
+      "controllers": ["$self", "$deployer"]
     },
     "commanders": [
       { "principal": "$principal:admin", "permissions": "*" }
@@ -51,7 +46,7 @@
     "$comment": "source forms: local:seed/templates/<file> for committed templates; build:<canister> for conductor wasms resolved by the CLI at bootstrap",
     "wasms": [
       { "family": "casals-backend", "version": "main", "source": "build:casals_backend" },
-      { "family": "file-registry", "version": "main", "source": "build:ic_file_registry" },
+      { "family": "certified-assets", "version": "0.3.0", "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz" },
       { "family": "hello-world-basilisk", "version": "1.3.0", "source": "local:seed/templates/hello-world-basilisk@1.3.0.wasm.gz" }
     ]
   },

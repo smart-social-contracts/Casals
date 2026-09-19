@@ -43,8 +43,13 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     // ── governance / registration ──
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
     set_subnet_whitelist:    IDL.Func([IDL.Text], [IDL.Text], []),
-    grant_registry_publisher: IDL.Func([IDL.Text], [IDL.Text], []),
-    revoke_registry_publisher: IDL.Func([IDL.Text], [IDL.Text], []),
+    // ── casals-wasms store: browser uploads + housekeeping ──
+    begin_upload:          IDL.Func([IDL.Text], [IDL.Text], []),
+    end_upload:            IDL.Func([IDL.Text], [IDL.Text], []),
+    list_upload_grants:    IDL.Func([], [IDL.Text], ['query']),
+    list_store_files:      IDL.Func([IDL.Text], [IDL.Text], []),
+    store_retention:       IDL.Func([IDL.Text], [IDL.Text], []),
+    store_size:            IDL.Func([IDL.Text], [IDL.Text], []),
     create_section:        IDL.Func([IDL.Text], [IDL.Text], []),
     create_stand:           IDL.Func([IDL.Text], [IDL.Text], []),
     set_commander:         IDL.Func([IDL.Text], [IDL.Text], []),

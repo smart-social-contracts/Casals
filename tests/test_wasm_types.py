@@ -18,6 +18,14 @@ def test_infer_baton():
     assert infer_wasm_type("orchestration-baton@1.0.0") == "baton"
 
 
+def test_infer_asset_canister_families():
+    # The store and the conductor frontend run the certified-assets canister;
+    # the committee's Upgrade-canister picker filters the catalog by type.
+    assert infer_wasm_type("certified-assets@0.3.0") == "assets"
+    assert infer_wasm_type("casals-wasms") == "assets"
+    assert infer_wasm_type("casals-frontend") == "assets"
+
+
 def test_multisig_tags_include_motoko_not_basilisk():
     assert wasm_type_tags("multisig") == ["Multisig", "Motoko"]
     assert not has_basilisk_features("multisig")

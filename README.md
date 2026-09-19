@@ -14,6 +14,8 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 > **Live demo** — https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io
 
+> **Design rationale** — [docs/philosophy](docs/philosophy/README.md) (why orchestra / sections / stands / conductor / baton)
+
 ---
 
 ## Model
@@ -61,7 +63,7 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 
 - **`icp-cli`** for build & deploy (`icp.yaml`); dfx is not used.
 - **Basilisk** + `ic-basilisk-toolkit` for the backend.
-- **`file-registry`** — separate canister repo for WASM storage (namespaced, chunked upload, sha256).
+- **`casals-wasms`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it. Upload from the CLI (`casals up`) or from the browser on `/wasms`.
 
 ---
 
@@ -74,7 +76,7 @@ icp network start -e local          # terminal 1 — keep replica running
 python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes   # bootstrap + reconcile the demo orchestra
 ```
 
-`casals up <sheet>` is the only deploy path: it validates the sheet, builds and deploys the conductor and file-registry, publishes the referenced WASMs, and reconciles the live IC state to the sheet (`set_sheet` → `plan` → `apply`).
+`casals up <sheet>` is the only deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and reconciles the live IC state to the sheet (`set_sheet` → `plan` → `apply`).
 
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
 

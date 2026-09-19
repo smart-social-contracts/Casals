@@ -31,9 +31,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          # file_registry/ is required by tests/conftest.py (Casals create path).
-          submodules: recursive
 
       - uses: actions/setup-python@v6
         with:
@@ -59,7 +56,7 @@ jobs:
           pytest --version
 
       # tests/conftest.py starts the replica, builds + deploys casals_backend
-      # and the file-registry, then test_create_destroy_lock.py builds the
+      # and the casals-wasms store, then test_create_destroy_lock.py builds the
       # Motoko multisig from packages/orchestration and drives create → destroy.
       - name: Run create/destroy lock tests
         env:

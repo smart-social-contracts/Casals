@@ -1,8 +1,8 @@
 """Integration tests for the Casals conductor against a local replica.
 
 These cover the governance / registration / query layer end-to-end. The
-management-canister lifecycle paths (create_canister / upgrade_to) require a
-file-registry and inter-canister cycles; their *validation/authorization*
+management-canister lifecycle paths (create_canister / upgrade_to) require the
+casals-wasms store and inter-canister cycles; their *validation/authorization*
 branches are checked here, while a full create/upgrade is left to a deployed
 environment.
 """
@@ -137,17 +137,16 @@ class TestAuthorizedWasms:
 
 class TestSettingsAndCommander:
     def test_set_settings_roundtrip(self, canister):
+        before = call_canister("casals_metadata").get("wasm_store_canister_id") or ""
         _ok("set_settings", {
-            "file_registry_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
-            "file_registry_frontend_canister_id": "oe3kv-3aaaa-aaaac-qgmzq-cai",
+            "wasm_store_canister_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
             "open_access": True,
         })
         md = call_canister("casals_metadata")
-        assert md["file_registry_canister_id"] == "ryjl3-tyaaa-aaaaa-aaaba-cai"
-        assert md["file_registry_frontend_canister_id"] == "oe3kv-3aaaa-aaaac-qgmzq-cai"
+        assert md["wasm_store_canister_id"] == "ryjl3-tyaaa-aaaaa-aaaba-cai"
         assert md["open_access"] is True
-        # reset open_access so later assertions are stable
-        _ok("set_settings", {"open_access": False})
+        # reset so later assertions (and the session store binding) are stable
+        _ok("set_settings", {"open_access": False, "wasm_store_canister_id": before})
 
     def test_monitor_settings_roundtrip(self, canister):
         _ok("set_settings", {
