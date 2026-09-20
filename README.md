@@ -63,7 +63,7 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 
 - **`icp-cli`** for build & deploy (`icp.yaml`); dfx is not used.
 - **Basilisk** + `ic-basilisk-toolkit` for the backend.
-- **`casals-wasms`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it. Upload from the CLI (`casals up`) or from the browser on `/wasms`.
+- **`casals-wasms`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it — and every frontend asset bundle (`docs/BUNDLES.md`). Upload from the CLI (`casals up`) or from the browser on `/files`.
 
 ---
 
@@ -105,6 +105,8 @@ casals status                                      # version + object counts
 casals tree                                        # Section → Stand → Canister tree
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
+casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
+casals up sheet.json --stand my-stand              # reconcile one stand only (also: --section, --exclude-*)
 casals cycles                                      # treasury + per-canister balances
 casals pool                                        # canister pool
 casals sheet get                                   # live sheet JSON

@@ -226,6 +226,20 @@ Raw principals in `sections` are a validation error; they belong in
 Stands and sections carry `description`, `commanders` (same shape), and
 optionally `subnet` / `subnet_type` (ignored on local).
 
+Stands and sections may also carry **`"sync": "auto" | "manual"`** (default
+`auto`; a stand inherits its section's). `manual` = *observe, don't act*
+(issue #51; Argo CD's manual sync policy, Flux `suspend`, Terraform `-target`):
+the planner computes and reports the scope's drift under `plan.manual`, emits
+no items for it, `up` publishes no `registry.publish` row only it consumes and
+the reconcile timer leaves it alone. Acting is explicit — `casals up --stand
+<name>` / `--section <name>` (`plan {scope: {stands, sections,
+exclude_stands, exclude_sections}}`) reconciles the named scopes, manual ones
+included, and reports the rest under `plan.skipped`; `apply` re-plans under the
+stored plan's scope. On a `stand_template` section the mint is the act: a
+stand `create_stand` minted is built to completion (its `built` flag is set
+when a whole-sheet plan first finds it converged; adding members clears it)
+and frozen from then on. A manual frontend's `content` must be pinned.
+
 Stands may declare a `baton` **policy**. The baton canister itself is an
 ordinary member of `canisters` (name ending `-baton`, its own `wasm`,
 `controllers` — which must include `$multisig` and never `$self`: the
@@ -293,8 +307,8 @@ adopted canisters may appear there; `set_sheet` binds them).
     { "family": "realm-backend", "version": "main",
       "source": "release:smart-social-contracts/realms@main:realm_backend.wasm.gz", "sha256": "…" }
   ],
-  "publish": [                              // non-wasm content (realms extension catalog, branding)
-    { "path": "catalog/extensions.json", "source": "./dist/catalog.json", "sha256": "…" }
+  "publish": [                              // asset bundles: frontend builds, catalogs, branding (docs/BUNDLES.md)
+    { "path": "frontend/marketplace-assets/1.0.0", "source": "local:marketplace-1.0.0.tgz", "sha256": "<bundle hash>" }
   ]
 }
 ```
@@ -303,9 +317,13 @@ Replaces `seed/templates.json`, `add_authorized_wasm` calls in the CLIs, and
 the realms `catalog_publish` phase. Reconciled by sha256: present with the same
 hash → no-op.
 
-A `publish` entry whose `source` is a `local:` **directory** uploads every file
-under it to `<path>/<relative file path>` (content type from the extension). A
-`kind: frontend` canister then declares what it serves:
+A `publish` entry is a **bundle** (`docs/BUNDLES.md`): its `source` — a
+`local:` directory or canonical `.tgz` (`casals bundle dist/`), an `https://`
+URL or a `release:` — uploads every file to `<path>/<relative file path>`
+(content type from the extension), and its `sha256` is the *bundle hash*
+(sha256 of the sorted `sha256sum` listing; `casals pin` computes it, production
+requires it). The planner refuses to sync a namespace whose bundle hash differs
+from the pin. A `kind: frontend` canister then declares what it serves:
 
 ```jsonc
 { "name": "marketplace-frontend", "kind": "frontend", "wasm": "assets@…",
@@ -317,11 +335,13 @@ under it to `<path>/<relative file path>` (content type from the extension). A
 `content` (every file of the namespace) plus `files` (text rendered with the
 usual placeholders — how a frontend learns its backend id) is the desired asset
 set. Planner compares `(key, sha256)` against the asset canister's `list` and
-emits `sync_assets` for the keys that differ; the applier copies a bounded
-slice per `apply` (the next plan lists what is still missing). Keys the canister
-serves beyond the declared set are left alone (a realm frontend gets branding at
-runtime). A new build is a new `publish` path and a new `content` value — the
-same "new desired state" rule as a wasm hash. The oracle grades assets by
+emits `sync_assets` for the keys that differ — writing changed files and
+deleting the keys that left the bundle, so the canister serves exactly the
+pinned bundle plus `files` (keys under `files` are never bundle keys); the
+applier copies a bounded slice per `apply` (the next plan lists what is still
+missing). A new build is a new `publish` path and a new `content` value — the
+same "new desired state" rule as a wasm hash — or, from the browser, a bundle
+uploaded on `/files` under the same namespace and pinned in the sheet. The oracle grades assets by
 fetching every key over HTTP and hashing the body.
 
 **DECISION (recommended):** `sha256` is mandatory for anything a `production`
@@ -815,6 +835,9 @@ the oracle passes on its end state.
 | **stale plan** | `plan`, mutate replica, `apply(old_hash)` | rejected with the new hash |
 | **proposal-only** | orchestra 2/8/9 with `apply_requires_proposal` | direct `apply` rejected; `ApplySheet` proposal applies |
 | **export round-trip** | `export_sheet()` → `set_sheet` → `plan` | empty |
+| **content change** | orchestras with `registry.publish` (3): `casals bundle` packs a second build (index.html marker + one new file) into a `.tgz`, a sheet copy pins it under a new namespace → `up`; back to the declared sheet | the frontend serves the marker and the new file; after the way back the new file is gone (deleted, not left behind); oracle passes both ways |
+| **manual stand** | orchestras with `registry.publish` (3): sheet copy marks the frontend's stand `sync: manual` and pins a third build → `up`; `up --stand <name>`; back | plain `up`: no items, `plan.manual` has the `sync_assets`, the frontend still serves the old build, its bundle is not published; targeted `up` converges and serves the build; `plan` clean |
+| **manual template section** | orchestra 7 (Realms is `sync: manual`), inside `runtime_stand`: after the mint converged, add a foreign controller to the realm baton | `get_tree` says `built`; plain `plan` has no item for the stand and a `set_controllers` under `manual`; two reconcile ticks later the foreign controller is still there; `up --stand realm-e2e` heals it; `plan` clean |
 | **baton upgrade** | orchestras with `hand_off: "sole"` (3, 7): sheet copy bumps a sole-managed backend to `hello-world-rust@1.0.1` → `up`; the multisig approves on the baton (`CallCanister submit_approval`, weight 2); poll `get_action`; `up` again; then back to the declared sheet the same way | before: controllers are exactly `{baton(, itself)}`, the baton's `{multisig}`; `up` leaves no items, one `pending` entry with Casals' vote only, hash unchanged; after approval the action reaches `COMPLETE` on the baton's own timers, plan empty, hash new; oracle passes (`baton.sole`, weighted `baton.commanders`) |
 | **destroy** | `casals destroy --all --confirm-destructive` | replica has no orchestra canisters; deployer balance ≥ before − fees |
 

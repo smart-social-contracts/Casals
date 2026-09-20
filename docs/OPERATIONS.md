@@ -95,7 +95,9 @@ Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 | the audit log / cycles / wasm catalog | `casals -e local events\|cycles\|wasms sheet.json` |
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
 | upgrade a member its baton controls (`hand_off: "sole"`) | bump its `wasm` in the sheet, `up`: Casals files the proposal on the baton and votes; the plan lists it under `pending` with the `action_id`. The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers and the next `up` is empty |
-| pin the artifacts a production sheet installs | build, then `casals pin sheet.json` (writes `registry.wasms[].sha256`); `casals pin --check sheet.json` exits non-zero on drift. `up -e production` refuses a row whose source builds to something else; other environments re-pin to the local build and say so |
+| pin the artifacts a production sheet installs | build, then `casals pin sheet.json` (writes `registry.wasms[].sha256` and the bundle hash into `registry.publish[].sha256`); `casals pin --check sheet.json` exits non-zero on drift. `up -e production` refuses a row whose source builds to something else; other environments re-pin to the local build and say so |
+| ship a new frontend build | `casals bundle dist/ -o app-1.2.0.tgz` (canonical hashed tarball, `docs/BUNDLES.md`); point the `registry.publish` row at it (`local:app-1.2.0.tgz`, a release URL, …) with its bundle `sha256`, `up`. Or, as a commander, no CLI at all: `/files` → *Upload bundle* (folder or `.tgz`) → *Pin in sheet* → apply the `sync_assets` item on `/plan` |
+| keep a part of the orchestra out of routine runs | `"sync": "manual"` on the section or stand: `plan`/`up` report its drift under *manual* and touch nothing; deploy it on purpose with `casals up --stand <name>` (or `--section`). `--exclude-stand`/`--exclude-section` skip a part once. A manual frontend's `content` must be pinned |
 | move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
@@ -182,6 +184,13 @@ Products mint stands from a section's `stand_template` with `create_stand`
 a quarter). With `conductor.settings.reconcile_interval_secs` set the
 conductor builds them on its own timer; `plan`/`show`/`oracle` treat them like
 any declared canister. Without the timer, the next `up` builds them.
+
+A template section marked `"sync": "manual"` (the corpus' `dynamic-stands`
+Realms section) still builds every mint to completion — the mint *is* the
+request — and then leaves the stand alone: a later template change (new realm
+wasm, new bundle) shows under *manual* for each realm and lands only with
+`casals up --stand realm-x` / `--section Realms`. Adding members with
+`create_stand` re-opens the build for that stand.
 
 ## Testing
 

@@ -75,9 +75,9 @@ rendered by `frontend/src/routes/+layout.svelte`:
 | Route | Purpose |
 |-------|---------|
 | `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
-| `/wasms` | Authorized WASM catalog |
+| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — pin status, store contents, consumers; Upload bundle from a folder or `.tgz`, then *Pin in sheet*). `/wasms` redirects here |
 | `/sheet` | Live sheet JSON editor (Save); pool list + **Assign** |
-| `/plan` | Plan / Drift — what `casals plan` would change; apply it |
+| `/plan` | Plan / Drift — what `casals plan` would change; apply it. *Manual* lists drift in `sync: manual` scopes (observed, not acted upon); the stands/sections inputs run a targeted plan |
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, reconcile |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
@@ -200,8 +200,11 @@ python3 scripts/casals.py <command>
 make cli ARGS="<command>"
 ```
 
-Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`, `pin`
-(write/check `registry.wasms[].sha256`; offline), `verify`,
+Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan` (both take
+`--section`/`--stand` and `--exclude-section`/`--exclude-stand`, see *Untracked
+scopes*), `pin` (write/check `registry.wasms[].sha256` and
+`registry.publish[].sha256`; offline), `bundle` (pack a built frontend into a
+canonical hashed `.tgz`, `docs/BUNDLES.md`), `verify`,
 `export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
 `graph`, `oracle`, `destroy`, `register`, `code new` (mint a commander access
 code; offline), and the legacy `orchestra destroy --preserve <name>` (batched
@@ -321,7 +324,7 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   `/<namespace>/<path>` (`sheetv2.store_key` / `store_namespace_prefix`); the
   row fields are still called `registry_namespace` / `registry_path`.
   `registry.wasms` key `<name>@<version>` → `/wasm/<name>@<version>.wasm.gz`
-  (`WASM_NAMESPACE = "wasm"`, `registry_path`); a `registry.publish` directory
+  (`WASM_NAMESPACE = "wasm"`, `registry_path`); a `registry.publish` bundle
   `<ns>` → `/<ns>/<relative file path>`.
 - **Seeding (CLI, `casals up` step 4).** `casals_cli/registry.py::ensure_registry_uploads`
   computes the sha256 of each local artifact, lists the store (`list` query),
@@ -347,7 +350,7 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   per 1 MiB chunk, verified against the sha256 the store returns), `list_files`.
   `lifecycle._pull_and_install` streams from it into `install_chunked_code`;
   `applier.authorize_wasm` stats it. Audit events carry `"store": "assets"`.
-- **Browser uploads.** `/wasms` → *Upload WASM* streams a file straight into the
+- **Browser uploads.** `/files` → *Upload WASM* streams a file straight into the
   store from the browser (`frontend/src/lib/wasmStoreClient.ts`, batch API, 1 MiB
   chunks, sha256 computed client-side and verified against the store's).
   `begin_upload` grants the caller `Commit` on the store just in time
@@ -363,7 +366,7 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
 - **Housekeeping.** `list_store_files` (store contents vs. the catalog),
   `store_retention` (delete unauthorized files older than N days, dry-run by
   default) and `store_size` (bytes vs. the 1.5 GiB pre-upgrade serialization
-  budget, warning from 1 GiB) — all on `/wasms`, controller-only for the sweep. `src/store_uploads.py`.
+  budget, warning from 1 GiB) — all on `/files`, controller-only for the sweep. `src/store_uploads.py`.
 - **Retired `file-registry`.** The Basilisk file-registry pair is gone (issue
   #48): sheets may not declare `conductor.file_registry*` (validation error)
   and `bind_conductor` ignores those keys. What `ensure_core_layout` does with
@@ -384,6 +387,72 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
 - Bindings: `casals_metadata().wasm_store_canister_id`; CLI bindings file key
   `conductor["casals-wasms"]`. Baton reads the same id via its
   `wasm_store_canister_id` config (`orchestration_bridge` propagates it).
+
+### Asset bundles (`registry.publish`, issue #50)
+
+A frontend's content is a **bundle**: the file set a `registry.publish` row
+names, identified by its *bundle hash* — sha256 of the sorted `sha256sum`
+listing of its files (`docs/BUNDLES.md`; one implementation in
+`sheetv2.bundle_hash`, re-used by `casals_cli/bundle.py` and mirrored in
+`frontend/src/lib/bundle.ts`, cross-checked by `bundle.test.ts`). The
+canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
+
+- **Shipping.** `casals bundle dist/ -o app-1.2.0.tgz` writes a canonical
+  gzip tarball (sorted entries, zeroed mtimes, `manifest.json` inside) and
+  prints the bundle hash. A `registry.publish` row's `source` may be a
+  directory, a `.tgz` (`local:`), an `https://` URL or `release:`; `sha256` is
+  the bundle hash — `casals pin` computes it, production requires it, `up`
+  refuses a source that hashes differently.
+- **Reconcile.** The planner (`_plan_assets`) compares the store namespace's
+  bundle hash against the pin: mismatch → `unverifiable` ("publish the pinned
+  bundle first"), never a sync of unapproved content. When they match, a
+  `sync_assets` item writes changed files and **deletes** the keys that left
+  the bundle (`delete_keys`, `lifecycle._sync_assets_gen`).
+- **Browser upload.** `/files` → *Upload bundle*: pick a folder or `.tgz`,
+  hashes computed client-side, one diff against the store namespace, one
+  `commit_batch` (create/set/delete). `begin_upload {namespace}` records the
+  grant's scope — the store's `Commit` is canister-wide, so `end_upload
+  {bundle: true}` deletes anything written outside the namespace during the
+  grant, computes the bundle hash on-chain (`store_bundle` query does the same
+  any time) and the page offers *Pin in sheet* (writes
+  `registry.publish[].sha256`). Then the conductor's plan shows the
+  `sync_assets` item and a commander applies it on `/plan`. Permission
+  `wasm.upload` ("Upload files (WASMs, bundles) to the store").
+
+### Untracked scopes: `sync: manual` and targeted runs (issue #51)
+
+`"sync": "manual"` on a section or stand (default `auto`; a stand inherits its
+section) means *observe, don't act*: the planner computes its drift and reports
+it under `plan.manual` (CLI table, `/plan` *Manual*), emits no items for it,
+`up` does not publish `registry.publish` rows only it consumes, and the
+reconcile timer leaves it alone. Acting is explicit: `casals up --stand <name>`
+/ `--section <name>` (and `plan`) reconcile only the named scopes — manual ones
+included — and report everything else under `plan.skipped`;
+`--exclude-stand` / `--exclude-section` is the inverse. `plan {scope}` carries
+the same; `apply` re-plans under the stored plan's scope, so a targeted plan
+hash stays valid (`sheet_api.apply_gen`). `sheetv2.scope_modes` /
+`planner._PlanContext.disposition` decide `apply | manual | excluded |
+out_of_scope` per item; `casals_cli/up.py::untouched_publish_rows` mirrors it
+for step 4.
+
+- **Bookkeeping is not a deploy.** `register_section` / `register_stand` and a
+  section's or stand's own `set_commanders` (no `canister_id`) are applied
+  inside a manual scope too (`planner.STRUCTURAL_KINDS`): they change conductor
+  state only, and the sheet stays the truth for *who* may act on the scope.
+- **Template sections: the mint is the act.** A `stand_template` section may
+  be manual (corpus `dynamic-stands/Realms`): stands the installer mints are
+  still built to completion — `Stand.built_at == 0` while under construction
+  (`live_stands()[name]["built"]`, `get_tree` `built`), `materialize` sets the
+  stand's `sync` to `auto` until a whole-sheet plan finds every member bound
+  with nothing planned/deferred/pending for it (`sheet_api.mark_built_stands`).
+  `create_stand` adding members resets `built_at`. Rows a template consumes
+  are always published (the build needs them).
+- **Guard.** A manual frontend's `content` must be pinned
+  (`registry.publish[].sha256`) in every environment: nothing reconciles it
+  routinely, so the pin is its only statement of truth (`_validate_registry`).
+- **CLI safety.** `up` stops after `STALE_ROUNDS` consecutive `stale plan` /
+  `busy` answers instead of looping (an older conductor re-planning a targeted
+  run without its scope produced exactly that).
 
 ### Baton-governed stands (`baton.hand_off`)
 
