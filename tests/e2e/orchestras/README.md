@@ -38,7 +38,8 @@ plain `up` reports the new build under *manual* and serves the old one,
 template section also: the built stand is frozen until `up --stand`),
 `baton_upgrade` (sole
 hand-off: controllers verified, a code change becomes a baton proposal the
-multisig approves), `retire_and_pool` (`retire: true` members),
+multisig approves; on a manual stand the plain `up` only observes it and the
+proposal is filed by `up --stand`), `retire_and_pool` (`retire: true` members),
 `drift_controller`, `drift_stopped`, `drift_adopted_code` (adopted members),
 `stale_plan`, `access_code`, `export_roundtrip`.
 A scenario passes only when `casals oracle` passes on its end state.
