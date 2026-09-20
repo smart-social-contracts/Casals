@@ -79,8 +79,6 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
         "plan_summary": {
             "hash": plan.get("hash"),
             "items": len(plan.get("items") or []),
-            "unmanaged": len(plan.get("unmanaged") or []),
-            "drift": len(plan.get("drift") or []),
         },
     }
 
@@ -88,8 +86,7 @@ def build_live_view(ic, sheet: dict, env: str, backend_id: str, bindings: dict[s
 def render_show_text(view: dict) -> str:
     lines = [
         f"env={view.get('env')} backend={view.get('backend_id')}",
-        f"plan: {view.get('plan_summary', {}).get('items', 0)} items, "
-        f"{view.get('plan_summary', {}).get('unmanaged', 0)} unmanaged",
+        f"plan: {view.get('plan_summary', {}).get('items', 0)} items",
         "",
         f"{'SECTION':<12} {'STAND':<14} {'CANISTER':<28} {'ID':<27} {'MODE':<8} {'CYCLES':>8}",
         "-" * 102,

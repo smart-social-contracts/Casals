@@ -96,11 +96,13 @@ class Stand(Entity, TimestampedMixin):
     # Desired subnet placement, overriding the section's when set (see Section).
     subnet = String(max_length=128, default="")
     subnet_type = String(max_length=64, default="")
-    # Runtime (template-minted) stands: 0 while the stand is being built —
-    # the mint is the act, so the conductor finishes it even under a
-    # `sync: manual` section — then the time the planner first found it
-    # converged. `create_stand` adding members resets it (#51).
+    # Runtime (template-minted) stands: 0 while the stand is being built by
+    # the conductor's stand-build timer, then the time the planner first found
+    # it complete. `create_stand` adding members resets it.
     built_at = Integer(default=0)
+    # Why the last build round stopped ('' while building or once built); a
+    # new `create_stand` for the stand clears it and re-arms the build.
+    build_error = String(max_length=1024, default="")
     canisters = OneToMany("Canister", "stand")
 
 

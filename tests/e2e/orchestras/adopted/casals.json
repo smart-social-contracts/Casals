@@ -1,7 +1,7 @@
 {
   "version": 2,
   "name": "adopted",
-  "description": "adopted backend reconciles control and config only",
+  "description": "adopted backend: Casals takes control and config only, never code",
   "environments": {
     "local": {
       "network": "local",

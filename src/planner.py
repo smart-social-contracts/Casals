@@ -8,6 +8,7 @@ import json
 from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions
 from commanders import reconcile_claimed
+from control_rules import lockout_error as _lockout_controllers
 from sheetv2 import (
     CONDUCTOR_KEYS,
     CONDUCTOR_NAMES,
@@ -18,7 +19,6 @@ from sheetv2 import (
     bundle_hash,
     iter_canisters,
     publish_pins,
-    scope_modes,
     registry_path,
     stand_member,
     MULTISIG_NAME,
@@ -30,7 +30,6 @@ from sheetv2 import (
     env_block,
     sheet_hash,
     wasm_ref,
-    canister_names,
     find_placeholder_tokens,
 )
 
@@ -58,11 +57,6 @@ PHASE = {
     "set_controllers": 600,
     "set_commanders": 610,
 }
-
-
-# Conductor-internal bookkeeping: applied even inside a `sync: manual` scope
-# (a section's/stand's own `set_commanders` — no canister_id — counts too).
-STRUCTURAL_KINDS = frozenset({"register_section", "register_stand"})
 
 
 # Baton action statuses after which nothing more happens (mirrors the baton's
@@ -105,26 +99,24 @@ def build_plan(
     self_id: str,
     now_ns: int = 0,
     sheet_hash_value: str | None = None,
-    scope: dict | None = None,
+    only_stand: str | None = None,
 ) -> dict:
     """Return a Plan dict (§5.5). Raises ``PlanningError`` on planning errors.
 
-    ``scope`` narrows a run: ``{"sections": [...], "stands": [...],
-    "exclude_sections": [...], "exclude_stands": [...]}``. Items outside it
-    are still computed but land in ``skipped`` instead of ``items``. Items in
-    a ``sync: manual`` section/stand land in ``manual`` unless that section or
-    stand is named in ``scope`` — the one way to act on them (#51)."""
-    ctx = _PlanContext(resolved_sheet, env, live_state, self_id, sheet_hash_value, now_ns, scope=scope)
+    The planner is the bootstrap executor: it diffs the sheet against the live
+    orchestra so `casals up` can build (or resume building) it in rounds.
+
+    ``only_stand`` restricts the plan to one stand — how the conductor builds a
+    stand minted at runtime (`create_stand`) without touching the rest of the
+    orchestra. Items for other stands are dropped, not reported."""
+    ctx = _PlanContext(resolved_sheet, env, live_state, self_id, sheet_hash_value, now_ns, only_stand=only_stand)
     ctx.run()
     return ctx.finish()
 
 
 class _PlanContext:
-    def __init__(self, sheet, env, live_state, self_id, sheet_hash_value, now_ns, scope=None):
-        self.scope = _normalize_scope(scope)
-        self.modes = scope_modes(sheet)
-        self.manual: list[dict] = []   # drift in manual scopes: observed, not acted upon
-        self.skipped: list[dict] = []  # items outside a targeted run
+    def __init__(self, sheet, env, live_state, self_id, sheet_hash_value, now_ns, only_stand=None):
+        self.only_stand = (only_stand or "").strip() or None
         self.stands_live = live_state.get("stands") or {}
         self.sheet = sheet  # already materialized (sheetv2.materialize): template stands are declared stands
         self.env = env
@@ -138,20 +130,26 @@ class _PlanContext:
         self.deferred: list[dict] = []  # fields still naming a canister that does not exist yet
         self.unverifiable: list[dict] = []
         self.pending: list[dict] = []  # upgrades proposed on a baton, waiting for its commanders
-        self.departed: list[dict] = []  # members whose controllers dropped both Casals and the baton
         self.bindings = dict(live_state.get("bindings") or {})
         self.canisters_live = live_state.get("canisters") or {}
         self.sections_live = live_state.get("sections") or {}
         self.auth_wasms = live_state.get("authorized_wasms") or {}
-        self.known_ids = live_state.get("known_ids") or {}
         self.config_queries = live_state.get("config_queries") or {}
         self.assets = live_state.get("assets") or {}
         self.published = live_state.get("published") or {}
         self.publish_pins = publish_pins(self.sheet)
-        self.sheet_names = set(canister_names(self.sheet))
         self.reuse_pool = bool((sheet.get("cycles") or {}).get("reuse_pool"))
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
-        self.declared_stands: set[str] = set()
+
+    def in_reach(self, section: str | None, stand: str | None) -> bool:
+        """Does this plan act on (section, stand)? Everything, unless the plan
+        is restricted to one stand — then that stand and the global items
+        (registry) that belong to no section."""
+        if not self.only_stand:
+            return True
+        stand = (stand or "").strip()
+        section = (section or "").strip()
+        return stand == self.only_stand or (not section and not stand)
 
     def defer_if_unresolved(self, value, name: str, field: str) -> bool:
         """True (and recorded) when ``value`` still holds a placeholder such as
@@ -182,17 +180,6 @@ class _PlanContext:
         store_bundle = bundle_hash({p: m.get("sha256", "") for p, m in self.published[ns].items()}) if ns else ""
         pinned = self.publish_pins.get(ns, "") if ns else ""
         if pinned and store_bundle != pinned:
-            where = self.disposition(section, stand)
-            if where != "apply":
-                # A manual / untargeted frontend whose bundle was never published
-                # (`up` skips those uploads): still drift worth seeing — the
-                # sheet wants a bundle the canister does not serve.
-                self._divert(where, "sync_assets",
-                             {"name": name, "canister_id": cid, "section": section, "stand": stand},
-                             f"{name}: sheet pins bundle {pinned[:12]}… for {ns}, store holds "
-                             f"{store_bundle[:12] + '…' if store_bundle else 'nothing'} — publish it and target the stand to act",
-                             {"desired": {"content": ns, "bundle_sha256": pinned}})
-                return
             self.unverifiable.append({
                 "target": name, "field": "content",
                 "reason": f"store namespace {ns} holds bundle {store_bundle[:12]}… but the sheet pins "
@@ -224,28 +211,14 @@ class _PlanContext:
                 section_order=si, stand_order=sj,
             )
 
-    def _divert(self, where: str, kind, target, reason, kw) -> None:
-        entry = {
-            "kind": kind, "target": target, "reason": reason,
-            "destructive": bool(kw.get("destructive", False)),
-            "requires": kw.get("requires", "self"),
-            "current": kw.get("current") if kw.get("current") is not None else {},
-            "desired": kw.get("desired") if kw.get("desired") is not None else {},
-            "scope": where,
-        }
-        (self.manual if where == "manual" else self.skipped).append(entry)
-
-    def _scope_of(self, name: str) -> tuple[str | None, str | None]:
-        """(section, stand) a deferred target belongs to — a canister, a stand
-        or a section name."""
-        if name in self.modes["stands"]:
-            return self.modes["stands"][name][0], name
-        if name in self.modes["sections"]:
-            return name, None
-        for section, stand, cname, _spec in iter_canisters(self.sheet):
-            if cname == name:
-                return (section.get("name") or "").strip(), (stand.get("name") or "").strip()
-        return None, None
+    def _stand_of(self, name: str) -> str:
+        """The stand a deferred target belongs to — a canister, a stand or a
+        section name ('' for a section or an unknown name)."""
+        for _section, stand, cname, _spec in iter_canisters(self.sheet):
+            sname = (stand.get("name") or "").strip()
+            if cname == name or sname == name:
+                return sname
+        return ""
 
     def binding(self, name: str) -> str:
         return (self.bindings.get(name) or "").strip()
@@ -253,38 +226,9 @@ class _PlanContext:
     def live(self, name: str) -> dict:
         return self.canisters_live.get(name) or {}
 
-    def disposition(self, section: str | None, stand: str | None, structural: bool = False) -> str:
-        """``apply`` | ``manual`` | ``excluded`` | ``out_of_scope`` for an item
-        on (section, stand). Global items (no section) are applied unless the
-        run targets specific sections/stands. ``structural`` items — registering
-        a section or stand and its Casals commanders, bookkeeping inside the
-        conductor that touches no canister — ignore `sync: manual`: the sheet
-        stays the truth for who may act on a manual scope."""
-        sc = self.scope
-        section = (section or "").strip() or None
-        stand = (stand or "").strip() or None
-        if (section and section in sc["exclude_sections"]) or (stand and stand in sc["exclude_stands"]):
-            return "excluded"
-        targeted_only = bool(sc["sections"] or sc["stands"])
-        targeted = (section in sc["sections"]) or (stand and stand in sc["stands"])
-        if targeted_only and not targeted:
-            return "out_of_scope"
-        if stand:
-            mode = (self.modes["stands"].get(stand) or (section, self.modes["sections"].get(section, "auto")))[1]
-        elif section:
-            mode = self.modes["sections"].get(section, "auto")
-        else:
-            mode = "auto"
-        if mode == "manual" and not targeted and not structural:
-            return "manual"
-        return "apply"
-
     def add(self, kind, target, reason, **kw):
         t = target or {}
-        structural = kind in STRUCTURAL_KINDS or (kind == "set_commanders" and not t.get("canister_id"))
-        where = self.disposition(t.get("section"), t.get("stand"), structural=structural)
-        if where != "apply":
-            self._divert(where, kind, target, reason, kw)
+        if not self.in_reach(t.get("section"), t.get("stand")):
             return
         self.items.append({
             "kind": kind,
@@ -420,7 +364,6 @@ class _PlanContext:
             if isinstance(stand_spec, dict):
                 dname = (stand_spec.get("name") or "").strip()
                 if dname:
-                    self.declared_stands.add(dname)
                     self._plan_stand(stand_spec, sname, dname, si, sj, provisioners)
 
     def _plan_stand(self, stand_spec: dict, sname: str, dname: str, si: int, sj: int,
@@ -499,8 +442,7 @@ class _PlanContext:
         if baton_hand_off_mode(baton_spec):
             managed_live = bat_live.get("managed_canisters") or []
             missing = [m["name"] for m in baton_managed_members(stand_spec) if self.binding(m["name"])
-                       and self.binding(m["name"]) not in managed_live
-                       and not self._departed(m["name"])]
+                       and self.binding(m["name"]) not in managed_live]
             if missing:
                 self.add(
                     "hand_off",
@@ -509,9 +451,6 @@ class _PlanContext:
                     desired={"members": missing},
                     section_order=si, stand_order=sj,
                 )
-
-    def _departed(self, name: str) -> bool:
-        return any(d["target"] == name for d in self.departed)
 
     def _baton_action_for(self, baton_ctx: dict, cid: str, wasm_hash: str) -> dict | None:
         """The most recent baton action that upgrades ``cid`` to ``wasm_hash``."""
@@ -559,17 +498,6 @@ class _PlanContext:
             self.unverifiable.append({"target": name, "field": "canister_info", "reason": lv["error"]})
             return
 
-        if sole and live_ctls and self.self_id not in live_ctls and baton_id not in live_ctls:
-            # The member rewrote its own controllers and dropped the baton (a realm
-            # seceding with its `$this` key). Casals lets go instead of planning a
-            # fight it could not win anyway: no controller, code or hand-off items.
-            self.departed.append({
-                "target": name, "canister_id": cid, "stand": stand,
-                "controllers": live_ctls,
-                "note": f"{name} is controlled by {live_ctls}: neither Casals nor baton {baton_ctx['name']}; treated as departed",
-            })
-            return
-
         if spec.get("retire"):
             if not spec.get("allow_destructive"):
                 self.errors.append(f"{name}: retire requires allow_destructive")
@@ -615,9 +543,9 @@ class _PlanContext:
                 code_pending = True
                 action = self._baton_action_for(baton_ctx, cid, expected_hash)
                 status = (action or {}).get("status") or ""
-                if action and status not in _BATON_TERMINAL:
+                if action and status not in _BATON_TERMINAL and self.in_reach(section, stand):
                     self.pending.append({
-                        "target": name, "canister_id": cid, "baton": baton_ctx["name"],
+                        "target": name, "canister_id": cid, "stand": stand, "baton": baton_ctx["name"],
                         "action_id": action.get("action_id"), "status": status,
                         "approvals": action.get("approvals") or [],
                         "current": {"module_hash": live_hash}, "desired": {"module_hash": expected_hash},
@@ -717,13 +645,13 @@ class _PlanContext:
             self._plan_assets(spec, name, cid, section, stand, live_ctls, si, sj)
 
         if live_ctls != desired_ctls and not self.defer_if_unresolved(desired_ctls, name, "controllers"):
-            err = _lockout_controllers(name, live_ctls, desired_ctls, self.self_id)
+            err = _lockout_controllers(name, live_ctls, desired_ctls)
             removes_self = self.self_id in live_ctls and self.self_id not in desired_ctls
             removed = set(live_ctls) - set(desired_ctls)
             # Handing a baton back — Casals dropping exactly itself after the
             # install — is what the sheet rules demand (no $self on batons), so
-            # the reconcile timer may do it unattended; any other removal stays
-            # a human decision.
+            # a stand build may do it unattended; any other removal stays a
+            # human decision.
             baton_handback = name.endswith("-baton") and removed == {self.self_id}
             # Sole hand-off: the provisioning controllers (Casals, the multisig, the
             # canister that minted the stand) leaving a member once installed is the
@@ -787,20 +715,6 @@ class _PlanContext:
         ))
         for i, it in enumerate(self.items):
             it["seq"] = i
-        drift = [it for it in self.items if it["kind"] in (
-            "set_controllers", "set_commanders", "configure_multisig", "start", "stop",
-        )]
-        unmanaged = []
-        for cid, cname in self.known_ids.items():
-            if cname and cname in self.sheet_names:
-                continue
-            (self.stands_live.get(cname or "") or {}).get("section") if cname else None
-            if cname and cname in self.stands_live:
-                if cname not in self.declared_stands:
-                    for cn in self._stand_canister_names(cname):
-                        unmanaged.append({"canister_id": cid, "name": cn, "reason": "stand not in sheet"})
-                continue
-            unmanaged.append({"canister_id": cid, "name": cname, "reason": "not in sheet"})
         unverifiable = self.unverifiable
         env_data = env_block(self.sheet, self.env)
         dns = env_data.get("dns") if isinstance(env_data.get("dns"), dict) else {}
@@ -812,9 +726,10 @@ class _PlanContext:
                         "field": "domains",
                         "reason": "dns provider none on this environment",
                     })
-        # A placeholder waiting on a create that this run does not perform
-        # (manual or out-of-scope) is that scope's business, not an error.
-        self.deferred = [d for d in self.deferred if self.disposition(*self._scope_of(d["target"])) == "apply"]
+        if self.only_stand:
+            # A placeholder waiting on a create outside this stand is not this
+            # build's business.
+            self.deferred = [d for d in self.deferred if self._stand_of(d["target"]) == self.only_stand]
         if self.deferred and not self.items:
             raise PlanningError([
                 f"{d['target']}.{d['field']} waits for {', '.join(d['waiting_for'])}, which nothing creates"
@@ -822,31 +737,21 @@ class _PlanContext:
             ])
         plan_items_for_hash = [{k: v for k, v in it.items() if k != "seq"} for it in self.items]
         ph = hashlib.sha256(
-            canonical_json({"sheet_hash": self.sh, "env": self.env, "items": plan_items_for_hash}).encode("utf-8")
+            canonical_json({"sheet_hash": self.sh, "env": self.env, "stand": self.only_stand or "",
+                            "items": plan_items_for_hash}).encode("utf-8")
         ).hexdigest()
         return {
             "hash": ph,
             "sheet_hash": self.sh,
             "env": self.env,
             "created_at_ns": self.now_ns,
+            "stand": self.only_stand or "",
             "items": self.items,
-            "manual": self.manual,
-            "skipped": self.skipped,
-            "scope": {k: sorted(v) for k, v in self.scope.items()},
-            "drift": drift,
-            "unmanaged": unmanaged,
             "unverifiable": unverifiable,
             "deferred": self.deferred,
             "pending": self.pending,
-            "departed": self.departed,
             "info": self.info,
         }
-
-    def _stand_canister_names(self, stand_name: str) -> list[str]:
-        return [
-            n for n, cid in self.bindings.items()
-            if n and cid
-        ]
 
 
 def _expected_wasm_hash(sheet: dict, spec: dict) -> str:
@@ -911,26 +816,6 @@ def _removes_principals(before: list, after: list) -> bool:
 
 def _has_non_self_commander(cmds: list, self_id: str) -> bool:
     return any(e["principal"] != self_id for e in cmds)
-
-
-def _normalize_scope(scope) -> dict:
-    out = {"sections": set(), "stands": set(), "exclude_sections": set(), "exclude_stands": set()}
-    if not isinstance(scope, dict):
-        return out
-    for key in out:
-        vals = scope.get(key) or []
-        if isinstance(vals, str):
-            vals = [vals]
-        out[key] = {str(v).strip() for v in vals if str(v).strip()}
-    return out
-
-
-def _lockout_controllers(name, live_ctls, desired_ctls, self_id) -> str | None:
-    if not set(live_ctls) - set(desired_ctls):
-        return None
-    if not desired_ctls:
-        return f"{name}: controller removal would leave no valid controller"
-    return None
 
 
 def desired_assets(spec: dict, published: dict) -> dict[str, str] | None:

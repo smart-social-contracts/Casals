@@ -1,6 +1,15 @@
 # Casals v2 — declarative, idempotent orchestra
 
-> **Status:** Draft v0 (for review — nothing here is implemented)
+> **Status:** Historical. The sheet-as-day-one-deploy part of this design is
+> what Casals does; the continuous-reconciliation part (drift, `verify`,
+> the conductor's reconcile timer, `sync: manual`, targeted scopes,
+> `apply_requires_proposal` / `ApplySheet`) was built and then removed in
+> issue #52 — after day one the orchestra is operated imperatively (UI,
+> `casals upgrade`, `create_stand`, …). Read `AGENTS.md` and
+> `docs/OPERATIONS.md` for what is true now; this file is kept for the
+> reasoning behind the sheet schema and the planner.
+>
+> **Original status:** Draft v0
 > **Issue:** TBD
 > **Repo:** smart-social-contracts/Casals (+ consumers: gos-as-a-service, realms)
 > **Companion:** `orchestra-control-graph-spec.md` (the same three control planes, as a *view*; this document is the *input* side)

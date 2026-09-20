@@ -1,7 +1,7 @@
 {
   "version": 2,
   "name": "governed",
-  "description": "multisig, proposal-only apply, commanders",
+  "description": "multisig-controlled conductor, commanders",
   "environments": {
     "local": {
       "network": "local",
@@ -67,7 +67,7 @@
       },
       {
         "principal": "$principal:steward",
-        "permissions": "sheet.set,sheet.apply,commander.assign"
+        "permissions": "wasm.upload,commander.assign"
       }
     ]
   },
@@ -85,10 +85,6 @@
       "controllers": [
         "$multisig"
       ]
-    },
-    "apply_requires_proposal": {
-      "production": true,
-      "default": false
     }
   },
   "registry": {

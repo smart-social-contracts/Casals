@@ -14,8 +14,6 @@ export const NAV_SECTIONS: NavSection[] = [
     links: [
       { href: '/', label: 'Orchestra' },
       { href: '/files', label: 'Files', description: 'WASMs and asset bundles in the store' },
-      { href: '/sheet', label: 'Sheet' },
-      { href: '/plan', label: 'Plan / Drift', description: 'What `casals plan` would change; apply it' },
       { href: '/cycles', label: 'Cycles' },
       { href: '/activity', label: 'Activity' },
       { href: '/aliases', label: 'Aliases' },

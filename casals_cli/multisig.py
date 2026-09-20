@@ -44,14 +44,6 @@ def set_controllers_via_multisig(ic, ms_id: str, deployer: str, canister_id: str
                f'variant {{ SetCanisterControllers = record {{ canister_id = principal "{canister_id}"; controllers = vec {{ {vec} }} }} }}')
 
 
-def apply_via_multisig(ic, ms_id: str, deployer: str, backend_id: str, plan_hash: str, *, confirm_destructive: bool, max_items: int) -> None:
-    """`apply_requires_proposal`: the multisig applies the plan (`ApplySheet`), looping
-    `apply` on the conductor until the plan is empty."""
-    _as_signer(ic, ms_id, deployer, f"apply plan {plan_hash[:12]}",
-               f'variant {{ ApplySheet = record {{ casals_backend = principal "{backend_id}"; plan_hash = "{plan_hash}"; '
-               f"confirm_destructive = {str(confirm_destructive).lower()}; max_items = {max_items} : nat }} }}")
-
-
 def ensure_control(ic, canister_id: str, deployer: str, multisig_id: str) -> None:
     """Before the CLI changes a canister as deployer: make the deployer a controller,
     through the multisig if the canister was handed over. The next plan removes it again."""

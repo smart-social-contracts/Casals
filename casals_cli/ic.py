@@ -468,13 +468,11 @@ class RecordingIc:
             return self.updates[key]
         if method == "plan":
             if self.converged:
-                return {"ok": True, "plan": {"hash": "h0", "items": [], "unverifiable": [], "drift": [], "unmanaged": [], "info": []}}
-            return {"ok": True, "plan": {"hash": "h1", "items": [{"seq": 0, "kind": "create_canister", "target": {"name": "x"}, "requires": "self"}], "unverifiable": [], "drift": [], "unmanaged": [], "info": []}}
+                return {"ok": True, "plan": {"hash": "h0", "items": [], "unverifiable": [], "info": []}}
+            return {"ok": True, "plan": {"hash": "h1", "items": [{"seq": 0, "kind": "create_canister", "target": {"name": "x"}, "requires": "self"}], "unverifiable": [], "info": []}}
         if method == "apply":
             self.converged = True
             return {"ok": True, "plan_hash": "h1", "applied": [{"kind": "noop", "target": {"name": "x"}, "result": "ok"}], "failed": None, "skipped": [], "remaining": 0}
-        if method == "verify":
-            return {"ok": True, "converged": self.converged, "plan": {"hash": "h0", "items": []}}
         if method == "set_sheet":
             return {"ok": True, "sheet_hash": "sh1", "env": self.env, "warnings": []}
         if method == "bind_conductor":

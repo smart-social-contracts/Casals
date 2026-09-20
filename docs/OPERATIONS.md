@@ -1,13 +1,17 @@
 # Operating a Casals orchestra
 
-One file describes an environment; one command makes the Internet Computer
-match it. Everything else in this document is inspection.
+One file describes an environment; one command builds it on the Internet
+Computer. After that the orchestra is operated, not reconciled: releases,
+controller changes, new stands and retirements are explicit actions from the
+UI or the CLI, and nothing on-chain re-reads the sheet on a timer.
 
 ```
-casals.json  ──casals up──▶  conductor (Casals backend on the IC)  ──plan/apply──▶  canisters
+day one:   casals.json  ──casals up──▶  conductor (Casals backend on the IC)  ──plan/apply──▶  canisters
+later:     UI / casals upgrade / create_stand / upgrade_to / set_canister_controllers …  ──▶  canisters
 ```
 
-The design is `docs/issues/declarative-orchestra-spec.md`. This page is the
+The cleanup that fixed this shape is issue #52; the original declarative design
+is `docs/issues/declarative-orchestra-spec.md` (historical). This page is the
 runbook.
 
 ## Prerequisites
@@ -57,13 +61,11 @@ On mainnet, transient boundary-node errors (502/503, `read_state` not coming
 back, "The request timed out") are retried with backoff — five attempts — for
 the operations that are safe to repeat (calls, status, settings, balance);
 never for `canister create`, `top-up`, `install` or a cycles transfer. A plan
-item the conductor reports applied that comes back three rounds in a row with
-the same current and desired state stops the run with the item named: the
-target does not take the change (typically a wasm built with the wrong
-variant), and looping would only spend cycles. When the deployer's last item
-hands the conductor's controllers to the multisig, the refused plan that
-follows (`caller is not a commander`) is read as converged: bindings are
-saved, `verify` is skipped with the conductor's new controllers printed.
+that comes back `stale` or `busy` six rounds in a row stops the run instead of
+looping. When the deployer's last item hands the conductor's controllers to
+the multisig, the refused plan that follows (`caller is not a commander`) is
+read as converged: bindings are saved and the conductor's new controllers are
+printed.
 
 Cycles: the deployer pays 2 TC per conductor canister it creates (`icp canister
 create`'s default deposit; the IC keeps 0.5 TC of it as the creation fee) and
@@ -85,38 +87,51 @@ Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 
 | Want to… | Run |
 |---|---|
-| see what would change | `casals -e local plan sheet.json` |
-| assert nothing would change | `casals -e local verify sheet.json` (non-zero exit on drift) |
-| make the IC match the sheet | `casals -e local up sheet.json` (or `apply`) |
+| see what `up` would still add | `casals -e local plan sheet.json` (a caller who is not a conductor controller gets the plan of the *stored* sheet, with a warning when the file differs) |
+| build the sheet (first time, or after adding to it) | `casals -e local up sheet.json` (or `apply`) |
 | grade the live state independently of the conductor | `casals -e local oracle sheet.json` |
 | the live orchestra, ids, controllers, commanders | `casals -e local show sheet.json` |
 | the control graph | `casals -e local graph sheet.json` (Mermaid; `--ascii` for text) |
 | the sheet the conductor runs, with bindings | `casals -e local export sheet.json` |
 | the audit log / cycles / wasm catalog | `casals -e local events\|cycles\|wasms sheet.json` |
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
-| upgrade a member its baton controls (`hand_off: "sole"`) | bump its `wasm` in the sheet, `up`: Casals files the proposal on the baton and votes; the plan lists it under `pending` with the `action_id`. The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers and the next `up` is empty |
+| ship a new wasm | build, `casals pin sheet.json` (or bump the `wasm` version in the sheet and pin), then `casals -e <env> upgrade sheet.json --wasm <family>[@<version>]`: uploads the build to the store when missing, authorizes it, and runs `upgrade_to` on every canister that runs the family (`--stand`/`--section` to narrow). Rows print `upgraded` / `skipped` (already at that hash) / `failed`. The Orchestra page's per-canister *Upgrade* does the same for one canister |
+| upgrade a member its baton controls (`hand_off: "sole"`) | same `casals upgrade --wasm`: Casals files the proposal on the baton and votes; the row is `pending` with the `action_id` (`deferred` while the baton is running another action — a baton takes one at a time; run again once it finishes). The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers |
 | pin the artifacts a production sheet installs | build, then `casals pin sheet.json` (writes `registry.wasms[].sha256` and the bundle hash into `registry.publish[].sha256`); `casals pin --check sheet.json` exits non-zero on drift. `up -e production` refuses a row whose source builds to something else; other environments re-pin to the local build and say so |
-| ship a new frontend build | `casals bundle dist/ -o app-1.2.0.tgz` (canonical hashed tarball, `docs/BUNDLES.md`); point the `registry.publish` row at it (`local:app-1.2.0.tgz`, a release URL, …) with its bundle `sha256`, `up`. Or, as a commander, no CLI at all: `/files` → *Upload bundle* (folder or `.tgz`) → *Pin in sheet* → apply the `sync_assets` item on `/plan` |
-| keep a part of the orchestra out of routine runs | `"sync": "manual"` on the section or stand: `plan`/`up` report its drift under *manual* and touch nothing; deploy it on purpose with `casals up --stand <name>` (or `--section`). `--exclude-stand`/`--exclude-section` skip a part once. A manual frontend's `content` must be pinned |
+| ship a new frontend build | `casals bundle dist/ -o app-1.2.0.tgz` (canonical hashed tarball, `docs/BUNDLES.md`); point the `registry.publish` row at it (`local:app-1.2.0.tgz`, a release URL, …), `casals pin`, then `casals -e <env> upgrade sheet.json --content <namespace>`: the bundle is uploaded when missing and every frontend whose `content` is that namespace serves exactly it (`sync_content`, repeated until no file remains). A commander may upload the bundle from the browser instead (`/files` → *Upload bundle*), then pin and run `casals upgrade --content` |
 | move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
 Add `--json` for machine-readable output. The conductor's frontend shows the
-same things: Orchestra tree, Control graph, and Plan / Drift (`/plan`).
+same things: Orchestra tree and Control graph.
 
 ### Changing an environment
 
-Edit `casals.json`, run `up`. That is the whole procedure for adding a
-canister, changing controllers or commanders, bumping a wasm version, editing
-a frontend's generated files, or retiring a canister (`"retire": true`, then
-`up --yes` because it is destructive). `plan` first if you want to read the
-diff before it happens.
+The sheet is the day-one document and `casals up` is bootstrap + resume: it
+plans the sheet against the world and applies until the plan is empty, so a
+re-run on a built orchestra is a no-op, and a sheet that gained a canister, a
+stand, a section or a commander block gets it created. Nothing on-chain runs
+that loop by itself, and it is not the release procedure: a new build for a
+running canister is `casals upgrade --wasm` (or *Upgrade* in the UI), new
+frontend content is `casals upgrade --content`, a controller change is *Set
+controllers* in the UI (`set_canister_controllers`), a commander change is
+*Operator access*, retiring a canister is *Destroy* / `casals destroy`. Keep
+the sheet file in step (`casals pin` after a release, edits after a structural
+change) so a future rebuild — a new environment, a disaster — reproduces what
+you run; `casals export` prints what the conductor stored, and the conductor
+records each release in it (the canister's `wasm`/`content`, the registry
+pins), so that document stays true on its own.
 
-Items the conductor cannot do itself (it is not a controller of the target)
-are `requires: multisig`; the deployer executes them during bootstrap, the
-multisig thereafter. On an environment with
-`governance.apply_requires_proposal: true` `up` does not apply directly: it
-files an `ApplySheet` proposal on the multisig and the signers approve it.
+`set_sheet` and `apply` are controller-only. On a governed orchestra the
+deployer hands the conductor to the multisig at the end of day one, so its
+later `up` runs are no-ops (the CLI skips `set_sheet` when the file is the
+stored document) and a *changed* sheet is refused with the controllers named:
+after day one, adding or removing canisters is an operation from the UI as
+well.
+
+Items the conductor cannot do itself on day one (it is not a controller of the
+target) are `requires: multisig`; the deployer executes them during bootstrap,
+the multisig thereafter.
 
 ### Inviting an operator with an access code
 
@@ -181,16 +196,15 @@ treasury without deleting the old conductor: `casals treasury-send --to
 
 Products mint stands from a section's `stand_template` with `create_stand`
 (the GaaS installer does this for every realm; a realm backend does it to add
-a quarter). With `conductor.settings.reconcile_interval_secs` set the
-conductor builds them on its own timer; `plan`/`show`/`oracle` treat them like
-any declared canister. Without the timer, the next `up` builds them.
-
-A template section marked `"sync": "manual"` (the corpus' `dynamic-stands`
-Realms section) still builds every mint to completion — the mint *is* the
-request — and then leaves the stand alone: a later template change (new realm
-wasm, new bundle) shows under *manual* for each realm and lands only with
-`casals up --stand realm-x` / `--section Realms`. Adding members with
-`create_stand` re-opens the build for that stand.
+a quarter). `create_stand` builds the stand it minted on its own: a one-shot
+timer plans only that stand and applies until every member is bound, then the
+stand shows `built` in `get_tree` / `casals tree`. A round that fails leaves
+its message in the stand's `build_error` (visible in the tree); calling
+`create_stand` on the stand again clears it and retries. `plan`/`show`/`oracle`
+treat built stands like any declared canister. A later template change (new
+realm wasm, new bundle) reaches the existing realms with
+`casals upgrade --wasm` / `--content` (narrow with `--section Realms` or
+`--stand realm-x`).
 
 ## Testing
 
@@ -211,11 +225,14 @@ orchestra between runs.
 - `plan` not empty after `up` and a second `up` "changed nothing": read the
   items — a `config_call` whose `converged_when` never matches the canister's
   reply is the usual cause; `casals show` prints the reply.
-- `busy: an apply is in progress` / `stale plan`: the conductor's timer is
-  applying; `up` waits and re-plans by itself. Nothing to do.
-- Frontend serves 404 for a file the sheet declares: the conductor syncs
-  assets a slice per tick; `casals plan` lists the `sync_assets` item until
-  done.
+- `busy: an apply is in progress`: a stand build (`create_stand`) or another
+  operator's apply is running; `up` waits and re-plans by itself.
+- A runtime stand stays unbuilt: `casals tree` shows its `build_error`; fix
+  the cause (usually a missing/unauthorized wasm or an unpinned bundle) and
+  call `create_stand` for it again.
+- Frontend serves 404 for a file the sheet declares: `casals upgrade
+  --content <namespace>` syncs the pinned bundle to every frontend that uses
+  it.
 - Replica calls "timed out": the local replica is slow under load; every
   `read_state` retries, and `up` can simply be re-run.
 - Lost bindings file: every command accepts `--conductor <backend id>`;

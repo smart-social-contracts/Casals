@@ -1,4 +1,4 @@
-"""Individual casals commands (plan, apply, verify, export, destroy, legacy)."""
+"""Individual casals commands (plan, apply, export, destroy, legacy)."""
 
 from __future__ import annotations
 
@@ -24,17 +24,15 @@ def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]
     return backend, bindings
 
 
-def cmd_plan(ic, args, project_root: str, upload_ic=None, scope: dict | None = None) -> None:
-    """The diff between the sheet file and the world (`casals up` without apply);
-    without a file, the conductor's plan for the sheet it already holds."""
-    from casals_cli.up import plan_args
-
+def cmd_plan(ic, args, project_root: str, upload_ic=None) -> None:
+    """What `casals up` would still do (a dry run: the sheet file diffed against
+    the world); without a file, the conductor's plan for the sheet it holds."""
     if getattr(args, "sheet", None):
         res = run_up(ic, args.sheet, args.env, conductor_override=getattr(args, "conductor", None),
-                     project_root=project_root, dry_run=True, upload_ic=upload_ic, scope=scope)
+                     project_root=project_root, dry_run=True, upload_ic=upload_ic)
     else:
         backend, _ = _backend(args)
-        res = ic.call_update(backend, "plan", plan_args(scope))
+        res = ic.call_update(backend, "plan", "{}")
     if getattr(args, "json", False):
         emit_json(res)
     else:
@@ -160,20 +158,6 @@ def cmd_apply(ic, args) -> None:
     )
     if getattr(args, "json", False):
         emit_json({"ok": True, "plan": final})
-
-
-def cmd_verify(ic, args) -> None:
-    backend, _ = _backend(args)
-    res = ic.call_update(backend, "verify", "{}")
-    if getattr(args, "json", False):
-        emit_json(res)
-    else:
-        converged = isinstance(res, dict) and res.get("converged")
-        print(f"verify: {'PASS' if converged else 'FAIL'}", file=sys.stderr)
-        if not converged and isinstance(res, dict):
-            print_plan_table(res.get("plan") or {})
-        if not converged:
-            sys.exit(1)
 
 
 def cmd_export(ic, args) -> None:

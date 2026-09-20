@@ -12,7 +12,7 @@ from cycles import _status_cycles, _ic_run_status
 from helpers import unwrap_call_result
 from lifecycle import _canister_info_gen, _list_registry_files
 from services import AssetCanisterService
-from models import AuthorizedWasm, Canister, PooledCanister, Section, Stand
+from models import AuthorizedWasm, Canister, Section, Stand
 from views import stand_members
 from orchestration_bridge import _baton_status_gen, _multisig_list_signers_gen
 from sheetv2 import (
@@ -31,22 +31,6 @@ def _bindings_map() -> dict[str, str]:
         if cid and (st.name or "").strip():
             out[st.name.strip()] = cid
     return out
-
-
-def _known_canister_ids() -> dict[str, str | None]:
-    """Map every canister id Casals knows to a logical name (or None)."""
-    known: dict[str, str | None] = {}
-    list(Canister.instances())
-    for st in Canister.instances():
-        cid = (st.canister_id or "").strip()
-        if cid:
-            known[cid] = (st.name or "").strip() or None
-    list(PooledCanister.instances())
-    for p in PooledCanister.instances():
-        cid = (p.canister_id or "").strip()
-        if cid and cid not in known:
-            known[cid] = (p.canister_name or "").strip() or None
-    return known
 
 
 def _authorized_wasms_view() -> dict[str, dict]:
@@ -154,7 +138,6 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
         "config_queries": {},
         "assets": {},
         "published": {},
-        "known_ids": _known_canister_ids(),
         "bindings": dict(bindings or {}),
     }
 

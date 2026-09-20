@@ -1,4 +1,7 @@
-"""casals up — bootstrap and reconcile an orchestra from a v2 sheet."""
+"""casals up — build (or resume building) an orchestra from a v2 sheet.
+
+The sheet is applied once, on day one; after that the orchestra is operated
+through the UI and the imperative CLI commands, not by re-applying the sheet."""
 
 from __future__ import annotations
 
@@ -9,11 +12,11 @@ import os
 import sys
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, iter_canisters, scope_modes, validate
+from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, sheet_hash, validate
 
 from casals_cli.bindings import Bindings, load_bindings
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
-from casals_cli.multisig import apply_via_multisig, ensure_control, set_controllers_via_multisig
+from casals_cli.multisig import ensure_control, set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads, resolve_source
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
 from casals_cli.wasm_store import ensure_commit
@@ -45,9 +48,8 @@ STEPS: list[tuple[str, str]] = [
      "(create → install → configure → set_controllers); a create must land before its install can be planned, "
      "so expect one round per rung; controller changes only the deployer may make are done by the CLI; "
      "loops until the plan is empty"),
-    ("domains + verify",
-     "DNS reconcile (skipped when dns.provider is none), a final verify that live state equals the sheet, "
-     "and save the name → canister-id bindings under CASALS_HOME"),
+    ("domains + bindings",
+     "DNS (skipped when dns.provider is none) and save the name → canister-id bindings under CASALS_HOME"),
 ]
 
 _T0 = {"start": 0.0}
@@ -201,27 +203,12 @@ def print_plan_table(plan: dict) -> None:
             req = item.get("requires") or "self"
             dest = "yes" if item.get("destructive") else "no"
             _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
-    manual = plan.get("manual") or []
-    if manual:
-        _progress(f"manual (sync: manual — observed, not acted upon; target with --stand/--section): {len(manual)}")
-        for item in manual:
-            target = item.get("target") or {}
-            _progress(f"  {item.get('kind') or '?':20} {target.get('name') or '?':30} stand={target.get('stand') or '-'} "
-                      f"{item.get('reason') or ''}")
-    skipped = plan.get("skipped") or []
-    if skipped:
-        _progress(f"skipped (outside this run's scope): {len(skipped)}")
-        for item in skipped:
-            target = item.get("target") or {}
-            _progress(f"  {item.get('kind') or '?':20} {target.get('name') or '?':30} {item.get('scope')}")
     # Upgrades Casals filed on a baton: not items (Casals has done its part), but
     # the sheet is not live until the baton's commanders approve and it converges.
     for p in plan.get("pending") or []:
         votes = len(p.get("approvals") or [])
         _progress(f"  pending  {p.get('target')}: baton {p.get('baton')} action {p.get('action_id')} "
                   f"{p.get('status')} ({votes} vote(s) so far) — approve on the baton")
-    for d in plan.get("departed") or []:
-        _progress(f"  departed {d.get('target')}: controllers {d.get('controllers')} — left alone")
 
 
 def fund_conductor(ic, sheet: dict, env: str, backend_id: str, *, strict: bool = True) -> None:
@@ -383,22 +370,10 @@ def multisig_id(ic, backend_id: str) -> str:
     return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
 
 
-# An item the conductor reports as applied, that comes back in the next plan
-# with the same current and desired state, this many rounds in a row is not
-# converging: the live canister does not take the change (a wasm built with
-# the wrong variant answering `config_call` with the old value, a setting the
-# target does not persist, …). `sync_assets` is not caught by this: its
-# `desired.keys` shrink every round it makes progress.
-STALE_ROUNDS = 6  # consecutive "stale plan"/"busy" answers before `up` gives up
-STUCK_ROUNDS = 3
-
-
-def _item_fingerprint(item: dict) -> str:
-    target = item.get("target") or {}
-    return json.dumps(
-        [item.get("kind"), target.get("name"), target.get("canister_id"), item.get("current"), item.get("desired")],
-        sort_keys=True, default=str,
-    )
+# The conductor may be building a runtime stand (`create_stand`) while `up`
+# runs: its rounds move the world under ours, so a plan can come back stale
+# or the apply lock busy. Re-plan, but not forever.
+STALE_ROUNDS = 6
 
 
 def _is_unauthorized(res: Any) -> bool:
@@ -406,13 +381,8 @@ def _is_unauthorized(res: Any) -> bool:
     return "not a commander" in err or "unauthorized" in err
 
 
-def plan_args(scope: dict | None) -> str:
-    """JSON body of the conductor's `plan` call: `{}` or `{"scope": {...}}` (#51)."""
-    return json.dumps({"scope": scope}) if scope else "{}"
-
-
-def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int, wasm_by_hash=None,
-             scope: dict | None = None) -> dict:
+def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int,
+             wasm_by_hash=None) -> dict:
     """plan → apply until the plan is empty. Returns the (empty) final plan.
     Each round the conductor applies what it can, then the deployer does the
     controller changes only it can; a round that changes nothing is an error.
@@ -421,14 +391,12 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
     converged from where the deployer stands (``handed_off`` in the result)."""
     last_hash = None
     round_no = 0
-    applied_prev: set[str] = set()   # fingerprints the conductor applied in the previous round
-    stuck: dict[str, int] = {}       # fingerprint → consecutive rounds applied yet back unchanged
     handed_off = False
     stale_in_a_row = 0
     while True:
         round_no += 1
         _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
-        plan_res = ic.call_update(backend_id, "plan", plan_args(scope))
+        plan_res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
             if handed_off and _is_unauthorized(plan_res):
                 _progress("  the conductor now answers to the multisig only; the deployer cannot plan any more — "
@@ -443,19 +411,6 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
         if plan.get("hash") == last_hash:
             emit_error("orchestra not converged: a plan/apply round changed nothing", plan=plan)
         last_hash = plan.get("hash")
-        fps = {_item_fingerprint(i): i for i in items}
-        stuck = {fp: stuck.get(fp, 0) + 1 for fp in fps if fp in applied_prev}
-        for fp, n in stuck.items():
-            if n >= STUCK_ROUNDS:
-                it = fps[fp]
-                emit_error(
-                    f"orchestra not converged: {it.get('kind')} → {(it.get('target') or {}).get('name')} was applied "
-                    f"{n} rounds in a row and comes back unchanged ({it.get('reason')}). The live canister does not take "
-                    f"the change — check the wasm it runs (build variant, version) and the value it reports; "
-                    f"stopping so the loop does not keep spending cycles.",
-                    item=it, plan=plan,
-                )
-        applied_prev = set()
         if any(i.get("destructive") for i in items) and not yes:
             raise RuntimeError("plan has destructive items; pass --yes to continue")
         if any((i.get("requires") or "self") == "self" for i in items):
@@ -467,20 +422,13 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                 timeout=3600,  # up to `max_items` chunked wasm installs in one call
             )
             err = str((apply_res or {}).get("error") or "") if isinstance(apply_res, dict) else ""
-            if err.startswith("apply requires proposal"):
-                _progress("  apply requires proposal: proposing ApplySheet on the multisig")
-                apply_via_multisig(ic, multisig_id, deployer, backend_id, plan.get("hash"),
-                                   confirm_destructive=yes, max_items=max_items)
-                continue
             if err.startswith("stale plan") or err.startswith("busy"):
-                # The conductor's own reconcile timer moved the world; re-plan.
+                # A stand build moved the world under this run; re-plan.
                 stale_in_a_row += 1
                 if stale_in_a_row >= STALE_ROUNDS:
                     emit_error(
-                        f"orchestra not converged: the conductor answered '{err}' {stale_in_a_row} times in a row. "
-                        f"Either something keeps changing the live orchestra under this run, or plan and apply "
-                        f"disagree (a conductor older than this CLI re-plans a targeted --stand/--section run "
-                        f"without its scope); stopping instead of looping.",
+                        f"orchestra not converged: the conductor answered '{err}' {stale_in_a_row} times in a row; "
+                        f"something keeps changing the live orchestra under this run. Stopping instead of looping.",
                         plan=plan,
                     )
                 _progress(f"  {err}: re-planning")
@@ -490,14 +438,8 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
             stale_in_a_row = 0
             if not (isinstance(apply_res, dict) and apply_res.get("ok")):
                 raise RuntimeError(f"apply failed: {apply_res}")
-            applied_keys = set()
             for row in apply_res.get("applied") or []:
                 _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
-                applied_keys.add((row.get("kind"), (row.get("target") or {}).get("name")))
-            applied_prev = {
-                fp for fp, i in fps.items()
-                if (i.get("kind"), (i.get("target") or {}).get("name")) in applied_keys
-            }
             failed = apply_res.get("failed")
             if failed:
                 raise RuntimeError(
@@ -515,41 +457,6 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
             for i in items
         )
         deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
-
-
-def _in_reach(section: str, stand: str, modes: dict, scope: dict | None) -> bool:
-    """Would this run act on (section, stand)? Mirrors the planner's
-    disposition: excluded → no; targeted run and not named → no; manual and
-    not named → no."""
-    sc = scope or {}
-    if section in (sc.get("exclude_sections") or []) or stand in (sc.get("exclude_stands") or []):
-        return False
-    named = section in (sc.get("sections") or []) or stand in (sc.get("stands") or [])
-    if (sc.get("sections") or sc.get("stands")) and not named:
-        return False
-    mode = (modes["stands"].get(stand) or (section, modes["sections"].get(section, "auto")))[1]
-    return not (mode == "manual" and not named)
-
-
-def untouched_publish_rows(sheet: dict, scope: dict | None) -> list[dict]:
-    """`registry.publish` rows every consumer of which this run leaves alone
-    (sync: manual, excluded or outside a targeted run). Publishing them would
-    change store namespaces that only a manual/foreign frontend reads —
-    somebody else's decision, so `up` does not. Rows a `stand_template`
-    consumes are not here: the conductor needs them to build a mint, whatever
-    the section's sync (#51)."""
-    modes = scope_modes(sheet)
-    consumers: dict[str, list[bool]] = {}
-    for section, stand, _name, spec in iter_canisters(sheet):
-        ns = spec.get("content")
-        if ns:
-            consumers.setdefault(ns, []).append(
-                _in_reach((section.get("name") or "").strip(), (stand.get("name") or "").strip(), modes, scope))
-    out = []
-    for entry in (sheet.get("registry") or {}).get("publish") or []:
-        if isinstance(entry, dict) and consumers.get(entry.get("path")) and not any(consumers[entry.get("path")]):
-            out.append(entry)
-    return out
 
 
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
@@ -573,17 +480,10 @@ def run_up(
     project_root: str | None = None,
     dry_run: bool = False,
     upload_ic=None,
-    scope: dict | None = None,
     bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
     `set_sheet` and returns the plan: it needs a conductor and never applies.
-
-    `scope` (#51): `{sections, stands, exclude_sections, exclude_stands}` —
-    a targeted run. The whole sheet is still validated and set (it stays the
-    source of truth); the conductor plans and applies only inside the scope,
-    and `sync: manual` scopes are acted upon only when named here. Store
-    uploads (step 4) skip publish rows whose consumers are all out of reach.
 
     `upload_ic`: a client for another identity that signs only the wasm-store
     uploads of step 4 (`ic`, a store controller, grants it Commit). Every
@@ -677,44 +577,65 @@ def run_up(
         _progress(f"  store uploads signed by {uploader_principal} ({upload_ic.identity})")
     if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, uploader_principal):
         _progress(f"  granted Commit on the wasm store {store_id} to {uploader_principal}")
-    upload_sheet = sheet
-    skipped_publish = untouched_publish_rows(sheet, scope)
-    if skipped_publish:
-        upload_sheet = {**sheet, "registry": {**(sheet.get("registry") or {}),
-                                              "publish": [e for e in (sheet.get("registry") or {}).get("publish") or []
-                                                          if e not in skipped_publish]}}
-        for e in skipped_publish:
-            _progress(f"  publish {e.get('path')}: skipped — its frontends are sync: manual or outside this run "
-                      f"(target them with --stand/--section to publish)")
     ensure_registry_uploads(
-        uploader, upload_sheet,
+        uploader, sheet,
         sheet_path=sheet_path,
         project_root=project_root,
         store_id=store_id,
         progress=_progress,
         strict_pins=(env == "production"),
     )
-    if skipped_publish:  # pins the upload wrote back belong in the sheet handed to the conductor
-        by_path = {e.get("path"): e for e in (upload_sheet.get("registry") or {}).get("publish") or []}
-        for e in (sheet.get("registry") or {}).get("publish") or []:
-            if e.get("path") in by_path and by_path[e.get("path")] is not e and by_path[e.get("path")].get("sha256"):
-                e["sha256"] = by_path[e.get("path")]["sha256"]
 
-    # bind_conductor
-    bind_map = {k: v for k, v in bindings.conductor.items() if v}
-    bind_conductor(ic, backend_id, bind_map)
-
-    # 5. set_sheet
+    # 5. bind_conductor + set_sheet — controller-only calls. Once the deployer has
+    #    handed the conductor to the multisig (governed orchestras) it cannot make
+    #    them any more; a re-run with the same sheet needs neither.
     _step(5)
-    set_res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
-    if not (isinstance(set_res, dict) and set_res.get("ok")):
-        raise RuntimeError(f"set_sheet failed: {set_res}")
-    _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
+    bind_map = {k: v for k, v in bindings.conductor.items() if v}
+    want_hash = sheet_hash(sheet)
+    try:
+        stored = ic.query(backend_id, "get_sheet")
+        stored_hash = (stored.get("sheet_hash") or "") if isinstance(stored, dict) and stored.get("ok") else ""
+        # Compared as documents serialised here, not by hash: the conductor's JSON
+        # writer need not escape non-ASCII exactly like this Python does.
+        same_sheet = bool(stored_hash) and canonical_json(stored.get("sheet")) == canonical_json(sheet)
+        stored_bindings = ic.query(backend_id, "get_bindings")
+        stored_bindings = (stored_bindings.get("bindings") or {}) if isinstance(stored_bindings, dict) else {}
+    except Exception:  # a conductor too old for these queries: store as before
+        stored_hash, same_sheet, stored_bindings = "", False, {}
+    bound_already = all(stored_bindings.get(k) == v for k, v in bind_map.items())
+    planning_stored = False  # dry run against a stored sheet this caller may not replace
+    if same_sheet and bound_already:
+        _progress(f"  sheet hash={stored_hash} (already stored; conductor bindings unchanged)")
+    else:
+        if not bound_already:
+            bind_conductor(ic, backend_id, bind_map)
+        set_res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
+        if not (isinstance(set_res, dict) and set_res.get("ok")):
+            err = str((set_res or {}).get("error") if isinstance(set_res, dict) else set_res)
+            if _is_unauthorized(set_res) and dry_run and stored_hash:
+                # `plan` is read-only: show what the conductor would still add under
+                # the sheet it holds, and say the file is not that sheet.
+                planning_stored = True
+                _progress(f"  WARNING: {deployer} is not a conductor controller, so the file "
+                          f"({want_hash[:12]}…) is not stored; planning the stored sheet ({stored_hash[:12]}…) "
+                          "instead — releases recorded by `casals upgrade` account for most such differences")
+            elif _is_unauthorized(set_res):
+                raise RuntimeError(
+                    f"set_sheet refused ({err}): the conductor's controllers are "
+                    f"{ic.read_controllers(backend_id) or []} and {deployer} is not one of them. "
+                    f"The sheet changed since it was stored ({stored_hash[:12] or 'none'}… → {want_hash[:12]}…); "
+                    "after day one, ship changes with `casals upgrade` / the UI, or have a controller run `up`.")
+            else:
+                raise RuntimeError(f"set_sheet failed: {set_res}")
+        else:
+            _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
 
     if dry_run:
-        res = ic.call_update(backend_id, "plan", plan_args(scope))
+        res = ic.call_update(backend_id, "plan", "{}")
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"plan failed: {res}")
+        if planning_stored:
+            res["sheet_differs"] = {"stored": stored_hash, "file": want_hash}
         _progress(f"dry run done in {_elapsed()}")
         return res
 
@@ -725,26 +646,15 @@ def run_up(
         wasm_by_hash=registry_wasm_by_hash(
             sheet, sheet_dir=os.path.dirname(os.path.abspath(sheet_path)), project_root=project_root,
         ),
-        scope=scope,
     )
 
-    # 9. domains + verify
+    # 9. domains + bindings
     _step(7)
     domain_rows = reconcile_domains(sheet, env, bindings)
     bindings.save()
     if plan.get("handed_off"):
-        # The deployer's last item gave the conductor to the multisig; `verify`
-        # is a commander call it may no longer make. The public facts are
-        # still checkable: the controllers it just set.
         ctls = ic.read_controllers(backend_id) or []
-        verify_res = {"ok": True, "converged": None, "skipped": "deployer is no longer a commander",
-                      "conductor_controllers": ctls}
-        _progress(f"  verify: skipped — the deployer handed the conductor over (controllers now {ctls}); "
-                  f"run `casals verify` as a commander, or check the Orchestra page")
-    else:
-        verify_res = ic.call_update(backend_id, "verify", "{}")
-        conv = isinstance(verify_res, dict) and verify_res.get("converged")
-        _progress("  verify: live state equals the sheet" if conv else f"  verify: NOT converged — {verify_res}")
+        _progress(f"  the deployer handed the conductor over (controllers now {ctls})")
     _progress(f"done in {_elapsed()}: {sheet_name} → {env}, conductor {backend_id}, bindings saved")
 
     return {
@@ -754,6 +664,5 @@ def run_up(
         "backend_id": backend_id,
         "bindings": bindings.to_dict(),
         "domains": domain_rows,
-        "verify": verify_res,
         "plan": plan,
     }

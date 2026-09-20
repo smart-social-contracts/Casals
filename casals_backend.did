@@ -127,7 +127,6 @@ service : {
   "set_sheet" : (text) -> (text);
   "bind_conductor" : (text) -> (text);
   "plan" : (text) -> (text);
-  "verify" : () -> (text);
   "apply" : (text) -> (text);
   "export_sheet" : () -> (text) query;
   "get_plan" : (text) -> (text) query;
@@ -174,6 +173,8 @@ service : {
   "provision_assets" : (text) -> (text);
   "grant_stand_backend_commit" : (text) -> (text);
   "upgrade_to" : (text) -> (text);
+  "propose_upgrade" : (text) -> (text);
+  "sync_content" : (text) -> (text);
   "create_snapshot" : (text) -> (text);
   "revert_snapshot" : (text) -> (text);
   "stop_canister" : (text) -> (text);

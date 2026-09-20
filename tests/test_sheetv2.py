@@ -376,14 +376,6 @@ def test_environments_and_env_block():
     assert sv2.env_block(sheet, "local")["network"] == "local"
 
 
-def test_apply_requires_proposal_lookup():
-    assert not sv2.apply_requires_proposal({}, "local")
-    gov = {"governance": {"apply_requires_proposal": {"production": True, "default": False}}}
-    assert sv2.apply_requires_proposal(gov, "production")
-    assert not sv2.apply_requires_proposal(gov, "local")
-    assert sv2.apply_requires_proposal({"governance": {"apply_requires_proposal": True}}, "local")
-
-
 # ── numbered optional template members (auto-scaling) ────────────────────────
 
 _TEMPLATE = {

@@ -190,38 +190,6 @@ def publish_pins(sheet: dict) -> dict:
     return out
 
 
-SYNC_AUTO = "auto"
-SYNC_MANUAL = "manual"
-SYNC_MODES = (SYNC_AUTO, SYNC_MANUAL)
-
-
-def sync_mode(section: dict | None, stand: dict | None = None) -> str:
-    """`sync` of a stand (inherits its section's) or a section. ``manual``
-    sections/stands are observed by the planner — drift is reported — but
-    never acted upon unless a run targets them explicitly (#51)."""
-    for scope in (stand, section):
-        if isinstance(scope, dict):
-            mode = str(scope.get("sync") or "").strip().lower()
-            if mode:
-                return mode
-    return SYNC_AUTO
-
-
-def scope_modes(sheet: dict) -> dict:
-    """``{"sections": {name: mode}, "stands": {name: (section, mode)}}`` — the
-    effective sync mode of every declared section and stand."""
-    out = {"sections": {}, "stands": {}}
-    for section in sheet.get("sections") or []:
-        if not isinstance(section, dict):
-            continue
-        sname = (section.get("name") or "").strip()
-        out["sections"][sname] = sync_mode(section)
-        for stand in section.get("stands") or []:
-            if isinstance(stand, dict) and (stand.get("name") or "").strip():
-                out["stands"][stand["name"].strip()] = (sname, sync_mode(section, stand))
-    return out
-
-
 def store_namespace_prefix(namespace: str) -> str:
     """Key prefix under which every file of ``namespace`` lives in the store."""
     ns = (namespace or "").strip().strip("/")
@@ -575,12 +543,8 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                 _register_name(names, MULTISIG_NAME, "governance.multisig", errors)
                 _validate_canister(multisig, "governance.multisig", errors, in_sections=False)
                 _check_raw_principals(multisig, "governance.multisig", errors)
-            for key, val in governance.items():
-                if key == "multisig":
-                    continue
-                if key == "apply_requires_proposal" and isinstance(val, dict):
-                    continue
-                if key not in ("apply_requires_proposal",):
+            for key in governance:
+                if key != "multisig":
                     errors.append(f"governance.{key}: unknown field")
 
     sections = sheet.get("sections")
@@ -594,8 +558,6 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             errors.append(f"{spath} must be an object")
             continue
         _check_raw_principals(section, spath, errors)
-        if "sync" in section and section["sync"] not in SYNC_MODES:
-            errors.append(f"{spath}.sync must be one of {', '.join(SYNC_MODES)}")
         if "commanders" in section:
             _validate_commanders(section["commanders"], f"{spath}.commanders", errors)
         if "stand_template" in section:
@@ -606,8 +568,6 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                 errors.append(f"{stpath} must be an object")
                 continue
             _check_raw_principals(stand, stpath, errors)
-            if "sync" in stand and stand["sync"] not in SYNC_MODES:
-                errors.append(f"{stpath}.sync must be one of {', '.join(SYNC_MODES)}")
             if "commanders" in stand:
                 _validate_commanders(stand["commanders"], f"{stpath}.commanders", errors)
             if "baton" in stand and stand["baton"] is not None:
@@ -987,18 +947,10 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
         if pin is not None and not _is_hex64(pin):
             errors.append(f"{path}.sha256 must be a 64-hex bundle hash (docs/BUNDLES.md)")
         published.add(entry.get("path"))
-    pinned = {e.get("path") for e in publish if isinstance(e, dict) and e.get("sha256")}
-    for section, stand, name, canister in iter_canisters(sheet):
+    for _section, _stand, name, canister in iter_canisters(sheet):
         content = canister.get("content")
-        if not content:
-            continue
-        if content not in published:
+        if content and content not in published:
             errors.append(f"canister {name}: content '{content}' has no registry.publish entry")
-        elif content not in pinned and sync_mode(section, stand) == SYNC_MANUAL:
-            # Nothing reconciles a manual frontend routinely, so the pin is the
-            # only statement of what it should serve (#51).
-            errors.append(f"canister {name}: content '{content}' must be pinned (registry.publish sha256) "
-                          f"because its stand/section is sync: manual")
 
 
 def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
@@ -1363,14 +1315,6 @@ def _resolve_canister_tree(canister: dict, path: str, stand: dict | None, resolv
         canister[key] = resolve_value(val, f"{path}.{key}", stand, this)
 
 
-def apply_requires_proposal(sheet: dict, env: str) -> bool:
-    """`governance.apply_requires_proposal`: a bool, or `{<env>: bool, default: bool}`."""
-    v = (sheet.get("governance") or {}).get("apply_requires_proposal", False)
-    if isinstance(v, dict):
-        v = v.get(env, v.get("default", False))
-    return bool(v)
-
-
 def glob_match(name: str, pattern: str) -> bool:
     """`*` wildcard match (stand_template.name_pattern); no other glob syntax."""
     parts = pattern.split("*")
@@ -1465,11 +1409,5 @@ def materialize(sheet: dict, live_stands: dict[str, dict]) -> dict:
         for name, live in sorted(live_stands.items()):
             if live.get("section") == section.get("name") and name not in declared \
                     and glob_match(name, tmpl.get("name_pattern") or ""):
-                stand = instantiate_template_stand(tmpl, name, live.get("members"))
-                # The mint is the act (#51): a stand still being built is
-                # reconciled even under a `sync: manual` section; once the
-                # conductor has found it converged it follows the section.
-                if sync_mode(section) == SYNC_MANUAL and not live.get("built", True):
-                    stand["sync"] = SYNC_AUTO
-                stands.append(stand)
+                stands.append(instantiate_template_stand(tmpl, name, live.get("members")))
     return out

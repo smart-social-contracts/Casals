@@ -34,8 +34,6 @@ PERMISSIONS = [
     ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
     ("wasm.upload",        "Upload files (WASMs, bundles) to the store", "Platform"),
     ("wasm.authorize",     "Authorize / revoke catalog WASMs", "Platform"),
-    ("sheet.set",                          "Set orchestra sheet",             "Sheet"),
-    ("sheet.apply",                        "Apply reconciliation plan",       "Sheet"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 

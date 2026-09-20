@@ -121,7 +121,6 @@
       case 'wasm_deauthorized': return `Removed WASM ${p.key ?? ''}`;
       case 'settings_changed': return `Settings changed: ${Object.keys(p).join(', ')}`;
       case 'sheet_deployed': return 'Sheet deployed';
-      case 'sheet_edited': return `Sheet edited (${p.sections ?? 0} sections)`;
       case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_canister ? ` (was ${p.was_canister})` : ''}`;
       case 'pool_assigned': return `Assigned pool canister to ${p.name ?? ''} on stand ${p.stand ?? ''}`;
       default: return Object.keys(p).length ? JSON.stringify(p) : '';

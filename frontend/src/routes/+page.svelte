@@ -3,7 +3,6 @@
   import {
     getTree,
     getStatus,
-    getPlan,
     createSection,
     createStand,
     registerCanister,
@@ -51,7 +50,7 @@
     writeCachedTree,
   } from '$lib/treeCache';
   import type {
-    Tree, Status, Section, Stand, Canister, UpdateResult, Plan,
+    Tree, Status, Section, Stand, Canister, UpdateResult,
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
     CanisterCycles, CanisterDeployment, IcRunStatus,
   } from '$lib/api';
@@ -98,7 +97,6 @@
   let tree = $state<Tree | null>(null);
   let status = $state<Status | null>(null);
   let orchestraName = $state('');
-  let storedPlan = $state<Plan | null>(null);
   let casalsControllers = $state<{ backend?: string[]; frontend?: string[] }>({});
   let loading = $state(true);
   let error = $state('');
@@ -299,11 +297,10 @@
       if (!background && missingControllers) {
         await refreshControllersCache().catch(() => undefined);
       }
-      [tree, status, catalog, storedPlan] = await Promise.all([
+      [tree, status, catalog] = await Promise.all([
         getTree(),
         getStatus(),
         listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
-        getPlan().catch(() => null),
       ]);
       tree = await hydrateDisplayedControllers(tree);
       writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
@@ -1017,18 +1014,6 @@
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Events</span>
             <span class="font-semibold text-primary-900">{status.events}</span>
-          </div>
-          <div class="flex flex-col gap-0.5">
-            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Plan</span>
-            <a href="/plan" class="text-primary-700 hover:underline text-sm">
-              {#if !storedPlan}
-                not computed
-              {:else if storedPlan.items.length === 0}
-                <span class="text-emerald-700 font-semibold">converged</span>{#if storedPlan.unmanaged.length} · {storedPlan.unmanaged.length} unmanaged{/if}
-              {:else}
-                <span class="font-semibold">{storedPlan.items.length} item(s)</span>{#if storedPlan.unmanaged.length} · {storedPlan.unmanaged.length} unmanaged{/if}
-              {/if}
-            </a>
           </div>
           <div class="flex flex-col gap-0.5 sm:col-span-2">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Conductor hosting</span>

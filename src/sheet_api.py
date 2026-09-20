@@ -25,15 +25,16 @@ from sheetv2 import (
     CONDUCTOR_NAMES,
     LEGACY_CONDUCTOR_KEYS,
     LEGACY_CONDUCTOR_NAMES,
-    MULTISIG_NAME,
-    apply_requires_proposal,
     ResolveContext,
     env_block,
+    find_canister,
     iter_canisters,
     materialize,
     resolve_partial,
     sheet_hash,
+    template_members,
     validate,
+    wasm_ref,
 )
 
 
@@ -141,24 +142,9 @@ def _declared_world(env: str, sheet: dict) -> dict:
     return resolved
 
 
-def plan_scope(args: dict | None) -> dict | None:
-    """The `scope` a plan request carries (#51): {sections, stands,
-    exclude_sections, exclude_stands}, each a list of names. None = whole sheet."""
-    if not isinstance(args, dict):
-        return None
-    scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
-    out = {}
-    for key in ("sections", "stands", "exclude_sections", "exclude_stands"):
-        vals = scope.get(key) if scope else args.get(key)
-        if isinstance(vals, str):
-            vals = [vals]
-        if isinstance(vals, list) and vals:
-            out[key] = [str(v) for v in vals]
-    return out or None
-
-
-def _plan_world_gen(scope: dict | None = None):
-    """Plan against live state; returns (plan, resolved_sheet, live_state, self_id, env)."""
+def _plan_world_gen(only_stand: str | None = None):
+    """Plan against live state; returns (plan, resolved_sheet, live_state, self_id, env).
+    ``only_stand`` restricts the plan to one stand (a runtime stand build)."""
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
@@ -170,13 +156,12 @@ def _plan_world_gen(scope: dict | None = None):
     live["bindings"] = bindings
     try:
         plan = build_plan(
-            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh, scope=scope,
+            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh, only_stand=only_stand,
         )
     except PlanningError as exc:
         raise ValueError("; ".join(exc.errors)) from exc
     store_plan(plan)
-    if not scope:
-        mark_built_stands(plan, resolved, bindings, snapshot=stands_before)
+    mark_built_stands(plan, resolved, bindings, snapshot=stands_before, only_stand=only_stand)
     return plan, resolved, live, self_id, env
 
 
@@ -185,20 +170,21 @@ def _stand_of_target(target) -> str:
 
 
 def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | None = None,
-                      snapshot: dict | None = None) -> list[str]:
-    """Runtime stands whose build the conductor just found complete (#51): every
-    member bound and nothing planned, deferred or pending for the stand. From
-    here on a `sync: manual` section freezes them like any declared stand.
-    Only a whole-sheet plan may decide this — a targeted one sees a slice.
+                      snapshot: dict | None = None, only_stand: str | None = None) -> list[str]:
+    """Stands whose build the conductor just found complete: every member bound
+    and nothing planned, deferred or pending for the stand. A whole-sheet plan
+    (`casals up`) may decide this for every stand; a single-stand plan (a
+    runtime build) only for its own.
 
     ``snapshot`` is ``live_stands()`` from before the plan awaited live state:
     a stand minted or grown (``create_stand``) while the plan was in flight
     was planned from stale members — it is left for the next plan."""
     now_stands = live_stands() if snapshot is not None else None
     busy: set[str] = set()
-    for key in ("items", "manual", "skipped", "pending"):
-        for it in plan.get(key) or []:
-            busy.add(_stand_of_target(it.get("target")))
+    for it in plan.get("items") or []:
+        busy.add(_stand_of_target(it.get("target")))
+    for p in plan.get("pending") or []:
+        busy.add((p.get("stand") or "").strip())
     canister_stand = {name: (st.get("name") or "") for _sec, st, name, _c in iter_canisters(resolved)}
     for d in plan.get("deferred") or []:
         busy.add(canister_stand.get(d.get("target") or "", d.get("target") or ""))
@@ -212,6 +198,8 @@ def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | N
         name = (stand.name or "").strip()
         if not name or int(getattr(stand, "built_at", 0) or 0) > 0 or name in busy:
             continue
+        if only_stand and name != only_stand:
+            continue
         if now_stands is not None and (
             name not in snapshot or (now_stands.get(name) or {}).get("members") != snapshot[name].get("members")
         ):
@@ -220,22 +208,20 @@ def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | N
         if not names or any(not bindings.get(n) for n in names):
             continue
         stand.built_at = now
+        stand.build_error = ""
         built.append(name)
     return built
 
 
 def plan_gen(args: dict | None = None):
-    plan, _resolved, _live, _self_id, _env = yield from _plan_world_gen(plan_scope(args))
+    only_stand = (args or {}).get("stand") if isinstance(args, dict) else None
+    plan, _resolved, _live, _self_id, _env = yield from _plan_world_gen(
+        str(only_stand).strip() if only_stand else None)
     return plan
 
 
-def verify_gen():
-    plan = yield from plan_gen({})
-    return {"converged": len(plan.get("items") or []) == 0, "plan": plan}
-
-
-# One apply at a time: the endpoint and the reconcile timer share this lock so
-# two runs never act on the same plan item (e.g. both creating a canister).
+# One apply at a time: the endpoint and a stand build share this lock so two
+# runs never act on the same plan item (e.g. both creating a canister).
 _APPLY_LOCK = {"held": False}
 BUSY_ERROR = "busy: an apply is in progress"
 
@@ -252,20 +238,15 @@ def apply_gen(args: dict):
         raise ValueError("plan_hash required")
     if _APPLY_LOCK["held"]:
         return {"ok": False, "error": BUSY_ERROR}
-    sheet, env, _sh = load_sheet_doc()
+    sheet, _env, _sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
-    bindings = _bindings_map()
-    if apply_requires_proposal(sheet, env) and _caller() != bindings.get(MULTISIG_NAME):
-        return {"ok": False, "error": "apply requires proposal: only the governance multisig may apply on this environment"}
-    # A targeted plan (#51) is only reproducible under its own scope: re-plan
-    # with the scope the stored plan carries (or the one the caller repeats),
-    # otherwise a `--stand` item on a manual stand would always look stale.
+    # A single-stand plan is only reproducible under the same restriction.
     stored = get_plan_record(plan_hash) or {}
-    scope = plan_scope({"scope": stored.get("scope")}) if stored.get("scope") else plan_scope(args)
+    only_stand = (stored.get("stand") or "").strip() or None
     _APPLY_LOCK["held"] = True
     try:
-        plan, resolved, live, self_id, _env = yield from _plan_world_gen(scope)
+        plan, resolved, live, self_id, _env = yield from _plan_world_gen(only_stand)
         if plan.get("hash") != plan_hash:
             return {"ok": False, "error": "stale plan", "current_plan_hash": plan.get("hash")}
         destructive = [it for it in (plan.get("items") or []) if it.get("destructive")]
@@ -287,49 +268,144 @@ def apply_gen(args: dict):
     return {"ok": True, **result}
 
 
-def reconcile_interval_secs(sheet: dict | None) -> int:
-    """`conductor.settings.reconcile_interval_secs`: how often the conductor
-    plans and applies on its own (0 / absent = only when asked)."""
-    try:
-        return max(0, int(((sheet or {}).get("conductor") or {}).get("settings", {}).get("reconcile_interval_secs") or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def reconcile_gen(max_rounds: int = 3):
-    """One reconcile tick: plan, then apply the non-destructive items the
-    conductor can do itself; repeat while progress is made (a create needs a
-    round before its install). Never destructive, never past the deployer's
-    or multisig's items, and nothing at all where `apply_requires_proposal`
-    holds — those stay a human decision. Returns a small summary."""
+def build_stand_round_gen(stand_name: str) -> dict:
+    """One round of building a runtime stand (`create_stand`): plan that stand
+    alone, apply the items the conductor can do itself. Never destructive and
+    never past items the deployer or multisig would have to do — a fresh stand
+    has none. Returns ``{applied, converged, failed?, blocked?}``; the caller
+    (the stand-build timer) repeats until ``converged`` or nothing moves."""
     if _APPLY_LOCK["held"]:
         return {"skipped": "busy"}
-    sheet, env, _sh = load_sheet_doc()
-    if not sheet or apply_requires_proposal(sheet, env):
-        return {"skipped": "no sheet" if not sheet else "apply requires proposal"}
     _APPLY_LOCK["held"] = True
-    applied = 0
     try:
-        for _round in range(max_rounds):
-            plan, resolved, live, self_id, _env = yield from _plan_world_gen()
-            mine = [it for it in plan.get("items") or []
-                    if (it.get("requires") or "self") == "self" and not it.get("destructive")]
-            if not mine:
-                return {"applied": applied, "converged": not plan.get("items")}
-            result = yield from apply_plan_gen(
-                {**plan, "items": mine}, resolved_sheet=resolved, live_state=live, self_id=self_id,
-            )
-            applied += len(result.get("applied") or [])
-            store_apply_result(result)
-            if result.get("failed") or not result.get("applied"):
-                return {"applied": applied, "failed": result.get("failed")}
+        plan, resolved, live, self_id, _env = yield from _plan_world_gen(stand_name)
+        items = plan.get("items") or []
+        mine = [it for it in items if (it.get("requires") or "self") == "self" and not it.get("destructive")]
+        if not items and not plan.get("pending"):
+            return {"applied": 0, "converged": True}
+        if not mine:
+            return {"applied": 0, "converged": False,
+                    "blocked": [f"{it.get('kind')} {(it.get('target') or {}).get('name')} requires {it.get('requires')}"
+                                for it in items] or [p.get("note") for p in plan.get("pending") or []]}
+        result = yield from apply_plan_gen(
+            {**plan, "items": mine}, resolved_sheet=resolved, live_state=live, self_id=self_id,
+        )
+        store_apply_result(result)
+        return {"applied": len(result.get("applied") or []), "converged": False, "failed": result.get("failed")}
     finally:
         _APPLY_LOCK["held"] = False
-    return {"applied": applied, "converged": False}
+
+
+# ── Release bookkeeping ───────────────────────────────────────────────────────
+# The sheet builds the orchestra once; afterwards releases are operations
+# (`upgrade_to`, `propose_upgrade`, `sync_content`). Each records what it
+# shipped in the stored sheet, so the sheet keeps saying what runs and a later
+# `casals up` / `plan` finds nothing to do — without anyone needing `set_sheet`.
+
+
+def _sheet_spec_for(sheet: dict, name: str, stand_name: str, section_name: str) -> dict | None:
+    """The stored sheet's canister block for ``name``: a declared canister, or the
+    `stand_template` member a runtime-minted stand rendered it from (so a
+    fleet release moves the template too, and new mints get the same build)."""
+    found = find_canister(sheet, name)
+    if found:
+        return found[2]
+    for section in sheet.get("sections") or []:
+        if not isinstance(section, dict) or section.get("name") != section_name:
+            continue
+        tmpl = section.get("stand_template")
+        if not isinstance(tmpl, dict):
+            continue
+        for c, subs in template_members(tmpl, stand_name, [name]):
+            rendered = str(c.get("name") or "").replace("{stand}", stand_name)
+            for k, v in subs.items():
+                rendered = rendered.replace("{" + k + "}", v)
+            if rendered == name:
+                return c
+    return None
+
+
+def _store_if_changed(sheet: dict, env: str, changed: bool) -> str | None:
+    if not changed:
+        return None
+    try:
+        return store_sheet_doc(sheet, env, sheet_deployer())
+    except ValueError as e:  # the edit made the sheet invalid: keep the old document
+        _append_event("sheet_record_failed", "", {"error": str(e)})
+        return None
+
+
+def record_wasm_release(name: str, stand_name: str, section_name: str, wasm_key: str, wasm_hash: str,
+                        source: str | None = None) -> str | None:
+    """``name`` now runs ``wasm_key`` (``wasm_hash``): point its sheet block (or its
+    template member) at that key and pin the registry row — added when the
+    sheet has none and the caller names its ``source`` (the sheet file's row,
+    passed along by `casals upgrade`). Returns the new sheet hash when the
+    document changed."""
+    sheet, env, _sh = load_sheet_doc()
+    if not sheet:
+        return None
+    changed = False
+    family, version = wasm_ref(wasm_key)
+    spec = _sheet_spec_for(sheet, name, stand_name, section_name)
+    family_rows = [r for r in (sheet.get("registry") or {}).get("wasms") or []
+                   if isinstance(r, dict) and (r.get("family") or "").strip() == family]
+    if spec is not None and spec.get("mode") != "adopted":
+        cur_family, cur_version = wasm_ref(spec.get("wasm") or "")
+        # A bare `family` reference means "the family's (only) registry row" and
+        # is kept — the row's pin moves below; otherwise follow the shipped key.
+        keep_bare = cur_family == family and not cur_version and len(family_rows) <= 1
+        target = spec.get("wasm") if keep_bare else wasm_key
+        if (spec.get("wasm") or "") != target:
+            spec["wasm"] = target
+            changed = True
+    # The registry row's pin follows. A key the sheet has no row for gets one
+    # only when its source is known: the conductor does not invent sources.
+    row = next((r for r in family_rows if not version or (r.get("version") or "").strip() == version), None)
+    if row is None and version and (source or "").strip():
+        row = {"family": family, "version": version, "source": source.strip()}
+        sheet.setdefault("registry", {}).setdefault("wasms", []).append(row)
+        changed = True
+    if row is not None and (row.get("sha256") or "").strip().lower() != (wasm_hash or "").lower():
+        row["sha256"] = (wasm_hash or "").lower()
+        changed = True
+    sh = _store_if_changed(sheet, env, changed)
+    if sh:
+        _append_event("sheet_recorded", "", {"canister": name, "wasm": wasm_key, "sheet_hash": sh})
+    return sh
+
+
+def record_content_release(namespace: str, bundle_sha256: str, *, canister: str = "", stand_name: str = "",
+                           section_name: str = "", source: str | None = None) -> str | None:
+    """``canister`` now serves bundle ``bundle_sha256`` from store namespace
+    ``namespace``: its sheet block's `content` names that namespace and the
+    registry.publish row is pinned — added when the sheet has none and the
+    caller names its ``source``."""
+    sheet, env, _sh = load_sheet_doc()
+    if not sheet:
+        return None
+    changed = False
+    publish = (sheet.get("registry") or {}).get("publish") or []
+    row = next((r for r in publish if isinstance(r, dict) and (r.get("path") or "").strip() == namespace), None)
+    if row is None and (source or "").strip():
+        row = {"path": namespace, "source": source.strip()}
+        sheet.setdefault("registry", {}).setdefault("publish", []).append(row)
+        changed = True
+    if row is not None and (row.get("sha256") or "").strip().lower() != (bundle_sha256 or "").lower():
+        row["sha256"] = (bundle_sha256 or "").lower()
+        changed = True
+    if canister and row is not None:
+        spec = _sheet_spec_for(sheet, canister, stand_name, section_name)
+        if spec is not None and spec.get("mode") != "adopted" and (spec.get("content") or "") != namespace:
+            spec["content"] = namespace
+            changed = True
+    sh = _store_if_changed(sheet, env, changed)
+    if sh:
+        _append_event("sheet_recorded", "", {"namespace": namespace, "bundle_sha256": bundle_sha256, "sheet_hash": sh})
+    return sh
 
 
 def export_sheet_impl() -> dict:
-    """The sheet this conductor runs, plus its name → id bindings. Once `verify`
-    passes, this *is* the live state rendered as a sheet."""
+    """The sheet this conductor was built from, plus its name → id bindings."""
     sheet, env, sh = load_sheet_doc()
     return {"sheet": sheet or {}, "env": env, "sheet_hash": sh, "bindings": _bindings_map()}

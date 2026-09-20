@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from casals_cli import commands, show, up
+from casals_cli import commands, show, up, upgrade
 from casals_cli.bindings import live_bindings
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
@@ -31,29 +31,29 @@ def _build_parser() -> argparse.ArgumentParser:
     _common_flags(ap)
     sub = ap.add_subparsers(dest="command", required=True)
 
-    def _scope_flags(p_):
-        p_.add_argument("--section", action="append", default=[], metavar="NAME",
-                        help="act only on this section (repeatable); also unlocks a sync: manual section")
-        p_.add_argument("--stand", action="append", default=[], metavar="NAME",
-                        help="act only on this stand (repeatable); also unlocks a sync: manual stand")
-        p_.add_argument("--exclude-section", action="append", default=[], metavar="NAME", help="leave this section alone")
-        p_.add_argument("--exclude-stand", action="append", default=[], metavar="NAME", help="leave this stand alone")
-
-    up_p = sub.add_parser("up", help="validate, bootstrap, and reconcile a sheet")
+    up_p = sub.add_parser("up", help="build (or resume building) an orchestra from a sheet")
     up_p.add_argument("sheet", help="path to casals.json")
     up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
     up_p.add_argument("--max-items", type=int, default=5)
     up_p.add_argument("--bootstrap", action="store_true",
                       help="production only: allow creating a brand-new conductor when no bindings exist")
-    _scope_flags(up_p)
 
-    plan_p = sub.add_parser("plan", help="compute reconciliation plan")
+    plan_p = sub.add_parser("plan", help="what `up` would still do (a dry run)")
     plan_p.add_argument("sheet", nargs="?", help="path to casals.json")
-    _scope_flags(plan_p)
+
+    upg_p = sub.add_parser("upgrade", help="ship the build the sheet pins to canisters that already exist")
+    upg_p.add_argument("sheet", help="path to casals.json (run `casals pin` first)")
+    upg_p.add_argument("--wasm", action="append", default=[], metavar="FAMILY[@VERSION]",
+                       help="upgrade every canister running this registry family (repeatable); "
+                            "baton-governed members become a baton proposal (`pending`)")
+    upg_p.add_argument("--content", action="append", default=[], metavar="NAMESPACE",
+                       help="make every frontend whose sheet `content` is this namespace serve that bundle (repeatable)")
+    upg_p.add_argument("--stand", action="append", default=[], metavar="NAME", help="only canisters on this stand (repeatable)")
+    upg_p.add_argument("--section", action="append", default=[], metavar="NAME", help="only canisters in this section (repeatable)")
+    upg_p.add_argument("--yes", "-y", action="store_true", help="reserved; upgrades never ask")
 
     for name, help_text in (
-        ("verify", "assert plan items empty"),
-        ("export", "export live sheet + bindings"),
+        ("export", "the sheet the conductor was built from + bindings"),
         ("status", "conductor status"),
         ("tree", "orchestra tree"),
         ("events", "audit log"),
@@ -131,17 +131,6 @@ def _ic_from_args(args) -> IcClient:
     )
 
 
-def scope_from_args(args) -> dict | None:
-    """--section/--stand/--exclude-section/--exclude-stand → the planner's scope (#51)."""
-    scope = {
-        "sections": list(getattr(args, "section", None) or []),
-        "stands": list(getattr(args, "stand", None) or []),
-        "exclude_sections": list(getattr(args, "exclude_section", None) or []),
-        "exclude_stands": list(getattr(args, "exclude_stand", None) or []),
-    }
-    return {k: v for k, v in scope.items() if v} or None
-
-
 def _upload_ic_from_args(args) -> IcClient | None:
     name = getattr(args, "upload_identity", None)
     if not name or name == getattr(args, "identity", None):
@@ -175,20 +164,19 @@ def main(argv: list[str] | None = None) -> None:
                 max_items=args.max_items,
                 project_root=REPO_ROOT,
                 upload_ic=_upload_ic_from_args(args),
-                scope=scope_from_args(args),
                 bootstrap=args.bootstrap,
             )
             emit_json(result)
         elif cmd == "plan":
-            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args), scope=scope_from_args(args))
+            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args))
+        elif cmd == "upgrade":
+            upgrade.cmd_upgrade(ic, args, REPO_ROOT)
         elif cmd == "pin":
             commands.cmd_pin(args, REPO_ROOT)
         elif cmd == "bundle":
             commands.cmd_bundle(args)
         elif cmd == "apply":
             commands.cmd_apply(ic, args)
-        elif cmd == "verify":
-            commands.cmd_verify(ic, args)
         elif cmd == "export":
             commands.cmd_export(ic, args)
         elif cmd == "destroy":

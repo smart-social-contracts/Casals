@@ -605,8 +605,8 @@
                   <span class="badge badge-ok text-xs">Baton is IC controller</span>
                 {:else}
                   <p class="text-xs text-amber-700">
-                    Baton is registered but not an IC controller — declare it in the sheet's controllers and
-                    apply from <a href="/plan" class="underline">Plan / Drift</a>.
+                    Baton is registered but not an IC controller — add it with <em>Set controllers</em> on the canister
+                    (it should then be the only controller besides the canister itself).
                   </p>
                 {/if}
               </div>

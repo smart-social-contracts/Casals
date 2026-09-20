@@ -1,9 +1,9 @@
-# Declarative e2e: the orchestra corpus on a local replica.
+# Day-one deploy e2e: the orchestra corpus on a local replica.
 #
 # tests/e2e/run_e2e.py starts the replica, funds the test identity, and for
 # every orchestra under tests/e2e/orchestras/ runs the scenario matrix
-# (fresh, idempotent, content_change, runtime_stand, retire_and_pool, drift_*,
-# proposal_only, stale_plan, export_roundtrip …), grading each with
+# (fresh, idempotent, content_change, runtime_stand, baton_upgrade,
+# retire_and_pool, access_code, export_roundtrip), grading each with
 # `casals oracle`. The two product sheets (gaas, realms) run in their repos'
 # own workflows because they need the product artifacts built first.
 

@@ -62,7 +62,7 @@ class TestParserV2:
     def parser(self):
         return _build_parser()
 
-    @pytest.mark.parametrize("cmd", ["status", "tree", "plan", "verify", "export"])
+    @pytest.mark.parametrize("cmd", ["status", "tree", "plan", "export"])
     def test_simple_commands(self, parser, cmd):
         assert parser.parse_args([cmd]).command == cmd
 

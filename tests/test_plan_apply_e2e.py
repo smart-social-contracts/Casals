@@ -76,7 +76,7 @@ class TestPlanApplySmoke:
         plan_final = _ok("plan", {})
         assert plan_final["plan"]["items"] == []
 
-    def test_controller_drift_heals(self, minimal_env):
+    def test_controller_change_is_planned_and_applied(self, minimal_env):
         bindings = _ok("get_bindings", {})["bindings"]
         target_name = "hello-backend"
         cid = bindings.get(target_name)

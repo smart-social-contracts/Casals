@@ -22,7 +22,9 @@ test('NAV_SECTIONS groups governance links separately from operate', () => {
     ['/commanders', '/multisig'],
   );
   const operate = NAV_SECTIONS.find((s) => s.id === 'operate');
-  assert.ok(operate?.links.some((l) => l.href === '/plan'));
+  assert.ok(operate?.links.some((l) => l.href === '/files'));
+  // the sheet is applied once by `casals up`; there is no page to edit or re-apply it
+  assert.equal(operate?.links.some((l) => l.href === '/plan' || l.href === '/sheet'), false);
   assert.equal(operate?.links.some((l) => l.href === '/multisig'), false);
 });
 

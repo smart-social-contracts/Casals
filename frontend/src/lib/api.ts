@@ -432,16 +432,12 @@ export interface SheetCanister {
   files?: Record<string, string>;
 }
 
-/** `sync` on a section or stand (#51): `manual` scopes are observed, never acted upon unless targeted. */
-export type SyncMode = 'auto' | 'manual';
-
 export interface SheetStand {
   name: string;
   description?: string;
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
-  sync?: SyncMode;
   canisters?: SheetCanister[];
 }
 
@@ -451,7 +447,6 @@ export interface SheetSection {
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
-  sync?: SyncMode;
   stands?: SheetStand[];
 }
 
@@ -488,49 +483,6 @@ export interface PoolReport {
   free: number;
   in_use: number;
   canisters: PooledCanister[];
-}
-
-// ---------------------------------------------------------------------------
-// Plan / apply (declarative orchestrator — mirrors `casals plan` / `casals verify`)
-// ---------------------------------------------------------------------------
-
-export type PlanRequires = 'self' | 'multisig' | 'operator';
-
-export interface PlanItem {
-  seq: number;
-  kind: string;
-  target: { name?: string; canister_id?: string; section?: string; stand?: string };
-  reason: string;
-  destructive: boolean;
-  requires: PlanRequires;
-  current: Record<string, unknown>;
-  desired: Record<string, unknown>;
-  call: Record<string, unknown>;
-}
-
-export interface Plan {
-  hash: string;
-  sheet_hash: string;
-  env: string;
-  created_at_ns: number;
-  items: PlanItem[];
-  /** drift in `sync: manual` scopes — observed, not acted upon (#51) */
-  manual?: (Omit<PlanItem, 'seq' | 'call'> & { scope: 'manual' })[];
-  /** items outside a targeted run's scope */
-  skipped?: (Omit<PlanItem, 'seq' | 'call'> & { scope: 'excluded' | 'out_of_scope' })[];
-  scope?: { sections: string[]; stands: string[]; exclude_sections: string[]; exclude_stands: string[] };
-  drift: PlanItem[];
-  unmanaged: { canister_id: string; name: string; reason: string }[];
-  unverifiable: { target: string; field: string; reason: string }[];
-  info: { target: string; note: string }[];
-}
-
-export interface ApplyResult {
-  plan_hash: string;
-  applied: PlanItem[];
-  failed: (PlanItem & { error?: string }) | null;
-  skipped: PlanItem[];
-  remaining: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -890,15 +842,11 @@ export async function getCanisterDeployment(canisterId: string): Promise<Caniste
 }
 
 // ---------------------------------------------------------------------------
-// Sheet (persistent desired-orchestra) + canister pool
+// Sheet (the day-one document the orchestra was built from) + canister pool
 // ---------------------------------------------------------------------------
 
-// The live sheet is public to read (it's just the desired layout); editing,
-// planning and applying require authentication.
-export async function getSheet(): Promise<Sheet> {
-  return _parseQuery<Sheet>(await (await _actor()).get_sheet());
-}
-
+// The sheet is public to read (it is the declared layout). It is set by
+// `casals up` (controllers only) and never edited from the UI.
 export interface SheetDocument {
   sheet: Sheet;
   env: string;
@@ -911,17 +859,8 @@ export async function getSheetDocument(): Promise<SheetDocument> {
   return { sheet: (doc.sheet ?? { sections: [] }) as Sheet, env: doc.env ?? 'local', sheet_hash: doc.sheet_hash ?? '' };
 }
 
-/** Set the sheet for `env` (requires `sheet.set`). */
-export async function setSheetDocument(sheet: Sheet, env: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify({ sheet, env })));
-}
-
 export async function listPool(): Promise<PoolReport> {
   return _parseQuery<PoolReport>(await (await _actor()).list_pool());
-}
-
-export async function setSheet(sheet: Sheet): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify(sheet)));
 }
 
 // Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
@@ -938,43 +877,6 @@ export async function listSubnetPlacement(): Promise<SubnetListResult> {
 export async function listSubnets(): Promise<string[]> {
   const r = await listSubnetPlacement();
   return r.subnets ?? [];
-}
-
-// Compute the plan (update call: reads live IC state; 10–60 s on a big orchestra).
-export interface PlanScope {
-  sections?: string[];
-  stands?: string[];
-  exclude_sections?: string[];
-  exclude_stands?: string[];
-}
-
-/** Plan the whole sheet, or a targeted run (#51): naming a `sync: manual`
- *  section/stand in `scope` is the one way to act on it. */
-export async function planOrchestra(scope?: PlanScope): Promise<Plan> {
-  const args = scope && Object.values(scope).some((v) => v && v.length) ? { scope } : {};
-  return _parseUpdate<{ plan: Plan }>(await (await _actor(true)).plan(JSON.stringify(args))).plan;
-}
-
-export async function verifyOrchestra(): Promise<{ converged: boolean; plan: Plan }> {
-  return _parseUpdate<{ converged: boolean; plan: Plan }>(await (await _actor(true)).verify());
-}
-
-export async function applyPlan(args: {
-  plan_hash: string;
-  max_items?: number;
-  confirm_destructive?: boolean;
-}): Promise<ApplyResult> {
-  return _parseUpdate<ApplyResult>(await (await _actor(true)).apply(JSON.stringify(args)));
-}
-
-/** Last stored plan (or the one with `hash`); `null` when none has been computed yet. */
-export async function getPlan(hash?: string): Promise<Plan | null> {
-  const args = hash ? { plan_hash: hash } : {};
-  return _parseQuery<{ plan: Plan | null }>(await (await _actor()).get_plan(JSON.stringify(args))).plan;
-}
-
-export async function lastApply(): Promise<ApplyResult | null> {
-  return _parseQuery<{ apply: ApplyResult | null }>(await (await _actor()).last_apply()).apply;
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ class TestParser:
         return _build_parser()
 
     @pytest.mark.parametrize("cmd", [
-        "up", "plan", "apply", "verify", "export", "show", "graph", "oracle",
+        "up", "plan", "apply", "export", "show", "graph", "oracle",
         "destroy", "status", "tree", "events", "wasms", "cycles", "pool",
     ])
     def test_commands_parse(self, parser, cmd):
@@ -194,7 +194,7 @@ class TestUpSequencing:
         assert "set_sheet" in methods
         assert "plan" in methods
         assert methods.index("set_sheet") < methods.index("plan")
-        assert "verify" in methods
+        assert "verify" not in methods  # the sheet is applied, not audited afterwards
         # a controller of the store is not thereby allowed to upload to it:
         # up grants itself the store's Commit before the registry upload
         assert ic.store.grants == [(DEPLOYER, "Commit")]
@@ -669,7 +669,7 @@ class TestShowGraph:
         view = {
             "env": "local",
             "backend_id": "backend-id",
-            "plan_summary": {"items": 0, "unmanaged": 0},
+            "plan_summary": {"items": 0},
             "canisters": [{
                 "section": "App", "stand": "Hello", "name": "hello-backend",
                 "canister_id": "aaaa-aa", "mode": "managed", "cycles_tc": 1.5,
@@ -704,22 +704,6 @@ class TestMultisigPaths:
             ("canister", "call", "ms-id", "get_proposal"): "(opt record { status = variant { executed }; })",
         }
         return ic
-
-    def test_apply_via_multisig_proposes_apply_sheet(self):
-        from casals_cli.multisig import apply_via_multisig
-
-        ic = self._ic()
-        apply_via_multisig(ic, "ms-id", "deployer", "be-id", "abc", confirm_destructive=True, max_items=5)
-        proposal = next(c[1][0] for c in ic.calls if c[0] == "icp" and c[1][0][3:4] == ("propose",))
-        assert 'ApplySheet = record { casals_backend = principal "be-id"; plan_hash = "abc"; ' \
-               'confirm_destructive = true; max_items = 5 : nat }' in proposal[4]
-
-    def test_non_signer_is_refused(self):
-        from casals_cli.multisig import apply_via_multisig
-
-        ic = self._ic()
-        with pytest.raises(RuntimeError, match="not a signer"):
-            apply_via_multisig(ic, "ms-id", "stranger", "be-id", "abc", confirm_destructive=False, max_items=5)
 
     def test_pending_proposal_stops_with_id(self):
         from casals_cli.multisig import set_controllers_via_multisig
@@ -976,27 +960,19 @@ def _config_item(seq_hash: str, extra_items=()):
 
 
 class TestConvergeGuards:
-    def test_item_applied_but_back_unchanged_stops_after_three_rounds(self):
-        """Realms prod, 2026-09-19: a test-variant wasm answered `config_call`
-        with the old value forever; the loop re-applied it for 16 rounds
-        because a shrinking sync_assets kept the plan hash moving."""
-        from casals_cli.up import converge
+    def test_stale_plan_is_replanned_then_bounded(self):
+        """A stand build moving the world under `up` makes the apply stale:
+        re-plan, but give up after STALE_ROUNDS answers in a row."""
+        from casals_cli.up import STALE_ROUNDS, converge
 
-        def sync(n):
-            return {"seq": 1, "kind": "sync_assets", "target": {"name": "demo-frontend", "canister_id": "fe"},
-                    "reason": f"sync {n} asset(s)", "requires": "self", "destructive": False,
-                    "current": {}, "desired": {"keys": [f"k{i}" for i in range(n)]}}
-
-        plans = [_config_item(f"h{i}", [sync(40 - 10 * i)]) for i in range(6)]
-        applied = {"ok": True, "applied": [
-            {"kind": "config_call", "target": {"name": "demo-backend"}},
-            {"kind": "sync_assets", "target": {"name": "demo-frontend"}},
-        ], "failed": None, "remaining": 0}
-        ic = _ScriptedIc(plans, applied, env="production")
+        plans = [_config_item(f"h{i}") for i in range(STALE_ROUNDS + 1)]
+        ic = _ScriptedIc(plans, {"ok": False, "error": "stale plan", "current_plan_hash": "x"}, env="local")
+        import casals_cli.up as up_mod
+        up_mod.time.sleep = lambda _s: None
         with pytest.raises(SystemExit):
             converge(ic, "be", "dep", "", yes=True, max_items=5)
         rounds = [c for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"]
-        assert len(rounds) == 4  # applied in rounds 1-3, refused at round 4
+        assert len(rounds) == STALE_ROUNDS
 
     def test_progressing_items_are_not_flagged(self):
         from casals_cli.up import converge
@@ -1086,75 +1062,9 @@ class TestTransientRetry:
         assert len(calls) == 1
 
 
-# ── #51: targeted runs and sync: manual ──────────────────────────────────────
-
-
-class TestScopeFlags:
+class TestProductionGuards:
     BATON = os.path.join(REPO_ROOT, "tests", "e2e", "orchestras", "baton-stand", "casals.json")
 
-    def test_flags_become_the_planner_scope(self):
-        from casals_cli.main import scope_from_args
-        from casals_cli.up import plan_args
-
-        p = _build_parser()
-        args = p.parse_args(["up", "x.json", "--stand", "Rust", "--stand", "Go", "--exclude-section", "Legacy"])
-        scope = scope_from_args(args)
-        assert scope == {"stands": ["Rust", "Go"], "exclude_sections": ["Legacy"]}
-        assert json.loads(plan_args(scope)) == {"scope": scope}
-        assert scope_from_args(p.parse_args(["plan"])) is None and plan_args(None) == "{}"
-
-    def test_publish_rows_of_manual_frontends_are_not_uploaded(self):
-        from casals_cli.up import untouched_publish_rows
-
-        sheet = json.load(open(self.BATON))
-        assert untouched_publish_rows(sheet, None) == []
-        sheet["sections"][0]["stands"][0]["sync"] = "manual"
-        rows = untouched_publish_rows(sheet, None)
-        assert [r["path"] for r in rows] == ["frontend/rust-frontend/1.0.0"]
-        # naming the stand puts it back in reach; excluding it or targeting another takes it out
-        assert untouched_publish_rows(sheet, {"stands": ["Rust"]}) == []
-        assert untouched_publish_rows(sheet, {"sections": ["Demo"]}) == []
-        del sheet["sections"][0]["stands"][0]["sync"]
-        assert [r["path"] for r in untouched_publish_rows(sheet, {"exclude_stands": ["Rust"]})] == ["frontend/rust-frontend/1.0.0"]
-        assert [r["path"] for r in untouched_publish_rows(sheet, {"stands": ["Other"]})] == ["frontend/rust-frontend/1.0.0"]
-
-    def test_up_passes_the_scope_to_plan_and_skips_manual_publish(self, tmp_path, monkeypatch):
-        ic = RecordingIc(env="local", identity="deployer")
-        ic.deployer = DEPLOYER
-        ic.cycles["__deployer__"] = 110_000_000_000_000
-        ic.converged = True
-        ic.store = FakeAssetStore()
-        ic.candid.update(ic.store.handlers())
-        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
-        sheet = json.load(open(self.BATON))
-        sheet["sections"][0]["stands"][0]["sync"] = "manual"
-        sheet["registry"]["publish"][0]["sha256"] = "ab" * 32  # a manual frontend's content must be pinned
-        sheet_path = tmp_path / "casals.json"
-        sheet_path.write_text(json.dumps(sheet))
-
-        def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
-            bindings.conductor.setdefault("casals-backend", "backend-id")
-            bindings.conductor.setdefault("casals-wasms", "store-id")
-            bindings.backend_id = bindings.conductor["casals-backend"]
-            ic.controllers["store-id"] = [DEPLOYER]
-            return bindings
-
-        uploaded: list = []
-        monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
-        monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda _ic, s, **k: uploaded.append(s) or [])
-        monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
-
-        run_up(ic, str(sheet_path), "local", yes=True, project_root=REPO_ROOT)
-        assert uploaded[-1]["registry"]["publish"] == []  # manual stand: its bundle is not published
-        assert [json.loads(c[1][2]) for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"][-1] == {}
-
-        run_up(ic, str(sheet_path), "local", yes=True, project_root=REPO_ROOT, scope={"stands": ["Rust"]})
-        assert [e["path"] for e in uploaded[-1]["registry"]["publish"]] == ["frontend/rust-frontend/1.0.0"]
-        plans = [json.loads(c[1][2]) for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"]
-        assert plans[-1] == {"scope": {"stands": ["Rust"]}}
-
-
-class TestProductionGuards:
     def test_production_without_bindings_refuses_to_bootstrap(self, tmp_path, monkeypatch):
         """Missing bindings on production = wrong CASALS_HOME far more often than a
         first deploy; a fresh conductor on mainnet needs an explicit --bootstrap."""
@@ -1162,7 +1072,7 @@ class TestProductionGuards:
         ic.deployer = DEPLOYER
         ic.cycles["__deployer__"] = 110_000_000_000_000
         monkeypatch.setenv("CASALS_HOME", str(tmp_path))
-        sheet = json.load(open(TestScopeFlags.BATON))
+        sheet = json.load(open(self.BATON))
         sheet.setdefault("environments", {})["production"] = json.loads(json.dumps(sheet["environments"]["local"]))
         for e in sheet["registry"]["wasms"]:
             e["sha256"] = "0" * 64

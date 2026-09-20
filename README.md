@@ -73,10 +73,10 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 pip install ic-basilisk-toolkit
 icp network start -e local          # terminal 1 — keep replica running
 
-python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes   # bootstrap + reconcile the demo orchestra
+python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes   # bootstrap + build the demo orchestra
 ```
 
-`casals up <sheet>` is the only deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and reconciles the live IC state to the sheet (`set_sheet` → `plan` → `apply`).
+`casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
 
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
 
@@ -106,13 +106,12 @@ casals tree                                        # Section → Stand → Canis
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
 casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
-casals up sheet.json --stand my-stand              # reconcile one stand only (also: --section, --exclude-*)
+casals up sheet.json --yes                         # day one: build the orchestra the sheet declares
+casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the pinned build
+casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the pinned bundle
 casals cycles                                      # treasury + per-canister balances
 casals pool                                        # canister pool
-casals sheet get                                   # live sheet JSON
-casals sheet set   my-sheet.json                   # replace live sheet
-casals sheet deploy                                # deploy current live sheet
-casals sheet deploy my-sheet.json                  # set + deploy in one step
+casals export sheet.json                           # the sheet the conductor was built from + bindings
 casals new [-y]                                    # build, deploy, and seed (fresh canisters)
 casals new ids.json [-y]                           # deploy with existing canister IDs
 casals new -e ic --identity casals ids.json        # mainnet upgrade from ID map
@@ -138,12 +137,12 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | Kind | Method | Purpose |
 |---|---|---|
 | query | `get_tree` | full Section→Stand→Canister tree |
-| query | `get_sheet` / `list_pool` | live sheet + canister pool |
+| query | `get_sheet` / `list_pool` | stored day-one sheet + canister pool |
 | query | `get_cycle_history` | balance samples over time |
 | query | `list_permissions` | assignable commander permission keys |
 | query | `list_backend_controllers` | Casals canister IC controllers (for Commanders UI) |
 | update | `create_section` / `create_stand` / `create_canister` | structure |
-| update | `deploy_sheet` | idempotently deploy the whole orchestra |
+| update | `propose_upgrade` / `sync_content` | imperative release of a baton-governed member / a frontend bundle |
 | update | `set_commander` / `set_permissions` | commander principals + permission grants |
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |

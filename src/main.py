@@ -72,7 +72,8 @@ from bootstrap import (  # noqa: F401 — `_is_retire_protected` re-exported for
     is_core_stand,
     orphan_canisters,
 )
-from orchestration_bridge import _multisig_configure_gen
+from orchestration_bridge import _baton_in_stand_optional, _baton_propose_upgrade_gen, _multisig_configure_gen
+from control_rules import controller_change_error
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
 import store_uploads as _store_uploads
@@ -169,7 +170,11 @@ from lifecycle import (
     _provision_assets,
     _verify_module_hash,
     _versions_in_family,
+    SYNC_MAX_FILES,
+    _list_registry_files,
+    _sync_assets_gen,
 )
+
 from models import (
     AuthorizedWasm,
     CycleSample,
@@ -204,7 +209,7 @@ from util import (
     decide_topup,
     to_hex as _to_hex,
 )
-from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, unknown_members
+from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, bundle_hash, find_canister, unknown_members
 from views import _canister_view, _section_view, _stand_view
 from version_http import version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
@@ -213,18 +218,21 @@ from wasm_types import infer_wasm_type, wasm_type_of_wasm
 # After util/views: sheetv2 needs a real `re`, which is only importable once
 # the earlier imports have initialised the WASI import system.
 from sheet_api import (
+    _declared_world,
     apply_gen as _apply_plan_gen,
     bind_conductor_impl,
+    build_stand_round_gen as _build_stand_round_gen,
     export_sheet_impl,
     get_bindings_impl,
     get_sheet_impl,
     plan_gen as _plan_gen,
-    reconcile_gen as _reconcile_sheet_gen,
-    reconcile_interval_secs,
+    record_content_release,
+    record_wasm_release,
     set_sheet_impl,
-    verify_gen as _verify_plan_gen,
 )
 from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc
+from live_state import _asset_hashes_gen
+from planner import desired_assets
 
 # IC HTTP gateway types (GET /version — gos-as-a-service#39).
 # Incoming Header is a Candid tuple, not the outgoing HttpHeader record.
@@ -396,48 +404,116 @@ def _bootstrap() -> None:
         ensure_core_layout()  # every canister on a stand; migrate older layouts
         _arm_autopilot()
         _arm_cycle_sampler()
-        _arm_sheet_reconcile()
+        _resume_stand_builds()
     except Exception as e:  # pragma: no cover - defensive at install time
         _log.error(f"bootstrap error: {e}")
 
 
-# ── Sheet reconcile timer ─────────────────────────────────────────────────────
-# The conductor converges the orchestra on its own: stands minted at runtime
-# (`create_stand`) get built without anyone running `casals up`.
+# ── Stand builds ──────────────────────────────────────────────────────────────
+# The sheet is applied once, by `casals up`. The one thing the conductor builds
+# on its own is a stand minted at runtime (`create_stand`, from a section's
+# `stand_template`): the mint records the stand, then a one-shot timer builds
+# it in rounds (create → install → configure → controllers) so the caller's
+# update returns at once. A round that fails or changes nothing stops the
+# build and leaves the reason on `Stand.build_error`; a new `create_stand`
+# for the stand re-arms it.
 
-_sheet_timer_id = None
+_STAND_BUILD_DELAY_S = 1        # between rounds
+_STAND_BUILD_BUSY_RETRY_S = 5   # when an operator's apply holds the lock
+_STAND_BUILD_MAX_ROUNDS = 12    # create → install → config → baton → hand-off, with margin
+_stand_build_queue: list = []   # stand names waiting for their next round, in order
+_stand_build_rounds: dict = {}  # stand name → rounds run so far
+_stand_build_timer = {"id": None}
 
 
-def _sheet_reconcile_cb():
-    """Timer callback (generator; never raises)."""
+def _schedule_stand_build(name: str, delay_s: int = _STAND_BUILD_DELAY_S) -> None:
+    name = (name or "").strip()
+    if not name:
+        return
+    if name not in _stand_build_queue:
+        _stand_build_queue.append(name)
+    if _stand_build_timer["id"] is None:
+        try:
+            _stand_build_timer["id"] = ic.set_timer(Duration(delay_s), _stand_build_cb)
+        except Exception as e:  # pragma: no cover - host tests without a timer API
+            _log.error(f"could not schedule the build of stand {name}: {e}")
+
+
+def _stand_build_stop(name: str, error: str) -> None:
+    _stand_build_rounds.pop(name, None)
+    list(Stand.instances())
+    dk = Stand[name]
+    if dk is not None:
+        dk.build_error = (error or "")[:1024]
+    _append_event("stand_build_failed", "", {"name": name, "error": (error or "")[:600]})
+    _log.error(f"stand {name} build stopped: {error}")
+
+
+def _stand_build_cb():
+    """Timer callback (generator; never raises): one build round for the stand
+    at the head of the queue, then re-arm for the next round or stand."""
+    _stand_build_timer["id"] = None
+    if not _stand_build_queue:
+        return
+    name = _stand_build_queue.pop(0)
+    delay = _STAND_BUILD_DELAY_S
     try:
-        summary = yield from _reconcile_sheet_gen()
-        if summary.get("applied"):
-            _append_event("sheet_reconcile", "", {"source": "timer", **{k: v for k, v in summary.items() if k != "failed"}})
-        if summary.get("failed"):
-            _log.error(f"sheet reconcile: {summary['failed']}")
+        summary = yield from _build_stand_round_gen(name)
+        if summary.get("skipped") == "busy":
+            _stand_build_queue.append(name)
+            delay = _STAND_BUILD_BUSY_RETRY_S
+        elif summary.get("converged"):
+            _stand_build_rounds.pop(name, None)
+            _append_event("stand_built", "", {"name": name})
+        else:
+            rounds = _stand_build_rounds.get(name, 0) + 1
+            _stand_build_rounds[name] = rounds
+            failed = summary.get("failed")
+            if failed:
+                _stand_build_stop(name, f"{failed.get('kind')} {(failed.get('target') or {}).get('name')}: "
+                                        f"{failed.get('error')}")
+            elif summary.get("blocked"):
+                _stand_build_stop(name, "waiting on " + "; ".join(str(b) for b in summary["blocked"]))
+            elif not summary.get("applied"):
+                _stand_build_stop(name, "a build round changed nothing")
+            elif rounds >= _STAND_BUILD_MAX_ROUNDS:
+                _stand_build_stop(name, f"not built after {rounds} rounds")
+            else:
+                _stand_build_queue.append(name)
     except Exception as e:  # pragma: no cover - defensive
-        _log.error(f"sheet reconcile failed: {e}")
+        _stand_build_stop(name, str(e))
+    if _stand_build_queue:
+        _schedule_stand_build(_stand_build_queue[0], delay)
 
 
-def _arm_sheet_reconcile() -> None:
-    """(Re)arm from `conductor.settings.reconcile_interval_secs` of the stored
-    sheet; called at init / post_upgrade and after every `set_sheet`."""
-    global _sheet_timer_id
+def _resume_stand_builds() -> None:
+    """After an upgrade the timers are gone: re-arm the build of every runtime
+    stand (minted from a template, not declared in the sheet) that is neither
+    built nor stopped on an error."""
     try:
-        if _sheet_timer_id is not None:
-            try:
-                ic.clear_timer(_sheet_timer_id)
-            except Exception:
-                pass
-            _sheet_timer_id = None
         sheet, _env, _sh = load_sheet_doc()
-        interval = reconcile_interval_secs(sheet)
-        if interval > 0:
-            _sheet_timer_id = ic.set_timer_interval(Duration(interval), _sheet_reconcile_cb)
-            _log.info(f"sheet reconcile armed: every {interval}s")
+        if not sheet:
+            return
+        template_sections = set()
+        declared = set()
+        for sec in sheet.get("sections") or []:
+            if not isinstance(sec, dict):
+                continue
+            if isinstance(sec.get("stand_template"), dict):
+                template_sections.add((sec.get("name") or "").strip())
+            for st in sec.get("stands") or []:
+                if isinstance(st, dict):
+                    declared.add((st.get("name") or "").strip())
+        list(Stand.instances())
+        for dk in Stand.instances():
+            name = (dk.name or "").strip()
+            if not name or name in declared or dk.section is None or dk.section.name not in template_sections:
+                continue
+            if int(getattr(dk, "built_at", 0) or 0) > 0 or (getattr(dk, "build_error", "") or "").strip():
+                continue
+            _schedule_stand_build(name)
     except Exception as e:  # pragma: no cover - defensive at install time
-        _log.error(f"could not arm sheet reconcile: {e}")
+        _log.error(f"could not resume stand builds: {e}")
 
 
 @init
@@ -521,31 +597,8 @@ def _require_can_add() -> None:
     raise Exception("unauthorized: open access is disabled; caller is not a controller")
 
 
-def _instance_commander_has_permission(permission: str) -> bool:
-    """True if caller holds ``permission`` on any section or stand commander grant."""
-    caller = _caller()
-    list(Section.instances())
-    for sec in Section.instances():
-        if entity_has_permission(sec, caller, permission):
-            return True
-    list(Stand.instances())
-    for stand in Stand.instances():
-        if entity_has_permission(stand, caller, permission):
-            return True
-    return False
-
-
-def _require_sheet_permission(permission: str) -> None:
-    """Authorize sheet.set (controller or commander with permission)."""
-    if _is_controller():
-        return
-    if _instance_commander_has_permission(permission):
-        return
-    raise Exception(f"unauthorized: caller lacks '{permission}'")
-
-
 def _require_any_commander() -> None:
-    """Any section/stand commander may call plan/verify."""
+    """Any section/stand commander may call plan."""
     if _is_controller():
         return
     caller = _caller()
@@ -558,11 +611,6 @@ def _require_any_commander() -> None:
         if is_commander(stand, caller):
             return
     raise Exception("unauthorized: caller is not a commander")
-
-
-def _require_sheet_apply() -> None:
-    """Authorize apply (controller or commander with sheet.apply)."""
-    _require_sheet_permission("sheet.apply")
 
 
 def _conductor_commander_can(permission: str) -> bool:
@@ -1015,12 +1063,12 @@ def assign_pool_canister(args: text) -> Async[text]:
 
 @update
 def set_sheet(args: text) -> text:
-    """Store validated v2 sheet (§5.5). Requires controller or ``sheet.set``."""
+    """Store the validated v2 sheet `casals up` builds the orchestra from (§5.5).
+    Controllers only: the sheet is not edited on a running orchestra."""
     try:
-        _require_sheet_permission("sheet.set")
+        _require_admin()
         params = json.loads(args) if args else {}
         result = set_sheet_impl(params)
-        _arm_sheet_reconcile()
         return _ok(**result)
     except Exception as e:
         return _err(str(e))
@@ -1028,9 +1076,9 @@ def set_sheet(args: text) -> text:
 
 @update
 def bind_conductor(args: text) -> text:
-    """Bind conductor canister ids (needs sheet.set, idempotent). §5.5."""
+    """Bind conductor canister ids (controllers only, idempotent). §5.5."""
     try:
-        _require_sheet_permission("sheet.set")
+        _require_admin()
         params = json.loads(args) if args else {}
         return _ok(**bind_conductor_impl(params))
     except Exception as e:
@@ -1039,11 +1087,9 @@ def bind_conductor(args: text) -> text:
 
 @update
 def plan(args: text) -> Async[text]:
-    """Compute reconciliation plan from live IC state (§5.5). Args (JSON,
-    optional): {scope?: {sections?, stands?, exclude_sections?,
-    exclude_stands?}} — a targeted run (#51): items outside the scope are
-    reported under `skipped`; `sync: manual` scopes are acted upon only when
-    named here, otherwise their drift is reported under `manual`."""
+    """What `casals up` still has to do: the sheet diffed against the live
+    orchestra (§5.5). Args (JSON, optional): {stand?} — plan one stand alone,
+    the way a runtime stand build does."""
     try:
         _require_any_commander()
         params = json.loads(args) if args else {}
@@ -1054,21 +1100,10 @@ def plan(args: text) -> Async[text]:
 
 
 @update
-def verify() -> Async[text]:
-    """Plan with converged assertion (§5.5)."""
-    try:
-        _require_any_commander()
-        result = yield from _verify_plan_gen()
-        return _ok(**result)
-    except Exception as e:
-        return _err(str(e))
-
-
-@update
 def apply(args: text) -> Async[text]:
-    """Execute a stored plan by hash (§5.5). Requires ``sheet.apply``."""
+    """Execute a stored plan by hash (§5.5). Controllers only."""
     try:
-        _require_sheet_apply()
+        _require_admin()
         params = json.loads(args) if args else {}
         result = yield from _apply_plan_gen(params)
         if isinstance(result, dict) and result.get("ok") is False:
@@ -1080,7 +1115,7 @@ def apply(args: text) -> Async[text]:
 
 @query
 def export_sheet() -> text:
-    """Best-effort v2 sheet from live Casals state (§5.5)."""
+    """The sheet this conductor was built from, with its name → id bindings (§5.5)."""
     try:
         return _ok(**export_sheet_impl())
     except Exception as e:
@@ -1293,12 +1328,14 @@ def create_stand(args: text) -> text:
                 dk.members_json = json.dumps(merged)
                 _append_event("stand_members_added", "", {"name": name, "members": sorted(set(members) - set(have))})
             # Growing is a mint too: asking for a member that does not exist yet
-            # re-opens the build, so it is created even under sync: manual (#51)
-            # — also when the member was already listed but never built.
+            # re-opens the build — also when the member was already listed but
+            # never built.
             list(Canister.instances())
             wanted = {m.replace("{stand}", name) for m in members}
             if any(Canister[n] is None for n in wanted):
                 dk.built_at = 0
+                dk.build_error = ""
+                _schedule_stand_build(name)
             return _ok(name=name, members=merged, created=False)
         _require_can_add_in_section(sec, "stand.create")
         dk = Stand(name=name)
@@ -1311,6 +1348,8 @@ def create_stand(args: text) -> text:
         assert_subnet_allowed(dk.subnet, dk.subnet_type)
         dk.created_by = _caller()
         _append_event("stand_created", "", {"section": section_name, "name": name})
+        if tmpl is not None:
+            _schedule_stand_build(name)
         return _ok(name=name, members=sorted(set(members)), created=True)
     except Exception as e:
         return _err(str(e))
@@ -2581,6 +2620,13 @@ def _upgrade_to_impl_gen(params: dict) -> Async[str]:
                       {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name})
     finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
     _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "canisters": [s.canister_id for s in targets]})
+    # The stored sheet keeps saying what runs (a later `up`/`plan` is a no-op).
+    for st in targets:
+        try:
+            record_wasm_release(st.name, dk.name if dk else "", dk.section.name if dk and dk.section else "",
+                                w.key, w.wasm_hash, source=params.get("source"))
+        except Exception as e:
+            _log.error(f"upgrade_to: sheet bookkeeping for {st.name} failed: {e}")
     return _ok(upgraded=[s.canister_id for s in targets], wasm_hash=w.wasm_hash)
 
 
@@ -2618,6 +2664,127 @@ def upgrade_to(args: text) -> Async[text]:
     except Exception as e:
         _log.error(f"upgrade_to error: {e}")
         return _err(f"{e} :: {traceback.format_exc()[-600:]}")
+
+
+@update
+def propose_upgrade(args: text) -> Async[text]:
+    """Upgrade a member its stand's baton controls (Casals does not): file a
+    managed-upgrade proposal on the baton and cast Casals' own vote. The
+    baton's commanders approve; the baton runs the pipeline. This is how
+    `casals upgrade` moves a baton-governed stand.
+
+    Args (JSON): {canister, wasm_key, source?} (`source`: the sheet file's
+    registry row source, recorded with the pin). Requires `canister.deploy` on
+    the stand. Returns {action_id, baton, baton_id, wasm_hash}."""
+    try:
+        params = json.loads(args)
+        name = (params.get("canister") or "").strip()
+        list(Canister.instances())
+        st = Canister[name]
+        if st is None or not (st.canister_id or "").strip():
+            return _err(f"unknown canister '{name}'")
+        dk = st.stand
+        _require_commander(dk, "canister.deploy")
+        baton = _baton_in_stand_optional(dk)
+        if baton is None:
+            return _err(f"{name}: its stand has no baton; use upgrade_to")
+        w = _resolve_authorized_wasm((params.get("wasm_key") or "").strip(), dk.section if dk else None)
+        sheet, _env, _sh = load_sheet_doc()
+        spec = find_canister(sheet or {}, name) if sheet else None
+        health = any(isinstance(h, dict) and (h.get("query") or "").strip() == "health_check"
+                     for h in ((spec[2] if spec else {}).get("health") or []))
+        action_id = yield from _baton_propose_upgrade_gen(
+            baton.canister_id.strip(), st.canister_id.strip(),
+            registry_namespace=w.registry_namespace, registry_path=w.registry_path,
+            wasm_hash=w.wasm_hash, health_check=health,
+        )
+        # The stored sheet states the intent now; `plan` reports the member as
+        # `pending` on the baton until its commanders approve and it finishes.
+        try:
+            record_wasm_release(name, dk.name if dk else "", dk.section.name if dk and dk.section else "",
+                                w.key, w.wasm_hash, source=params.get("source"))
+        except Exception as e:
+            _log.error(f"propose_upgrade: sheet bookkeeping for {name} failed: {e}")
+        return _ok(action_id=action_id, baton=baton.name, baton_id=baton.canister_id.strip(), wasm_hash=w.wasm_hash)
+    except Exception as e:
+        _log.error(f"propose_upgrade error: {e}")
+        return _err(str(e))
+
+
+@update
+def sync_content(args: text) -> Async[text]:
+    """Make a frontend serve exactly a published bundle: every file of the store
+    namespace plus the canister's rendered `files` from the sheet, compared by
+    sha256; files that left the bundle are removed. Bounded per call — repeat
+    while `remaining` > 0. This is how `casals upgrade --content` ships a new
+    frontend build after day one.
+
+    Args (JSON): {canister, namespace?, bundle_sha256?, source?} — the namespace
+    defaults to the canister's `content` in the sheet; the store bundle must
+    hash to `bundle_sha256` (else to the stored sheet's pin, when it has one);
+    `source` is the sheet file's registry.publish source, recorded with the pin.
+    Requires `canister.deploy` on the stand. Returns {written, deleted,
+    remaining, bundle_sha256}."""
+    try:
+        params = json.loads(args)
+        name = (params.get("canister") or "").strip()
+        list(Canister.instances())
+        st = Canister[name]
+        if st is None or not (st.canister_id or "").strip():
+            return _err(f"unknown canister '{name}'")
+        _require_commander(st.stand, "canister.deploy")
+        sheet, env, _sh = load_sheet_doc()
+        spec = {}
+        if sheet:
+            found = find_canister(_declared_world(env, sheet), name)
+            spec = dict(found[2]) if found else {}
+        ns = (params.get("namespace") or spec.get("content") or "").strip()
+        if not ns:
+            return _err(f"{name}: no namespace given and the sheet declares no content for it")
+        spec["content"] = ns
+        published = {}
+        try:
+            files = yield from _list_registry_files(ns)
+            published[ns] = {f["path"]: {"sha256": f.get("sha256", "")} for f in files if f.get("path")}
+        except Exception as e:
+            return _err(f"store namespace {ns} unreadable: {e}")
+        if not published[ns]:
+            return _err(f"store namespace {ns} is empty; publish the bundle first")
+        # Never sync unapproved content: the store bundle must be the one pinned —
+        # by the caller (`casals upgrade` passes the sheet file's pin) or, failing
+        # that, by the stored sheet's registry.publish row for this namespace.
+        store_hash = bundle_hash({p: m.get("sha256", "") for p, m in published[ns].items()})
+        expected = (params.get("bundle_sha256") or "").strip().lower()
+        if not expected:
+            for row in ((sheet or {}).get("registry") or {}).get("publish") or []:
+                if isinstance(row, dict) and (row.get("path") or "").strip() == ns:
+                    expected = (row.get("sha256") or "").strip().lower()
+        if expected and expected != store_hash:
+            return _err(f"store bundle {ns} is {store_hash[:12]}…, the pin is {expected[:12]}…; "
+                        "publish the pinned bundle first")
+        desired = desired_assets(spec, published) or {}
+        live = yield from _asset_hashes_gen(st.canister_id.strip())
+        keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)
+        delete_keys = sorted(k for k in live if k not in desired)
+        record = dict(canister=name, stand_name=st.stand.name if st.stand else "",
+                      section_name=st.stand.section.name if st.stand and st.stand.section else "",
+                      source=params.get("source"))
+        if not keys and not delete_keys:
+            record_content_release(ns, store_hash, **record)
+            return _ok(written=0, deleted=0, remaining=0, bundle_sha256=store_hash)
+        yield from _sync_assets_gen(st.canister_id.strip(), ns, keys, spec.get("files") or {},
+                                    sorted(desired), delete_keys if len(keys) <= SYNC_MAX_FILES else [])
+        written = min(len(keys), SYNC_MAX_FILES)
+        remaining = max(0, len(keys) - written)
+        _append_event("content_synced", st.canister_id.strip(),
+                      {"name": name, "namespace": ns, "written": written, "remaining": remaining})
+        if not remaining:
+            record_content_release(ns, store_hash, **record)
+        return _ok(written=written, deleted=len(delete_keys) if not remaining else 0, remaining=remaining,
+                   bundle_sha256=store_hash)
+    except Exception as e:
+        _log.error(f"sync_content error: {e}")
+        return _err(str(e))
 
 
 @update
@@ -2740,13 +2907,28 @@ def set_canister_controllers(args: text) -> Async[text]:
         if not controllers:
             return _err("'controllers' must be a non-empty list of principals")
         self_id = ic.id().to_str()
-        if self_id in controllers and not params.get("force"):
+        force = bool(params.get("force"))
+        if self_id in controllers and not force:
             return _err(
                 "refusing to add Casals as a controller "
                 "(the governance multisig is the platform controller; "
                 "pass force=true to override)")
+        # The planner's safety rules apply to the hand-made change too
+        # (control_rules): never lock the canister out, never make it
+        # unreachable for the orchestra, never drop its baton — unless forced.
+        list(Canister.instances())
+        st = next((c for c in Canister.instances() if (c.canister_id or "").strip() == cid), None)
+        baton = _baton_in_stand_optional(st.stand) if st is not None and st.stand is not None else None
+        live_ctls = yield from _fetch_canister_controllers(cid)
+        err = controller_change_error(
+            name or cid, live_ctls, controllers, self_id=self_id,
+            multisig_id=_governance_multisig_id(),
+            baton_id=(baton.canister_id or "").strip() if baton is not None and baton is not st else "",
+        )
+        if err and (not force or "no valid controller" in err):
+            return _err(err)
         yield from _add_controllers(cid, controllers)
-        _append_event("set_controllers", cid, {"controllers": controllers})
+        _append_event("set_controllers", cid, {"controllers": controllers, "forced": bool(force and err)})
         return _ok(canister_id=cid, controllers=controllers)
     except Exception as e:
         return _err(str(e))
@@ -3746,6 +3928,14 @@ def sync_controllers(args: text) -> Async[text]:
                 if not desired:
                     skipped.append({"canister": st.name, "canister_id": st.canister_id,
                                     "reason": "refusing empty controller list"})
+                    continue
+                baton = _baton_in_stand_optional(st.stand) if st.stand is not None else None
+                err = controller_change_error(
+                    st.name, current, desired, self_id=self_id, multisig_id=_governance_multisig_id(),
+                    baton_id=(baton.canister_id or "").strip() if baton is not None and baton is not st else "",
+                )
+                if err:
+                    skipped.append({"canister": st.name, "canister_id": st.canister_id, "reason": err})
                     continue
 
                 if not added and not removed:

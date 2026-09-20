@@ -11,15 +11,22 @@ deploy their own conductor instances and supply sheets from their own repos.
 
 ## Declarative model
 
-One `casals.json` sheet describes an environment; `python -m casals_cli.main -e <env> up <sheet> --yes`
-makes the IC match it. `up` bootstraps the conductor (backend, frontend,
-`casals-wasms` store) if it is not bound yet, publishes the wasms the
-`registry` block names, stores the sheet (`set_sheet`), then runs the conductor's
-`plan` → `apply` until the plan is empty. With
-`conductor.settings.reconcile_interval_secs` set, the conductor re-plans and
-applies on its own timer. Products mint stands at runtime from a section's
-`stand_template` via `create_stand`. Runbook: `docs/OPERATIONS.md`; design:
-`docs/issues/declarative-orchestra-spec.md`.
+One `casals.json` sheet describes an environment on day one;
+`python -m casals_cli.main -e <env> up <sheet> --yes` builds it. `up` bootstraps
+the conductor (backend, frontend, `casals-wasms` store) if it is not bound yet,
+publishes the wasms the `registry` block names, stores the sheet (`set_sheet`),
+then runs the conductor's `plan` → `apply` until the plan is empty (bootstrap
++ resume: idempotent, safe to interrupt). Re-running `up` on a built orchestra
+is a no-op unless the sheet gained something.
+
+After that, Casals is **imperative**: the conductor never re-plans on its own
+(there is no reconcile timer, no drift report, no `verify`), and daily
+operations are explicit actions — the UI, `upgrade_to`, `set_canister_controllers`,
+`create_stand`, `casals upgrade` (ship a wasm or a content bundle), … Each
+`create_stand` builds the stand it minted (a one-shot timer plans only that
+stand; `Stand.build_error` reports a failed round). Runbook:
+`docs/OPERATIONS.md`; the cleanup that got here is issue #52; the original
+design is `docs/issues/declarative-orchestra-spec.md` (historical).
 
 ## Toolchain: icp-cli only
 
@@ -58,7 +65,7 @@ seed/templates/      — committed, gzipped template WASMs; sheets reference the
                        local:seed/templates/<file>; rebuild with `make build-templates`.
                        Also holds certified-assets@0.3.0.wasm.gz — the `casals-wasms`
                        store itself (built from smart-social-contracts/certified-assets)
-seed/sheets/         — sheets (desired orchestras), e.g. demo.json
+seed/sheets/         — sheets (day-one orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
 scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
                        examples/wire_monitor.py (off-chain monitor wiring example)
@@ -75,10 +82,8 @@ rendered by `frontend/src/routes/+layout.svelte`:
 | Route | Purpose |
 |-------|---------|
 | `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
-| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — pin status, store contents, consumers; Upload bundle from a folder or `.tgz`, then *Pin in sheet*). `/wasms` redirects here |
-| `/sheet` | Live sheet JSON editor (Save); pool list + **Assign** |
-| `/plan` | Plan / Drift — what `casals plan` would change; apply it. *Manual* lists drift in `sync: manual` scopes (observed, not acted upon); the stands/sections inputs run a targeted plan |
-| `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, reconcile |
+| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — pin status, store contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
+| `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, cycles autopilot |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
 | `/commanders` | Operator access: orchestra / section / stand commanders and granular permissions (a commander at one rung acts on everything beneath it) |
@@ -103,7 +108,7 @@ icp network start -e local
 # Parallel run on the same laptop: CASALS_REPLICA_PORT=auto CASALS_HOME=~/casals-home-b
 # (see docs/OPERATIONS.md — isolated replica).
 
-# Terminal 2 — build, deploy and reconcile an orchestra from its sheet
+# Terminal 2 — build and deploy an orchestra from its sheet
 python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
 ```
 
@@ -200,11 +205,11 @@ python3 scripts/casals.py <command>
 make cli ARGS="<command>"
 ```
 
-Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan` (both take
-`--section`/`--stand` and `--exclude-section`/`--exclude-stand`, see *Untracked
-scopes*), `pin` (write/check `registry.wasms[].sha256` and
-`registry.publish[].sha256`; offline), `bundle` (pack a built frontend into a
-canonical hashed `.tgz`, `docs/BUNDLES.md`), `verify`,
+Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`,
+`upgrade` (`--wasm <family>[@version]` / `--content <namespace>`, optionally
+`--stand`/`--section`; see *Releases*), `pin` (write/check
+`registry.wasms[].sha256` and `registry.publish[].sha256`; offline), `bundle`
+(pack a built frontend into a canonical hashed `.tgz`, `docs/BUNDLES.md`),
 `export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
 `graph`, `oracle`, `destroy`, `register`, `code new` (mint a commander access
 code; offline), and the legacy `orchestra destroy --preserve <name>` (batched
@@ -239,10 +244,11 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 
 | Method | Purpose |
 |--------|---------|
-| `set_sheet` | store the desired sheet (persisted) |
-| `plan` / `get_plan` / `verify` | compute the reconciliation plan / read a stored plan / assert it is empty |
-| `apply` / `last_apply` | execute plan items / last apply result |
-| `export_sheet` / `get_bindings` / `bind_conductor` | live sheet + bindings (name → canister id) |
+| `set_sheet` | store the day-one sheet (controllers only; `casals up` / `casals upgrade`) |
+| `plan` / `get_plan` | compute what the sheet would still add (`{only_stand}` for one stand) / read the stored plan |
+| `apply` / `last_apply` | execute plan items (controllers only) / last apply result |
+| `propose_upgrade` / `sync_content` | imperative release of a baton-governed member / of a frontend's `content` bundle (`casals upgrade`) |
+| `export_sheet` / `get_bindings` / `bind_conductor` | stored sheet + bindings (name → canister id) |
 
 ### Orchestra structure & governance
 
@@ -403,56 +409,67 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
   directory, a `.tgz` (`local:`), an `https://` URL or `release:`; `sha256` is
   the bundle hash — `casals pin` computes it, production requires it, `up`
   refuses a source that hashes differently.
-- **Reconcile.** The planner (`_plan_assets`) compares the store namespace's
+- **Day one.** The planner (`_plan_assets`) compares the store namespace's
   bundle hash against the pin: mismatch → `unverifiable` ("publish the pinned
   bundle first"), never a sync of unapproved content. When they match, a
   `sync_assets` item writes changed files and **deletes** the keys that left
   the bundle (`delete_keys`, `lifecycle._sync_assets_gen`).
+- **Later.** `casals upgrade <sheet> --content <namespace>` (or the conductor's
+  `sync_content {canister, namespace}` directly) does the same for a frontend
+  that already exists — `sync_content` verifies the store bundle against the
+  sheet pin and writes one slice per call; the CLI repeats it until
+  `remaining` is 0.
 - **Browser upload.** `/files` → *Upload bundle*: pick a folder or `.tgz`,
   hashes computed client-side, one diff against the store namespace, one
   `commit_batch` (create/set/delete). `begin_upload {namespace}` records the
   grant's scope — the store's `Commit` is canister-wide, so `end_upload
   {bundle: true}` deletes anything written outside the namespace during the
   grant, computes the bundle hash on-chain (`store_bundle` query does the same
-  any time) and the page offers *Pin in sheet* (writes
-  `registry.publish[].sha256`). Then the conductor's plan shows the
-  `sync_assets` item and a commander applies it on `/plan`. Permission
-  `wasm.upload` ("Upload files (WASMs, bundles) to the store").
+  any time). Shipping it is a release (below). Permission `wasm.upload`
+  ("Upload files (WASMs, bundles) to the store").
 
-### Untracked scopes: `sync: manual` and targeted runs (issue #51)
+### Releases: `casals upgrade` (issue #52)
 
-`"sync": "manual"` on a section or stand (default `auto`; a stand inherits its
-section) means *observe, don't act*: the planner computes its drift and reports
-it under `plan.manual` (CLI table, `/plan` *Manual*), emits no items for it,
-`up` does not publish `registry.publish` rows only it consumes, and the
-reconcile timer leaves it alone. Acting is explicit: `casals up --stand <name>`
-/ `--section <name>` (and `plan`) reconcile only the named scopes — manual ones
-included — and report everything else under `plan.skipped`;
-`--exclude-stand` / `--exclude-section` is the inverse. `plan {scope}` carries
-the same; `apply` re-plans under the stored plan's scope, so a targeted plan
-hash stays valid (`sheet_api.apply_gen`). `sheetv2.scope_modes` /
-`planner._PlanContext.disposition` decide `apply | manual | excluded |
-out_of_scope` per item; `casals_cli/up.py::untouched_publish_rows` mirrors it
-for step 4.
+The sheet builds the orchestra once; a new build afterwards is an operation,
+not a re-apply. `casals pin` writes the new `sha256` into the sheet file, then
+`casals upgrade <sheet> --wasm <family>[@<version>]` / `--content <namespace>`
+(repeatable; `--stand`/`--section` narrow the targets):
 
-- **Bookkeeping is not a deploy.** `register_section` / `register_stand` and a
-  section's or stand's own `set_commanders` (no `canister_id`) are applied
-  inside a manual scope too (`planner.STRUCTURAL_KINDS`): they change conductor
-  state only, and the sheet stays the truth for *who* may act on the scope.
-- **Template sections: the mint is the act.** A `stand_template` section may
-  be manual (corpus `dynamic-stands/Realms`): stands the installer mints are
-  still built to completion — `Stand.built_at == 0` while under construction
-  (`live_stands()[name]["built"]`, `get_tree` `built`), `materialize` sets the
-  stand's `sync` to `auto` until a whole-sheet plan finds every member bound
-  with nothing planned/deferred/pending for it (`sheet_api.mark_built_stands`).
-  `create_stand` adding members resets `built_at`. Rows a template consumes
-  are always published (the build needs them).
-- **Guard.** A manual frontend's `content` must be pinned
-  (`registry.publish[].sha256`) in every environment: nothing reconciles it
-  routinely, so the pin is its only statement of truth (`_validate_registry`).
-- **CLI safety.** `up` stops after `STALE_ROUNDS` consecutive `stale plan` /
-  `busy` answers instead of looping (an older conductor re-planning a targeted
-  run without its scope produced exactly that).
+- uploads the artifact to the store when missing (`ensure_registry_uploads`
+  on just the touched rows) and authorizes it (`add_authorized_wasm`);
+- for every canister running the family: `upgrade_to` when Casals controls it,
+  `propose_upgrade` (baton `propose_managed_upgrade` + Casals' own vote,
+  reported as `pending` with the action id) when its stand's baton does;
+  `mode: adopted` canisters are skipped;
+- for every frontend whose sheet `content` is the namespace: `sync_content`
+  (the store bundle must hash to the file's pin) until nothing remains.
+
+The stored sheet keeps saying what runs without anyone calling `set_sheet`:
+`upgrade_to`, `propose_upgrade` and `sync_content` record what they shipped
+(`sheet_api.record_wasm_release` / `record_content_release` — the canister's
+`wasm`/`content`, a runtime stand's template member, the registry row's pin,
+the row itself when the CLI passes the file's `source`), so a later `casals
+up` / `plan` finds nothing to do. `set_sheet`, `bind_conductor` and `apply`
+are controller-only; once the deployer has handed the conductor to the
+multisig, `up` re-runs are no-ops (it skips `set_sheet` when the file is the
+stored document) and a *changed* sheet needs a controller — after day one,
+structure changes are UI/CLI operations too.
+
+Controller changes (`set_canister_controllers`, `sync_controllers`, the
+planner's `set_controllers` item) all go through `src/control_rules.py`:
+never drop the conductor from a canister it manages unless a baton it knows
+takes over, never leave a canister with no controller, no `$self` on batons.
+
+### Runtime stands (`create_stand`)
+
+`create_stand` registers the stand (or adds members) and arms a one-shot timer
+(`main._schedule_stand_build`) that plans **only that stand** (`plan`'s
+`only_stand`) and applies until nothing is planned, deferred or pending, then
+marks it built (`sheet_api.build_stand_round_gen`, `mark_built_stands`). A
+`busy` conductor retries later; a round that raises stores the message in
+`Stand.build_error` (`get_tree`, `casals tree`) and stops after
+`_STAND_BUILD_MAX_ROUNDS`; `create_stand` on the same stand clears the error
+and re-arms. Post-upgrade, `_resume_stand_builds` re-arms unbuilt stands.
 
 ### Baton-governed stands (`baton.hand_off`)
 
@@ -467,15 +484,15 @@ or `"*"` (every member but the baton). `hand_off`:
   `[$stand.baton]` (plus `$this` when the member controls itself, as realm
   backends do so they can secede). The provisioning controllers (Casals, the
   multisig, the stand's `created_by` canister) leave non-destructively, so the
-  reconcile timer finishes a runtime-minted stand by itself; the baton's own
+  stand-build timer finishes a runtime-minted stand by itself; the baton's own
   timers drive its pipeline (`_arm_resume_timer`: the callback must be the
-  generator). From then on a `wasm` bump plans an
-  `upgrade_via_baton` item: the conductor files `propose_managed_upgrade` on the
-  baton, votes with its own weight, and the plan lists the action under
-  `pending` until the other commanders approve and the baton finishes. A member
-  that dropped both Casals and the baton from its controllers is `departed` and
-  left alone. Sole-managed members can't carry `content`/`files` (Casals could
-  not sync assets afterwards); `validate` enforces that.
+  generator). From then on a release is `casals upgrade --wasm` → the
+  conductor's `propose_upgrade`: it files `propose_managed_upgrade` on the
+  baton, votes with its own weight, and reports the action as `pending` until
+  the other commanders approve and the baton finishes (on day one the planner's
+  `upgrade_via_baton` item does the same). Sole-managed members can't carry
+  `content`/`files` (Casals could not sync assets afterwards); `validate`
+  enforces that.
 
 Baton controllers must be `[$multisig]` (the orchestra multisig can unbrick).
 `hand_off: "sole"` lets Casals only reach a member through `canister_info`; the

@@ -264,30 +264,27 @@ def test_bind_conductor_homes_every_canister(db, monkeypatch):
     assert store["kind"] == "frontend" and store["wasm_type"] == "assets"
 
 
-def test_apply_replans_under_the_stored_plans_scope(db, monkeypatch):
-    """A targeted plan (#51) is applied under its own scope: without it a
-    `--stand` item on a manual stand re-plans as `manual`, the hash changes
-    and every apply reads "stale plan" (seen on the e2e corpus)."""
+def test_apply_replans_under_the_stored_plans_stand(db, monkeypatch):
+    """A single-stand plan (a runtime stand build) is only reproducible under
+    the same restriction: `apply` re-plans with the stand the stored plan
+    names, a whole-sheet plan without one."""
     import sheet_api
     from sheet_storage import store_plan
 
     seen: list = []
-    targeted = {"hash": "t" * 8, "items": [{"kind": "sync_assets", "requires": "self"}],
-                "scope": {"sections": [], "stands": ["Rust"], "exclude_sections": [], "exclude_stands": []}}
-    plain = {"hash": "p" * 8, "items": [], "scope": {k: [] for k in targeted["scope"]}}
+    targeted = {"hash": "t" * 8, "items": [{"kind": "sync_assets", "requires": "self"}], "stand": "Rust"}
+    plain = {"hash": "p" * 8, "items": [], "stand": ""}
     store_plan(targeted)
     store_plan(plain)
 
-    def fake_world(scope=None):
-        seen.append(scope)
-        plan = targeted if scope else plain
+    def fake_world(only_stand=None):
+        seen.append(only_stand)
+        plan = targeted if only_stand else plain
         yield  # a generator, like the real one
         return plan, {}, {}, "self", "local"
 
     monkeypatch.setattr(sheet_api, "_plan_world_gen", fake_world)
     monkeypatch.setattr(sheet_api, "load_sheet_doc", lambda: ({"version": 2}, "local", "h"))
-    monkeypatch.setattr(sheet_api, "_bindings_map", lambda: {})
-    monkeypatch.setattr(sheet_api, "apply_requires_proposal", lambda sheet, env: False)
     applied: list = []
 
     def fake_apply(plan, **kw):
@@ -307,16 +304,15 @@ def test_apply_replans_under_the_stored_plans_scope(db, monkeypatch):
 
     res = drive(sheet_api.apply_gen({"plan_hash": "t" * 8}))
     assert res.get("ok") is True and applied == ["t" * 8]
-    assert seen == [{"stands": ["Rust"]}]
-    # a whole-sheet plan re-plans without a scope
+    assert seen == ["Rust"]
+    # a whole-sheet plan re-plans without a restriction
     res = drive(sheet_api.apply_gen({"plan_hash": "p" * 8}))
     assert res.get("ok") is True and seen[-1] is None
 
 
 def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
-    """The mint is the act (#51): a runtime stand stays `built_at == 0` — and so
-    reconciled even under a manual section — until a whole-sheet plan finds
-    every member bound with nothing planned, deferred or pending for it."""
+    """A runtime stand stays `built_at == 0` until a plan finds every member
+    bound with nothing planned, deferred or pending for it."""
     import sheet_api
     from models import Section, Stand
 
@@ -325,7 +321,7 @@ def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
     st.section = sec
     resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [
         {"name": "realm-x-baton"}, {"name": "realm-x-backend"}]}]}]}
-    empty = {"items": [], "manual": [], "skipped": [], "pending": [], "deferred": []}
+    empty = {"items": [], "pending": [], "deferred": []}
     # a member not yet created
     assert sheet_api.mark_built_stands(dict(empty), resolved, {"realm-x-baton": "aaaaa-aa"}, now_s=7) == []
     bound = {"realm-x-baton": "aaaaa-aa", "realm-x-backend": "bbbbb-bb"}
@@ -334,8 +330,10 @@ def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
     plan = dict(empty, deferred=[{"target": "realm-x-backend", "field": "controllers"}])
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
-    plan = dict(empty, pending=[{"kind": "upgrade_code", "target": {"name": "realm-x-backend", "stand": "realm-x"}}])
+    plan = dict(empty, pending=[{"target": "realm-x-backend", "stand": "realm-x", "baton": "realm-x-baton"}])
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
+    # a single-stand plan for another stand decides nothing about this one
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, only_stand="realm-y") == []
     # converged: built, once
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7) == ["realm-x"]
     list(Stand.instances())
@@ -356,7 +354,7 @@ def test_mark_built_stands_skips_a_stand_grown_while_the_plan_was_in_flight(db):
     st = Stand(name="realm-x")
     st.section = sec
     resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [{"name": "realm-x-baton"}]}]}]}
-    empty = {"items": [], "manual": [], "skipped": [], "pending": [], "deferred": []}
+    empty = {"items": [], "pending": [], "deferred": []}
     bound = {"realm-x-baton": "aaaaa-aa"}
     before = {"realm-x": {"section": "Realms", "members": [], "built": False}}
     st.members_json = '["{stand}-quarter-2"]'  # grown during the plan

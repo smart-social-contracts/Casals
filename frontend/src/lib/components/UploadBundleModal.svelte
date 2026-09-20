@@ -1,9 +1,8 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
   import { get } from 'svelte/store';
-  import { canDo, identity } from '$lib/auth';
-  import { beginUpload, endUpload, getSheetDocument, listStoreFiles, setSheetDocument } from '$lib/api';
-  import type { Sheet } from '$lib/api';
+  import { identity } from '$lib/auth';
+  import { beginUpload, endUpload, listStoreFiles } from '$lib/api';
   import { formatBytes, uploadBundleToStore } from '$lib/wasmStoreClient';
   import type { BundleUploadProgress } from '$lib/wasmStoreClient';
   import {
@@ -46,10 +45,6 @@
   let onChainHash = $state('');
   let onChainFiles = $state(0);
   let outOfScope = $state<string[]>([]);
-  let pinning = $state(false);
-  let pinnedNow = $state(false);
-
-  const canSetSheet = canDo('sheet.set');
   const busy = $derived(phase === 'hashing' || phase === 'uploading' || phase === 'verifying');
   const nsOk = $derived(/^[^\s/][^\s]*$/.test(namespace.trim()) && !namespace.split('/').includes('..') && !namespace.startsWith('wasm/') && namespace.trim() !== 'wasm');
   const uploadBytes = $derived(files.filter((f) => diff.upload.includes(f.path)).reduce((n, f) => n + f.bytes.length, 0));
@@ -164,34 +159,6 @@
     }
   }
 
-  /** Write the on-chain bundle hash into the sheet's registry.publish row for
-   *  this namespace (adding a `store:` row when the sheet has none), so the
-   *  planner may sync it. `casals up` verifies a `store:` row instead of
-   *  uploading it. */
-  async function pinInSheet() {
-    pinning = true;
-    error = '';
-    try {
-      const doc = await getSheetDocument();
-      const sheet: Sheet = JSON.parse(JSON.stringify(doc.sheet));
-      const registry = (sheet.registry ??= {});
-      const publish = (registry.publish ??= []);
-      const ns = namespace.trim();
-      const row = publish.find((r) => r.path === ns);
-      if (row) row.sha256 = onChainHash;
-      else publish.push({ path: ns, source: 'store:', sha256: onChainHash });
-      await setSheetDocument(sheet, doc.env);
-      say(`sheet: registry.publish ${ns} pinned to ${onChainHash.slice(0, 12)}…`);
-      pinnedNow = true;
-      phase = 'done';
-      ondone?.();
-    } catch (e: any) {
-      error = e?.message ?? String(e);
-    } finally {
-      pinning = false;
-    }
-  }
-
   function cancel() {
     if (busy) return;
     oncancel?.();
@@ -213,8 +180,9 @@
     <p class="text-sm text-primary-500 mb-4">
       A frontend's built <span class="font-mono">dist/</span> — a folder or a <span class="font-mono">.tgz</span> from
       <span class="font-mono">casals bundle</span>. Every file is hashed here; only changed files are written, files that
-      left the bundle are removed, all in one commit to the <span class="font-mono">casals-wasms</span> store. Then the
-      bundle hash the store computed can be pinned in the sheet.
+      left the bundle are removed, all in one commit to the <span class="font-mono">casals-wasms</span> store. Shipping
+      it to a frontend is a release: pin the bundle hash in the sheet file (<span class="font-mono">casals pin</span>) and run
+      <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span>.
     </p>
 
     {#if error}
@@ -307,16 +275,11 @@
           <div class="font-mono break-all mt-0.5">{onChainHash}</div>
           {#if !hashMismatch}<div class="mt-0.5">matches the files hashed in this browser</div>{/if}
         </div>
-        {#if !hashMismatch && pinDiffers && !pinnedNow}
+        {#if !hashMismatch && pinDiffers}
           <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            {#if $canSetSheet === false}
-              The sheet {pinned ? `pins ${pinned.slice(0, 12)}…` : 'has no pin for this namespace'}; a commander with
-              <span class="font-mono">sheet.set</span> must pin <span class="font-mono">{onChainHash.slice(0, 12)}…</span>
-              before the conductor syncs it.
-            {:else}
-              The sheet {pinned ? `pins ${pinned.slice(0, 12)}…` : 'has no pin for this namespace'}. Pin the new bundle
-              so <em>Plan</em> proposes the sync; then apply it from <em>Plan / Drift</em>.
-            {/if}
+            The sheet {pinned ? `pins ${pinned.slice(0, 12)}…` : 'has no pin for this namespace'}. To ship this build:
+            <span class="font-mono">casals pin</span> the sheet file, then
+            <span class="font-mono">casals upgrade &lt;sheet&gt; --content {namespace.trim()}</span>.
           </div>
         {/if}
       {/if}
@@ -335,11 +298,6 @@
           {#if phase === 'hashing'}Hashing…{:else if phase === 'uploading'}Uploading…{:else if phase === 'verifying'}Verifying…{:else}Upload {diff.upload.length || ''} file(s){/if}
         </button>
       {:else if phase === 'uploaded'}
-        {#if !hashMismatch && pinDiffers && $canSetSheet !== false}
-          <button type="button" class="btn-primary btn-sm" onclick={pinInSheet} disabled={pinning}>
-            {pinning ? 'Pinning…' : 'Pin in sheet'}
-          </button>
-        {/if}
         <button type="button" class="btn-secondary btn-sm" onclick={finish}>Done</button>
       {/if}
     </div>
