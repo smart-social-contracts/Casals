@@ -154,9 +154,19 @@ class IcClient:
             return ["--project-root-override", self.project_root]
         return []
 
+    def _announce_signing(self, argv: list[str]) -> None:
+        """A hardware key signs every call and may want a touch; icp's own
+        prompt is swallowed with its stdout, so say what is being signed
+        (`CASALS_QUIET_SIGNING=1` silences it)."""
+        if not self._pin_file or os.environ.get("CASALS_QUIET_SIGNING") or argv[:2] == ["canister", "link"]:
+            return
+        what = " ".join(argv[:4]) if argv[:2] == ["canister", "call"] else " ".join(argv[:3])
+        print(f"  signing {what} as {self.identity or 'default'} — touch the key if it blinks", file=sys.stderr, flush=True)
+
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True, env: bool = True) -> subprocess.CompletedProcess[str]:
         cmd = ["icp"] + argv + self._base_flags(env) + self._project_root_flag()
         attempts = TRANSIENT_ATTEMPTS if tuple(argv[:2]) in RETRYABLE_OPS else 1
+        self._announce_signing(argv)
         for attempt in range(1, attempts + 1):
             result = subprocess.run(
                 cmd,

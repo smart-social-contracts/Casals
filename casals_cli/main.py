@@ -43,6 +43,8 @@ def _build_parser() -> argparse.ArgumentParser:
     up_p.add_argument("sheet", help="path to casals.json")
     up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
     up_p.add_argument("--max-items", type=int, default=5)
+    up_p.add_argument("--bootstrap", action="store_true",
+                      help="production only: allow creating a brand-new conductor when no bindings exist")
     _scope_flags(up_p)
 
     plan_p = sub.add_parser("plan", help="compute reconciliation plan")
@@ -174,6 +176,7 @@ def main(argv: list[str] | None = None) -> None:
                 project_root=REPO_ROOT,
                 upload_ic=_upload_ic_from_args(args),
                 scope=scope_from_args(args),
+                bootstrap=args.bootstrap,
             )
             emit_json(result)
         elif cmd == "plan":

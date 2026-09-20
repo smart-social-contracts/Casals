@@ -560,6 +560,7 @@ def run_up(
     dry_run: bool = False,
     upload_ic=None,
     scope: dict | None = None,
+    bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
     `set_sheet` and returns the plan: it needs a conductor and never applies.
@@ -602,6 +603,15 @@ def run_up(
     if conductor_override:
         bindings.backend_id = conductor_override
         _adopt_live_conductor(ic, bindings, conductor_override)
+    if env == "production" and not bindings.casals_backend_id and not conductor_override and not bootstrap:
+        # No bindings here means "create a whole new orchestra on mainnet" —
+        # almost always a CASALS_HOME pointing at the wrong place, not intent.
+        from casals_cli.bindings import bindings_dir
+        raise RuntimeError(
+            f"no production bindings for {sheet_name} under {bindings_dir()}: this run would bootstrap a brand-new "
+            f"conductor on mainnet. If the orchestra exists, point CASALS_HOME at its bindings or pass "
+            f"--conductor <casals-backend id>; for a genuine first deploy pass --bootstrap."
+        )
 
     # 2. fund
     _step(2)

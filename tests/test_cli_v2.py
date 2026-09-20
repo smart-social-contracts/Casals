@@ -1151,3 +1151,37 @@ class TestScopeFlags:
         assert [e["path"] for e in uploaded[-1]["registry"]["publish"]] == ["frontend/rust-frontend/1.0.0"]
         plans = [json.loads(c[1][2]) for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"]
         assert plans[-1] == {"scope": {"stands": ["Rust"]}}
+
+
+class TestProductionGuards:
+    def test_production_without_bindings_refuses_to_bootstrap(self, tmp_path, monkeypatch):
+        """Missing bindings on production = wrong CASALS_HOME far more often than a
+        first deploy; a fresh conductor on mainnet needs an explicit --bootstrap."""
+        ic = RecordingIc(env="production", identity="prod")
+        ic.deployer = DEPLOYER
+        ic.cycles["__deployer__"] = 110_000_000_000_000
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        sheet = json.load(open(TestScopeFlags.BATON))
+        sheet.setdefault("environments", {})["production"] = json.loads(json.dumps(sheet["environments"]["local"]))
+        for e in sheet["registry"]["wasms"]:
+            e["sha256"] = "0" * 64
+        for e in sheet["registry"].get("publish") or []:
+            e["sha256"] = "0" * 64
+        sheet_path = tmp_path / "casals.json"
+        sheet_path.write_text(json.dumps(sheet))
+        monkeypatch.setattr("casals_cli.up.validate", lambda *_a, **_k: [])
+        with pytest.raises(RuntimeError, match="would bootstrap a brand-new conductor on mainnet"):
+            run_up(ic, str(sheet_path), "production", yes=True, project_root=REPO_ROOT)
+        assert not [c for c in ic.calls if c[0] == "call_update"]  # nothing touched the network
+
+    def test_signing_line_names_the_call_when_a_pin_file_is_set(self, capsys):
+        client = IcClient.__new__(IcClient)
+        client._pin_file = "/tmp/pin"
+        client.identity = "prod-identity"
+        client._announce_signing(["canister", "call", "aaaaa-aa", "set_sheet", "--args-file", "x"])
+        client._announce_signing(["canister", "link", "x", "y"])
+        err = capsys.readouterr().err
+        assert err == "  signing canister call aaaaa-aa set_sheet as prod-identity — touch the key if it blinks\n"
+        client._pin_file = None
+        client._announce_signing(["canister", "call", "aaaaa-aa", "plan"])
+        assert capsys.readouterr().err == ""
