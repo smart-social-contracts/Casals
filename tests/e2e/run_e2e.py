@@ -429,6 +429,23 @@ def _sole_backends(o: Orchestra) -> list[tuple[str, str, dict, str]]:
     return out
 
 
+def _manual_stands(o: Orchestra, names: list[str]) -> list[str]:
+    """The stands (declared or minted) among ``names`` that a plain `up` leaves
+    alone: `sync: manual` on the stand or, for a template, on its section."""
+    out = []
+    for sec in o.sheet["sections"]:
+        manual_sec = sec.get("sync") == "manual"
+        for st in sec.get("stands") or []:
+            if st["name"] in names and (st.get("sync") or ("manual" if manual_sec else "auto")) == "manual":
+                out.append(st["name"])
+        tmpl = sec.get("stand_template")
+        if isinstance(tmpl, dict):
+            stand = tmpl["name_pattern"].replace("*", "e2e")
+            if stand in names and (tmpl.get("sync") or ("manual" if manual_sec else "auto")) == "manual":
+                out.append(stand)
+    return out
+
+
 def _member(stand: dict, role: str) -> dict:
     return next(c for c in stand["canisters"] if c["name"].endswith("-" + role))
 
@@ -479,7 +496,21 @@ def baton_upgrade(o: Orchestra) -> None:
     changed_path = os.path.join(o.home, "upgrade.json")
     json.dump(changed, open(changed_path, "w"))
     before = o.module_hashes()
-    res = o.casals("up", changed_path, "--yes")
+    # A stand under `sync: manual` (#51): the plain run must not file the proposal
+    # — the drift shows under plan.manual — and the rest of the scenario targets it.
+    stands = {n: n[: -len("-backend")] for n, _b, _s in upgradable}
+    manual = _manual_stands(o, list(stands.values()))
+    target = [f for st in manual for f in ("--stand", st)]
+    if manual:
+        res = o.casals("up", changed_path, "--yes")
+        filed = [p["target"] for p in res["plan"].get("pending") or [] if stands[p["target"]] in manual] if res["plan"].get("pending") else []
+        if filed:
+            raise Fail(f"plain up filed a baton proposal for manual stand(s) {manual}: {filed}")
+        seen = [m["target"]["name"] for m in res["plan"].get("manual") or [] if m["kind"] == "upgrade_via_baton"]
+        if not all(n in seen for n, st in stands.items() if st in manual):
+            raise Fail(f"upgrade on manual stand(s) {manual} not reported under plan.manual: {res['plan'].get('manual')}")
+        print(f"    (stand(s) {manual} are sync: manual — plain up filed nothing; targeting with {' '.join(target)})")
+    res = o.casals("up", changed_path, "--yes", *target)
     if res["plan"]["items"]:
         raise Fail(f"up left items: {[i['kind'] for i in res['plan']['items']]}")
     pending = {p["target"]: p for p in res["plan"].get("pending") or []}
@@ -511,7 +542,7 @@ def baton_upgrade(o: Orchestra) -> None:
             if time.time() > deadline:
                 raise Fail(f"{n}: baton action {aid} still {st} after 10 min")
             time.sleep(5)
-    res = o.casals("up", changed_path, "--yes")
+    res = o.casals("up", changed_path, "--yes", *target)
     if res["plan"]["items"] or res["plan"].get("pending"):
         raise Fail(f"after approval: items={[i['kind'] for i in res['plan']['items']]} pending={res['plan'].get('pending')}")
     after = o.module_hashes()
@@ -522,7 +553,7 @@ def baton_upgrade(o: Orchestra) -> None:
     if not rep.get("ok"):
         raise Fail("oracle after baton upgrade: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
     # back to the declared sheet: the downgrade is a proposal too (approve, wait, converge)
-    res = o.casals("up", o.sheet_path, "--yes")
+    res = o.casals("up", o.sheet_path, "--yes", *target)
     for n, b, _s in upgradable:
         p = next((p for p in res["plan"].get("pending") or [] if p["target"] == n), None)
         if not p:
@@ -534,7 +565,7 @@ def baton_upgrade(o: Orchestra) -> None:
             if time.time() > deadline:
                 raise Fail(f"{n}: downgrade action did not complete")
             time.sleep(5)
-    if o.casals("up", o.sheet_path, "--yes")["plan"]["items"]:
+    if o.casals("up", o.sheet_path, "--yes", *target)["plan"]["items"]:
         raise Fail("not converged after the downgrade")
     o.oracle()
 
