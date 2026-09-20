@@ -87,6 +87,52 @@ def cmd_pin(args, project_root: str) -> None:
         sys.exit(1)
 
 
+def cmd_bundle(args) -> None:
+    """`casals bundle <dist>`: pack a built frontend into a canonical, hashed
+    `.tgz` (docs/BUNDLES.md) — or, with `--verify`, check an existing bundle
+    or directory and print its bundle hash. The hash is what a sheet pins."""
+    from casals_cli import bundle as B
+
+    src = args.source
+    try:
+        if getattr(args, "verify", False):
+            files = B.read_bundle(src)
+            info = {"ok": True, "source": src, **B.summary(files)}
+            if getattr(args, "json", False):
+                emit_json(info)
+            else:
+                print(f"{src}: {info['files']} file(s), {info['bytes']} bytes, bundle sha256 {info['bundle_sha256']}")
+            return
+        files = B.read_dir(src) if os.path.isdir(src) else B.read_bundle(src)
+        data, man = B.write_tgz(files)
+    except B.BundleError as exc:
+        emit_error(str(exc))
+        return
+    out = args.output
+    if not out:
+        base = (args.name or os.path.basename(os.path.abspath(src.rstrip("/"))) or "bundle")
+        out = f"{base}-{args.version}.tgz" if args.version else f"{base}.tgz"
+    with open(out, "wb") as f:
+        f.write(data)
+    tgz_digest = B.sha256_hex(data)
+    with open(out + ".sha256", "w", encoding="utf-8") as f:
+        f.write(B.sha256sum_line(tgz_digest, os.path.basename(out)))
+    if getattr(args, "manifest", None):
+        with open(args.manifest, "w", encoding="utf-8") as f:
+            json.dump(man, f, indent=2, sort_keys=True)
+            f.write("\n")
+    info = {
+        "ok": True, "output": out, "tgz_sha256": tgz_digest, "bundle_sha256": man["bundle_sha256"],
+        "files": len(man["files"]), "bytes": len(data),
+    }
+    if getattr(args, "json", False):
+        emit_json(info)
+    else:
+        print(f"{out}: {info['files']} file(s), {info['bytes']} bytes gzipped")
+        print(f"  bundle sha256 {info['bundle_sha256']}   (pin this)")
+        print(f"  tgz    sha256 {tgz_digest}   ({out}.sha256)")
+
+
 def cmd_apply(ic, args) -> None:
     backend, _ = _backend(args)
     final = converge(

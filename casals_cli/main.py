@@ -60,6 +60,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pin_p.add_argument("sheet", help="path to casals.json")
     pin_p.add_argument("--check", action="store_true", help="only compare; exit 1 on unpinned or drifted rows")
 
+    bundle_p = sub.add_parser("bundle", help="pack a built frontend (dist/) into a canonical hashed .tgz — see docs/BUNDLES.md")
+    bundle_p.add_argument("source", help="dist directory (or, with --verify, a directory or .tgz)")
+    bundle_p.add_argument("-o", "--output", default=None, help="output path (default <name>-<version>.tgz)")
+    bundle_p.add_argument("--name", default=None, help="artifact name for the default output file")
+    bundle_p.add_argument("--version", default=None, help="artifact version for the default output file")
+    bundle_p.add_argument("--manifest", default=None, help="also write the manifest JSON to this path")
+    bundle_p.add_argument("--verify", action="store_true", help="only read and validate; print the bundle hash")
+
     apply_p = sub.add_parser("apply", help="execute plan items")
     apply_p.add_argument("sheet", nargs="?", help="path to casals.json")
     apply_p.add_argument("--confirm-destructive", action="store_true")
@@ -148,6 +156,8 @@ def main(argv: list[str] | None = None) -> None:
             commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args))
         elif cmd == "pin":
             commands.cmd_pin(args, REPO_ROOT)
+        elif cmd == "bundle":
+            commands.cmd_bundle(args)
         elif cmd == "apply":
             commands.cmd_apply(ic, args)
         elif cmd == "verify":
