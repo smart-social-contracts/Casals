@@ -19,7 +19,9 @@ from casals_cli.util import (  # noqa: E402
     candid_text_arg,
     candid_unescape,
     load_json_file,
+    missing_icp_cli_message,
     parse_icp_output,
+    run_icp_cmd,
 )
 
 CLI_SCRIPT = os.path.join(REPO_ROOT, "scripts", "casals.py")
@@ -109,3 +111,20 @@ class TestSubprocessRouting:
         # status needs bindings or --conductor; pass conductor override
         result = self._run(["--conductor", "aaaaa-aa", "status"], fake_icp_dir)
         assert result.returncode == 0
+
+
+class TestMissingIcpCli:
+    def test_message_points_at_the_repo_not_a_command(self):
+        text = missing_icp_cli_message()
+        assert text == "casals needs icp-cli on PATH. See https://github.com/dfinity/icp-cli"
+        assert "npm" not in text
+
+    def test_run_icp_cmd_rewrites_file_not_found(self, monkeypatch):
+        def _missing(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "icp")
+
+        monkeypatch.setattr("casals_cli.util.subprocess.run", _missing)
+        with pytest.raises(RuntimeError, match="github.com/dfinity/icp-cli") as caught:
+            run_icp_cmd(["icp", "identity", "principal"])
+        assert "No such file or directory" not in str(caught.value)
+        assert "npm" not in str(caught.value)

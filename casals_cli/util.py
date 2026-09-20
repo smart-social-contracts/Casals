@@ -3,7 +3,27 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+from typing import Any
+
+# Official install docs — do not embed a command here; the repo is the source.
+ICP_CLI_REPO = "https://github.com/dfinity/icp-cli"
+
+
+def missing_icp_cli_message() -> str:
+    return f"casals needs icp-cli on PATH. See {ICP_CLI_REPO}"
+
+
+def run_icp_cmd(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """``subprocess.run`` for an ``icp …`` argv. Missing binary → repo pointer."""
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except FileNotFoundError as exc:
+        name = cmd[0] if cmd else ""
+        if name == "icp" or getattr(exc, "filename", None) in (None, "icp"):
+            raise RuntimeError(missing_icp_cli_message()) from exc
+        raise
 
 _CANDID_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\", "'": "'"}
 

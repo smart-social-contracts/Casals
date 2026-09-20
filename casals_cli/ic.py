@@ -13,7 +13,7 @@ import time
 from typing import Any, Protocol
 
 from casals_cli.replica import icp_project_args, network_url as replica_network_url, replica_home
-from casals_cli.util import candid_text_arg, parse_icp_output
+from casals_cli.util import candid_text_arg, parse_icp_output, run_icp_cmd
 
 NETWORK_URLS = {
     "local": "http://127.0.0.1:8000",
@@ -168,7 +168,7 @@ class IcClient:
         attempts = TRANSIENT_ATTEMPTS if tuple(argv[:2]) in RETRYABLE_OPS else 1
         self._announce_signing(argv)
         for attempt in range(1, attempts + 1):
-            result = subprocess.run(
+            result = run_icp_cmd(
                 cmd,
                 cwd=self.project_root,
                 capture_output=True,
@@ -335,7 +335,7 @@ class IcClient:
         if needs_identity and self._pin_file:
             flags += ["--identity-password-file", self._pin_file]
         cmd = ["icp"] + argv + flags + ["--project-root-override", project_dir]
-        result = subprocess.run(
+        result = run_icp_cmd(
             cmd,
             cwd=project_dir,
             capture_output=True,

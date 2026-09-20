@@ -26,6 +26,8 @@ import sys
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from casals_cli.util import run_icp_cmd
+
 DEFAULT_PORT = 8000
 DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 PORT_RANGE = range(8001, 8100)
@@ -198,7 +200,7 @@ def activate() -> Replica:
 def _icp(argv: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
     cmd = ["icp", *argv, *icp_project_args()]
     cwd = replica_home() or os.getcwd()
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return run_icp_cmd(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
 def status_ok() -> bool:
@@ -222,7 +224,7 @@ def start(replica: Replica | None = None) -> Replica:
         _icp(["network", "stop", "-e", "local"], timeout=120)
     extra = ["--project-root-override", replica.home] if replica.home else []
     cwd = replica.home or os.getcwd()
-    res = subprocess.run(
+    res = run_icp_cmd(
         ["icp", "network", "start", "-e", "local", "--background", *extra],
         cwd=cwd,
         capture_output=True,
@@ -247,7 +249,7 @@ def stop(replica: Replica | None = None) -> None:
     replica = replica or activate()
     extra = ["--project-root-override", replica.home] if replica.home else []
     cwd = replica.home or os.getcwd()
-    subprocess.run(
+    run_icp_cmd(
         ["icp", "network", "stop", "-e", "local", *extra],
         cwd=cwd,
         capture_output=True,
