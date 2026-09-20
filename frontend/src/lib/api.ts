@@ -48,6 +48,8 @@ export interface Stand {
   all_permissions?: boolean;
   subnet?: string;
   subnet_type?: string;
+  /** Runtime (template-minted) stands: false while the conductor is still building the mint (#51). */
+  built?: boolean;
   canisters: Canister[];
 }
 
@@ -423,7 +425,15 @@ export interface SheetCanister {
   name: string;
   wasm_key: string;
   kind?: CanisterKind;
+  /** v2: `family@version` */
+  wasm?: string;
+  /** v2 frontends: the store namespace (a bundle) this canister serves */
+  content?: string;
+  files?: Record<string, string>;
 }
+
+/** `sync` on a section or stand (#51): `manual` scopes are observed, never acted upon unless targeted. */
+export type SyncMode = 'auto' | 'manual';
 
 export interface SheetStand {
   name: string;
@@ -431,6 +441,7 @@ export interface SheetStand {
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
+  sync?: SyncMode;
   canisters?: SheetCanister[];
 }
 
@@ -440,13 +451,27 @@ export interface SheetSection {
   commander_principal?: string;
   subnet?: string;
   subnet_type?: string;
+  sync?: SyncMode;
   stands?: SheetStand[];
+}
+
+export interface SheetPublishRow {
+  path: string;
+  source: string;
+  /** the bundle hash (docs/BUNDLES.md) */
+  sha256?: string;
+}
+
+export interface SheetRegistry {
+  wasms?: { family: string; version: string; source: string; sha256?: string }[];
+  publish?: SheetPublishRow[];
 }
 
 export interface Sheet {
   name?: string;
   description?: string;
   sections: SheetSection[];
+  registry?: SheetRegistry;
   [key: string]: unknown;
 }
 
@@ -489,6 +514,11 @@ export interface Plan {
   env: string;
   created_at_ns: number;
   items: PlanItem[];
+  /** drift in `sync: manual` scopes — observed, not acted upon (#51) */
+  manual?: (Omit<PlanItem, 'seq' | 'call'> & { scope: 'manual' })[];
+  /** items outside a targeted run's scope */
+  skipped?: (Omit<PlanItem, 'seq' | 'call'> & { scope: 'excluded' | 'out_of_scope' })[];
+  scope?: { sections: string[]; stands: string[]; exclude_sections: string[]; exclude_stands: string[] };
   drift: PlanItem[];
   unmanaged: { canister_id: string; name: string; reason: string }[];
   unverifiable: { target: string; field: string; reason: string }[];
@@ -869,6 +899,23 @@ export async function getSheet(): Promise<Sheet> {
   return _parseQuery<Sheet>(await (await _actor()).get_sheet());
 }
 
+export interface SheetDocument {
+  sheet: Sheet;
+  env: string;
+  sheet_hash: string;
+}
+
+/** The conductor's sheet as it stores it: `{sheet, env, sheet_hash}`. */
+export async function getSheetDocument(): Promise<SheetDocument> {
+  const doc = _parseQuery<Partial<SheetDocument>>(await (await _actor()).get_sheet());
+  return { sheet: (doc.sheet ?? { sections: [] }) as Sheet, env: doc.env ?? 'local', sheet_hash: doc.sheet_hash ?? '' };
+}
+
+/** Set the sheet for `env` (requires `sheet.set`). */
+export async function setSheetDocument(sheet: Sheet, env: string): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).set_sheet(JSON.stringify({ sheet, env })));
+}
+
 export async function listPool(): Promise<PoolReport> {
   return _parseQuery<PoolReport>(await (await _actor()).list_pool());
 }
@@ -894,8 +941,18 @@ export async function listSubnets(): Promise<string[]> {
 }
 
 // Compute the plan (update call: reads live IC state; 10–60 s on a big orchestra).
-export async function planOrchestra(): Promise<Plan> {
-  return _parseUpdate<{ plan: Plan }>(await (await _actor(true)).plan('{}')).plan;
+export interface PlanScope {
+  sections?: string[];
+  stands?: string[];
+  exclude_sections?: string[];
+  exclude_stands?: string[];
+}
+
+/** Plan the whole sheet, or a targeted run (#51): naming a `sync: manual`
+ *  section/stand in `scope` is the one way to act on it. */
+export async function planOrchestra(scope?: PlanScope): Promise<Plan> {
+  const args = scope && Object.values(scope).some((v) => v && v.length) ? { scope } : {};
+  return _parseUpdate<{ plan: Plan }>(await (await _actor(true)).plan(JSON.stringify(args))).plan;
 }
 
 export async function verifyOrchestra(): Promise<{ converged: boolean; plan: Plan }> {
@@ -1456,6 +1513,9 @@ export interface UploadTicket {
 
 export interface UploadReceipt {
   revoked: string;
+  out_of_scope_deleted?: string[];
+  files?: Record<string, { sha256: string; size: number }>;
+  bundle_sha256?: string;
   key?: string;
   namespace?: string;
   path?: string;
@@ -1496,18 +1556,36 @@ export interface StoreSizeReport {
 }
 
 /** Grant the caller a just-in-time Commit on the store; returns where to upload. */
-export async function beginUpload(keyPrefix = ''): Promise<UploadTicket> {
-  return _parseUpdate<UploadTicket>(
-    await (await _actor(true)).begin_upload(JSON.stringify(keyPrefix ? { key_prefix: keyPrefix } : {})),
-  );
+/**
+ * A just-in-time Commit grant on the store. `namespace` scopes it to one
+ * bundle namespace (end_upload deletes anything written outside it).
+ */
+export async function beginUpload(keyPrefixOrOpts: string | { namespace?: string; key_prefix?: string } = ''): Promise<UploadTicket> {
+  const args = typeof keyPrefixOrOpts === 'string'
+    ? (keyPrefixOrOpts ? { key_prefix: keyPrefixOrOpts } : {})
+    : Object.fromEntries(Object.entries(keyPrefixOrOpts).filter(([, v]) => v));
+  return _parseUpdate<UploadTicket>(await (await _actor(true)).begin_upload(JSON.stringify(args)));
 }
 
-/** Revoke the caller's Commit; with a path, also return the on-chain size + sha256. */
-export async function endUpload(path = '', namespace = ''): Promise<UploadReceipt> {
-  const args: Record<string, string> = {};
+/** Revoke the caller's Commit; with a path, also return the on-chain size +
+ *  sha256; with `bundle`, the namespace's files and bundle hash. */
+export async function endUpload(path = '', namespace = '', bundle = false): Promise<UploadReceipt> {
+  const args: Record<string, string | boolean> = {};
   if (path) args.path = path;
   if (namespace) args.namespace = namespace;
+  if (bundle) args.bundle = true;
   return _parseUpdate<UploadReceipt>(await (await _actor(true)).end_upload(JSON.stringify(args)));
+}
+
+export interface StoreBundle {
+  namespace: string;
+  files: Record<string, { sha256: string; size: number }>;
+  bundle_sha256: string;
+}
+
+/** A store namespace as a bundle, hashed on-chain (docs/BUNDLES.md). */
+export async function storeBundle(namespace: string): Promise<StoreBundle> {
+  return _parseUpdate<StoreBundle>(await (await _actor(true)).store_bundle(JSON.stringify({ namespace })));
 }
 
 export async function listStoreFiles(namespace = ''): Promise<StoreFile[]> {

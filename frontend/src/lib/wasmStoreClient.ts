@@ -24,7 +24,7 @@ export {
   uploadEpochMs,
   wasmStorePath,
 } from './wasmStorePath';
-import { hexToBytes } from './wasmStorePath';
+import { hexToBytes, storeKey } from './wasmStorePath';
 
 // Mirrors certified-assets assets.did (a variant with fewer tags than the
 // canister's is a valid Candid subtype, so only the operations we use are listed).
@@ -150,6 +150,117 @@ export async function uploadToStore(opts: UploadOptions): Promise<void> {
     });
   } catch (e) {
     // Free the half-uploaded chunks; the grant is revoked by end_upload regardless.
+    await actor.delete_batch({ batch_id }).catch(() => {});
+    throw e;
+  }
+}
+
+// ── bundles ────────────────────────────────────────────────────────────────
+
+export interface BundleUploadFile {
+  path: string;
+  bytes: Uint8Array;
+  sha256: string;
+  contentType: string;
+}
+
+export interface BundleUploadProgress {
+  /** bytes sent so far / to send */
+  sent: number;
+  total: number;
+  filesDone: number;
+  files: number;
+  phase: 'chunks' | 'commit' | 'done';
+}
+
+export interface BundleUploadOptions {
+  identity: Identity;
+  storeCanisterId: string;
+  /** store namespace the bundle lives under, e.g. `frontend/web/main` */
+  namespace: string;
+  /** files to write (new or changed) */
+  files: BundleUploadFile[];
+  /** paths that left the bundle: deleted in the same commit */
+  deletePaths?: string[];
+  chunkBytes?: number;
+  parallel?: number;
+  onProgress?: (p: BundleUploadProgress) => void;
+}
+
+/**
+ * Write a bundle into its store namespace as ONE batch: every changed file's
+ * chunks, then a single commit_batch carrying CreateAsset + SetAssetContent
+ * per file and DeleteAsset per path that left the bundle. The store certifies
+ * the whole tree on commit, so a reader never sees a half-updated namespace,
+ * and one grant window covers the whole release (docs/BUNDLES.md).
+ */
+export async function uploadBundleToStore(opts: BundleUploadOptions): Promise<void> {
+  const chunkBytes = opts.chunkBytes ?? 1024 * 1024;
+  const parallel = Math.max(1, opts.parallel ?? 3);
+  const actor = await storeActor(opts.identity, opts.storeCanisterId);
+  const total = opts.files.reduce((n, f) => n + f.bytes.length, 0);
+  const progress: BundleUploadProgress = { sent: 0, total, filesDone: 0, files: opts.files.length, phase: 'chunks' };
+  opts.onProgress?.({ ...progress });
+
+  const { batch_id } = await actor.create_batch({});
+  try {
+    // every (file, chunk) pair, uploaded with bounded parallelism
+    const jobs: { file: number; index: number; slice: Uint8Array }[] = [];
+    const chunkIds: bigint[][] = opts.files.map((f) => {
+      const n = Math.max(1, Math.ceil(f.bytes.length / chunkBytes));
+      return new Array<bigint>(n);
+    });
+    opts.files.forEach((f, fi) => {
+      const n = chunkIds[fi].length;
+      for (let i = 0; i < n; i++) {
+        jobs.push({ file: fi, index: i, slice: f.bytes.subarray(i * chunkBytes, Math.min(f.bytes.length, (i + 1) * chunkBytes)) });
+      }
+    });
+    let next = 0;
+    const remaining = chunkIds.map((c) => c.length);
+    const worker = async () => {
+      while (next < jobs.length) {
+        const job = jobs[next++];
+        const { chunk_id } = await actor.create_chunk({ batch_id, content: job.slice });
+        chunkIds[job.file][job.index] = chunk_id;
+        progress.sent += job.slice.length;
+        if (--remaining[job.file] === 0) progress.filesDone += 1;
+        opts.onProgress?.({ ...progress });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(parallel, Math.max(1, jobs.length)) }, worker));
+
+    const operations: unknown[] = [];
+    opts.files.forEach((f, fi) => {
+      operations.push({
+        CreateAsset: {
+          key: storeKey(opts.namespace, f.path),
+          content_type: f.contentType,
+          max_age: [],
+          headers: [],
+          enable_aliasing: [],
+          allow_raw_access: [],
+        },
+      });
+      operations.push({
+        SetAssetContent: {
+          key: storeKey(opts.namespace, f.path),
+          content_encoding: 'identity',
+          chunk_ids: chunkIds[fi],
+          last_chunk: [],
+          sha256: [hexToBytes(f.sha256)],
+        },
+      });
+    });
+    for (const path of opts.deletePaths ?? []) {
+      operations.push({ DeleteAsset: { key: storeKey(opts.namespace, path) } });
+    }
+    progress.phase = 'commit';
+    opts.onProgress?.({ ...progress });
+    await actor.commit_batch({ batch_id, operations });
+    progress.phase = 'done';
+    opts.onProgress?.({ ...progress });
+  } catch (e) {
     await actor.delete_batch({ batch_id }).catch(() => {});
     throw e;
   }

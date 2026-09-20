@@ -16,7 +16,15 @@
   let notice = $state('');
   let confirmDestructive = $state(false);
   let expanded = $state<Record<string, boolean>>({});
-  let open = $state<Record<string, boolean>>({ drift: true, unmanaged: false, unverifiable: false, info: false });
+  let open = $state<Record<string, boolean>>({ drift: true, manual: true, skipped: false, unmanaged: false, unverifiable: false, info: false });
+  // Targeted run (#51): stand / section names, comma-separated. Naming a
+  // `sync: manual` scope is the one way to plan (and then apply) its items.
+  let scopeStands = $state('');
+  let scopeSections = $state('');
+  const manual = $derived(plan?.manual ?? []);
+  const skipped = $derived(plan?.skipped ?? []);
+  const scoped = $derived(!!plan?.scope && Object.values(plan.scope).some((v) => v.length));
+  const splitNames = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
   const hasDestructive = $derived(plan?.items.some((i) => i.destructive) ?? false);
   const canApply = $derived(
@@ -49,7 +57,7 @@
     planning = true;
     error = '';
     try {
-      plan = await planOrchestra();
+      plan = await planOrchestra({ stands: splitNames(scopeStands), sections: splitNames(scopeSections) });
       expanded = {};
       confirmDestructive = false;
     } catch (e: any) {
@@ -117,6 +125,43 @@
 </script>
 
 <svelte:head><title>Casals · Plan / Drift</title></svelte:head>
+
+{#snippet observedTable(items: { kind: string; target: PlanItem['target']; reason: string; scope: string; destructive: boolean; requires: string }[], prefix: string)}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-[10px] font-semibold uppercase tracking-wider text-primary-400 border-b border-[var(--color-border-primary)]">
+          <th class="py-2 pl-4 pr-2">Kind</th>
+          <th class="py-2 px-2">Target</th>
+          <th class="py-2 px-2">Reason</th>
+          <th class="py-2 px-2">Why not applied</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-[var(--color-border-primary)]">
+        {#each items as item, i (`${prefix}:${i}`)}
+          <tr class="align-top hover:bg-primary-50/40">
+            <td class="py-2 pl-4 pr-2 font-mono text-xs text-primary-800 whitespace-nowrap">{item.kind}</td>
+            <td class="py-2 px-2 min-w-0">
+              <div class="font-medium text-primary-900">{targetLabel(item.target)}</div>
+              {#if scopeLabel(item.target)}<div class="text-xs text-primary-400">{scopeLabel(item.target)}</div>{/if}
+            </td>
+            <td class="py-2 px-2 text-xs text-primary-600">{item.reason}</td>
+            <td class="py-2 px-2">
+              {#if item.scope === 'manual'}
+                <span class="badge bg-amber-50 text-amber-800 border border-amber-200" title="sync: manual — plan with the stand/section named to act on it">manual</span>
+              {:else if item.scope === 'excluded'}
+                <span class="badge badge-neutral">excluded</span>
+              {:else}
+                <span class="badge badge-neutral">out of scope</span>
+              {/if}
+              {#if item.destructive}<span class="badge badge-critical ml-1">destructive</span>{/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+{/snippet}
 
 {#snippet itemTable(items: PlanItem[], prefix: string)}
   <div class="overflow-x-auto">
@@ -226,7 +271,8 @@
         displayed plan, then re-plans.
       </p>
     </div>
-    <div class="flex items-center gap-2 self-start shrink-0">
+    <div class="flex flex-col items-end gap-2 self-start shrink-0">
+    <div class="flex items-center gap-2">
       <button class="btn-secondary btn-sm" onclick={load} disabled={loading || planning || applying}>Refresh</button>
       <button class="btn-secondary btn-sm" onclick={runPlan} disabled={!$isAuthenticated || planning || applying} title={$isAuthenticated ? '' : 'Log in as a commander to plan'}>
         {#if planning}
@@ -248,6 +294,13 @@
           Apply
         {/if}
       </button>
+    </div>
+    <div class="flex items-center gap-2 text-xs text-primary-500" title="Targeted run: plan only these stands/sections — the one way to act on sync: manual scopes">
+      <label for="plan-scope-stands">stands</label>
+      <input id="plan-scope-stands" class="input input-sm font-mono w-40" placeholder="(all)" bind:value={scopeStands} disabled={planning || applying} />
+      <label for="plan-scope-sections">sections</label>
+      <input id="plan-scope-sections" class="input input-sm font-mono w-40" placeholder="(all)" bind:value={scopeSections} disabled={planning || applying} />
+    </div>
     </div>
   </div>
 
@@ -300,6 +353,32 @@
             </div>
             {@render itemTable(plan.items, 'item')}
           </div>
+        {/if}
+
+        {#if manual.length || skipped.length || scoped}
+          <div class="card overflow-hidden">
+            {@render section('manual', 'Manual — observed, not acted upon', manual.length)}
+            {#if open.manual}
+              <p class="px-4 pb-2 text-xs text-primary-500">
+                Drift inside <span class="font-mono">sync: manual</span> sections/stands. Neither the reconcile timer nor
+                <span class="font-mono">casals up</span> touch them; to act, plan with the stand or section named below (or
+                <span class="font-mono">casals up --stand &lt;name&gt;</span>) and apply.
+              </p>
+              {#if manual.length === 0}
+                <p class="px-4 pb-3 text-xs text-primary-400">No drift in manual scopes.</p>
+              {:else}
+                {@render observedTable(manual, 'manual')}
+              {/if}
+            {/if}
+          </div>
+          {#if skipped.length}
+            <div class="card overflow-hidden">
+              {@render section('skipped', 'Skipped — outside this run\'s scope', skipped.length)}
+              {#if open.skipped}
+                {@render observedTable(skipped, 'skipped')}
+              {/if}
+            </div>
+          {/if}
         {/if}
 
         <div class="card overflow-hidden">
@@ -382,6 +461,10 @@
             <div class="flex justify-between"><dt class="text-primary-500">Items</dt><dd class="font-mono text-primary-800">{plan.items.length}</dd></div>
             <div class="flex justify-between"><dt class="text-primary-400">· destructive</dt><dd class="font-mono {hasDestructive ? 'text-red-600' : 'text-primary-500'}">{plan.items.filter((i) => i.destructive).length}</dd></div>
             <div class="flex justify-between"><dt class="text-primary-500">Drift</dt><dd class="font-mono text-primary-800">{plan.drift.length}</dd></div>
+            <div class="flex justify-between"><dt class="text-primary-500">Manual</dt><dd class="font-mono {manual.length ? 'text-amber-700' : 'text-primary-800'}">{manual.length}</dd></div>
+            {#if scoped}
+              <div class="flex justify-between gap-3"><dt class="text-primary-500">Scope</dt><dd class="font-mono text-primary-800 truncate text-right" title={JSON.stringify(plan.scope)}>{[...(plan.scope?.sections ?? []), ...(plan.scope?.stands ?? [])].join(', ') || '—'}{plan.scope?.exclude_stands?.length || plan.scope?.exclude_sections?.length ? ' (with exclusions)' : ''}</dd></div>
+            {/if}
             <div class="flex justify-between"><dt class="text-primary-500">Unmanaged</dt><dd class="font-mono text-primary-800">{plan.unmanaged.length}</dd></div>
             <div class="flex justify-between"><dt class="text-primary-500">Unverifiable</dt><dd class="font-mono text-primary-800">{plan.unverifiable.length}</dd></div>
           </dl>

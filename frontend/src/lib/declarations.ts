@@ -47,6 +47,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     // ── casals-wasms store: browser uploads + housekeeping ──
     begin_upload:          IDL.Func([IDL.Text], [IDL.Text], []),
     end_upload:            IDL.Func([IDL.Text], [IDL.Text], []),
+    store_bundle:          IDL.Func([IDL.Text], [IDL.Text], []),
     list_upload_grants:    IDL.Func([], [IDL.Text], ['query']),
     list_store_files:      IDL.Func([IDL.Text], [IDL.Text], []),
     store_retention:       IDL.Func([IDL.Text], [IDL.Text], []),

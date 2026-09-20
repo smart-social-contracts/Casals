@@ -304,11 +304,11 @@
                 {meta.wasm_store_canister_id}
               </span>
               <a
-                href="/wasms"
+                href="/files"
                 class="shrink-0 inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-900 transition-colors"
                 title="Catalog and store contents"
               >
-                WASMs
+                Files
               </a>
             {:else}
               <span class="font-mono text-primary-900">—</span>

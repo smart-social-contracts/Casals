@@ -37,11 +37,17 @@
     if (!s) return null;
     let stands = 0;
     let canisters = 0;
+    const manual: string[] = [];
     for (const sec of s.sections ?? []) {
       stands += (sec.stands ?? []).length;
-      for (const d of sec.stands ?? []) canisters += (d.canisters ?? []).length;
+      for (const d of sec.stands ?? []) {
+        canisters += (d.canisters ?? []).length;
+        // a stand inherits its section's sync unless it says otherwise (#51)
+        if ((d.sync ?? sec.sync) === 'manual') manual.push(d.name);
+      }
     }
-    return { sections: (s.sections ?? []).length, stands, canisters };
+    const bundles = (s.registry?.publish ?? []).length;
+    return { sections: (s.sections ?? []).length, stands, canisters, manual, bundles };
   });
 
   const orchestraCanisterIdSet = $derived.by(() =>
@@ -131,7 +137,12 @@
         <span class="text-xs font-semibold text-primary-500 uppercase tracking-wider">Sheet (JSON)</span>
         {#if summary}
           <span class="text-xs text-primary-400">
-            {summary.sections} section(s) · {summary.stands} stand(s) · {summary.canisters} canister(s)
+            {summary.sections} section(s) · {summary.stands} stand(s) · {summary.canisters} canister(s){#if summary.bundles} · {summary.bundles} bundle(s){/if}
+            {#if summary.manual.length}
+              <span class="badge bg-amber-50 text-amber-800 border border-amber-200 ml-2" title="sync: manual — observed by the planner, acted upon only when targeted (casals up --stand …)">
+                manual: {summary.manual.join(', ')}
+              </span>
+            {/if}
           </span>
         {/if}
       </div>

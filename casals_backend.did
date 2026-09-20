@@ -164,6 +164,7 @@ service : {
   "set_subnet_whitelist" : (text) -> (text);
   "begin_upload" : (text) -> (text);
   "end_upload" : (text) -> (text);
+  "store_bundle" : (text) -> (text);
   "list_upload_grants" : () -> (text) query;
   "list_store_files" : (text) -> (text);
   "store_retention" : (text) -> (text);
