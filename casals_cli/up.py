@@ -16,6 +16,7 @@ from casals_cli.conductor import bind_conductor, bootstrap_conductor
 from casals_cli.multisig import apply_via_multisig, ensure_control, set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads, resolve_source
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
+from casals_cli.wasm_store import ensure_commit
 
 
 def _progress(msg: str) -> None:
@@ -571,11 +572,16 @@ def run_up(
     _step(4)
     if not dry_run:
         fund_store(ic, sheet, "wasms", store_id)
-        # Writing to the asset store takes Commit permission; controllers
-        # have it. The deployer is one at bootstrap and after a plan only
-        # when the sheet lists $deployer — otherwise borrow it through the
-        # multisig like any conductor change (the next plan removes it).
+        # Writing to the asset store takes the store's own Commit permission;
+        # being a controller is not enough (the batch API checks the explicit
+        # lists only), but a controller may grant it. So: be a controller —
+        # the deployer is one at bootstrap and after a plan only when the
+        # sheet lists $deployer, otherwise borrow it through the multisig
+        # like any conductor change (the next plan removes it) — then grant
+        # Commit to ourselves if a previous deployer was the one who had it.
         ensure_control(ic, store_id, deployer, multisig_id(ic, backend_id))
+        if ensure_commit(ic, store_id, deployer):
+            _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
     ensure_registry_uploads(
         ic, sheet,
         sheet_path=sheet_path,

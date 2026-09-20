@@ -161,3 +161,20 @@ def test_store_wasm_path_resolves_the_certified_assets_template(tmp_path):
         os.unlink(path)
     with pytest.raises(ValueError, match="no registry.wasms entry"):
         _store_wasm_path("wasms", {"conductor": {"wasms": {"wasm": "nope@1"}}}, sheet_dir=str(tmp_path), project_root=ROOT)
+
+
+def test_ensure_commit_grants_only_when_missing(ic):
+    from casals_cli.wasm_store import ensure_commit, list_permitted
+
+    me = "rd4en-sizpv-vnamr-6vbfc-uljz5-vvz7c-g4nzy-uflq2-zbj3x-mrwjs-gqe"
+    other = "755e2-cbcwn-7m7cb-k37ax-yez2m-q2p5p-rr3ug-neqbx-lxjmi-awsk3-uqe"
+    ic.store.permitted["Commit"] = {other}
+
+    # a controller that never held Commit (the previous deployer did) gets it
+    assert ensure_commit(ic, STORE, me) is True
+    assert ic.store.grants == [(me, "Commit")]
+    assert list_permitted(ic, STORE, "Commit") == sorted([me, other])
+
+    # idempotent: holding it already means no grant call
+    assert ensure_commit(ic, STORE, me) is False
+    assert ic.store.grants == [(me, "Commit")]

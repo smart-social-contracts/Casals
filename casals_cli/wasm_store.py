@@ -17,6 +17,7 @@ import hashlib
 from typing import Any
 
 from ic.candid import Types, VecClass, decode, encode, leb128, leb128uDecode
+from ic.principal import Principal
 
 from sheetv2 import store_key, store_namespace_prefix
 
@@ -94,6 +95,11 @@ _Operation = Types.Variant({
     "DeleteAsset": _DeleteAsset,
 })
 _CommitBatchArg = Types.Record({"batch_id": Types.Nat, "operations": Types.Vec(_Operation)})
+
+_Permission = Types.Variant({"Commit": Types.Null, "ManagePermissions": Types.Null, "Prepare": Types.Null})
+_ListPermittedArg = Types.Record({"permission": _Permission})
+_ListPermittedRet = Types.Vec(Types.Principal)
+_GrantPermissionArg = Types.Record({"to_principal": Types.Principal, "permission": _Permission})
 
 
 def _enc(typ, value) -> bytes:
@@ -221,6 +227,29 @@ def upload_bytes(
     return digest
 
 
+def list_permitted(ic, store_id: str, permission: str = "Commit") -> list[str]:
+    """Principals holding ``permission`` on the store (``list_permitted`` query)."""
+    raw = ic.call_candid(store_id, "list_permitted", _enc(_ListPermittedArg, {"permission": {permission: None}}), query=True)
+    return sorted(str(p) for p in (_dec(raw, _ListPermittedRet) or []))
+
+
+def ensure_commit(ic, store_id: str, principal: str) -> bool:
+    """Give ``principal`` ``Commit`` on the store if it does not hold it.
+
+    The batch API (``create_batch`` … ``commit_batch``) is guarded by the
+    explicit permission lists only; being a controller is *not* enough. Only
+    ``grant_permission`` accepts a controller, so this must be called as one
+    (`up` runs it right after ``ensure_control``). Returns True when a grant
+    was made."""
+    if principal in list_permitted(ic, store_id, "Commit"):
+        return False
+    ic.call_candid(
+        store_id, "grant_permission",
+        _enc(_GrantPermissionArg, {"to_principal": Principal.from_str(principal).bytes, "permission": {"Commit": None}}),
+    )
+    return True
+
+
 def delete_file(ic, store_id: str, namespace: str, path: str) -> None:
     batch_id = int(_dec(ic.call_candid(store_id, "create_batch", _enc(Types.Record({}), {})), _CreateBatchRet)["batch_id"])
     ops = [{"DeleteAsset": {"key": store_key(namespace, path)}}]
@@ -241,13 +270,30 @@ class FakeAssetStore:
         self._next_batch = 1
         self._next_chunk = 1
         self.commits: list[list[dict]] = []
+        # {permission: {principal text}}; empty = unrestricted (most tests do
+        # not care). Set ``permitted["Commit"]`` to model the real guard.
+        self.permitted: dict[str, set[str]] = {}
+        self.grants: list[tuple[str, str]] = []
 
     def handlers(self) -> dict:
         return {
             "list": self._list, "get": self._get, "get_chunk": self._get_chunk,
             "create_batch": self._create_batch, "create_chunk": self._create_chunk,
             "commit_batch": self._commit_batch,
+            "list_permitted": self._list_permitted, "grant_permission": self._grant_permission,
         }
+
+    def _list_permitted(self, raw: bytes) -> bytes:
+        perm = next(iter(_dec(raw, _ListPermittedArg)["permission"]))
+        return _enc(_ListPermittedRet, [Principal.from_str(p).bytes for p in sorted(self.permitted.get(perm, set()))])
+
+    def _grant_permission(self, raw: bytes) -> bytes:
+        arg = _dec(raw, _GrantPermissionArg)
+        perm = next(iter(arg["permission"]))
+        who = str(arg["to_principal"])
+        self.permitted.setdefault(perm, set()).add(who)
+        self.grants.append((who, perm))
+        return b"DIDL\x00\x00"
 
     def _list(self, raw: bytes) -> bytes:
         entries = []

@@ -29,6 +29,11 @@ from casals_cli.registry import resolve_source, sha256_hex  # noqa: E402
 from casals_cli.show import build_live_view, mermaid_graph, render_show_text  # noqa: E402
 from casals_cli.up import run_up  # noqa: E402
 from casals_cli.util import candid_text_arg, candid_unescape, parse_icp_output  # noqa: E402
+from casals_cli.wasm_store import FakeAssetStore  # noqa: E402
+
+# a real principal: the fake wasm store encodes it into Candid
+DEPLOYER = "rd4en-sizpv-vnamr-6vbfc-uljz5-vvz7c-g4nzy-uflq2-zbj3x-mrwjs-gqe"
+PREVIOUS_DEPLOYER = "755e2-cbcwn-7m7cb-k37ax-yez2m-q2p5p-rr3ug-neqbx-lxjmi-awsk3-uqe"
 
 CORPUS = os.path.join(REPO_ROOT, "tests", "e2e", "orchestras", "governed", "casals.json")
 
@@ -157,11 +162,15 @@ class TestReadState:
 class TestUpSequencing:
     def _governed_ic(self) -> RecordingIc:
         ic = RecordingIc(env="local")
-        ic.deployer = "deployer-principal"
+        ic.deployer = DEPLOYER
         # budget + three create deposits + headroom (exactly budget_tc is the
         # GaaS-prod trap the preflight now catches)
         ic.cycles["__deployer__"] = 110_000_000_000_000
         ic.converged = False
+        # the wasm store, with Commit still held by whoever bootstrapped it
+        ic.store = FakeAssetStore()
+        ic.store.permitted["Commit"] = {PREVIOUS_DEPLOYER}
+        ic.candid.update(ic.store.handlers())
         return ic
 
     def test_first_up_records_bootstrap_calls(self, tmp_path, monkeypatch):
@@ -173,7 +182,7 @@ class TestUpSequencing:
             bindings.conductor.setdefault("casals-wasms", "store-id")
             bindings.backend_id = bindings.conductor["casals-backend"]
             # bootstrap leaves the deployer controlling the fresh store
-            ic.controllers["store-id"] = ["deployer-principal"]
+            ic.controllers["store-id"] = [DEPLOYER]
             return bindings
 
         monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
@@ -186,6 +195,11 @@ class TestUpSequencing:
         assert "plan" in methods
         assert methods.index("set_sheet") < methods.index("plan")
         assert "verify" in methods
+        # a controller of the store is not thereby allowed to upload to it:
+        # up grants itself the store's Commit before the registry upload
+        assert ic.store.grants == [(DEPLOYER, "Commit")]
+        sequence = [c[1][1] for c in ic.calls if c[0] in ("call_candid", "call_update")]
+        assert sequence.index("grant_permission") < sequence.index("set_sheet")
 
     def test_second_up_skips_create_install(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
@@ -195,7 +209,7 @@ class TestUpSequencing:
             sheet_name="governed",
             env="local",
             network_url="http://127.0.0.1:8000",
-            deployer="deployer-principal",
+            deployer=DEPLOYER,
             conductor={
                 "casals-backend": "cond-backend",
                 "casals-frontend": "cond-fe",
@@ -205,7 +219,7 @@ class TestUpSequencing:
         b.save()
         for cid in b.conductor.values():
             ic.module_hashes[cid] = "deadbeef"
-            ic.controllers[cid] = ["deployer-principal"]
+            ic.controllers[cid] = [DEPLOYER]
 
         monkeypatch.setattr(
             "casals_cli.conductor.conductor_alive",
@@ -322,7 +336,7 @@ class TestFundCheck:
         ic = RecordingIc()
         ic.cycles["__deployer__"] = 50_000_000_000_000
         sheet = {"environments": {"local": {"cycles": {"budget_tc": 40}}}}
-        check_funds(ic, sheet, "local", "deployer-principal")
+        check_funds(ic, sheet, "local", DEPLOYER)
         assert any(c[0] == "deployer_cycles_balance" for c in ic.calls)
 
     def test_local_shortfall_includes_mint_hint(self):
@@ -336,7 +350,7 @@ class TestFundCheck:
             "environments": {"local": {"cycles": {"budget_tc": 100}}},
         }
         with pytest.raises(RuntimeError, match="shortfall"):
-            check_funds(ic, sheet, "local", "deployer-principal")
+            check_funds(ic, sheet, "local", DEPLOYER)
 
     _SHEET = {
         "conductor": {"backend": {}, "frontend": {}, "wasms": {}},

@@ -327,8 +327,13 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   computes the sha256 of each local artifact, lists the store (`list` query),
   skips entries whose `sha256` encoding hash already matches and uploads the rest
   with the batch API (`create_batch` → `create_chunk`×n → `commit_batch`). The
-  deployer needs `Commit` on the store; `up` grants it via `ensure_control` right
-  after the store is created. The Candid client lives in `casals_cli/wasm_store.py`
+  deployer needs the store's own `Commit` permission — being a controller is
+  *not* enough (the batch API checks the explicit permission lists only; only
+  `grant_permission` accepts a controller). `up` therefore makes the deployer a
+  controller (`ensure_control`, through the multisig after handover) and then
+  grants itself `Commit` if it does not hold it (`wasm_store.ensure_commit`);
+  this is what lets a new deployer identity take over a store its predecessor
+  bootstrapped. The Candid client lives in `casals_cli/wasm_store.py`
   (it carries its own `_BlobClass` — ic-py's stock `Vec(Nat8)` decode is ~20 s/MiB).
 - **Reading (backend).** `src/wasm_store.py` is the only read path:
   `stat_file` (size + sha256 from `get`), `iter_file` (`get` then `get_chunk`
