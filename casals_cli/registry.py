@@ -20,6 +20,7 @@ import subprocess
 import urllib.request
 from dataclasses import dataclass
 
+from casals_cli import bundle as _bundle
 from casals_cli import wasm_store as _store
 
 CHUNK_BYTES = 1024 * 1024
@@ -143,6 +144,35 @@ def _download_github_release(source: str) -> bytes:
     return gzip.decompress(raw) if asset.endswith(".gz") else raw
 
 
+def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[str, bytes]:
+    """A `registry.publish` source as bundle files (docs/BUNDLES.md): `local:` a
+    dist directory or a `.tgz`; `https://` / `release:` a `.tgz`. Validated —
+    unsafe paths, a missing index.html or a manifest that disagrees with the
+    files are errors here, before anything reaches the store."""
+    src = (source or "").strip()
+    if src.startswith("local:"):
+        rel = src[6:]
+        candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
+        path = next((c for c in candidates if os.path.exists(c)), None)
+        if path is None:
+            raise FileNotFoundError(f"publish source not found: {' or '.join(candidates)}")
+        return _bundle.read_bundle(path)
+    if src.startswith("https://") or src.startswith("http://"):
+        with urllib.request.urlopen(src, timeout=120) as resp:
+            raw = resp.read()
+        return _bundle.read_tgz(raw)[0]
+    if src.startswith("release:"):
+        m = RELEASE_RE.match(src)
+        if not m:
+            raise ValueError(f"invalid release source: {src}")
+        owner_repo, tag, asset = m.group(1), m.group(3), m.group(4)
+        url = f"https://github.com/{owner_repo}/releases/download/{tag}/{asset}"
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            raw = resp.read()
+        return _bundle.read_tgz(raw)[0]
+    raise ValueError(f"registry.publish: unsupported source {source!r} (local:<dir|.tgz>, https://…tgz, release:…)")
+
+
 def iter_registry_entries(sheet: dict) -> list[ResolvedArtifact]:
     """Resolve all registry.wasms entries from a sheet (no upload)."""
     registry = sheet.get("registry") or {}
@@ -213,6 +243,11 @@ class StoreTarget:
             self._keys.add(key)
         return digest
 
+    def delete(self, namespace: str, path: str) -> None:
+        _store.delete_file(self.ic, self.canister_id, namespace, path)
+        if self._keys is not None:
+            self._keys.discard(store_key(namespace, path))
+
 
 def ensure_registry_uploads(
     ic,
@@ -277,42 +312,54 @@ def ensure_registry_uploads(
             target.upload(namespace, path, data, digest)
             rows.append({**row, "action": "uploaded"})
         for entry in registry.get("publish") or []:
-            published = publish_directory(target, entry, sheet_dir=sheet_dir, project_root=project_root)
+            if not isinstance(entry, dict):
+                continue
+            published = publish_bundle(target, entry, sheet_dir=sheet_dir, project_root=project_root,
+                                       strict_pins=strict_pins, progress=progress)
             if progress:
                 n_up = sum(1 for r in published if r["action"] == "uploaded")
-                progress(f"  publish {entry.get('path')} → {target.label}: {len(published)} file(s), "
-                         f"{n_up} uploaded, {len(published) - n_up} unchanged")
+                n_del = sum(1 for r in published if r["action"] == "deleted")
+                progress(f"  publish {entry.get('path')} → {target.label}: bundle {str(entry.get('sha256'))[:12]}…, "
+                         f"{len(published) - n_del} file(s), {n_up} uploaded, {len(published) - n_up - n_del} unchanged"
+                         + (f", {n_del} removed" if n_del else ""))
             rows.extend(published)
     return rows
 
 
-def publish_directory(target, entry: dict, *, sheet_dir: str, project_root: str) -> list[dict]:
-    """`registry.publish` entry: every file under `source` (a `local:` directory)
-    lands at `<path>/<relative file path>` in ``target``; files already there
-    with the same sha256 are skipped."""
+def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str,
+                   strict_pins: bool = True, progress=None) -> list[dict]:
+    """`registry.publish` entry: the bundle at `source` becomes namespace `path`
+    in ``target`` — exactly. Files with the same sha256 are skipped, changed
+    or new ones uploaded, files the store has that left the bundle deleted,
+    so the namespace's bundle hash equals the bundle's. The entry's `sha256`
+    (the bundle hash) is enforced with ``strict_pins`` and written back to the
+    entry either way, as for wasms."""
     ns = str(entry.get("path") or "")
-    src = str(entry.get("source") or "")
-    if not src.startswith("local:"):
-        raise ValueError(f"registry.publish {ns}: only local: directories are supported, got {src!r}")
-    rel = src[6:]
-    candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
-    root = next((c for c in candidates if os.path.isdir(c)), None)
-    if root is None:
-        raise FileNotFoundError(f"publish source directory not found: {' or '.join(candidates)}")
+    files = resolve_bundle(str(entry.get("source") or ""), sheet_dir=sheet_dir, project_root=project_root)
+    hashes = _bundle.file_hashes(files)
+    digest = _bundle.bundle_hash(hashes)
+    expected = (entry.get("sha256") or "").strip().lower()
+    if expected and expected != digest:
+        if strict_pins:
+            raise ValueError(f"bundle sha256 mismatch for {ns}: pinned {expected}, source is {digest}")
+        if progress:
+            progress(f"  {ns}: pinned bundle {expected[:12]}… but the source is {digest[:12]}…; "
+                     f"using the source (pins are enforced in production only)")
+    entry["sha256"] = digest
     existing = target.file_hashes(ns)
+    plan = _bundle.diff(existing, hashes)
     rows = []
-    for dirpath, _dirs, files in os.walk(root):
-        for fn in sorted(files):
-            full = os.path.join(dirpath, fn)
-            path = os.path.relpath(full, root).replace(os.sep, "/")
-            with open(full, "rb") as f:
-                data = f.read()
-            digest = sha256_hex(data)
-            action = "skipped"
-            if existing.get(path) != digest:
-                ctype = mimetypes.guess_type(fn)[0] or "application/octet-stream"
-                target.upload(ns, path, data, digest, content_type=ctype)
-                action = "uploaded"
-            rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action,
-                         "sha256": digest, "store": target.label})
+    for path in sorted(hashes):
+        action = "skipped"
+        if path in plan["upload"]:
+            ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            target.upload(ns, path, files[path], hashes[path], content_type=ctype)
+            action = "uploaded"
+        rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action,
+                     "sha256": hashes[path], "store": target.label, "bundle_sha256": digest})
+    for path in plan["delete"]:
+        target.delete(ns, path)
+        rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": "deleted",
+                     "sha256": existing.get(path, ""), "store": target.label, "bundle_sha256": digest})
     return rows
+

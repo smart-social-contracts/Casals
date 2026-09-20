@@ -56,7 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
     grp.add_argument("--amount", type=int, help="cycles to send")
     grp.add_argument("--all", action="store_true", help="everything above the treasury reserve")
 
-    pin_p = sub.add_parser("pin", help="write each registry.wasms artifact's sha256 into the sheet")
+    pin_p = sub.add_parser("pin", help="write each registry.wasms artifact's sha256 and each registry.publish bundle hash into the sheet")
     pin_p.add_argument("sheet", help="path to casals.json")
     pin_p.add_argument("--check", action="store_true", help="only compare; exit 1 on unpinned or drifted rows")
 

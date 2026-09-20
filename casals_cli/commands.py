@@ -43,12 +43,14 @@ def cmd_plan(ic, args, project_root: str, upload_ic=None) -> None:
 
 
 def cmd_pin(args, project_root: str) -> None:
-    """Resolve every `registry.wasms` source (building `build:` targets) and write
-    each artifact's sha256 into the sheet file. Production validation refuses a
+    """Resolve every `registry.wasms` source (building `build:` targets) and every
+    `registry.publish` bundle, and write each artifact's sha256 — for bundles
+    the bundle hash of docs/BUNDLES.md — into the sheet file. Production validation refuses a
     row without a pin, so the deploy recipe is: build, `casals pin`, review the
     diff, commit, `casals up -e production`. `--check` only compares: exit 1 when
     a pinned row no longer matches what its source builds to (or has no pin)."""
-    from casals_cli.registry import resolve_source
+    from casals_cli import bundle as B
+    from casals_cli.registry import resolve_bundle, resolve_source
 
     path = args.sheet
     with open(path, encoding="utf-8") as f:
@@ -69,6 +71,20 @@ def cmd_pin(args, project_root: str) -> None:
             if not getattr(args, "check", False):
                 entry["sha256"] = digest
         rows.append({"family": family, "version": version, "sha256": digest, "was": before or None, "state": state})
+    for entry in (sheet.get("registry") or {}).get("publish") or []:
+        if not isinstance(entry, dict):
+            continue
+        ns = str(entry.get("path") or "")
+        before = (entry.get("sha256") or "").strip().lower()
+        files = resolve_bundle(str(entry.get("source") or ""), sheet_dir=sheet_dir, project_root=project_root)
+        digest = B.bundle_hash(B.file_hashes(files))
+        state = "unchanged" if before == digest else ("unpinned" if not before else "changed")
+        if state != "unchanged":
+            drift += 1
+            if not getattr(args, "check", False):
+                entry["sha256"] = digest
+        rows.append({"family": ns, "version": "bundle", "sha256": digest, "was": before or None, "state": state,
+                     "files": len(files)})
     if drift and not getattr(args, "check", False):
         indent = 2 if "\n  " in raw else None
         with open(path, "w", encoding="utf-8") as f:

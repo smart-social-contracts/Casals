@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Iterator
 
 from access_code import is_code_checksum, normalize_code_checksum
@@ -921,6 +922,9 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
                 errors.append(f"{path}.{field} is required")
         if entry.get("path", "").startswith(WASM_NAMESPACE + "/"):
             errors.append(f"{path}.path may not start with '{WASM_NAMESPACE}/'")
+        pin = entry.get("sha256")
+        if pin is not None and not (isinstance(pin, str) and re.fullmatch(r"[0-9a-fA-F]{64}", pin)):
+            errors.append(f"{path}.sha256 must be a 64-hex bundle hash (docs/BUNDLES.md)")
         published.add(entry.get("path"))
     for _s, _st, name, canister in iter_canisters(sheet):
         content = canister.get("content")
@@ -1204,6 +1208,9 @@ def _validate_production_rules(sheet: dict, errors: list[str]) -> None:
     for i, entry in enumerate(registry.get("wasms") or []):
         if isinstance(entry, dict) and not entry.get("sha256"):
             errors.append(f"registry.wasms[{i}].sha256 is required for production")
+    for i, entry in enumerate(registry.get("publish") or []):
+        if isinstance(entry, dict) and not entry.get("sha256"):
+            errors.append(f"registry.publish[{i}].sha256 (bundle hash) is required for production")
 
 
 def _env_lookup_root(sheet: dict, env: str, ctx: ResolveContext) -> dict:
