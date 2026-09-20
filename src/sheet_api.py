@@ -162,6 +162,7 @@ def _plan_world_gen(scope: dict | None = None):
     sheet, env, sh = load_sheet_doc()
     if not sheet:
         raise ValueError("no sheet set")
+    stands_before = live_stands()
     resolved = _declared_world(env, sheet)
     bindings = _bindings_map()
     self_id = ic.id().to_str()
@@ -175,7 +176,7 @@ def _plan_world_gen(scope: dict | None = None):
         raise ValueError("; ".join(exc.errors)) from exc
     store_plan(plan)
     if not scope:
-        mark_built_stands(plan, resolved, bindings)
+        mark_built_stands(plan, resolved, bindings, snapshot=stands_before)
     return plan, resolved, live, self_id, env
 
 
@@ -183,11 +184,17 @@ def _stand_of_target(target) -> str:
     return ((target or {}).get("stand") or "").strip() if isinstance(target, dict) else ""
 
 
-def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | None = None) -> list[str]:
+def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | None = None,
+                      snapshot: dict | None = None) -> list[str]:
     """Runtime stands whose build the conductor just found complete (#51): every
     member bound and nothing planned, deferred or pending for the stand. From
     here on a `sync: manual` section freezes them like any declared stand.
-    Only a whole-sheet plan may decide this — a targeted one sees a slice."""
+    Only a whole-sheet plan may decide this — a targeted one sees a slice.
+
+    ``snapshot`` is ``live_stands()`` from before the plan awaited live state:
+    a stand minted or grown (``create_stand``) while the plan was in flight
+    was planned from stale members — it is left for the next plan."""
+    now_stands = live_stands() if snapshot is not None else None
     busy: set[str] = set()
     for key in ("items", "manual", "skipped", "pending"):
         for it in plan.get(key) or []:
@@ -204,6 +211,10 @@ def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | N
     for stand in Stand.instances():
         name = (stand.name or "").strip()
         if not name or int(getattr(stand, "built_at", 0) or 0) > 0 or name in busy:
+            continue
+        if now_stands is not None and (
+            name not in snapshot or (now_stands.get(name) or {}).get("members") != snapshot[name].get("members")
+        ):
             continue
         names = members.get(name)
         if not names or any(not bindings.get(n) for n in names):

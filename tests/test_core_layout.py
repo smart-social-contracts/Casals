@@ -342,3 +342,27 @@ def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
     assert Stand["realm-x"].built_at == 7
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=9) == []
     assert Stand["realm-x"].built_at == 7
+
+
+def test_mark_built_stands_skips_a_stand_grown_while_the_plan_was_in_flight(db):
+    """`plan` awaits live state; a `create_stand` landing meanwhile resets
+    built_at and adds a member the in-flight plan never saw. Marking from the
+    stale plan would freeze the stand with the new member unbuilt (seen on the
+    e2e corpus): the snapshot taken before the await says so."""
+    import sheet_api
+    from models import Section, Stand
+
+    sec = Section(name="Realms")
+    st = Stand(name="realm-x")
+    st.section = sec
+    resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [{"name": "realm-x-baton"}]}]}]}
+    empty = {"items": [], "manual": [], "skipped": [], "pending": [], "deferred": []}
+    bound = {"realm-x-baton": "aaaaa-aa"}
+    before = {"realm-x": {"section": "Realms", "members": [], "built": False}}
+    st.members_json = '["{stand}-quarter-2"]'  # grown during the plan
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=before) == []
+    # a stand minted during the plan is not in the snapshot at all
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot={}) == []
+    # unchanged members: marked
+    same = {"realm-x": {"section": "Realms", "members": ["{stand}-quarter-2"], "built": False}}
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=same) == ["realm-x"]

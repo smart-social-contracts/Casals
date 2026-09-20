@@ -1291,8 +1291,14 @@ def create_stand(args: text) -> text:
             merged = sorted(set(have) | set(members))
             if merged != have:
                 dk.members_json = json.dumps(merged)
-                dk.built_at = 0  # growing is a mint too: build the new members even under sync: manual (#51)
                 _append_event("stand_members_added", "", {"name": name, "members": sorted(set(members) - set(have))})
+            # Growing is a mint too: asking for a member that does not exist yet
+            # re-opens the build, so it is created even under sync: manual (#51)
+            # — also when the member was already listed but never built.
+            list(Canister.instances())
+            wanted = {m.replace("{stand}", name) for m in members}
+            if any(Canister[n] is None for n in wanted):
+                dk.built_at = 0
             return _ok(name=name, members=merged, created=False)
         _require_can_add_in_section(sec, "stand.create")
         dk = Stand(name=name)
