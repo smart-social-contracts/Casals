@@ -228,8 +228,9 @@ def upload_bytes(
 
 
 def list_permitted(ic, store_id: str, permission: str = "Commit") -> list[str]:
-    """Principals holding ``permission`` on the store (``list_permitted`` query)."""
-    raw = ic.call_candid(store_id, "list_permitted", _enc(_ListPermittedArg, {"permission": {permission: None}}), query=True)
+    """Principals holding ``permission`` on the store. ``list_permitted`` is an
+    update method in the asset canister (controller/manager guarded), not a query."""
+    raw = ic.call_candid(store_id, "list_permitted", _enc(_ListPermittedArg, {"permission": {permission: None}}))
     return sorted(str(p) for p in (_dec(raw, _ListPermittedRet) or []))
 
 
