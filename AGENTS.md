@@ -333,7 +333,14 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   controller (`ensure_control`, through the multisig after handover) and then
   grants itself `Commit` if it does not hold it (`wasm_store.ensure_commit`);
   this is what lets a new deployer identity take over a store its predecessor
-  bootstrapped. The Candid client lives in `casals_cli/wasm_store.py`
+  bootstrapped. A dist publish is hundreds of signed calls; with a touch-policy
+  HSM as `--identity` that means a touch every 15 s for half an hour, so
+  `--upload-identity <name>` (or `$CASALS_UPLOAD_IDENTITY`) names a second,
+  plaintext identity that signs step 4 only — `--identity` grants it `Commit`,
+  everything else (bootstrap, `set_sheet`, apply) stays on the HSM. The store is
+  content-addressed and installs are checked against the sheet's sha256 pins,
+  so the uploader can waste cycles, not smuggle code in. The Candid client lives
+  in `casals_cli/wasm_store.py`
   (it carries its own `_BlobClass` — ic-py's stock `Vec(Nat8)` decode is ~20 s/MiB).
 - **Reading (backend).** `src/wasm_store.py` is the only read path:
   `stat_file` (size + sha256 from `get`), `iter_file` (`get` then `get_chunk`

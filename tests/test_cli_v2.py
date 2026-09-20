@@ -201,6 +201,40 @@ class TestUpSequencing:
         sequence = [c[1][1] for c in ic.calls if c[0] in ("call_candid", "call_update")]
         assert sequence.index("grant_permission") < sequence.index("set_sheet")
 
+    def test_upload_identity_signs_store_uploads_only(self, tmp_path, monkeypatch):
+        """--upload-identity: the commander grants Commit to the uploader and
+        the registry upload runs on the uploader's client; everything else
+        (bootstrap, set_sheet, plan) stays with the commander."""
+        ic = self._governed_ic()
+        ic.converged = True
+        uploader = RecordingIc(env="local", identity="store-uploader")
+        uploader.deployer = PREVIOUS_DEPLOYER
+        uploader.store = ic.store  # one store, two signers
+        uploader.candid.update(ic.store.handlers())
+        ic.store.permitted["Commit"] = set()
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+
+        def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
+            bindings.conductor.setdefault("casals-backend", "backend-id")
+            bindings.conductor.setdefault("casals-wasms", "store-id")
+            bindings.backend_id = bindings.conductor["casals-backend"]
+            ic.controllers["store-id"] = [DEPLOYER]
+            return bindings
+
+        seen: list = []
+        monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
+        monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda _ic, *a, **k: seen.append(_ic) or [])
+        monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
+        run_up(ic, CORPUS, "local", yes=True, project_root=REPO_ROOT, upload_ic=uploader)
+
+        assert seen == [uploader]
+        assert ic.store.grants == [(PREVIOUS_DEPLOYER, "Commit")]
+        # the grant was signed by the commander (a controller), not the uploader
+        assert [c[1][1] for c in ic.calls if c[0] == "call_candid"] == ["list_permitted", "grant_permission"]
+        assert [c for c in uploader.calls if c[0] == "call_candid"] == []
+        assert "set_sheet" in [c[1][1] for c in ic.calls if c[0] == "call_update"]
+        assert "set_sheet" not in [c[1][1] for c in uploader.calls if c[0] == "call_update"]
+
     def test_second_up_skips_create_install(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
         ic.converged = True

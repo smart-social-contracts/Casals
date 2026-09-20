@@ -18,6 +18,10 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 def _common_flags(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("-e", "--env", default="local", help="sheet environment (local|production); production talks to the IC")
     ap.add_argument("--identity", default=None, help="icp identity")
+    ap.add_argument("--upload-identity", default=os.environ.get("CASALS_UPLOAD_IDENTITY") or None,
+                    help="icp identity that signs the wasm-store uploads in `up`/`plan` step 4 "
+                         "(hundreds of calls; a plaintext key spares a touch-policy HSM). "
+                         "--identity grants it Commit on the store. Default: $CASALS_UPLOAD_IDENTITY, else --identity")
     ap.add_argument("--conductor", default=None, help="conductor backend canister id override")
     ap.add_argument("--json", action="store_true", help="JSON output")
 
@@ -105,6 +109,13 @@ def _ic_from_args(args) -> IcClient:
     )
 
 
+def _upload_ic_from_args(args) -> IcClient | None:
+    name = getattr(args, "upload_identity", None)
+    if not name or name == getattr(args, "identity", None):
+        return None
+    return IcClient(env=args.env, identity=name, project_root=REPO_ROOT)
+
+
 def _sheet_name_from_args(args) -> str:
     path = getattr(args, "sheet", None)
     if not path:
@@ -130,10 +141,11 @@ def main(argv: list[str] | None = None) -> None:
                 conductor_override=args.conductor,
                 max_items=args.max_items,
                 project_root=REPO_ROOT,
+                upload_ic=_upload_ic_from_args(args),
             )
             emit_json(result)
         elif cmd == "plan":
-            commands.cmd_plan(ic, args, REPO_ROOT)
+            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args))
         elif cmd == "pin":
             commands.cmd_pin(args, REPO_ROOT)
         elif cmd == "apply":
