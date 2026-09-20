@@ -580,8 +580,11 @@ def run_up(
         # like any conductor change (the next plan removes it) — then grant
         # Commit to ourselves if a previous deployer was the one who had it.
         ensure_control(ic, store_id, deployer, multisig_id(ic, backend_id))
-        if ensure_commit(ic, store_id, deployer):
-            _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
+    # The dry run uploads too (it needs the store populated to plan), so the
+    # grant is not gated on dry_run — only on being a controller, which the
+    # dry run does not arrange.
+    if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
+        _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
     ensure_registry_uploads(
         ic, sheet,
         sheet_path=sheet_path,
