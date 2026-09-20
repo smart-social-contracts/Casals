@@ -90,6 +90,8 @@
     },
     {
       "name": "Realms",
+      "sync": "manual",
+      "$comment": "Untracked by a routine `casals up` (#51): realms are minted by the installer and built to completion by the conductor — the mint is the act — then left alone: a template change (new realm wasm, new bundle) is reported under plan.manual and applied only with `casals up --section Realms` / `--stand realm-x`.",
       "commanders": [
         { "principal": "$principal:realms_operator", "permissions": "stand.create,stand.rename,stand.delete,canister.lifecycle,canister.topup" }
       ],

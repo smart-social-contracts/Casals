@@ -246,7 +246,8 @@ def test_stand_template_matching():
     live = _empty_live(resolved, bindings)
     live["stands"]["realm-alpha"] = {"exists": True, "section": "Realms", "commanders": []}
     live["sections"]["Realms"] = {"exists": True, "commanders": []}
-    plan = build_plan(sv2.materialize(resolved, {"realm-alpha": {"section": "Realms", "members": []}}), env, live, self_id=SELF)
+    # freshly minted → not built yet → reconciled although Realms is sync: manual
+    plan = build_plan(sv2.materialize(resolved, {"realm-alpha": {"section": "Realms", "members": [], "built": False}}), env, live, self_id=SELF)
     names = {it["target"]["name"] for it in plan["items"]}
     assert {"realm-alpha-baton", "realm-alpha-backend", "realm-alpha-frontend"} <= names
 
@@ -398,6 +399,29 @@ def test_manual_stand_drift_is_observed_not_acted_upon():
     assert plan["skipped"] == []
 
 
+def test_manual_stand_with_an_unpublished_bundle_is_still_reported_as_manual_drift():
+    # `up` does not upload the bundle of a manual frontend, so the store never
+    # holds the pin: the planner must show that under manual, not bury it in
+    # unverifiable (that is what a plain `up` on the e2e corpus produces).
+    resolved, env, bindings = _resolved("baton-stand")
+    resolved["sections"][0]["stands"][0]["sync"] = "manual"
+    live = _converged_live(resolved, bindings)
+    ns = sv2.find_canister(resolved, "rust-frontend")[2]["content"]
+    row = next(e for e in resolved["registry"]["publish"] if e["path"] == ns)
+    row["sha256"] = "ab" * 32
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert plan["items"] == []
+    assert [u for u in plan["unverifiable"] if u["target"] == "rust-frontend"] == []
+    manual = plan["manual"]
+    assert [(m["kind"], m["target"]["name"], m["scope"]) for m in manual] == [("sync_assets", "rust-frontend", "manual")]
+    assert "abababababab" in manual[0]["reason"] and "target the stand" in manual[0]["reason"]
+    assert manual[0]["desired"]["bundle_sha256"] == "ab" * 32
+    # targeted, the same state is a blocker the operator must clear first
+    plan = build_plan(resolved, env, live, self_id=SELF, scope={"stands": ["Rust"]})
+    assert plan["manual"] == []
+    assert [u["target"] for u in plan["unverifiable"] if u["field"] == "content"] == ["rust-frontend"]
+
+
 def test_targeting_a_manual_stand_acts_on_it():
     resolved, env, bindings, live = _manual_stand_world()
     plan = build_plan(resolved, env, live, self_id=SELF, scope={"stands": ["Rust"]})
@@ -432,15 +456,77 @@ def test_excluding_and_out_of_scope_items_are_reported_as_skipped():
 
 
 def test_manual_stand_that_does_not_exist_yet_is_not_a_planning_error():
-    """Nothing about a manual stand runs — including its creates. A field
-    waiting for one of those (`$stand.baton`) must not fail the whole plan."""
+    """Nothing about a manual stand's canisters runs — including its creates. A
+    field waiting for one of those (`$stand.baton`) must not fail the whole
+    plan. Registering the stand and its commanders inside the conductor is
+    bookkeeping, not a deploy: that still happens."""
     resolved, env, bindings = _resolved("baton-stand")
     resolved["sections"][0]["stands"][0]["sync"] = "manual"
     live = _empty_live(resolved, bindings)
     plan = build_plan(resolved, env, live, self_id=SELF)
-    assert not [i for i in plan["items"] if (i["target"] or {}).get("stand") == "Rust"]
+    rust = [i for i in plan["items"] if (i["target"] or {}).get("stand") == "Rust"]
+    assert {i["kind"] for i in rust} == {"register_stand", "set_commanders"}
+    assert all(not i["target"].get("canister_id") for i in rust)
     assert {m["target"]["stand"] for m in plan["manual"]} == {"Rust"}
+    assert "install_code" in {m["kind"] for m in plan["manual"]}
     assert all(d["target"] not in {"rust-baton", "rust-backend", "rust-frontend"} for d in plan["deferred"])
+
+
+def test_manual_template_section_builds_minted_stands_then_freezes_them():
+    """The mint is the act (#51): while a runtime stand is being built its items
+    are applied even though its section is `sync: manual`; once the conductor
+    has marked it built, the same drift is only observed."""
+    def drifted(built):
+        resolved, live, b = _realm_world(built=built)
+        q = live["canisters"]["realm-e2e-quarter-1"]
+        q["controllers"] = sorted([MS, SELF, b["installer"]])
+        live["batons"]["realm-e2e-baton"]["managed_canisters"].remove(b["realm-e2e-quarter-1"])
+        return build_plan(resolved, "local", live, self_id=SELF)
+
+    plan = drifted(built=False)
+    assert [(it["kind"], it["target"]["name"]) for it in plan["items"]] == [
+        ("hand_off", "realm-e2e-baton"), ("set_controllers", "realm-e2e-quarter-1")]
+    assert plan["manual"] == []
+    plan = drifted(built=True)
+    assert plan["items"] == []
+    assert sorted((m["kind"], m["target"]["name"], m["scope"]) for m in plan["manual"]) == [
+        ("hand_off", "realm-e2e-baton", "manual"), ("set_controllers", "realm-e2e-quarter-1", "manual")]
+    # targeting the stand or its section acts on it again
+    resolved, live, b = _realm_world(built=True)
+    live["canisters"]["realm-e2e-quarter-1"]["controllers"] = sorted([MS, SELF, b["installer"]])
+    live["batons"]["realm-e2e-baton"]["managed_canisters"].remove(b["realm-e2e-quarter-1"])
+    plan = build_plan(resolved, "local", live, self_id=SELF, scope={"section": None, "sections": ["Realms"]})
+    assert [it["kind"] for it in plan["items"]] == ["hand_off", "set_controllers"]
+
+
+def test_undeclared_stand_inherits_its_sections_sync_mode():
+    resolved, env, bindings, live = _manual_stand_world()
+    resolved["sections"][0]["stands"][0].pop("sync")
+    resolved["sections"][0]["sync"] = "manual"
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    ctx = plan  # the materialized stand is declared; probe the fallback directly
+    from planner import _PlanContext  # noqa: PLC0415
+    pc = _PlanContext.__new__(_PlanContext)
+    pc.scope = {"sections": set(), "stands": set(), "exclude_sections": set(), "exclude_stands": set()}
+    pc.modes = sv2.scope_modes(resolved)
+    assert pc.disposition("Demo", "realm-minted-later") == "manual"
+    assert pc.disposition("Demo", None) == "manual"
+    assert pc.disposition("Other", "x") == "apply"
+    assert plan["items"] == [] and ctx["manual"]
+
+
+def test_manual_content_must_be_pinned():
+    sheet = _load("baton-stand")
+    sheet["sections"][0]["stands"][0]["sync"] = "manual"
+    errors = sv2.validate(sheet, "local")
+    assert any("rust-frontend: content 'frontend/rust-frontend/1.0.0' must be pinned" in e for e in errors)
+    row = next(e for e in sheet["registry"]["publish"] if e["path"] == "frontend/rust-frontend/1.0.0")
+    row["sha256"] = "ab" * 32
+    assert not [e for e in sv2.validate(sheet, "local") if "must be pinned" in e]
+    # an auto stand may stay unpinned outside production
+    del row["sha256"]
+    sheet["sections"][0]["stands"][0]["sync"] = "auto"
+    assert not [e for e in sv2.validate(sheet, "local") if "must be pinned" in e]
 
 
 def test_sync_field_is_validated():
@@ -452,11 +538,13 @@ def test_sync_field_is_validated():
     assert sv2.scope_modes(sheet) == {"sections": {"Demo": "sometimes"}, "stands": {"Rust": ("Demo", "manual")}}
 
 
-def _realm_world(live_members=("{stand}-quarter-1",)):
+def _realm_world(live_members=("{stand}-quarter-1",), built=False):
     """dynamic-stands with one runtime stand `realm-e2e` (template + quarter 1),
-    every canister bound, live state converged. Returns (resolved, live, bindings)."""
+    every canister bound, live state converged. Returns (resolved, live, bindings).
+    The corpus' Realms section is `sync: manual`; `built=False` is the stand
+    still under construction (reconciled), `built=True` the finished one (frozen)."""
     sheet = _load("dynamic-stands")
-    stands = {"realm-e2e": {"section": "Realms", "members": list(live_members)}}
+    stands = {"realm-e2e": {"section": "Realms", "members": list(live_members), "built": built}}
     declared = sv2.materialize(sheet, stands)
     ctx = _ctx(declared)
     for n in sv2.canister_names(declared):

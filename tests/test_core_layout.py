@@ -262,3 +262,83 @@ def test_bind_conductor_homes_every_canister(db, monkeypatch):
     assert _S.file_registry_canister_id == ""
     store = next(c for c in tree["sections"][0]["stands"][0]["canisters"] if c["name"] == "casals-wasms")
     assert store["kind"] == "frontend" and store["wasm_type"] == "assets"
+
+
+def test_apply_replans_under_the_stored_plans_scope(db, monkeypatch):
+    """A targeted plan (#51) is applied under its own scope: without it a
+    `--stand` item on a manual stand re-plans as `manual`, the hash changes
+    and every apply reads "stale plan" (seen on the e2e corpus)."""
+    import sheet_api
+    from sheet_storage import store_plan
+
+    seen: list = []
+    targeted = {"hash": "t" * 8, "items": [{"kind": "sync_assets", "requires": "self"}],
+                "scope": {"sections": [], "stands": ["Rust"], "exclude_sections": [], "exclude_stands": []}}
+    plain = {"hash": "p" * 8, "items": [], "scope": {k: [] for k in targeted["scope"]}}
+    store_plan(targeted)
+    store_plan(plain)
+
+    def fake_world(scope=None):
+        seen.append(scope)
+        plan = targeted if scope else plain
+        yield  # a generator, like the real one
+        return plan, {}, {}, "self", "local"
+
+    monkeypatch.setattr(sheet_api, "_plan_world_gen", fake_world)
+    monkeypatch.setattr(sheet_api, "load_sheet_doc", lambda: ({"version": 2}, "local", "h"))
+    monkeypatch.setattr(sheet_api, "_bindings_map", lambda: {})
+    monkeypatch.setattr(sheet_api, "apply_requires_proposal", lambda sheet, env: False)
+    applied: list = []
+
+    def fake_apply(plan, **kw):
+        applied.append(plan["hash"])
+        yield
+        return {"applied": [1], "failed": []}
+
+    monkeypatch.setattr(sheet_api, "apply_plan_gen", fake_apply)
+    monkeypatch.setattr(sheet_api, "store_apply_result", lambda res: None)
+
+    def drive(gen):
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            return stop.value
+
+    res = drive(sheet_api.apply_gen({"plan_hash": "t" * 8}))
+    assert res.get("ok") is True and applied == ["t" * 8]
+    assert seen == [{"stands": ["Rust"]}]
+    # a whole-sheet plan re-plans without a scope
+    res = drive(sheet_api.apply_gen({"plan_hash": "p" * 8}))
+    assert res.get("ok") is True and seen[-1] is None
+
+
+def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
+    """The mint is the act (#51): a runtime stand stays `built_at == 0` — and so
+    reconciled even under a manual section — until a whole-sheet plan finds
+    every member bound with nothing planned, deferred or pending for it."""
+    import sheet_api
+    from models import Section, Stand
+
+    sec = Section(name="Realms")
+    st = Stand(name="realm-x")
+    st.section = sec
+    resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [
+        {"name": "realm-x-baton"}, {"name": "realm-x-backend"}]}]}]}
+    empty = {"items": [], "manual": [], "skipped": [], "pending": [], "deferred": []}
+    # a member not yet created
+    assert sheet_api.mark_built_stands(dict(empty), resolved, {"realm-x-baton": "aaaaa-aa"}, now_s=7) == []
+    bound = {"realm-x-baton": "aaaaa-aa", "realm-x-backend": "bbbbb-bb"}
+    # something still planned for the stand
+    plan = dict(empty, items=[{"kind": "hand_off", "target": {"name": "realm-x-baton", "stand": "realm-x"}}])
+    assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
+    plan = dict(empty, deferred=[{"target": "realm-x-backend", "field": "controllers"}])
+    assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
+    plan = dict(empty, pending=[{"kind": "upgrade_code", "target": {"name": "realm-x-backend", "stand": "realm-x"}}])
+    assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
+    # converged: built, once
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7) == ["realm-x"]
+    list(Stand.instances())
+    assert Stand["realm-x"].built_at == 7
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=9) == []
+    assert Stand["realm-x"].built_at == 7

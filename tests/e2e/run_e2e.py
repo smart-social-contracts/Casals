@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -370,7 +371,42 @@ def runtime_stand(o: Orchestra) -> None:
             new = {m.replace("{stand}", name).replace("{n}", "2") for m in numbered}
             expected |= new
             converge(name, expected, new - set(o.ids()))
+        if sec.get("sync") == "manual":
+            manual_section_freezes_built_stand(o, sec, name)
     o.oracle()
+
+
+def manual_section_freezes_built_stand(o: Orchestra, sec: dict, name: str) -> None:
+    """#51 on a `sync: manual` template section: the conductor built the mint
+    (above) and has marked the stand built; from here drift in it is reported
+    under plan.manual and healed by nobody until a run targets the stand."""
+    tree = IcClient(env=ENV, identity=IDENTITY).query(o.bindings()["conductor"]["casals-backend"], "get_tree")
+    st = next(st for s_ in tree["sections"] for st in s_["stands"] if st["name"] == name)
+    if not st.get("built"):
+        raise Fail(f"{name} converged but the conductor did not mark it built")
+    baton = f"{name}-baton"
+    if not o.add_controller(o.ids()[baton], FOREIGN):
+        print(f"    ({baton} not reachable for drift injection — skipped)")
+        return
+    plan = o.casals("plan")["plan"]
+    if [i for i in plan["items"] if i["target"].get("stand") == name]:
+        raise Fail(f"plain plan acts on the built manual stand {name}: {[i['kind'] for i in plan['items']]}")
+    if not [m for m in plan.get("manual") or [] if m["kind"] == "set_controllers" and m["target"]["name"] == baton]:
+        raise Fail(f"drift on {baton} not reported under manual: {plan.get('manual')}")
+    interval = int(((o.sheet.get("conductor") or {}).get("settings") or {}).get("reconcile_interval_secs") or 0)
+    if interval:
+        time.sleep(2 * interval + 5)  # the timer must leave it alone too
+    ic = IcClient(env=ENV, identity=IDENTITY)
+    if FOREIGN not in (ic.read_controllers(o.ids()[baton]) or []):
+        raise Fail(f"{baton}: the foreign controller was removed although the stand is sync: manual")
+    res = o.casals("up", o.sheet_path, "--yes", "--stand", name)
+    if res["plan"]["items"]:
+        raise Fail(f"up --stand {name} did not converge")
+    if FOREIGN in (ic.read_controllers(o.ids()[baton]) or []):
+        raise Fail(f"{baton}: up --stand {name} did not heal the drift")
+    plan = o.casals("plan")["plan"]
+    if plan["items"] or [m for m in plan.get("manual") or [] if m["target"].get("stand") == name]:
+        raise Fail(f"{name} still drifts after the targeted run")
 
 
 def _sole_backends(o: Orchestra) -> list[tuple[str, str, dict, str]]:
@@ -584,37 +620,109 @@ def proposal_only(o: Orchestra) -> None:
     o.oracle()
 
 
-def content_change(o: Orchestra) -> None:
-    """A new frontend build: published under a new namespace version and pointed
-    at by the sheet; `up` syncs it and the browser sees the new file."""
-    publish = (o.sheet.get("registry") or {}).get("publish") or []
-    if not publish:
-        return
-    entry = publish[0]
+def _frontends_of(sheet: dict, namespace: str) -> list[str]:
+    return [name for _s, _st, name, c in _iter(sheet) if c.get("content") == namespace]
+
+
+def _v2_sheet(o: Orchestra, tag: str) -> tuple[dict, str, list[str]]:
+    """A second frontend build as docs/BUNDLES.md wants it shipped: `casals bundle`
+    packs dist/ (+ one new file) into a hashed .tgz, and the sheet pins that
+    hash under a new namespace version. Returns (sheet, marker, frontends)."""
+    entry = ((o.sheet.get("registry") or {}).get("publish") or [])[0]
     src = os.path.join(os.path.dirname(o.sheet_path), entry["source"][len("local:"):])
-    new_dir = os.path.join(o.home, "dist-v2")
+    new_dir = os.path.join(o.home, f"dist-{tag}")
     shutil.copytree(src, new_dir, dirs_exist_ok=True)
+    marker = f"<!-- {tag} -->"
     with open(os.path.join(new_dir, "index.html"), "a") as fh:
-        fh.write("<!-- v2 -->\n")
-    new_ns = entry["path"] + "-v2"
+        fh.write(marker + "\n")
+    with open(os.path.join(new_dir, f"{tag}.txt"), "w") as fh:
+        fh.write(f"only in {tag}\n")
+    tgz = os.path.join(o.home, f"frontend-{tag}.tgz")
+    packed = o.casals("bundle", new_dir, "-o", tgz)
+    new_ns = entry["path"] + "-" + tag
     changed = json.loads(json.dumps(o.sheet))
-    changed["registry"]["publish"] = [{"path": new_ns, "source": "local:" + new_dir}, *publish[1:]]
-    frontends = [name for _s, _st, name, c in _iter(changed) if c.get("content") == entry["path"]]
+    changed["registry"]["publish"] = [
+        {"path": new_ns, "source": "local:" + tgz, "sha256": packed["bundle_sha256"]},
+        *changed["registry"]["publish"][1:],
+    ]
+    frontends = _frontends_of(changed, entry["path"])
     for _s, _st, name, c in _iter(changed):
         if name in frontends:
             c["content"] = new_ns
+    return changed, marker, frontends
+
+
+def _serves(o: Orchestra, name: str, path: str) -> bytes | None:
+    """Body of ``path`` on the canister's HTTP gateway, or None when it is not
+    served (404; the local gateway answers 503 when the canister's 404 is not
+    certified — same information)."""
+    try:
+        return urllib.request.urlopen(canister_http_url(o.ids()[name], path), timeout=10).read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 503):
+            return None
+        raise
+
+
+def content_change(o: Orchestra) -> None:
+    """A new frontend build (#50): packed with `casals bundle`, pinned in the sheet
+    under a new namespace version; `up` makes the canister serve exactly that
+    bundle — the new file appears, and disappears again on the way back."""
+    if not ((o.sheet.get("registry") or {}).get("publish") or []):
+        return
+    changed, marker, frontends = _v2_sheet(o, "v2")
     changed_path = os.path.join(o.home, "content.json")
     json.dump(changed, open(changed_path, "w"))
     if o.casals("up", changed_path, "--yes")["plan"]["items"]:
         raise Fail("new content did not converge")
     for name in frontends:
-        body = urllib.request.urlopen(canister_http_url(o.ids()[name], "/index.html"), timeout=10).read()
-        if b"<!-- v2 -->" not in body:
+        body = _serves(o, name, "/index.html") or b""
+        if marker.encode() not in body:
             raise Fail(f"{name} does not serve the new build")
+        if b"only in v2" not in (_serves(o, name, "/v2.txt") or b""):
+            raise Fail(f"{name} does not serve the file added in v2")
     rep = o.casals("oracle", changed_path, check=False)
     if not rep.get("ok"):
         raise Fail("oracle on the new build: " + "; ".join(r["detail"] for r in rep.get("rows", []) if r["result"] == "FAIL"))
     o.casals("up", o.sheet_path, "--yes")  # back to the declared build
+    for name in frontends:
+        if b"only in v2" in (_serves(o, name, "/v2.txt") or b""):
+            raise Fail(f"{name} still serves v2.txt: a file that left the bundle must be deleted")
+    o.oracle()
+
+
+def manual_stand(o: Orchestra) -> None:
+    """`sync: manual` (#51): the stand that owns the frontend is marked manual and
+    a new build is declared for it. A plain `up` reports the drift under
+    plan.manual and changes nothing; `up --stand <name>` is the explicit act."""
+    if not ((o.sheet.get("registry") or {}).get("publish") or []):
+        return
+    changed, marker, frontends = _v2_sheet(o, "v3")
+    stand_name = next(st["name"] for _s, st, name, _c in _iter(changed) if name in frontends)
+    for _s, st, name, _c in _iter(changed):
+        if st["name"] == stand_name:
+            st["sync"] = "manual"
+    changed_path = os.path.join(o.home, "manual.json")
+    json.dump(changed, open(changed_path, "w"))
+    res = o.casals("up", changed_path, "--yes")
+    if res["plan"]["items"]:
+        raise Fail(f"up acted on a manual stand: {[i['kind'] for i in res['plan']['items']]}")
+    manual = res["plan"].get("manual") or []
+    if not any(m["kind"] == "sync_assets" and m["target"].get("name") in frontends for m in manual):
+        raise Fail(f"manual drift not reported: {[(m['kind'], m['target'].get('name')) for m in manual]}")
+    for name in frontends:
+        if marker.encode() in (_serves(o, name, "/index.html") or b""):
+            raise Fail(f"{name} was updated although its stand is sync: manual")
+    res = o.casals("up", changed_path, "--yes", "--stand", stand_name)
+    if res["plan"]["items"]:
+        raise Fail("targeted up did not converge the manual stand")
+    for name in frontends:
+        if marker.encode() not in (_serves(o, name, "/index.html") or b""):
+            raise Fail(f"{name} does not serve the build after `up --stand {stand_name}`")
+    res = o.casals("plan", changed_path)["plan"]
+    if res["items"] or res.get("manual"):
+        raise Fail(f"manual stand still drifts after the targeted run: {res.get('manual')}")
+    o.casals("up", o.sheet_path, "--yes")  # back to the declared sheet (auto again)
     o.oracle()
 
 
@@ -711,7 +819,7 @@ def access_code(o: Orchestra) -> None:
     o.oracle()
 
 
-SCENARIOS = [fresh, idempotent, content_change, runtime_stand, baton_upgrade, retire_and_pool, drift_controller, drift_stopped,
+SCENARIOS = [fresh, idempotent, content_change, manual_stand, runtime_stand, baton_upgrade, retire_and_pool, drift_controller, drift_stopped,
              drift_adopted_code, proposal_only, stale_plan, access_code, export_roundtrip]
 if os.environ.get("SCENARIOS"):  # e.g. SCENARIOS=fresh,stale_plan while iterating
     SCENARIOS = [s for s in SCENARIOS if s.__name__ in os.environ["SCENARIOS"].split(",")]

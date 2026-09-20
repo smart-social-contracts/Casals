@@ -60,6 +60,11 @@ PHASE = {
 }
 
 
+# Conductor-internal bookkeeping: applied even inside a `sync: manual` scope
+# (a section's/stand's own `set_commanders` — no canister_id — counts too).
+STRUCTURAL_KINDS = frozenset({"register_section", "register_stand"})
+
+
 # Baton action statuses after which nothing more happens (mirrors the baton's
 # TERMINAL_STATUSES): a new proposal is needed to try again.
 _BATON_TERMINAL = frozenset({
@@ -177,6 +182,17 @@ class _PlanContext:
         store_bundle = bundle_hash({p: m.get("sha256", "") for p, m in self.published[ns].items()}) if ns else ""
         pinned = self.publish_pins.get(ns, "") if ns else ""
         if pinned and store_bundle != pinned:
+            where = self.disposition(section, stand)
+            if where != "apply":
+                # A manual / untargeted frontend whose bundle was never published
+                # (`up` skips those uploads): still drift worth seeing — the
+                # sheet wants a bundle the canister does not serve.
+                self._divert(where, "sync_assets",
+                             {"name": name, "canister_id": cid, "section": section, "stand": stand},
+                             f"{name}: sheet pins bundle {pinned[:12]}… for {ns}, store holds "
+                             f"{store_bundle[:12] + '…' if store_bundle else 'nothing'} — publish it and target the stand to act",
+                             {"desired": {"content": ns, "bundle_sha256": pinned}})
+                return
             self.unverifiable.append({
                 "target": name, "field": "content",
                 "reason": f"store namespace {ns} holds bundle {store_bundle[:12]}… but the sheet pins "
@@ -237,10 +253,13 @@ class _PlanContext:
     def live(self, name: str) -> dict:
         return self.canisters_live.get(name) or {}
 
-    def disposition(self, section: str | None, stand: str | None) -> str:
+    def disposition(self, section: str | None, stand: str | None, structural: bool = False) -> str:
         """``apply`` | ``manual`` | ``excluded`` | ``out_of_scope`` for an item
         on (section, stand). Global items (no section) are applied unless the
-        run targets specific sections/stands."""
+        run targets specific sections/stands. ``structural`` items — registering
+        a section or stand and its Casals commanders, bookkeeping inside the
+        conductor that touches no canister — ignore `sync: manual`: the sheet
+        stays the truth for who may act on a manual scope."""
         sc = self.scope
         section = (section or "").strip() or None
         stand = (stand or "").strip() or None
@@ -251,17 +270,19 @@ class _PlanContext:
         if targeted_only and not targeted:
             return "out_of_scope"
         if stand:
-            mode = (self.modes["stands"].get(stand) or (section, "auto"))[1]
+            mode = (self.modes["stands"].get(stand) or (section, self.modes["sections"].get(section, "auto")))[1]
         elif section:
             mode = self.modes["sections"].get(section, "auto")
         else:
             mode = "auto"
-        if mode == "manual" and not targeted:
+        if mode == "manual" and not targeted and not structural:
             return "manual"
         return "apply"
 
     def add(self, kind, target, reason, **kw):
-        where = self.disposition((target or {}).get("section"), (target or {}).get("stand"))
+        t = target or {}
+        structural = kind in STRUCTURAL_KINDS or (kind == "set_commanders" and not t.get("canister_id"))
+        where = self.disposition(t.get("section"), t.get("stand"), structural=structural)
         if where != "apply":
             self._divert(where, kind, target, reason, kw)
             return

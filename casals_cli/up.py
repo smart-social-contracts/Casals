@@ -389,6 +389,7 @@ def multisig_id(ic, backend_id: str) -> str:
 # the wrong variant answering `config_call` with the old value, a setting the
 # target does not persist, …). `sync_assets` is not caught by this: its
 # `desired.keys` shrink every round it makes progress.
+STALE_ROUNDS = 6  # consecutive "stale plan"/"busy" answers before `up` gives up
 STUCK_ROUNDS = 3
 
 
@@ -423,6 +424,7 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
     applied_prev: set[str] = set()   # fingerprints the conductor applied in the previous round
     stuck: dict[str, int] = {}       # fingerprint → consecutive rounds applied yet back unchanged
     handed_off = False
+    stale_in_a_row = 0
     while True:
         round_no += 1
         _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
@@ -472,10 +474,20 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                 continue
             if err.startswith("stale plan") or err.startswith("busy"):
                 # The conductor's own reconcile timer moved the world; re-plan.
+                stale_in_a_row += 1
+                if stale_in_a_row >= STALE_ROUNDS:
+                    emit_error(
+                        f"orchestra not converged: the conductor answered '{err}' {stale_in_a_row} times in a row. "
+                        f"Either something keeps changing the live orchestra under this run, or plan and apply "
+                        f"disagree (a conductor older than this CLI re-plans a targeted --stand/--section run "
+                        f"without its scope); stopping instead of looping.",
+                        plan=plan,
+                    )
                 _progress(f"  {err}: re-planning")
                 last_hash = None
                 time.sleep(15 if err.startswith("busy") else 3)
                 continue
+            stale_in_a_row = 0
             if not (isinstance(apply_res, dict) and apply_res.get("ok")):
                 raise RuntimeError(f"apply failed: {apply_res}")
             applied_keys = set()
@@ -515,7 +527,7 @@ def _in_reach(section: str, stand: str, modes: dict, scope: dict | None) -> bool
     named = section in (sc.get("sections") or []) or stand in (sc.get("stands") or [])
     if (sc.get("sections") or sc.get("stands")) and not named:
         return False
-    mode = (modes["stands"].get(stand) or (section, "auto"))[1]
+    mode = (modes["stands"].get(stand) or (section, modes["sections"].get(section, "auto")))[1]
     return not (mode == "manual" and not named)
 
 
@@ -523,7 +535,9 @@ def untouched_publish_rows(sheet: dict, scope: dict | None) -> list[dict]:
     """`registry.publish` rows every consumer of which this run leaves alone
     (sync: manual, excluded or outside a targeted run). Publishing them would
     change store namespaces that only a manual/foreign frontend reads —
-    somebody else's decision, so `up` does not."""
+    somebody else's decision, so `up` does not. Rows a `stand_template`
+    consumes are not here: the conductor needs them to build a mint, whatever
+    the section's sync (#51)."""
     modes = scope_modes(sheet)
     consumers: dict[str, list[bool]] = {}
     for section, stand, _name, spec in iter_canisters(sheet):

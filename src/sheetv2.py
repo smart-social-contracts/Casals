@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from typing import Any, Iterator
 
 from access_code import is_code_checksum, normalize_code_checksum
@@ -166,6 +165,12 @@ def store_key(namespace: str, path: str) -> str:
 
 
 BUNDLE_MANIFEST = ".casals-bundle.json"  # metadata inside a bundle; never hashed, never served
+
+
+def _is_hex64(value) -> bool:
+    """A 64-hex digest. Written without ``re`` on purpose: the canister's
+    ``re`` (RustPython) lacks ``fullmatch``."""
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
 def bundle_hash(hashes: dict) -> str:
@@ -979,13 +984,21 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
         if entry.get("path", "").startswith(WASM_NAMESPACE + "/"):
             errors.append(f"{path}.path may not start with '{WASM_NAMESPACE}/'")
         pin = entry.get("sha256")
-        if pin is not None and not (isinstance(pin, str) and re.fullmatch(r"[0-9a-fA-F]{64}", pin)):
+        if pin is not None and not _is_hex64(pin):
             errors.append(f"{path}.sha256 must be a 64-hex bundle hash (docs/BUNDLES.md)")
         published.add(entry.get("path"))
-    for _s, _st, name, canister in iter_canisters(sheet):
+    pinned = {e.get("path") for e in publish if isinstance(e, dict) and e.get("sha256")}
+    for section, stand, name, canister in iter_canisters(sheet):
         content = canister.get("content")
-        if content and content not in published:
+        if not content:
+            continue
+        if content not in published:
             errors.append(f"canister {name}: content '{content}' has no registry.publish entry")
+        elif content not in pinned and sync_mode(section, stand) == SYNC_MANUAL:
+            # Nothing reconciles a manual frontend routinely, so the pin is the
+            # only statement of what it should serve (#51).
+            errors.append(f"canister {name}: content '{content}' must be pinned (registry.publish sha256) "
+                          f"because its stand/section is sync: manual")
 
 
 def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
@@ -1452,5 +1465,11 @@ def materialize(sheet: dict, live_stands: dict[str, dict]) -> dict:
         for name, live in sorted(live_stands.items()):
             if live.get("section") == section.get("name") and name not in declared \
                     and glob_match(name, tmpl.get("name_pattern") or ""):
-                stands.append(instantiate_template_stand(tmpl, name, live.get("members")))
+                stand = instantiate_template_stand(tmpl, name, live.get("members"))
+                # The mint is the act (#51): a stand still being built is
+                # reconciled even under a `sync: manual` section; once the
+                # conductor has found it converged it follows the section.
+                if sync_mode(section) == SYNC_MANUAL and not live.get("built", True):
+                    stand["sync"] = SYNC_AUTO
+                stands.append(stand)
     return out

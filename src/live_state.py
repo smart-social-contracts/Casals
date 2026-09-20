@@ -95,13 +95,15 @@ def _stand_views() -> dict[str, dict]:
             "section": sec.name if sec else "",
             "members": stand_members(stand),
             "commanders": list_commanders(stand),
+            "built": int(getattr(stand, "built_at", 0) or 0) > 0,
         }
     return out
 
 
 def live_stands() -> dict[str, dict]:
-    """stand name → {section, members}, for `materialize`."""
-    return {n: {"section": v["section"], "members": v["members"]} for n, v in _stand_views().items()}
+    """stand name → {section, members, built}, for `materialize`."""
+    return {n: {"section": v["section"], "members": v["members"], "built": v["built"]}
+            for n, v in _stand_views().items()}
 
 
 def _conductor_commanders() -> list:

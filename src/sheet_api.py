@@ -11,9 +11,10 @@ from audit import _append_event
 from bootstrap import attach_conductor_canister, ensure_core_layout
 from helpers import _caller, _settings
 from live_state import collect_live_state_gen, _bindings_map, live_stands
-from models import Canister
+from models import Canister, Stand
 from planner import PlanningError, build_plan  # noqa: F401 — re-export for callers
 from sheet_storage import (
+    get_plan_record,
     load_sheet_doc,
     store_apply_result,
     store_plan,
@@ -28,6 +29,7 @@ from sheetv2 import (
     apply_requires_proposal,
     ResolveContext,
     env_block,
+    iter_canisters,
     materialize,
     resolve_partial,
     sheet_hash,
@@ -36,7 +38,12 @@ from sheetv2 import (
 
 
 def _now_ns() -> int:
-    return int(time.time() * 1_000_000_000)
+    """Canister time in ns. ``time.time()`` is 0 inside the canister (plans
+    used to carry ``created_at_ns: 0``); fall back to it only off-chain."""
+    try:
+        return int(ic.time())
+    except Exception:  # unit tests without a canister runtime
+        return int(time.time() * 1_000_000_000)
 
 
 def _resolve_ctx(env: str, sheet: dict) -> ResolveContext:
@@ -167,7 +174,43 @@ def _plan_world_gen(scope: dict | None = None):
     except PlanningError as exc:
         raise ValueError("; ".join(exc.errors)) from exc
     store_plan(plan)
+    if not scope:
+        mark_built_stands(plan, resolved, bindings)
     return plan, resolved, live, self_id, env
+
+
+def _stand_of_target(target) -> str:
+    return ((target or {}).get("stand") or "").strip() if isinstance(target, dict) else ""
+
+
+def mark_built_stands(plan: dict, resolved: dict, bindings: dict, now_s: int | None = None) -> list[str]:
+    """Runtime stands whose build the conductor just found complete (#51): every
+    member bound and nothing planned, deferred or pending for the stand. From
+    here on a `sync: manual` section freezes them like any declared stand.
+    Only a whole-sheet plan may decide this — a targeted one sees a slice."""
+    busy: set[str] = set()
+    for key in ("items", "manual", "skipped", "pending"):
+        for it in plan.get(key) or []:
+            busy.add(_stand_of_target(it.get("target")))
+    canister_stand = {name: (st.get("name") or "") for _sec, st, name, _c in iter_canisters(resolved)}
+    for d in plan.get("deferred") or []:
+        busy.add(canister_stand.get(d.get("target") or "", d.get("target") or ""))
+    members: dict[str, list[str]] = {}
+    for _sec, st, name, _c in iter_canisters(resolved):
+        members.setdefault(st.get("name") or "", []).append(name)
+    list(Stand.instances())
+    now = (_now_ns() // 1_000_000_000) if now_s is None else now_s
+    built: list[str] = []
+    for stand in Stand.instances():
+        name = (stand.name or "").strip()
+        if not name or int(getattr(stand, "built_at", 0) or 0) > 0 or name in busy:
+            continue
+        names = members.get(name)
+        if not names or any(not bindings.get(n) for n in names):
+            continue
+        stand.built_at = now
+        built.append(name)
+    return built
 
 
 def plan_gen(args: dict | None = None):
@@ -204,9 +247,14 @@ def apply_gen(args: dict):
     bindings = _bindings_map()
     if apply_requires_proposal(sheet, env) and _caller() != bindings.get(MULTISIG_NAME):
         return {"ok": False, "error": "apply requires proposal: only the governance multisig may apply on this environment"}
+    # A targeted plan (#51) is only reproducible under its own scope: re-plan
+    # with the scope the stored plan carries (or the one the caller repeats),
+    # otherwise a `--stand` item on a manual stand would always look stale.
+    stored = get_plan_record(plan_hash) or {}
+    scope = plan_scope({"scope": stored.get("scope")}) if stored.get("scope") else plan_scope(args)
     _APPLY_LOCK["held"] = True
     try:
-        plan, resolved, live, self_id, _env = yield from _plan_world_gen()
+        plan, resolved, live, self_id, _env = yield from _plan_world_gen(scope)
         if plan.get("hash") != plan_hash:
             return {"ok": False, "error": "stale plan", "current_plan_hash": plan.get("hash")}
         destructive = [it for it in (plan.get("items") or []) if it.get("destructive")]

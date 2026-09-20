@@ -11,7 +11,7 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 | `adopted` | adopted backend reconciles control and config only |
 | `demo` | three stands, three batons, shared multisig |
 | `retire-and-pool` | retire: true, pool behaviour, reuse_pool |
-| `dynamic-stands` | stand_template with runtime-created stands via installer; governed (conductor under `$multisig`, operator as conductor commander); template baton controlled by the multisig only, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]`; the reconcile timer finishes a minted stand on its own |
+| `dynamic-stands` | stand_template with runtime-created stands via installer; governed (conductor under `$multisig`, operator as conductor commander); template baton controlled by the multisig only, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]`; the reconcile timer finishes a minted stand on its own; the Realms section is `sync: manual` (#51): built mints are frozen — drift is reported, healed only by `up --stand` |
 
 Production sheets (`gos-as-a-service/casals.json`, `realms/casals.json`) are
 referenced by path in the e2e runner, not copied here.
@@ -30,7 +30,13 @@ CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
 ```
 
 Every orchestra runs every applicable scenario (spec §11.3): `fresh`,
-`idempotent`, `runtime_stand` (template sections), `baton_upgrade` (sole
+`idempotent`, `content_change` (publish rows: a second build packed with
+`casals bundle`, pinned, served, its stale file deleted on the way back),
+`manual_stand` (publish rows: the frontend's stand made `sync: manual` — a
+plain `up` reports the new build under *manual* and serves the old one,
+`up --stand` deploys it), `runtime_stand` (template sections; on a manual
+template section also: the built stand is frozen until `up --stand`),
+`baton_upgrade` (sole
 hand-off: controllers verified, a code change becomes a baton proposal the
 multisig approves), `retire_and_pool` (`retire: true` members),
 `drift_controller`, `drift_stopped`, `drift_adopted_code` (adopted members),

@@ -76,6 +76,8 @@ def _stand_view(dk) -> dict:
         "subnet": dk.subnet or "",
         "subnet_type": dk.subnet_type or "",
         "members": stand_members(dk),
+        # runtime stands: False while the conductor is still building the mint (#51)
+        "built": int(getattr(dk, "built_at", 0) or 0) > 0,
         "canisters": [_canister_view(s) for s in (dk.canisters or [])],
     }
 

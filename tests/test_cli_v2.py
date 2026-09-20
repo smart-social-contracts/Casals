@@ -1128,6 +1128,7 @@ class TestScopeFlags:
         monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         sheet = json.load(open(self.BATON))
         sheet["sections"][0]["stands"][0]["sync"] = "manual"
+        sheet["registry"]["publish"][0]["sha256"] = "ab" * 32  # a manual frontend's content must be pinned
         sheet_path = tmp_path / "casals.json"
         sheet_path.write_text(json.dumps(sheet))
 
