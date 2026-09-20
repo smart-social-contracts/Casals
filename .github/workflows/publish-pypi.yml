@@ -1,14 +1,5 @@
 # Publish ic-casals to https://pypi.org/project/ic-casals/
-#
-# First run needs a PyPI trusted publisher (no long-lived token):
-#   https://pypi.org/manage/account/publishing/
-#   Owner: smart-social-contracts
-#   Repository: Casals
-#   Workflow: publish-pypi.yml
-#   Environment: pypi
-#
-# Sibling repos (basilisk, realms) use secrets.PYPI_API_TOKEN instead; add
-# that secret on this repo if you prefer a token upload.
+# Uses secrets.PYPI_API_TOKEN (same as basilisk / realms).
 name: Publish to PyPI
 
 on:
@@ -19,9 +10,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
       contents: read
 
     steps:
@@ -59,3 +48,5 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
