@@ -249,3 +249,43 @@ def diff(hashes_a: dict[str, str], hashes_b: dict[str, str]) -> dict[str, list[s
 
 def iter_lines(hashes: dict[str, str]) -> Iterable[str]:
     yield from manifest_text(hashes).splitlines()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python3 -m casals_cli.bundle <dist> -o <out.tgz>`` — the ``casals bundle``
+    command without the rest of the CLI's dependencies (stdlib only), for
+    product release workflows that clone Casals and pack their frontend."""
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(prog="casals_cli.bundle", description="pack a built frontend into a canonical hashed .tgz (docs/BUNDLES.md)")
+    ap.add_argument("source", help="dist directory (or, with --verify, a directory or .tgz)")
+    ap.add_argument("-o", "--output", default="bundle.tgz")
+    ap.add_argument("--manifest", default=None, help="also write the manifest JSON here")
+    ap.add_argument("--verify", action="store_true", help="only read and validate; print the bundle hash")
+    args = ap.parse_args(argv)
+    try:
+        if args.verify:
+            info = summary(read_bundle(args.source))
+            print(f"{args.source}: {info['files']} file(s), {info['bytes']} bytes, bundle sha256 {info['bundle_sha256']}")
+            return 0
+        files = read_dir(args.source) if os.path.isdir(args.source) else read_bundle(args.source)
+        data, man = write_tgz(files)
+    except BundleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    with open(args.output, "wb") as f:
+        f.write(data)
+    with open(args.output + ".sha256", "w", encoding="utf-8") as f:
+        f.write(sha256sum_line(sha256_hex(data), os.path.basename(args.output)))
+    if args.manifest:
+        with open(args.manifest, "w", encoding="utf-8") as f:
+            json.dump(man, f, indent=2, sort_keys=True)
+            f.write("\n")
+    print(f"{args.output}: {len(man['files'])} file(s), {len(data)} bytes gzipped")
+    print(f"  bundle sha256 {man['bundle_sha256']}   (pin this in registry.publish)")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
