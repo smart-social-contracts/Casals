@@ -33,6 +33,12 @@ from helpers import (
     unwrap_call_result,
 )
 from cycles import _status_cycles, _sync_treasury_baseline, _treasury_watch_begin_gen
+from monitor_access import (
+    desired_status_visibility,
+    parse_controllers,
+    parse_status_visibility,
+    status_visibility_arg,
+)
 from pool import _pool_evict, _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
 from util import to_hex as _to_hex
 from wasm_types import wasm_type_of_wasm
@@ -1010,6 +1016,67 @@ def _set_log_visibility(canister_id: str, public: bool):
     unwrap_call_result(res)
 
 
+# ── Off-chain monitor access (status_visibility, Casals#54) ──────────────────
+# The monitor reads canister_status as an *allowed viewer*, never as a
+# controller. The stock binding's settings record predates status_visibility,
+# so both the read and the write go through candid_encode/decode + call_raw.
+
+def _fetch_canister_settings_raw_gen(canister_id: str) -> tuple:
+    """Generator: ``(controllers, status_visibility_kind, allowed_viewers)``
+    from a raw ``canister_status`` call (labels arrive hashed; the parsers in
+    monitor_access accept both forms)."""
+    arg = '(record { canister_id = principal "' + canister_id + '" })'
+    res = yield ic.call_raw(
+        Principal.from_str(MANAGEMENT_CANISTER_ID), "canister_status", ic.candid_encode(arg), 0)
+    decoded = ic.candid_decode(unwrap_call_result(res))
+    kind, viewers = parse_status_visibility(decoded)
+    return parse_controllers(decoded), kind, viewers
+
+
+def _set_status_visibility(canister_id: str, kind: str, viewers: list):
+    """Generator: set ``status_visibility`` on a canister (Casals must control it)."""
+    arg = status_visibility_arg(canister_id, kind, viewers)
+    res = yield ic.call_raw(
+        Principal.from_str(MANAGEMENT_CANISTER_ID), "update_settings", ic.candid_encode(arg), 0)
+    unwrap_call_result(res)
+
+
+def _apply_monitor_visibility_gen(canister_id: str, dry_run: bool = False, s=None,
+                                  current=None) -> dict:
+    """Generator: make a canister's ``status_visibility`` match the monitor
+    settings — grant the monitor principal as an allowed viewer while
+    ``monitor_enabled``, drop it (keeping other viewers) otherwise.
+
+    ``current`` may carry an already-fetched ``(kind, viewers)`` pair to save
+    a management call. Returns ``{changed, kind, viewers, previous}``; emits a
+    ``status_visibility_set`` audit event when it writes."""
+    s = s or _settings()
+    mid = (s.monitor_principal or "").strip()
+    if not mid:
+        return {"changed": False, "reason": "no monitor principal"}
+    if current is None:
+        try:
+            _, cur_kind, cur_viewers = yield from _fetch_canister_settings_raw_gen(canister_id)
+        except Exception as e:
+            _log.error(f"status_visibility read failed for {canister_id}: {e}")
+            cur_kind, cur_viewers = "", []
+    else:
+        cur_kind, cur_viewers = current
+    desired = desired_status_visibility(cur_kind, cur_viewers, mid, bool(s.monitor_enabled))
+    if desired is None:
+        return {"changed": False, "reason": "already up to date",
+                "kind": cur_kind, "viewers": cur_viewers}
+    kind, viewers = desired
+    if not dry_run:
+        yield from _set_status_visibility(canister_id, kind, viewers)
+        _append_event("status_visibility_set", canister_id, {
+            "status_visibility": kind,
+            "allowed_viewers": viewers,
+            "previous": cur_kind or "unknown",
+        })
+    return {"changed": True, "kind": kind, "viewers": viewers, "previous": cur_kind}
+
+
 # ── Subnet helpers ────────────────────────────────────────────────────────────
 
 def _target_subnet(dk):
@@ -1195,6 +1262,12 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
         yield from _set_log_visibility(cid, True)
     except Exception as lv:
         _log.error(f"could not set log_visibility for {cid}: {lv}")
+    # Grant the off-chain monitor read access now, while Casals still controls
+    # the canister (after baton hand-off it no longer can).
+    try:
+        yield from _apply_monitor_visibility_gen(cid)
+    except Exception as mv:
+        _log.error(f"could not set status_visibility for {cid}: {mv}")
 
     _append_event("verifying_hash", cid, {"wasm_key": w.key})
     yield from _maybe_provision_assets(cid, w, dk)
@@ -1277,6 +1350,10 @@ def _assign_pool_canister(dk, name: str, kind: str, cid: str, w=None):
             yield from _set_log_visibility(cid, True)
         except Exception as lv:
             _log.error(f"could not set log_visibility for {cid}: {lv}")
+        try:
+            yield from _apply_monitor_visibility_gen(cid)
+        except Exception as mv:
+            _log.error(f"could not set status_visibility for {cid}: {mv}")
         yield from _maybe_provision_assets(cid, w, dk)
         controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
         if controllers:

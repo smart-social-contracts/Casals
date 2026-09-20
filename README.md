@@ -50,8 +50,10 @@ For production deployments, cycle observation and auto top-ups can run in **[cas
 **Use the hosted monitor** (no account; your conductor's settings are the credential):
 
 1. In **Settings → Cycle operations**, choose **Off-chain monitor**, paste the service base URL (`https://casals.realmsgos.dev` or `https://service.ic-casals.tech`) under **Hosted monitor service** and click **Use this service**. Casals reads the service's principal from `GET /v1/service` and fills in **Monitor service URL** (`<base>/v1/<this conductor's canister id>`) and **Monitor principal**.
-2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync controllers**), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
-3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h. Nothing else is needed.
+2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync monitor access**: `status_visibility = allowed_viewers [monitor]`), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
+3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h; the next **Sync monitor access** drops the viewer grant. Nothing else is needed.
+
+**What the monitor can and cannot do.** Its principal is an *allowed viewer*, never a controller: it can read `canister_status`, ask the conductor to `top_up` orchestra canisters (the conductor ignores the requested amount and deposits exactly what its own cycle policy says — zero when the canister is not below policy, never below `treasury_reserve`) and trigger `convert_treasury_icp` (ICP already on the treasury → cycles on the same treasury, at most once per 10 minutes). It cannot install, stop, destroy or reconfigure anything, and `set_settings` refuses to list it as an extra controller. New canisters get the viewer grant at provisioning, while Casals still controls them; canisters already handed to a baton are reported as `skipped: not a controller` by `sync_controllers` and need the grant via the baton (or were granted at creation). The conductor's own SPA asset canister is read by the monitor only if its viewer list is set by the multisig (`CallCanister → update_settings`).
 
 A self-hosted `casals-monitor` works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
 
@@ -149,7 +151,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |
-| update | `sync_controllers` | add monitor co-controller on managed canisters |
+| update | `sync_controllers` | sync monitor read access (`status_visibility` allowed viewer) on managed canisters |
 
 Full endpoint list: [AGENTS.md](AGENTS.md).
 

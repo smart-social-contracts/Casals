@@ -319,3 +319,78 @@ class TestTreasuryOps:
         assert "_require_admin_or_governance_multisig()" in destroy_orch, (
             f"destroy_orchestra auth check missing; body={destroy_orch[:300]!r}"
         )
+
+
+class TestMonitorLeastPrivilege:
+    """Casals#54: the off-chain monitor principal is a trigger, not a decider.
+
+    It may call ``convert_treasury_icp`` (throttled) and ``top_up`` (amount
+    recomputed on-chain, orchestra targets only) — and nothing else. It is
+    never added to a controller list."""
+
+    MONITOR_ID = "treasury-monitor-viewer"
+
+    @pytest.fixture(scope="class")
+    def monitor(self, registry):
+        principal = _orch_ensure_identity(self.MONITOR_ID)
+        _ok("set_settings", {"monitor_enabled": True, "monitor_principal": principal})
+        yield principal
+        _ok("set_settings", {"monitor_enabled": False, "monitor_principal": ""})
+
+    def test_01_monitor_may_convert_and_is_throttled(self, monitor):
+        first = _call_as("convert_treasury_icp", "{}", identity=self.MONITOR_ID)
+        assert isinstance(first, dict) and first.get("ok") is True, first
+        # Local replica has no ledger: graceful non-conversion, no auth error.
+        assert first.get("converted") is False, first
+        assert "unauthorized" not in (first.get("error") or "").lower(), first
+        second = _call_as("convert_treasury_icp", "{}", identity=self.MONITOR_ID)
+        assert second.get("ok") is True and second.get("reason") == "throttled", second
+        assert int(second.get("retry_after_secs") or 0) > 0, second
+        # Recovery path stays controller-only.
+        rec = _call_as("convert_treasury_icp", {"block_index": 1}, identity=self.MONITOR_ID)
+        assert rec.get("ok") in (False, True), rec
+        if rec.get("ok") is False:
+            assert "controller-only" in (rec.get("error") or ""), rec
+        else:
+            assert rec.get("reason") == "throttled", rec
+
+    def test_02_monitor_cannot_administer(self, monitor):
+        res = _call_as("set_settings", {"open_access": True}, identity=self.MONITOR_ID)
+        assert res.get("ok") is False and "unauthorized" in (res.get("error") or "").lower(), res
+        res = _call_as("reconcile", None, identity=self.MONITOR_ID)
+        assert res.get("ok") is False and "unauthorized" in (res.get("error") or "").lower(), res
+        res = _call_as("sync_controllers", "{}", identity=self.MONITOR_ID)
+        assert res.get("ok") is False and "unauthorized" in (res.get("error") or "").lower(), res
+
+    def test_03_monitor_top_up_only_inside_orchestra(self, monitor):
+        stray = _create_detached()
+        res = _call_as("top_up", {"canister_id": stray, "amount": 10**12}, identity=self.MONITOR_ID)
+        assert res.get("ok") is False, res
+        assert "unknown canister_id" in (res.get("error") or ""), res
+        res = _call_as("top_up", {"canister": "ghost"}, identity=self.MONITOR_ID)
+        assert res.get("ok") is False and "unknown canister" in (res.get("error") or ""), res
+
+    def test_04_monitor_disabled_means_no_access(self, monitor):
+        _ok("set_settings", {"monitor_enabled": False})
+        try:
+            res = _call_as("convert_treasury_icp", "{}", identity=self.MONITOR_ID)
+            assert res.get("ok") is False and "unauthorized" in (res.get("error") or "").lower(), res
+        finally:
+            _ok("set_settings", {"monitor_enabled": True})
+
+    def test_05_monitor_never_a_controller(self, monitor):
+        # Settings refuse to list the monitor as an extra controller.
+        res = call_canister("set_settings", json.dumps({"extra_controller_principals": [monitor]}))
+        assert res.get("ok") is False and "never as a controller" in (res.get("error") or ""), res
+        # sync_controllers never adds it; a dry run reports viewer changes only.
+        res = _ok("sync_controllers", {"dry_run": True})
+        assert res.get("monitor_principal") == monitor, res
+        for entry in res.get("updated") or []:
+            assert "added" not in entry, entry
+            assert monitor not in (entry.get("controllers") or []), entry
+            if entry.get("status_visibility") == "allowed_viewers":
+                assert monitor in entry.get("allowed_viewers", []), entry
+        # Source-level guard: top_up / convert never widen to the governance multisig.
+        casals_main = open(os.path.join(REPO_ROOT, "src", "main.py")).read()
+        body = casals_main.split("def sync_controllers(")[1].split("\n@update", 1)[0]
+        assert "want_extra" not in body and "_apply_monitor_visibility_gen" in body, body[:300]

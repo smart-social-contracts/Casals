@@ -290,14 +290,17 @@ class Settings(Entity):
     casals_frontend_canister_id = String(max_length=64, default="")
     # Principals allowed to call destroy_stand (JSON array of principal strings).
     delegated_destroy_principals_json = String(max_length=512, default="[]")
-    # Off-chain monitor (casals-monitor): when enabled, its principal is added as
-    # a co-controller of managed canisters so it can read canister_status and
-    # top up off-chain — replacing Casals' own recurring on-chain sampler/autopilot
-    # reads. monitor_service_url tells clients (the frontend) where to fetch the
-    # off-chain cycle telemetry instead of calling the conductor.
+    # Off-chain monitor (casals-monitor, Casals#54): when enabled, its principal
+    # is granted `status_visibility = allowed_viewers` on managed canisters so
+    # it can read canister_status *without* being a controller, and the
+    # conductor accepts its top_up (amount recomputed on-chain) and throttled
+    # convert_treasury_icp requests. monitor_service_url tells clients (the
+    # frontend) where to fetch the off-chain cycle telemetry.
     monitor_enabled = Integer(default=0)
     monitor_principal = String(max_length=64, default="")
     monitor_service_url = String(max_length=128, default="")
+    # Last convert_treasury_icp triggered by the monitor (unix secs) — throttle.
+    monitor_last_convert_ts = Integer(default=0)
     # Comma-separated alert recipients when treasury cannot fund a top-up.
     alert_emails = String(max_length=512, default="")
     # ── Native cycles management (the conductor as the orchestra's paymaster) ──

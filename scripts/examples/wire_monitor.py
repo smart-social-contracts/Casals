@@ -3,7 +3,8 @@
 
 Reads a JSON config (monitor_url, monitor_principal, casals_backend,
 casals_frontend), calls set_settings to enable the monitor, then sync_controllers
-so the monitor principal is co-controller on managed canisters.
+so the monitor principal is a status_visibility allowed viewer (never a controller)
+on managed canisters (Casals#54).
 
 Usage:
     python3 scripts/examples/wire_monitor.py config.json

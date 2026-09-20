@@ -662,10 +662,16 @@
   const canConvertIcp = $derived(
     $isAuthenticated && $isController === true && convertibleIcpE8s > 0,
   );
+  // Convert stays controller-gated on purpose (Casals#54 D.19): on a multisig-
+  // governed conductor nobody is a direct controller, so conversion happens
+  // either automatically (`cycles_icp_autoconvert`, or the off-chain monitor
+  // triggering `convert_treasury_icp`) or via a multisig CallCanister proposal.
   const convertBlockedReason = $derived.by(() => {
     if (!$isAuthenticated) return 'Log in with Internet Identity as a Casals controller.';
     if ($isController === null) return 'Checking controller access…';
-    if ($isController === false) return 'Your principal is not a Casals controller.';
+    if ($isController === false) {
+      return 'Your principal is not a Casals controller. On a multisig-governed conductor, ICP is converted automatically (auto-convert or the off-chain monitor) or via a multisig proposal calling convert_treasury_icp.';
+    }
     if (ledgerIcpE8s === undefined) return 'ICP balance unknown — refresh and try again.';
     if (convertibleIcpE8s <= 0) {
       return `Not enough ICP to cover the ledger transfer fee (${formatIcp(ICP_TRANSFER_FEE_E8S)}).`;

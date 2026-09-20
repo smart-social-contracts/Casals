@@ -53,9 +53,8 @@ def resolve_topup_source(requested: str, caller: str) -> str:
     """Audit source for ``top_up``. ``autotopup`` is only accepted from the monitor identity."""
     raw = (requested or "").strip().lower()
     if raw in ("autotopup", "auto", "monitor"):
-        s = _settings()
-        monitor_id = (s.monitor_principal or "").strip()
-        if s.monitor_enabled and monitor_id and caller == monitor_id:
+        from monitor_access import is_monitor_principal
+        if is_monitor_principal(_settings(), caller):
             return "autotopup"
     return "manual"
 

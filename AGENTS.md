@@ -298,10 +298,10 @@ placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
 | `reconcile` | autopilot top-up pass + full balance read |
 | `top_up` / `return_cycles` | manual cycle transfer to/from orchestra canisters |
 | `treasury_send` | controller/multisig: deposit treasury cycles into any canister id (above the reserve) — moves a retired orchestra's balance to its successor before the conductor is deleted |
-| `convert_treasury_icp` | burn ledger ICP → cycles via CMC |
+| `convert_treasury_icp` | burn ledger ICP → cycles via CMC (controller, or the off-chain monitor principal — throttled) |
 | `set_cycle_policy` | per-entity min/topup overrides |
 | `refresh_fx` | refresh cached cycles→fiat rate (throttled) |
-| `sync_controllers` | sync Casals as controller on managed canisters |
+| `sync_controllers` | grant/revoke the off-chain monitor's `status_visibility` viewer access on managed canisters; removes it from any controller list (Casals#54) |
 
 ## Sheets & the canister pool
 
@@ -666,7 +666,19 @@ and `get_cycles` first convert any ledger ICP on the backend canister's default
 account into cycles via the CMC (`transfer` + `notify_top_up`). Deposit ICP to
 the backend's ledger account ID (shown on the Cycles page); autopilot or a manual
 `convert_treasury_icp` call mints cycles from it. Controllers can also trigger
-conversion on demand with `convert_treasury_icp`.
+conversion on demand with `convert_treasury_icp`; so can the off-chain monitor
+principal (`monitor_enabled` + `monitor_principal`), throttled to one call per
+`MONITOR_CONVERT_MIN_INTERVAL_SECS` (10 min) — a throttled call answers
+`converted: false, reason: "throttled"`.
+
+**Off-chain monitor = trigger, not decider (Casals#54).** The monitor identity
+is a `status_visibility` *allowed viewer* of managed canisters (granted at
+provisioning and by `sync_controllers`), never a controller. Its `top_up`
+requests are accepted but the `amount` is ignored: the conductor reads
+`canister_status` itself and deposits `decide_topup(...)` (0 when not below
+policy, never under `treasury_reserve`), recorded as `source: "autotopup"`.
+`set_settings` refuses `extra_controller_principals` that include it. Pure
+helpers live in `src/monitor_access.py`.
 
 **Treasury deposit watch.** The cycle sampler (hourly), autopilot reconcile, and
 `get_cycles` compare the backend's ICP ledger balance and cycle balance against

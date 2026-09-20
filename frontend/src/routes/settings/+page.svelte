@@ -244,15 +244,20 @@
       await setSettings(patch);
       if (cycleMode === 'offchain' && monitorPrincipal.trim()) {
         try {
+          // "Sync monitor access": grants status_visibility (allowed viewer) to
+          // the monitor on every managed canister — never a controller.
           const sync = await syncControllers();
           const n = sync.updated?.length ?? 0;
+          const failed = sync.failed?.length ?? 0;
           if (n > 0) {
-            toasts.success(`Settings saved — added monitor controller on ${n} canister${n === 1 ? '' : 's'}`);
+            toasts.success(`Settings saved — monitor read access synced on ${n} canister${n === 1 ? '' : 's'}${failed ? ` (${failed} failed)` : ''}`);
+          } else if (failed > 0) {
+            toasts.error(`Settings saved, but monitor access failed on ${failed} canister${failed === 1 ? '' : 's'} — run sync_controllers`);
           } else {
             toasts.success('Settings saved');
           }
         } catch {
-          toasts.success('Settings saved (controller sync failed — run sync_controllers manually)');
+          toasts.success('Settings saved (monitor access sync failed — run sync_controllers manually)');
         }
         // Hosted monitor: the service checks the settings we just saved.
         if (monitorBaseFromInstanceUrl(monitorServiceUrl)) {
@@ -568,7 +573,7 @@
                   </p>
                 </div>
                 <div>
-                  <label class="label" for="monitorPrincipal">Monitor controller principal</label>
+                  <label class="label" for="monitorPrincipal">Monitor principal (allowed viewer)</label>
                   <input
                     id="monitorPrincipal"
                     type="text"
@@ -577,7 +582,7 @@
                     bind:value={monitorPrincipal}
                   />
                   <p class="text-xs text-primary-400 mt-1">
-                    Identity the monitor uses for <code class="text-[11px]">canister_status</code> reads. On save, Casals adds it as a co-controller of managed canisters when set.
+                    Casals grants this principal <code class="text-[11px]">status_visibility</code> on managed canisters (so it can read <code class="text-[11px]">canister_status</code>) and accepts its top-up / convert requests — amounts are recomputed on-chain from your cycle policy and conversions are throttled. It is <strong>not</strong> made a controller. Saving runs <em>Sync monitor access</em>.
                   </p>
                 </div>
                 {#if meta?.monitor_enabled && monitorBaseFromInstanceUrl(meta.monitor_service_url ?? '')}

@@ -156,6 +156,9 @@ from lifecycle import (
     _evacuate_treasury_gen,
     _governance_multisig_id,
     _adopt_registered_canister_gen,
+    _apply_monitor_visibility_gen,
+    _fetch_canister_settings_raw_gen,
+    _parse_extra_controller_principals,
     _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
@@ -175,6 +178,11 @@ from lifecycle import (
     _sync_assets_gen,
 )
 
+from monitor_access import (
+    MONITOR_CONVERT_MIN_INTERVAL_SECS,
+    is_monitor_principal,
+    monitor_convert_wait_secs,
+)
 from models import (
     AuthorizedWasm,
     CycleSample,
@@ -543,6 +551,17 @@ def _require_admin() -> None:
         raise Exception("unauthorized: caller is not a Casals controller")
 
 
+def _is_monitor_caller() -> bool:
+    """True when the caller is the enabled off-chain monitor principal
+    (``Settings.monitor_principal`` with ``monitor_enabled``).
+
+    The monitor is a trigger, not a decider (Casals#54): it may ask for
+    ``top_up`` (amount recomputed on-chain from policy) and for
+    ``convert_treasury_icp`` (throttled). It is never a controller and holds
+    no other right on the conductor."""
+    return is_monitor_principal(_settings(), _caller())
+
+
 def _is_governance_multisig_caller() -> bool:
     """True when the caller is the deployed governance multisig canister."""
     mid = _governance_multisig_id()
@@ -768,6 +787,10 @@ def casals_metadata() -> text:
         "monitor_enabled": bool(s.monitor_enabled),
         "monitor_principal": s.monitor_principal,
         "monitor_service_url": (s.monitor_service_url or ""),
+        # Casals#54: the monitor reads via status_visibility (allowed viewer),
+        # never as a controller; its convert requests are throttled on-chain.
+        "monitor_access": "allowed_viewer",
+        "monitor_convert_min_interval_secs": MONITOR_CONVERT_MIN_INTERVAL_SECS,
         "alert_emails": (s.alert_emails or ""),
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
@@ -1190,7 +1213,13 @@ def set_settings(args: text) -> text:
         if "monitor_enabled" in params:
             s.monitor_enabled = 1 if params["monitor_enabled"] else 0
         if "monitor_principal" in params:
-            s.monitor_principal = (params["monitor_principal"] or "").strip()
+            mid = (params["monitor_principal"] or "").strip()
+            if mid and mid in _parse_extra_controller_principals():
+                return _err(
+                    "monitor_principal is listed in extra_controller_principals: "
+                    "the off-chain monitor reads via status_visibility, never as a controller"
+                )
+            s.monitor_principal = mid
         if "monitor_service_url" in params:
             s.monitor_service_url = (params["monitor_service_url"] or "").strip()
         if "alert_emails" in params:
@@ -1216,6 +1245,12 @@ def set_settings(args: text) -> text:
             principals = params["extra_controller_principals"]
             if isinstance(principals, list):
                 cleaned = [str(p).strip() for p in principals if str(p).strip()]
+                mid = (s.monitor_principal or "").strip()
+                if mid and mid in cleaned:
+                    return _err(
+                        "extra_controller_principals must not include the monitor principal: "
+                        "the off-chain monitor reads via status_visibility, never as a controller"
+                    )
                 s.extra_controller_principals_json = json.dumps(cleaned)
         if "display_currency" in params:
             cur = ((params["display_currency"] or "USD").strip().upper())[:8]
@@ -3652,26 +3687,52 @@ def get_treasury_flow(args: text) -> text:
 def top_up(args: text) -> Async[text]:
     """Deposit cycles into a canister or every canister in a stand.
 
-    Authorized by the stand/section commander (or a controller). Args (JSON):
-    {"canister": str}|{"stand": str}, optional {"amount": int},
-    optional {"source": "manual"|"autotopup"}. ``autotopup`` is only recorded
-    when the caller is the configured off-chain monitor principal.
+    Authorized by the stand/section commander (or a controller), or by the
+    off-chain monitor principal. Args (JSON): {"canister": str}|{"stand": str},
+    optional {"amount": int}, optional {"source": "manual"|"autotopup"}.
+
+    Monitor caller (Casals#54): the supplied ``amount`` is ignored. For each
+    target the conductor reads ``canister_status`` itself and deposits exactly
+    ``decide_topup(balance, freezing, min_cycles, topup_cycles, treasury,
+    reserve)`` — zero when the canister is not below policy — never dipping
+    under ``treasury_reserve``. Targets must resolve inside the orchestra.
     """
     try:
         params = json.loads(args)
         targets, dk = _resolve_canister_or_stand(params)
-        _require_commander(dk, "canister.topup")
+        monitor_call = _is_monitor_caller()
+        if not monitor_call:
+            _require_commander(dk, "canister.topup")
         s = _settings()
         reserve = int(s.treasury_reserve or 0)
         treasury = int(ic.canister_balance128())
         explicit = params.get("amount")
         explicit = int(explicit) if explicit is not None else None
-        topup_source = resolve_topup_source(params.get("source"), _caller())
+        if monitor_call:
+            explicit = None
+            topup_source = "autotopup"
+        else:
+            topup_source = resolve_topup_source(params.get("source"), _caller())
         out = []
         for st in targets:
             if not st.canister_id:
                 continue
-            if explicit is not None:
+            if monitor_call:
+                min_c, topup_c = _policy_for(st, s)
+                status, status_err = yield from _fetch_canister_status_result_gen(st)
+                if status is None:
+                    out.append({"canister": st.name, "topped_up": 0,
+                                "reason": f"canister_status unavailable: {status_err}"})
+                    continue
+                balance = int(_status_cycles(status))
+                freezing = int(_status_freezing(status))
+                amount = decide_topup(balance, freezing, min_c, topup_c, treasury, reserve)
+                if amount <= 0:
+                    out.append({"canister": st.name, "topped_up": 0, "balance": balance,
+                                "reason": "not below policy" if balance - freezing >= min_c
+                                else "treasury at reserve"})
+                    continue
+            elif explicit is not None:
                 amount = explicit
             else:
                 _, amount = _policy_for(st, s)
@@ -3768,19 +3829,38 @@ def return_cycles(args: text) -> Async[text]:
 
 @update
 def convert_treasury_icp(args: text = "") -> Async[text]:
-    """Controller only. Convert all ledger ICP on this canister to cycles via the CMC.
+    """Convert all ledger ICP on this canister to cycles via the CMC.
+
+    Controller, or the off-chain monitor principal (Casals#54): the
+    conversion is irreversible but value-preserving — the cycles land on this
+    same treasury — so the monitor may trigger it. Monitor calls are throttled
+    to one per ``MONITOR_CONVERT_MIN_INTERVAL_SECS`` so a leaked key cannot
+    burn ledger fees; a throttled call returns ``converted: false,
+    reason: "throttled"`` (not an error).
 
     Optional JSON: ``{"block_index": <nat>}`` to complete a prior transfer whose
-    ``notify_top_up`` was not recorded (recovery).
+    ``notify_top_up`` was not recorded (recovery; controller only).
     """
     try:
-        _require_admin()
+        monitor_call = _is_monitor_caller()
+        if not monitor_call:
+            _require_admin()
         params = {}
         if args:
             try:
                 params = json.loads(args) if args else {}
             except (json.JSONDecodeError, ValueError):
                 params = {}
+        if monitor_call:
+            s = _settings()
+            now = _now_secs()
+            wait = monitor_convert_wait_secs(int(s.monitor_last_convert_ts or 0), now)
+            if wait > 0:
+                return _ok(converted=False, reason="throttled", retry_after_secs=wait,
+                           min_interval_secs=MONITOR_CONVERT_MIN_INTERVAL_SECS)
+            if params.get("block_index") is not None:
+                return _err("unauthorized: block_index recovery is controller-only")
+            s.monitor_last_convert_ts = now
         if params.get("block_index") is not None:
             convert = yield from _notify_top_up_gen(int(params["block_index"]))
             yield from _sync_treasury_baseline_gen()
@@ -3875,16 +3955,23 @@ def set_cycle_policy(args: text) -> text:
 
 @update
 def sync_controllers(args: text) -> Async[text]:
-    """Controller-only. Sweep all managed canisters and, for each where Casals
-    is already a controller, apply extras (e.g. the off-chain monitor) when
-    monitor_enabled is on. Casals itself is never added — the governance
-    multisig is the platform controller.
+    """Controller-only. Sync the off-chain monitor's *read* access (Casals#54).
 
-    Useful when monitor_enabled is turned on after canisters were already
-    created, or as a health-check after any controller changes.
+    Sweeps every managed canister Casals still controls and, per canister:
+
+    - ``status_visibility``: while ``monitor_enabled``, make sure
+      ``monitor_principal`` is an ``allowed_viewer`` (merged with existing
+      viewers; ``public`` is left alone); when disabled, drop it and revert to
+      ``controllers`` if nobody else is listed.
+    - controllers: the monitor is **never** a controller. If a previous build
+      added it, it is removed here (subject to the usual lock-out rules).
+
+    Canisters Casals no longer controls (baton hand-off) are reported under
+    ``skipped`` with reason ``not a controller``; their viewer list is set at
+    provisioning or by the baton.
 
     Args (JSON, optional): {"dry_run": true} to report without applying.
-    Returns: {updated, skipped, failed, dry_run}."""
+    Returns: {updated, skipped, failed, dry_run, monitor_principal}."""
     try:
         _require_admin()
         params = json.loads(args) if args else {}
@@ -3892,8 +3979,7 @@ def sync_controllers(args: text) -> Async[text]:
         list(Canister.instances())
         s = _settings()
         self_id = ic.id().to_str()
-        monitor_id = (s.monitor_principal or "").strip() if s.monitor_enabled else ""
-        want_extra = [monitor_id] if monitor_id else []
+        monitor_id = (s.monitor_principal or "").strip()
 
         updated = []
         skipped = []
@@ -3904,56 +3990,53 @@ def sync_controllers(args: text) -> Async[text]:
                 skipped.append({"canister": st.name, "reason": "no canister_id"})
                 continue
             try:
-                status_res = yield management_canister.canister_status(
-                    {"canister_id": Principal.from_str(st.canister_id)}
-                )
-                status = unwrap_call_result(status_res)
-                raw_settings = (status.get("settings") if isinstance(status, dict)
-                                else getattr(status, "settings", None))
-                raw_ctls = []
-                if raw_settings is not None:
-                    raw_ctls = (raw_settings.get("controllers") if isinstance(raw_settings, dict)
-                                else getattr(raw_settings, "controllers", []))
-                current = [c.to_str() if hasattr(c, "to_str") else str(c) for c in raw_ctls]
-
-                desired = [p for p in current if p != self_id]
-                added = []
-                removed = []
-                if self_id in current:
-                    removed.append(self_id)
-                for p in want_extra:
-                    if p and p not in desired:
-                        desired.append(p)
-                        added.append(p)
-                if not desired:
+                current, vis_kind, viewers = yield from _fetch_canister_settings_raw_gen(st.canister_id)
+                if self_id not in current:
                     skipped.append({"canister": st.name, "canister_id": st.canister_id,
-                                    "reason": "refusing empty controller list"})
-                    continue
-                baton = _baton_in_stand_optional(st.stand) if st.stand is not None else None
-                err = controller_change_error(
-                    st.name, current, desired, self_id=self_id, multisig_id=_governance_multisig_id(),
-                    baton_id=(baton.canister_id or "").strip() if baton is not None and baton is not st else "",
-                )
-                if err:
-                    skipped.append({"canister": st.name, "canister_id": st.canister_id, "reason": err})
+                                    "reason": "not a controller"})
                     continue
 
-                if not added and not removed:
+                change = {"canister": st.name, "canister_id": st.canister_id}
+
+                # 1. The monitor must not be a controller.
+                if monitor_id and monitor_id in current:
+                    desired = [p for p in current if p != monitor_id]
+                    baton = _baton_in_stand_optional(st.stand) if st.stand is not None else None
+                    err = controller_change_error(
+                        st.name, current, desired, self_id=self_id,
+                        multisig_id=_governance_multisig_id(),
+                        baton_id=(baton.canister_id or "").strip()
+                        if baton is not None and baton is not st else "",
+                    )
+                    if err:
+                        change["controllers_error"] = err
+                    else:
+                        if not dry_run:
+                            yield from _add_controllers(st.canister_id, desired)
+                            _append_event("set_controllers", st.canister_id,
+                                          {"controllers": desired, "added": [],
+                                           "removed": [monitor_id]})
+                        change["controllers_removed"] = [monitor_id]
+
+                # 2. The monitor reads through status_visibility.
+                vis = yield from _apply_monitor_visibility_gen(
+                    st.canister_id, dry_run=dry_run, s=s, current=(vis_kind, viewers))
+                if vis.get("changed"):
+                    change["status_visibility"] = vis["kind"]
+                    change["allowed_viewers"] = vis["viewers"]
+
+                if "controllers_removed" in change or "status_visibility" in change:
+                    updated.append(change)
+                else:
                     skipped.append({"canister": st.name, "canister_id": st.canister_id,
-                                    "reason": "already up to date"})
-                    continue
-
-                if not dry_run:
-                    yield from _add_controllers(st.canister_id, desired)
-                    _append_event("set_controllers", st.canister_id,
-                                  {"controllers": desired, "added": added, "removed": removed})
-                updated.append({"canister": st.name, "canister_id": st.canister_id,
-                                "added": added, "removed": removed})
+                                    "reason": change.get("controllers_error", "already up to date"),
+                                    "status_visibility": vis_kind or "unknown"})
             except Exception as e:
                 failed.append({"canister": st.name, "canister_id": st.canister_id,
                                "error": str(e)})
 
-        return _ok(updated=updated, skipped=skipped, failed=failed, dry_run=dry_run)
+        return _ok(updated=updated, skipped=skipped, failed=failed, dry_run=dry_run,
+                   monitor_principal=monitor_id, monitor_enabled=bool(s.monitor_enabled))
     except Exception as e:
         return _err(str(e))
 

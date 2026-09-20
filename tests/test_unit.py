@@ -2262,3 +2262,153 @@ def test_settings_and_svelte_get_tree_callers_import_it():
     assert missing == [], (
         "getTree() used without importing getTree from $lib/api: " + ", ".join(missing)
     )
+
+
+# ── Off-chain monitor least privilege (Casals#54) ───────────────────────────
+
+MON = "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6-2ae"
+OTHER = "2c2o3-dbhre-c7wf6-gqujk-wtusq-bqpyk-cv74a-jz35f-2wnzn-bil5z-2qe"
+
+
+def _hashed_status_reply(kind_body: str, controllers: str) -> str:
+    """A canister_status reply as ic.candid_decode prints it without a type:
+    every label is its Candid hash (with ``_`` digit groups)."""
+    import monitor_access as ma
+
+    def h(name):
+        return f"{ma.candid_hash(name):_}"   # e.g. 3_469_368_575
+
+    return (
+        "(record { 1_779_848_746 = 12_000_000 : nat; "
+        f"{h('settings')} = record {{ {h('controllers')} = vec {{ {controllers} }}; "
+        f"{h('log_visibility')} = variant {{ {h('controllers')} }}; "
+        f"{h('status_visibility')} = {kind_body}; 2_960_395_129 = 0 : nat }}; "
+        "2_336_206_924 = variant { 4_034_234_567 } })"
+    )
+
+
+def test_status_visibility_parser_named_labels():
+    import monitor_access as ma
+
+    txt = ('(record { settings = record { controllers = vec { principal "aaaaa-aa"; principal "'
+           + OTHER + '" }; status_visibility = variant { allowed_viewers = vec { principal "'
+           + MON + '" } } } })')
+    assert ma.parse_status_visibility(txt) == (ma.VIS_ALLOWED_VIEWERS, [MON])
+    assert ma.parse_controllers(txt) == ["aaaaa-aa", OTHER]
+    assert ma.parse_status_visibility(
+        "(record { status_visibility = variant { public } })") == (ma.VIS_PUBLIC, [])
+    assert ma.parse_status_visibility(
+        "(record { status_visibility = opt variant { controllers } })") == (ma.VIS_CONTROLLERS, [])
+    # Older replica: no status_visibility field at all.
+    assert ma.parse_status_visibility("(record { controllers = vec {} })") == ("", [])
+
+
+def test_status_visibility_parser_hashed_labels():
+    import monitor_access as ma
+
+    def h(name):
+        return str(ma.candid_hash(name))
+
+    viewers = f'variant {{ {h("allowed_viewers")} = vec {{ principal "{MON}"; principal "{OTHER}" }} }}'
+    txt = _hashed_status_reply(viewers, 'principal "aaaaa-aa"')
+    kind, vs = ma.parse_status_visibility(txt)
+    assert kind == ma.VIS_ALLOWED_VIEWERS and vs == [MON, OTHER]
+    assert ma.parse_controllers(txt) == ["aaaaa-aa"]
+    txt = _hashed_status_reply(f'variant {{ {h("controllers")} }}', 'principal "aaaaa-aa"')
+    assert ma.parse_status_visibility(txt) == (ma.VIS_CONTROLLERS, [])
+    txt = _hashed_status_reply(f'variant {{ {h("public")} }}', 'principal "aaaaa-aa"')
+    assert ma.parse_status_visibility(txt) == (ma.VIS_PUBLIC, [])
+
+
+def test_status_visibility_parser_edge_cases():
+    import monitor_access as ma
+
+    # `controllers` appears as a variant tag (log_visibility) before the real vec.
+    txt = ('(record { settings = record { log_visibility = variant { controllers }; '
+           'freezing_threshold = 2_592_000 : nat; controllers = vec { principal "aaaaa-aa" }; '
+           'status_visibility = variant { controllers } } })')
+    assert ma.parse_controllers(txt) == ["aaaaa-aa"]
+    assert ma.parse_status_visibility(txt) == (ma.VIS_CONTROLLERS, [])
+    # Nested braces inside the settings record do not confuse the block scanner.
+    txt = ('(record { settings = record { controllers = vec {}; '
+           'status_visibility = variant { allowed_viewers = vec { principal "' + MON + '" } }; '
+           'wasm_memory_limit = 0 : nat }; status = variant { running } })')
+    assert ma.parse_controllers(txt) == []
+    assert ma.parse_status_visibility(txt) == (ma.VIS_ALLOWED_VIEWERS, [MON])
+    # Garbage / truncated input never raises.
+    assert ma.parse_status_visibility("status_visibility = variant {") == ("", [])
+    assert ma.parse_status_visibility("status_visibility") == ("", [])
+    assert ma.parse_controllers("controllers = vec { principal \"x") == []
+    assert ma.parse_status_visibility("") == ("", [])
+
+
+def test_candid_hash_matches_spec():
+    import monitor_access as ma
+    assert ma.candid_hash("e8s") == 5035232
+    assert ma.candid_hash("Ok") == 17724
+
+
+def test_desired_status_visibility_merges_and_reverts():
+    import monitor_access as ma
+
+    # Enable: add the monitor, keep existing viewers, leave public alone.
+    assert ma.desired_status_visibility("controllers", [], MON, True) == ("allowed_viewers", [MON])
+    assert ma.desired_status_visibility("", [], MON, True) == ("allowed_viewers", [MON])
+    assert ma.desired_status_visibility("allowed_viewers", [OTHER], MON, True) == (
+        "allowed_viewers", [OTHER, MON])
+    assert ma.desired_status_visibility("allowed_viewers", [MON], MON, True) is None
+    assert ma.desired_status_visibility("public", [], MON, True) is None
+    # Disable: drop only the monitor; revert to controllers when nobody is left.
+    assert ma.desired_status_visibility("allowed_viewers", [MON], MON, False) == ("controllers", [])
+    assert ma.desired_status_visibility("allowed_viewers", [OTHER, MON], MON, False) == (
+        "allowed_viewers", [OTHER])
+    assert ma.desired_status_visibility("allowed_viewers", [OTHER], MON, False) is None
+    assert ma.desired_status_visibility("controllers", [], MON, False) is None
+    assert ma.desired_status_visibility("allowed_viewers", [MON], "", False) is None
+    # Cap.
+    full = [f"p{i}-aa" for i in range(ma.MAX_ALLOWED_VIEWERS)]
+    with pytest.raises(ValueError):
+        ma.desired_status_visibility("allowed_viewers", full, MON, True)
+
+
+def test_status_visibility_arg_encoding():
+    import monitor_access as ma
+
+    arg = ma.status_visibility_arg("aaaaa-aa", "allowed_viewers", [MON, OTHER])
+    assert arg == ('(record { canister_id = principal "aaaaa-aa"; settings = record { '
+                   'status_visibility = opt variant { allowed_viewers = vec { principal "'
+                   + MON + '"; principal "' + OTHER + '" } } } })')
+    assert "variant { controllers }" in ma.status_visibility_arg("aaaaa-aa", "controllers", [])
+    with pytest.raises(ValueError):
+        ma.status_visibility_arg("aaaaa-aa", "bogus", [])
+
+
+def test_is_monitor_principal_and_convert_throttle():
+    import monitor_access as ma
+
+    class S:
+        monitor_enabled = 1
+        monitor_principal = MON
+
+    assert ma.is_monitor_principal(S(), MON) is True
+    assert ma.is_monitor_principal(S(), OTHER) is False
+    S.monitor_enabled = 0
+    assert ma.is_monitor_principal(S(), MON) is False
+    S.monitor_enabled = 1
+    S.monitor_principal = ""
+    assert ma.is_monitor_principal(S(), "") is False
+
+    assert ma.monitor_convert_wait_secs(0, 1_000) == 0
+    assert ma.monitor_convert_wait_secs(1_000, 1_100) == ma.MONITOR_CONVERT_MIN_INTERVAL_SECS - 100
+    assert ma.monitor_convert_wait_secs(1_000, 1_000 + ma.MONITOR_CONVERT_MIN_INTERVAL_SECS) == 0
+
+
+def test_monitor_topup_amount_is_policy_not_request():
+    """The monitor's requested amount is irrelevant: decide_topup rules."""
+    # Above policy → nothing, whatever was asked.
+    assert util.decide_topup(5_000, 1_000, 2_000, 999_000, 100_000, 10_000) == 0
+    # Below policy → exactly topup_cycles …
+    assert util.decide_topup(2_500, 1_000, 2_000, 3_000, 100_000, 10_000) == 3_000
+    # … clamped so the treasury never goes under its reserve.
+    assert util.decide_topup(2_500, 1_000, 2_000, 3_000, 11_000, 10_000) == 1_000
+    assert util.decide_topup(2_500, 1_000, 2_000, 3_000, 10_000, 10_000) == 0
