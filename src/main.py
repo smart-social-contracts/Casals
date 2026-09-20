@@ -2177,7 +2177,9 @@ def _require_wasm_authorize_auth() -> None:
 @update
 def begin_upload(args: text) -> Async[text]:
     """Start a browser upload into the casals-wasms store. Args (JSON, optional):
-    {key_prefix?}.
+    {namespace?, key_prefix?}. ``namespace`` scopes the grant to one store
+    namespace (a bundle, docs/BUNDLES.md); end_upload deletes anything
+    written outside it.
 
     Grants the caller ``Commit`` on the store for UPLOAD_GRANT_TTL_S and
     returns {store_canister_id, namespace, key_prefix, chunk_bytes, expires_at}.
@@ -2188,7 +2190,9 @@ def begin_upload(args: text) -> Async[text]:
     try:
         _require_wasm_upload_auth()
         params = json.loads(args) if args else {}
-        res = yield from _store_uploads.begin_upload(_caller(), params.get("key_prefix") or "")
+        res = yield from _store_uploads.begin_upload(
+            _caller(), params.get("key_prefix") or "", namespace=params.get("namespace") or "",
+        )
         _append_event("store_upload_begun", "", {
             "principal": _caller(), "key_prefix": res["key_prefix"], "expires_at": res["expires_at"],
         })
@@ -2199,21 +2203,41 @@ def begin_upload(args: text) -> Async[text]:
 
 @update
 def end_upload(args: text) -> Async[text]:
-    """Finish a browser upload. Args (JSON, optional): {namespace?, path?}.
+    """Finish a browser upload. Args (JSON, optional): {namespace?, path?, bundle?}.
 
-    Revokes the caller's ``Commit`` on the store; with ``path`` also stats the
-    uploaded file and returns its on-chain {key, size, sha256, content_type}
-    so the Authorize form is filled from what the store holds."""
+    Revokes the caller's ``Commit`` on the store and deletes what it wrote
+    outside its grant's namespace; with ``path`` also stats the uploaded file
+    and returns its on-chain {key, size, sha256, content_type} so the
+    Authorize form is filled from what the store holds; with ``bundle`` lists
+    the namespace and returns its on-chain {files, bundle_sha256} — the hash
+    the sheet's registry.publish row pins."""
     try:
         _require_wasm_upload_auth()
         params = json.loads(args) if args else {}
         res = yield from _store_uploads.end_upload(
             _caller(), params.get("namespace") or "", params.get("path") or "",
+            bundle=bool(params.get("bundle")),
         )
         _append_event("store_upload_ended", "", {
             "principal": _caller(), "key": res.get("key", ""), "sha256": res.get("sha256", ""),
-            "size": res.get("size", 0),
+            "size": res.get("size", 0), "namespace": res.get("namespace", ""),
+            "bundle_sha256": res.get("bundle_sha256", ""), "out_of_scope_deleted": res.get("out_of_scope_deleted", []),
         })
+        return _ok(**res)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def store_bundle(args: text) -> Async[text]:
+    """A store namespace as a bundle (docs/BUNDLES.md): {namespace, files:
+    {path: {sha256, size}}, bundle_sha256} computed on-chain from what the
+    store holds. Args (JSON): {namespace}. Inter-canister, hence an update.
+    Authorized like begin_upload."""
+    try:
+        _require_wasm_upload_auth()
+        params = json.loads(args) if args else {}
+        res = yield from _store_uploads.namespace_bundle(params.get("namespace") or "")
         return _ok(**res)
     except Exception as e:
         return _err(str(e))

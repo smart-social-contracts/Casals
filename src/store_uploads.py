@@ -26,7 +26,7 @@ import wasm_store
 from helpers import _settings, unwrap_call_result
 from models import AuthorizedWasm, StoreUploadGrant
 from services import AssetCanisterService
-from sheetv2 import WASM_NAMESPACE, store_key, store_namespace_prefix
+from sheetv2 import WASM_NAMESPACE, bundle_hash, store_key, store_namespace_prefix
 
 _log = get_logger("casals.store_uploads")
 
@@ -102,6 +102,7 @@ def grant_view(g: StoreUploadGrant) -> dict:
     return {
         "principal": g.principal,
         "expires_at": int(g.expires_at or 0),
+        "granted_at": int(getattr(g, "granted_at", 0) or 0),
         "granted_by": g.granted_by or "",
         "key_prefix": g.key_prefix or "",
     }
@@ -129,12 +130,27 @@ def sweep_expired_grants(now_s: int | None = None, keep: str = ""):
     return swept
 
 
-def begin_upload(principal: str, key_prefix: str = "", now_s: int | None = None):
+def _check_namespace(namespace: str) -> str:
+    ns = (namespace or "").strip().strip("/")
+    if not ns:
+        return WASM_NAMESPACE
+    if ".." in ns.split("/") or any(ch.isspace() for ch in ns):
+        raise StoreUploadError(f"invalid store namespace {namespace!r}")
+    return ns
+
+
+def begin_upload(principal: str, key_prefix: str = "", now_s: int | None = None, namespace: str = ""):
     """Generator → {store_canister_id, namespace, key_prefix, chunk_bytes,
     expires_at, swept}. Grants ``principal`` Commit on the store for
-    UPLOAD_GRANT_TTL_S (re-arming an existing grant)."""
+    UPLOAD_GRANT_TTL_S (re-arming an existing grant).
+
+    The store's ``Commit`` is canister-wide — certified-assets has no
+    per-prefix permission — so the *scope* is recorded here (``namespace`` →
+    its key prefix) and enforced by ``end_upload``: anything the caller wrote
+    outside its prefix during the grant is deleted and reported."""
     now = _now_s() if now_s is None else now_s
-    prefix = (key_prefix or "").strip() or store_namespace_prefix(WASM_NAMESPACE)
+    ns = _check_namespace(namespace)
+    prefix = (key_prefix or "").strip() or store_namespace_prefix(ns)
     sid = _store_id()
     swept = yield from sweep_expired_grants(now, keep=principal)
     yield from _grant(principal)
@@ -142,12 +158,15 @@ def begin_upload(principal: str, key_prefix: str = "", now_s: int | None = None)
     g = StoreUploadGrant[principal]
     if g is None:
         g = StoreUploadGrant(principal=principal)
+        g.granted_at = now
+    elif int(getattr(g, "granted_at", 0) or 0) <= 0 or (g.key_prefix or "") != prefix:
+        g.granted_at = now
     g.expires_at = now + UPLOAD_GRANT_TTL_S
     g.granted_by = principal
     g.key_prefix = prefix
     return {
         "store_canister_id": sid,
-        "namespace": WASM_NAMESPACE,
+        "namespace": ns,
         "key_prefix": prefix,
         "chunk_bytes": UPLOAD_CHUNK_BYTES,
         "expires_at": g.expires_at,
@@ -155,20 +174,63 @@ def begin_upload(principal: str, key_prefix: str = "", now_s: int | None = None)
     }
 
 
-def end_upload(principal: str, namespace: str = "", path: str = "", now_s: int | None = None):
-    """Generator → {revoked, key?, size?, sha256?, content_type?}. Always
-    revokes ``principal``'s Commit and drops its row (even without a grant
-    row, so a stale permission left by an older build is cleaned up too).
-    With ``path`` the uploaded file is stat'ed on the store and its on-chain
-    size + sha256 returned for the Authorize form."""
+def namespace_bundle(namespace: str):
+    """Generator → {namespace, files: {path: {sha256, size}}, bundle_sha256}
+    from what the store holds under ``namespace`` — the on-chain view the UI
+    shows and the sheet pins (docs/BUNDLES.md)."""
+    ns = _check_namespace(namespace)
+    entries = yield from wasm_store.list_files(ns)
+    files = {e["path"]: {"sha256": e.get("sha256", ""), "size": int(e.get("size") or 0)} for e in entries if e.get("path")}
+    return {
+        "namespace": ns,
+        "files": files,
+        "bundle_sha256": bundle_hash({p: m["sha256"] for p, m in files.items()}) if files else "",
+    }
+
+
+def _enforce_scope(g: StoreUploadGrant, now: int):
+    """Generator: delete every store file modified since the grant began that
+    lies outside its key prefix. Returns the deleted keys."""
+    prefix = (g.key_prefix or "").strip()
+    since_ns = int(getattr(g, "granted_at", 0) or 0) * 1_000_000_000
+    if not prefix or prefix == "/" or since_ns <= 0:
+        return []
+    entries = yield from wasm_store.list_store_entries()
+    stray = [e["key"] for e in entries
+             if not e["key"].startswith(prefix) and int(e.get("modified_ns") or 0) >= since_ns]
+    if not stray:
+        return []
+    yield from _ensure_self_commit()
+    store = _store()
+    for key in stray:
+        res = yield store.delete_asset({"key": key})
+        unwrap_call_result(res)
+    _log.warning(f"store grant {g.principal}: {len(stray)} file(s) written outside {prefix} deleted: {stray[:5]}")
+    return stray
+
+
+def end_upload(principal: str, namespace: str = "", path: str = "", now_s: int | None = None,
+               bundle: bool = False):
+    """Generator → {revoked, out_of_scope_deleted, key?, size?, sha256?,
+    content_type?, files?, bundle_sha256?}. Always revokes ``principal``'s
+    Commit and drops its row (even without a grant row, so a stale permission
+    left by an older build is cleaned up too), then deletes whatever the
+    caller wrote outside the grant's prefix. With ``path`` the uploaded file
+    is stat'ed on the store and its on-chain size + sha256 returned for the
+    Authorize form; with ``bundle`` the whole ``namespace`` is listed and its
+    bundle hash computed on-chain, for the sheet's pin."""
     now = _now_s() if now_s is None else now_s
     yield from _revoke(principal)
     list(StoreUploadGrant.instances())
     g = StoreUploadGrant[principal]
+    stray: list = []
     if g is not None:
+        stray = yield from _enforce_scope(g, now)
         g.delete()
     yield from sweep_expired_grants(now)
-    out = {"revoked": principal}
+    out = {"revoked": principal, "out_of_scope_deleted": stray}
+    if bundle:
+        out.update((yield from namespace_bundle(namespace)))
     p = (path or "").strip().lstrip("/")
     if p:
         ns = (namespace or "").strip() or WASM_NAMESPACE

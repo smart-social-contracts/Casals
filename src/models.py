@@ -387,6 +387,7 @@ class StoreUploadGrant(Entity, TimestampedMixin):
     __alias__ = "principal"
     principal = String(min_length=1, max_length=64)
     expires_at = Integer(default=0)            # unix seconds
+    granted_at = Integer(default=0)            # unix seconds; scope enforcement looks at writes since then
     granted_by = String(max_length=64, default="")
     key_prefix = String(max_length=256, default="")
 

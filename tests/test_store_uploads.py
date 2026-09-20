@@ -177,7 +177,7 @@ def test_end_upload_without_path_only_revokes(env):
     import store_uploads
 
     res = _drive(store_uploads.end_upload(BOB, now_s=NOW))  # no grant row: still revokes
-    assert res == {"revoked": BOB}
+    assert res == {"revoked": BOB, "out_of_scope_deleted": []}
     assert ("revoke", BOB) in env.calls
 
 
@@ -222,6 +222,74 @@ def test_unbound_store_is_a_clear_error(env, monkeypatch):
     monkeypatch.setattr(store_uploads, "_store", store_uploads.__dict__["_store"])  # real one
     with pytest.raises(store_uploads.StoreUploadError, match="not bound"):
         _drive(store_uploads.begin_upload(ALICE, now_s=NOW))
+
+
+def test_begin_upload_scopes_the_grant_to_a_bundle_namespace(env):
+    import store_uploads
+
+    res = _drive(store_uploads.begin_upload(ALICE, now_s=NOW, namespace="frontend/web/main"))
+    assert res["namespace"] == "frontend/web/main" and res["key_prefix"] == "/frontend/web/main/"
+    g = _grants()[ALICE]
+    assert g.key_prefix == "/frontend/web/main/" and g.granted_at == NOW
+    # re-arming the same scope keeps granted_at; a new scope restarts it
+    _drive(store_uploads.begin_upload(ALICE, now_s=NOW + 60, namespace="frontend/web/main"))
+    assert _grants()[ALICE].granted_at == NOW
+    _drive(store_uploads.begin_upload(ALICE, now_s=NOW + 120, namespace="frontend/other/main"))
+    assert _grants()[ALICE].granted_at == NOW + 120
+    with pytest.raises(store_uploads.StoreUploadError, match="invalid store namespace"):
+        _drive(store_uploads.begin_upload(ALICE, now_s=NOW, namespace="a/../wasm"))
+
+
+def test_end_upload_deletes_writes_outside_the_grant_scope_and_hashes_the_bundle(env):
+    import store_uploads
+    from sheetv2 import bundle_hash
+
+    ns = "frontend/web/main"
+    s = lambda t: t * 1_000_000_000  # noqa: E731
+    env.files.update({
+        "/frontend/web/main/index.html": b"<html>",
+        "/frontend/web/main/app.js": b"js",
+        "/wasm/app@1.0.0.wasm.gz": b"old wasm",       # older than the grant: untouched
+        "/wasm/evil@9.9.9.wasm.gz": b"sneaked in",    # written during the grant, outside scope
+        "/frontend/other/main/index.html": b"also sneaked",
+    })
+    env.modified.update({
+        "/frontend/web/main/index.html": s(NOW + 10), "/frontend/web/main/app.js": s(NOW + 11),
+        "/wasm/app@1.0.0.wasm.gz": s(NOW - 100),
+        "/wasm/evil@9.9.9.wasm.gz": s(NOW + 12), "/frontend/other/main/index.html": s(NOW + 13),
+    })
+    _drive(store_uploads.begin_upload(ALICE, now_s=NOW, namespace=ns))
+    res = _drive(store_uploads.end_upload(ALICE, ns, now_s=NOW + 20, bundle=True))
+    assert ALICE not in env.permitted
+    assert sorted(res["out_of_scope_deleted"]) == ["/frontend/other/main/index.html", "/wasm/evil@9.9.9.wasm.gz"]
+    assert "/wasm/app@1.0.0.wasm.gz" in env.files and "/wasm/evil@9.9.9.wasm.gz" not in env.files
+    assert res["namespace"] == ns
+    assert set(res["files"]) == {"index.html", "app.js"}
+    assert res["files"]["app.js"] == {"sha256": hashlib.sha256(b"js").hexdigest(), "size": 2}
+    assert res["bundle_sha256"] == bundle_hash({p: m["sha256"] for p, m in res["files"].items()})
+    # Casals granted itself Commit before deleting (controllers cannot write in the fork)
+    assert ("grant", SELF) in env.calls
+
+
+def test_wasm_scope_grant_leaves_everything_alone(env):
+    import store_uploads
+
+    env.files["/frontend/web/main/index.html"] = b"x"
+    env.modified["/frontend/web/main/index.html"] = (NOW + 5) * 1_000_000_000
+    _drive(store_uploads.begin_upload(ALICE, now_s=NOW))  # default: /wasm/
+    res = _drive(store_uploads.end_upload(ALICE, now_s=NOW + 20))
+    assert res["out_of_scope_deleted"] == ["/frontend/web/main/index.html"]
+    _drive(store_uploads.begin_upload(BOB, now_s=NOW, key_prefix="/"))  # explicit whole-store scope
+    env.files["/frontend/web/main/index.html"] = b"x"
+    res = _drive(store_uploads.end_upload(BOB, now_s=NOW + 20))
+    assert res["out_of_scope_deleted"] == [] and "/frontend/web/main/index.html" in env.files
+
+
+def test_namespace_bundle_of_an_empty_namespace(env):
+    import store_uploads
+
+    res = _drive(store_uploads.namespace_bundle("frontend/none/main"))
+    assert res == {"namespace": "frontend/none/main", "files": {}, "bundle_sha256": ""}
 
 
 # ── catalog cross-reference ──────────────────────────────────────────────────

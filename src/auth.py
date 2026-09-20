@@ -32,7 +32,7 @@ PERMISSIONS = [
     ("stand.delete",       "Delete stand",               "Stand"),
     ("commander.assign",   "Appoint sub-commanders",     "Governance"),
     ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
-    ("wasm.upload",        "Upload WASMs to the store",  "Platform"),
+    ("wasm.upload",        "Upload files (WASMs, bundles) to the store", "Platform"),
     ("wasm.authorize",     "Authorize / revoke catalog WASMs", "Platform"),
     ("sheet.set",                          "Set orchestra sheet",             "Sheet"),
     ("sheet.apply",                        "Apply reconciliation plan",       "Sheet"),
