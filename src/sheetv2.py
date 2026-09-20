@@ -165,6 +165,26 @@ def store_key(namespace: str, path: str) -> str:
     return f"/{ns}/{p}" if ns else f"/{p}"
 
 
+BUNDLE_MANIFEST = ".casals-bundle.json"  # metadata inside a bundle; never hashed, never served
+
+
+def bundle_hash(hashes: dict) -> str:
+    """The bundle hash of docs/BUNDLES.md: sha256 of the sorted ``sha256sum``
+    listing (``"<sha256>  <path>\n"`` per file). One rule, shared by the CLI,
+    the conductor and (re-implemented) the browser."""
+    text = "".join(f"{hashes[p]}  {p}\n" for p in sorted(hashes) if p != BUNDLE_MANIFEST)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def publish_pins(sheet: dict) -> dict:
+    """``{namespace: bundle sha256}`` for every pinned `registry.publish` row."""
+    out = {}
+    for entry in (sheet.get("registry") or {}).get("publish") or []:
+        if isinstance(entry, dict) and entry.get("path") and entry.get("sha256"):
+            out[str(entry["path"])] = str(entry["sha256"]).strip().lower()
+    return out
+
+
 def store_namespace_prefix(namespace: str) -> str:
     """Key prefix under which every file of ``namespace`` lives in the store."""
     ns = (namespace or "").strip().strip("/")

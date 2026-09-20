@@ -26,8 +26,10 @@ import os
 import tarfile
 from typing import Iterable
 
+from sheetv2 import BUNDLE_MANIFEST, bundle_hash as _shared_bundle_hash
+
 FORMAT = "casals-bundle/1"
-MANIFEST_NAME = ".casals-bundle.json"
+MANIFEST_NAME = BUNDLE_MANIFEST
 INDEX = "index.html"
 
 
@@ -54,8 +56,9 @@ def manifest_text(hashes: dict[str, str]) -> str:
 
 
 def bundle_hash(hashes: dict[str, str]) -> str:
-    """sha256 of :func:`manifest_text`. The one number every consumer compares."""
-    return sha256_hex(manifest_text(hashes).encode("utf-8"))
+    """sha256 of :func:`manifest_text`. The one number every consumer compares;
+    the definition lives in ``sheetv2`` so the conductor uses the same one."""
+    return _shared_bundle_hash(hashes)
 
 
 def manifest(hashes: dict[str, str], sizes: dict[str, int] | None = None) -> dict:

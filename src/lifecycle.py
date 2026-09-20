@@ -554,13 +554,16 @@ def _text_content_type(key: str) -> str:
     return _TEXT_TYPES.get(ext) or _TEXT_TYPES.get(base) or "text/plain"
 
 
-def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, all_keys: list | None = None):
+def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, all_keys: list | None = None,
+                     delete_keys: list | None = None):
     """Generator: store a bounded slice of ``keys`` into an asset canister —
     rendered sheet ``files`` as-is, everything else pulled from the registry
     ``namespace`` — then apply the dist's `.ic-assets.json5` (headers, cache,
     raw access, aliasing) to each stored key, exactly as dfx would. When the
     policy file itself is among ``keys`` every key in ``all_keys`` is
-    re-propertied. The planner lists whatever is still missing next round."""
+    re-propertied. ``delete_keys`` (assets that left the bundle) are removed
+    after the writes, so a visitor never sees a half-updated set missing
+    files. The planner lists whatever is still missing next round."""
     asset = AssetCanisterService(Principal.from_str(canister_id))
     grant_res = yield asset.grant_permission({"to_principal": ic.id(), "permission": {"Commit": None}})
     unwrap_call_result(grant_res)
@@ -612,8 +615,15 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
             res = yield ic.call_raw(Principal.from_str(canister_id), "commit_batch", ic.candid_encode(arg), 0)
             unwrap_call_result(res)
             propertied += len(ops[start:start + 50])
+    deleted: list = []
+    if len(stored) == len(keys):  # every write landed: now the removals
+        for key in (delete_keys or [])[:SYNC_MAX_FILES]:
+            res = yield asset.delete_asset({"key": key})
+            unwrap_call_result(res)
+            deleted.append(key)
     _append_event("assets_synced", canister_id,
-                  {"namespace": namespace, "keys": stored, "rules": len(rules), "propertied": propertied})
+                  {"namespace": namespace, "keys": stored, "deleted": deleted, "rules": len(rules),
+                   "propertied": propertied})
 
 
 def _batch_id(reply_text: str) -> str:

@@ -291,7 +291,7 @@ def _execute_item(item: dict, sheet: dict):
         desired = item.get("desired") or {}
         files = _find_canister_spec(sheet, name).get("files") or {}
         yield from _sync_assets_gen(cid, desired.get("content") or "", desired.get("keys") or [], files,
-                                    desired.get("all_keys") or [])
+                                    desired.get("all_keys") or [], desired.get("delete_keys") or [])
         return
     if kind == "top_up":
         min_tc = float((item.get("desired") or {}).get("min_balance_tc") or 0)

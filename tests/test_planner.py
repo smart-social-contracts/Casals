@@ -333,6 +333,49 @@ def test_asset_drift_yields_sync_item():
     assert items[0]["requires"] == "self"
 
 
+def test_bundle_drift_names_both_hashes_and_removes_stale_keys():
+    """With `content` the frontend serves exactly the store bundle (+ files):
+    a new bundle in the namespace means writes for changed files and deletes
+    for files that left, and the reason reads bundle A → bundle B."""
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    ns = sv2.find_canister(resolved, "rust-frontend")[2]["content"]
+    old_store = dict(live["published"][ns])
+    live["published"][ns] = {"index.html": {"sha256": "22" * 32, "content_type": "text/html"},
+                             "_app/new.js": {"sha256": "33" * 32, "content_type": "text/javascript"}}
+    live["assets"]["rust-frontend"]["/old.js"] = "44" * 32  # left the bundle
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    items = [i for i in plan["items"] if i["kind"] == "sync_assets"]
+    assert len(items) == 1
+    d = items[0]["desired"]
+    assert d["keys"] == ["/_app/new.js", "/index.html"]
+    assert d["delete_keys"] == ["/old.js"]
+    assert d["bundle_sha256"] == sv2.bundle_hash({"index.html": "22" * 32, "_app/new.js": "33" * 32})
+    assert d["live_bundle_sha256"] == sv2.bundle_hash({"index.html": "11" * 32, "old.js": "44" * 32})
+    assert items[0]["reason"].startswith(f"rust-frontend: bundle {d['live_bundle_sha256'][:12]}… → {d['bundle_sha256'][:12]}…")
+    assert "(2 file(s) to write, 1 to remove)" in items[0]["reason"]
+    # rendered `files` are never part of the bundle hash
+    assert "canister_ids" not in json.dumps(d["live_bundle_sha256"])
+    live["published"][ns] = old_store
+
+
+def test_pinned_bundle_must_be_in_the_store_before_any_sync():
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    ns = sv2.find_canister(resolved, "rust-frontend")[2]["content"]
+    row = next(e for e in resolved["registry"]["publish"] if e["path"] == ns)
+    row["sha256"] = "ab" * 32  # the sheet pins a bundle the store does not hold
+    live["assets"]["rust-frontend"]["/index.html"] = "ff" * 32
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert not [i for i in plan["items"] if i["kind"] == "sync_assets"]
+    reasons = [u["reason"] for u in plan["unverifiable"] if u["target"] == "rust-frontend"]
+    assert reasons and "sheet pins abababababab…" in reasons[0] and "publish the pinned bundle" in reasons[0]
+    # pin matches the store: the sync goes ahead
+    row["sha256"] = sv2.bundle_hash({p: m["sha256"] for p, m in live["published"][ns].items()})
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert [i["desired"]["keys"] for i in plan["items"] if i["kind"] == "sync_assets"] == [["/index.html"]]
+
+
 def _realm_world(live_members=("{stand}-quarter-1",)):
     """dynamic-stands with one runtime stand `realm-e2e` (template + quarter 1),
     every canister bound, live state converged. Returns (resolved, live, bindings)."""

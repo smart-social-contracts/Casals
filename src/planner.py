@@ -15,6 +15,8 @@ from sheetv2 import (
     baton_commanders,
     baton_hand_off_mode,
     baton_managed_members,
+    bundle_hash,
+    publish_pins,
     registry_path,
     stand_member,
     MULTISIG_NAME,
@@ -127,6 +129,7 @@ class _PlanContext:
         self.config_queries = live_state.get("config_queries") or {}
         self.assets = live_state.get("assets") or {}
         self.published = live_state.get("published") or {}
+        self.publish_pins = publish_pins(self.sheet)
         self.sheet_names = set(canister_names(self.sheet))
         self.reuse_pool = bool((sheet.get("cycles") or {}).get("reuse_pool"))
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
@@ -148,11 +151,24 @@ class _PlanContext:
         are the frontend's desired asset set, compared by sha256 per key. Keys
         the asset canister has beyond that set are left alone."""
         desired = desired_assets(spec, self.published)
+        ns = spec.get("content") or ""
         if desired is None:
             self.unverifiable.append({"target": name, "field": "content",
-                                      "reason": f"registry namespace {spec.get('content')} unreadable"})
+                                      "reason": f"registry namespace {ns} unreadable"})
             return
         if self.defer_if_unresolved(spec.get("files"), name, "files"):
+            return
+        # With `content` the served set is a bundle (docs/BUNDLES.md): the store
+        # namespace must hold exactly the bundle the sheet pins, and the
+        # canister must serve exactly that bundle plus its rendered `files`.
+        store_bundle = bundle_hash({p: m.get("sha256", "") for p, m in self.published[ns].items()}) if ns else ""
+        pinned = self.publish_pins.get(ns, "") if ns else ""
+        if pinned and store_bundle != pinned:
+            self.unverifiable.append({
+                "target": name, "field": "content",
+                "reason": f"store namespace {ns} holds bundle {store_bundle[:12]}… but the sheet pins "
+                          f"{pinned[:12]}…; publish the pinned bundle (casals up / Upload bundle) first",
+            })
             return
         live = self.assets.get(name)
         if not isinstance(live, dict) or live.get("error"):
@@ -160,13 +176,22 @@ class _PlanContext:
                                       "reason": (live or {}).get("error") or "asset list unavailable"})
             return
         keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)
-        if keys:
+        delete_keys = sorted(k for k in live if k not in desired) if ns else []
+        if keys or delete_keys:
+            reason = f"sync {len(keys)} asset(s) into {name}"
+            extra: dict = {}
+            if ns:
+                file_keys = set(spec.get("files") or {})
+                live_bundle = bundle_hash({k.lstrip("/"): sha for k, sha in live.items() if k not in file_keys})
+                reason = (f"{name}: bundle {live_bundle[:12]}… → {store_bundle[:12]}… "
+                          f"({len(keys)} file(s) to write, {len(delete_keys)} to remove)")
+                extra = {"bundle_sha256": store_bundle, "live_bundle_sha256": live_bundle}
             self.add(
                 "sync_assets",
                 {"name": name, "canister_id": cid, "section": section, "stand": stand},
-                f"sync {len(keys)} asset(s) into {name}",
+                reason,
                 requires="self" if self.self_id in live_ctls else "multisig",
-                desired={"content": spec.get("content"), "keys": keys, "all_keys": sorted(desired)},
+                desired={"content": ns, "keys": keys, "all_keys": sorted(desired), "delete_keys": delete_keys, **extra},
                 section_order=si, stand_order=sj,
             )
 
