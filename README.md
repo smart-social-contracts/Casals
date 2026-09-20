@@ -45,15 +45,17 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 ## Off-chain cycle monitor
 
-For production deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers:
+For production deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers.
 
-1. Deploy `casals-monitor` (FastAPI + SQLite) with an IC identity that is a Casals controller.
-2. In **Settings → Cycle operations**, choose **Off-chain monitor** and set:
-   - **Monitor service URL** — e.g. `https://casals.example.org/v1/my-instance`
-   - **Monitor controller principal** — the identity the monitor uses for `canister_status` reads
-3. Save and run **Sync controllers** so the monitor is co-controller on managed canisters.
+**Use the hosted monitor** (no account; your conductor's settings are the credential):
 
-This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Optional **Alert emails** in Settings notify operators when the treasury cannot fund a top-up.
+1. In **Settings → Cycle operations**, choose **Off-chain monitor**, paste the service base URL (`https://casals.realmsgos.dev` or `https://service.ic-casals.tech`) under **Hosted monitor service** and click **Use this service**. Casals reads the service's principal from `GET /v1/service` and fills in **Monitor service URL** (`<base>/v1/<this conductor's canister id>`) and **Monitor principal**.
+2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync controllers**), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
+3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h. Nothing else is needed.
+
+A self-hosted `casals-monitor` works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
+
+This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Optional **Alert emails** in Settings notify operators when the treasury cannot fund a top-up or when the monitor sees consent withdrawn.
 
 For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `monitor_url`, `monitor_principal`, `casals_backend`, `casals_frontend`).
 

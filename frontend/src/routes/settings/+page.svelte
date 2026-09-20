@@ -1,6 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree } from '$lib/api';
+  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree, backendCanisterId } from '$lib/api';
+  import {
+    describeMonitorState,
+    fetchMonitorInstanceStatus,
+    fetchMonitorService,
+    instanceUrlFor,
+    monitorBaseFromInstanceUrl,
+    registerWithMonitor,
+    type MonitorInstanceStatus,
+    type MonitorServiceInfo,
+  } from '$lib/hostedMonitor';
   import type { Metadata, SettingsPatch } from '$lib/api';
   import { isAuthenticated, principal, isController } from '$lib/auth';
   import { get } from 'svelte/store';
@@ -37,6 +47,15 @@
   let cycleMode = $state<CycleMode>('onchain');
   let monitorServiceUrl = $state('');
   let monitorPrincipal = $state('');
+  // Hosted monitor onboarding (casals-monitor#4): base URL → GET /v1/service
+  // prefills principal + instance URL; after save we POST /v1/instances.
+  let hostedBase = $state('');
+  let hostedInfo = $state<MonitorServiceInfo | null>(null);
+  let hostedLoading = $state(false);
+  let hostedError = $state('');
+  let monitorStatus = $state<MonitorInstanceStatus | null>(null);
+  let monitorStatusLoading = $state(false);
+  let registerNote = $state('');
   let alertEmails = $state('');
   // Native cycles management
   let cyclesAutopilot = $state(false);
@@ -97,6 +116,8 @@
       cycleMode = meta.monitor_enabled ? 'offchain' : 'onchain';
       monitorServiceUrl = meta.monitor_service_url ?? '';
       monitorPrincipal = meta.monitor_principal ?? '';
+      hostedBase = monitorBaseFromInstanceUrl(monitorServiceUrl) || hostedBase;
+      if (meta.monitor_enabled && monitorServiceUrl) void refreshMonitorStatus();
       alertEmails = meta.alert_emails ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
       cyclesIcpAutoconvert = meta.cycles_icp_autoconvert ?? true;
@@ -124,6 +145,72 @@
       canEditSubnetWhitelist = false;
     }
   });
+
+  async function useHostedService() {
+    hostedError = '';
+    hostedLoading = true;
+    try {
+      const info = await fetchMonitorService(hostedBase);
+      hostedInfo = info;
+      monitorPrincipal = info.principal;
+      const cid = backendCanisterId();
+      if (cid) monitorServiceUrl = instanceUrlFor(hostedBase, cid);
+      if (info.registration_enabled === false) {
+        hostedError = 'This service is not accepting registrations right now.';
+      }
+    } catch (e: any) {
+      hostedInfo = null;
+      hostedError = e?.message ?? 'Could not reach the monitor service';
+    } finally {
+      hostedLoading = false;
+    }
+  }
+
+  async function refreshMonitorStatus() {
+    const url = (meta?.monitor_service_url ?? monitorServiceUrl).trim();
+    if (!url) {
+      monitorStatus = null;
+      return;
+    }
+    monitorStatusLoading = true;
+    try {
+      monitorStatus = await fetchMonitorInstanceStatus(url);
+    } finally {
+      monitorStatusLoading = false;
+    }
+  }
+
+  /** Register this conductor with the hosted monitor (idempotent). The service
+   *  verifies our on-chain settings; call it only after they are saved. */
+  async function registerHosted(): Promise<void> {
+    const base = monitorBaseFromInstanceUrl(meta?.monitor_service_url ?? monitorServiceUrl);
+    const cid = backendCanisterId();
+    if (!base || !cid) return;
+    registerNote = '';
+    const res = await registerWithMonitor(base, cid);
+    if (res.ok) {
+      registerNote = res.created ? 'Registered with the hosted monitor.' : 'Registration refreshed.';
+      toasts.success(registerNote);
+    } else if (res.status === 409) {
+      registerNote = `Monitor refused: ${res.detail}`;
+      toasts.error(registerNote);
+    } else if (res.status === 0) {
+      registerNote = `Monitor unreachable (${res.detail}). Retry with “Register / check status”.`;
+    } else {
+      registerNote = `Monitor answered ${res.status}: ${res.detail ?? ''}`;
+      toasts.error(registerNote);
+    }
+    await refreshMonitorStatus();
+  }
+
+  function formatAge(ts: number | undefined, now?: number): string {
+    if (!ts) return 'never';
+    const secs = Math.max(0, Math.floor((now ?? Date.now() / 1000) - ts));
+    if (secs < 90) return `${secs}s ago`;
+    if (secs < 5400) return `${Math.round(secs / 60)} min ago`;
+    if (secs < 172800) return `${Math.round(secs / 3600)} h ago`;
+    return `${Math.round(secs / 86400)} d ago`;
+  }
 
   async function save(event: Event) {
     event.preventDefault();
@@ -167,8 +254,17 @@
         } catch {
           toasts.success('Settings saved (controller sync failed — run sync_controllers manually)');
         }
+        // Hosted monitor: the service checks the settings we just saved.
+        if (monitorBaseFromInstanceUrl(monitorServiceUrl)) {
+          try {
+            await registerHosted();
+          } catch (e: any) {
+            registerNote = e?.message ?? 'registration failed';
+          }
+        }
       } else {
         toasts.success('Settings saved');
+        monitorStatus = null;
       }
       if (cycleMode === 'offchain') {
         cyclesAutopilot = false;
@@ -423,6 +519,41 @@
             {#if cycleMode === 'offchain'}
               <div class="space-y-4 border-l-2 border-emerald-200 ml-1 pl-4">
                 <div>
+                  <label class="label" for="hostedBase">Hosted monitor service</label>
+                  <div class="flex gap-2">
+                    <input
+                      id="hostedBase"
+                      type="url"
+                      class="input font-mono text-sm flex-1"
+                      placeholder="https://casals.realmsgos.dev"
+                      bind:value={hostedBase}
+                    />
+                    <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={hostedLoading || !hostedBase.trim()}>
+                      {hostedLoading ? 'Checking…' : 'Use this service'}
+                    </button>
+                  </div>
+                  <p class="text-xs text-primary-400 mt-1">
+                    Paste the service's base URL. Casals reads its principal from <code class="text-[11px]">/v1/service</code> and fills in the two fields below; on save it registers this conductor with the service. Your settings are the only credential — the service never holds a token for you.
+                  </p>
+                  {#if hostedError}
+                    <p class="text-xs text-red-600 mt-1">{hostedError}</p>
+                  {/if}
+                  {#if hostedInfo}
+                    <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                      <dt class="text-primary-500">Principal</dt>
+                      <dd class="font-mono text-primary-900 break-all">{hostedInfo.principal}</dd>
+                      {#if hostedInfo.poll_interval_secs}
+                        <dt class="text-primary-500">Polling</dt>
+                        <dd class="text-primary-900">every {Math.round(hostedInfo.poll_interval_secs.default / 60)} min by default (min {Math.round(hostedInfo.poll_interval_secs.min / 60)} min)</dd>
+                      {/if}
+                      {#if hostedInfo.terms_url}
+                        <dt class="text-primary-500">Terms</dt>
+                        <dd><a class="text-emerald-700 underline" href={hostedInfo.terms_url} target="_blank" rel="noreferrer">{hostedInfo.terms_url}</a></dd>
+                      {/if}
+                    </dl>
+                  {/if}
+                </div>
+                <div>
                   <label class="label" for="monitorServiceUrl">Monitor service URL</label>
                   <input
                     id="monitorServiceUrl"
@@ -449,6 +580,35 @@
                     Identity the monitor uses for <code class="text-[11px]">canister_status</code> reads. On save, Casals adds it as a co-controller of managed canisters when set.
                   </p>
                 </div>
+                {#if meta?.monitor_enabled && monitorBaseFromInstanceUrl(meta.monitor_service_url ?? '')}
+                  <div class="rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5 text-xs space-y-1.5">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-medium text-primary-800">Hosted monitor status</span>
+                      <button type="button" class="text-emerald-700 underline" onclick={registerHosted} disabled={monitorStatusLoading}>
+                        {monitorStatusLoading ? 'Checking…' : 'Register / check status'}
+                      </button>
+                    </div>
+                    {#if monitorStatus}
+                      <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                        <dt class="text-primary-500">State</dt>
+                        <dd class="{monitorStatus.state === 'ok' && monitorStatus.enabled ? 'text-emerald-700' : 'text-amber-700'} font-medium">{describeMonitorState(monitorStatus)}</dd>
+                        <dt class="text-primary-500">Last poll</dt>
+                        <dd class="text-primary-900">{formatAge(monitorStatus.last_poll_ts, monitorStatus.now)}{monitorStatus.last_poll_error ? ` — ${monitorStatus.last_poll_error}` : ''}</dd>
+                        <dt class="text-primary-500">Cadence</dt>
+                        <dd class="text-primary-900">poll every {Math.round(monitorStatus.cadence.poll_interval_secs / 60)} min · top-ups every {Math.round(monitorStatus.cadence.paymaster_interval_secs / 60)} min{monitorStatus.paymaster_allowed === false ? ' (paused)' : ''}</dd>
+                        {#if monitorStatus.canisters}
+                          <dt class="text-primary-500">Canisters</dt>
+                          <dd class="text-primary-900">{monitorStatus.canisters.ok} monitored{monitorStatus.canisters.deleted ? `, ${monitorStatus.canisters.deleted} deleted on the IC` : ''}</dd>
+                        {/if}
+                      </dl>
+                    {:else if !monitorStatusLoading}
+                      <p class="text-primary-500">{registerNote || 'Not registered with the service yet (or service unreachable).'}</p>
+                    {/if}
+                    {#if registerNote && monitorStatus}
+                      <p class="text-primary-500">{registerNote}</p>
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/if}
           </div>
