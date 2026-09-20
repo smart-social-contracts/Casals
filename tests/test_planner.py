@@ -376,6 +376,82 @@ def test_pinned_bundle_must_be_in_the_store_before_any_sync():
     assert [i["desired"]["keys"] for i in plan["items"] if i["kind"] == "sync_assets"] == [["/index.html"]]
 
 
+# ── sync: manual and targeted runs (#51) ─────────────────────────────────────
+
+
+def _manual_stand_world():
+    resolved, env, bindings = _resolved("baton-stand")
+    stand = resolved["sections"][0]["stands"][0]
+    stand["sync"] = "manual"
+    live = _converged_live(resolved, bindings)
+    live["assets"]["rust-frontend"]["/index.html"] = "ff" * 32  # drift inside the manual stand
+    return resolved, env, bindings, live
+
+
+def test_manual_stand_drift_is_observed_not_acted_upon():
+    resolved, env, bindings, live = _manual_stand_world()
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert plan["items"] == []
+    manual = plan["manual"]
+    assert [(m["kind"], m["target"]["name"], m["scope"]) for m in manual] == [("sync_assets", "rust-frontend", "manual")]
+    assert "bundle" in manual[0]["reason"]
+    assert plan["skipped"] == []
+
+
+def test_targeting_a_manual_stand_acts_on_it():
+    resolved, env, bindings, live = _manual_stand_world()
+    plan = build_plan(resolved, env, live, self_id=SELF, scope={"stands": ["Rust"]})
+    assert [i["kind"] for i in plan["items"]] == ["sync_assets"]
+    assert plan["manual"] == [] and plan["scope"]["stands"] == ["Rust"]
+    # naming its section works too
+    plan = build_plan(resolved, env, live, self_id=SELF, scope={"sections": ["Demo"]})
+    assert [i["kind"] for i in plan["items"]] == ["sync_assets"]
+
+
+def test_section_sync_manual_is_inherited_and_overridable():
+    resolved, env, bindings = _resolved("baton-stand")
+    section = resolved["sections"][0]
+    section["sync"] = "manual"
+    live = _converged_live(resolved, bindings)
+    live["assets"]["rust-frontend"]["/index.html"] = "ff" * 32
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert plan["items"] == [] and len(plan["manual"]) == 1
+    section["stands"][0]["sync"] = "auto"  # the stand opts back in
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert [i["kind"] for i in plan["items"]] == ["sync_assets"] and plan["manual"] == []
+
+
+def test_excluding_and_out_of_scope_items_are_reported_as_skipped():
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    live["assets"]["rust-frontend"]["/index.html"] = "ff" * 32
+    plan = build_plan(resolved, env, live, self_id=SELF, scope={"exclude_stands": ["Rust"]})
+    assert plan["items"] == [] and [s["scope"] for s in plan["skipped"]] == ["excluded"]
+    plan = build_plan(resolved, env, live, self_id=SELF, scope={"stands": ["Other"]})
+    assert plan["items"] == [] and [s["scope"] for s in plan["skipped"]] == ["out_of_scope"]
+
+
+def test_manual_stand_that_does_not_exist_yet_is_not_a_planning_error():
+    """Nothing about a manual stand runs — including its creates. A field
+    waiting for one of those (`$stand.baton`) must not fail the whole plan."""
+    resolved, env, bindings = _resolved("baton-stand")
+    resolved["sections"][0]["stands"][0]["sync"] = "manual"
+    live = _empty_live(resolved, bindings)
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert not [i for i in plan["items"] if (i["target"] or {}).get("stand") == "Rust"]
+    assert {m["target"]["stand"] for m in plan["manual"]} == {"Rust"}
+    assert all(d["target"] not in {"rust-baton", "rust-backend", "rust-frontend"} for d in plan["deferred"])
+
+
+def test_sync_field_is_validated():
+    sheet = _load("baton-stand")
+    sheet["sections"][0]["sync"] = "sometimes"
+    sheet["sections"][0]["stands"][0]["sync"] = "manual"
+    errors = sv2.validate(sheet, "local")
+    assert any("sections[0].sync must be one of auto, manual" in e for e in errors)
+    assert sv2.scope_modes(sheet) == {"sections": {"Demo": "sometimes"}, "stands": {"Rust": ("Demo", "manual")}}
+
+
 def _realm_world(live_members=("{stand}-quarter-1",)):
     """dynamic-stands with one runtime stand `realm-e2e` (template + quarter 1),
     every canister bound, live state converged. Returns (resolved, live, bindings)."""

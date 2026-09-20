@@ -24,15 +24,17 @@ def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]
     return backend, bindings
 
 
-def cmd_plan(ic, args, project_root: str, upload_ic=None) -> None:
+def cmd_plan(ic, args, project_root: str, upload_ic=None, scope: dict | None = None) -> None:
     """The diff between the sheet file and the world (`casals up` without apply);
     without a file, the conductor's plan for the sheet it already holds."""
+    from casals_cli.up import plan_args
+
     if getattr(args, "sheet", None):
         res = run_up(ic, args.sheet, args.env, conductor_override=getattr(args, "conductor", None),
-                     project_root=project_root, dry_run=True, upload_ic=upload_ic)
+                     project_root=project_root, dry_run=True, upload_ic=upload_ic, scope=scope)
     else:
         backend, _ = _backend(args)
-        res = ic.call_update(backend, "plan", "{}")
+        res = ic.call_update(backend, "plan", plan_args(scope))
     if getattr(args, "json", False):
         emit_json(res)
     else:

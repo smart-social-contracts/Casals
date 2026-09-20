@@ -1084,3 +1084,70 @@ class TestTransientRetry:
         with pytest.raises(RuntimeError):
             ic.icp(["canister", "create", "--detached"])
         assert len(calls) == 1
+
+
+# ── #51: targeted runs and sync: manual ──────────────────────────────────────
+
+
+class TestScopeFlags:
+    BATON = os.path.join(REPO_ROOT, "tests", "e2e", "orchestras", "baton-stand", "casals.json")
+
+    def test_flags_become_the_planner_scope(self):
+        from casals_cli.main import scope_from_args
+        from casals_cli.up import plan_args
+
+        p = _build_parser()
+        args = p.parse_args(["up", "x.json", "--stand", "Rust", "--stand", "Go", "--exclude-section", "Legacy"])
+        scope = scope_from_args(args)
+        assert scope == {"stands": ["Rust", "Go"], "exclude_sections": ["Legacy"]}
+        assert json.loads(plan_args(scope)) == {"scope": scope}
+        assert scope_from_args(p.parse_args(["plan"])) is None and plan_args(None) == "{}"
+
+    def test_publish_rows_of_manual_frontends_are_not_uploaded(self):
+        from casals_cli.up import untouched_publish_rows
+
+        sheet = json.load(open(self.BATON))
+        assert untouched_publish_rows(sheet, None) == []
+        sheet["sections"][0]["stands"][0]["sync"] = "manual"
+        rows = untouched_publish_rows(sheet, None)
+        assert [r["path"] for r in rows] == ["frontend/rust-frontend/1.0.0"]
+        # naming the stand puts it back in reach; excluding it or targeting another takes it out
+        assert untouched_publish_rows(sheet, {"stands": ["Rust"]}) == []
+        assert untouched_publish_rows(sheet, {"sections": ["Demo"]}) == []
+        del sheet["sections"][0]["stands"][0]["sync"]
+        assert [r["path"] for r in untouched_publish_rows(sheet, {"exclude_stands": ["Rust"]})] == ["frontend/rust-frontend/1.0.0"]
+        assert [r["path"] for r in untouched_publish_rows(sheet, {"stands": ["Other"]})] == ["frontend/rust-frontend/1.0.0"]
+
+    def test_up_passes_the_scope_to_plan_and_skips_manual_publish(self, tmp_path, monkeypatch):
+        ic = RecordingIc(env="local", identity="deployer")
+        ic.deployer = DEPLOYER
+        ic.cycles["__deployer__"] = 110_000_000_000_000
+        ic.converged = True
+        ic.store = FakeAssetStore()
+        ic.candid.update(ic.store.handlers())
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        sheet = json.load(open(self.BATON))
+        sheet["sections"][0]["stands"][0]["sync"] = "manual"
+        sheet_path = tmp_path / "casals.json"
+        sheet_path.write_text(json.dumps(sheet))
+
+        def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
+            bindings.conductor.setdefault("casals-backend", "backend-id")
+            bindings.conductor.setdefault("casals-wasms", "store-id")
+            bindings.backend_id = bindings.conductor["casals-backend"]
+            ic.controllers["store-id"] = [DEPLOYER]
+            return bindings
+
+        uploaded: list = []
+        monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
+        monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda _ic, s, **k: uploaded.append(s) or [])
+        monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
+
+        run_up(ic, str(sheet_path), "local", yes=True, project_root=REPO_ROOT)
+        assert uploaded[-1]["registry"]["publish"] == []  # manual stand: its bundle is not published
+        assert [json.loads(c[1][2]) for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"][-1] == {}
+
+        run_up(ic, str(sheet_path), "local", yes=True, project_root=REPO_ROOT, scope={"stands": ["Rust"]})
+        assert [e["path"] for e in uploaded[-1]["registry"]["publish"]] == ["frontend/rust-frontend/1.0.0"]
+        plans = [json.loads(c[1][2]) for c in ic.calls if c[0] == "call_update" and c[1][1] == "plan"]
+        assert plans[-1] == {"scope": {"stands": ["Rust"]}}

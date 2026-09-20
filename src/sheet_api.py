@@ -134,7 +134,23 @@ def _declared_world(env: str, sheet: dict) -> dict:
     return resolved
 
 
-def _plan_world_gen():
+def plan_scope(args: dict | None) -> dict | None:
+    """The `scope` a plan request carries (#51): {sections, stands,
+    exclude_sections, exclude_stands}, each a list of names. None = whole sheet."""
+    if not isinstance(args, dict):
+        return None
+    scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+    out = {}
+    for key in ("sections", "stands", "exclude_sections", "exclude_stands"):
+        vals = scope.get(key) if scope else args.get(key)
+        if isinstance(vals, str):
+            vals = [vals]
+        if isinstance(vals, list) and vals:
+            out[key] = [str(v) for v in vals]
+    return out or None
+
+
+def _plan_world_gen(scope: dict | None = None):
     """Plan against live state; returns (plan, resolved_sheet, live_state, self_id, env)."""
     sheet, env, sh = load_sheet_doc()
     if not sheet:
@@ -146,7 +162,7 @@ def _plan_world_gen():
     live["bindings"] = bindings
     try:
         plan = build_plan(
-            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh,
+            resolved, env, live, self_id=self_id, now_ns=_now_ns(), sheet_hash_value=sh, scope=scope,
         )
     except PlanningError as exc:
         raise ValueError("; ".join(exc.errors)) from exc
@@ -155,7 +171,7 @@ def _plan_world_gen():
 
 
 def plan_gen(args: dict | None = None):
-    plan, _resolved, _live, _self_id, _env = yield from _plan_world_gen()
+    plan, _resolved, _live, _self_id, _env = yield from _plan_world_gen(plan_scope(args))
     return plan
 
 

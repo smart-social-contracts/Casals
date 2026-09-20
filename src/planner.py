@@ -16,7 +16,9 @@ from sheetv2 import (
     baton_hand_off_mode,
     baton_managed_members,
     bundle_hash,
+    iter_canisters,
     publish_pins,
+    scope_modes,
     registry_path,
     stand_member,
     MULTISIG_NAME,
@@ -98,15 +100,26 @@ def build_plan(
     self_id: str,
     now_ns: int = 0,
     sheet_hash_value: str | None = None,
+    scope: dict | None = None,
 ) -> dict:
-    """Return a Plan dict (§5.5). Raises ``PlanningError`` on planning errors."""
-    ctx = _PlanContext(resolved_sheet, env, live_state, self_id, sheet_hash_value, now_ns)
+    """Return a Plan dict (§5.5). Raises ``PlanningError`` on planning errors.
+
+    ``scope`` narrows a run: ``{"sections": [...], "stands": [...],
+    "exclude_sections": [...], "exclude_stands": [...]}``. Items outside it
+    are still computed but land in ``skipped`` instead of ``items``. Items in
+    a ``sync: manual`` section/stand land in ``manual`` unless that section or
+    stand is named in ``scope`` — the one way to act on them (#51)."""
+    ctx = _PlanContext(resolved_sheet, env, live_state, self_id, sheet_hash_value, now_ns, scope=scope)
     ctx.run()
     return ctx.finish()
 
 
 class _PlanContext:
-    def __init__(self, sheet, env, live_state, self_id, sheet_hash_value, now_ns):
+    def __init__(self, sheet, env, live_state, self_id, sheet_hash_value, now_ns, scope=None):
+        self.scope = _normalize_scope(scope)
+        self.modes = scope_modes(sheet)
+        self.manual: list[dict] = []   # drift in manual scopes: observed, not acted upon
+        self.skipped: list[dict] = []  # items outside a targeted run
         self.stands_live = live_state.get("stands") or {}
         self.sheet = sheet  # already materialized (sheetv2.materialize): template stands are declared stands
         self.env = env
@@ -195,13 +208,63 @@ class _PlanContext:
                 section_order=si, stand_order=sj,
             )
 
+    def _divert(self, where: str, kind, target, reason, kw) -> None:
+        entry = {
+            "kind": kind, "target": target, "reason": reason,
+            "destructive": bool(kw.get("destructive", False)),
+            "requires": kw.get("requires", "self"),
+            "current": kw.get("current") if kw.get("current") is not None else {},
+            "desired": kw.get("desired") if kw.get("desired") is not None else {},
+            "scope": where,
+        }
+        (self.manual if where == "manual" else self.skipped).append(entry)
+
+    def _scope_of(self, name: str) -> tuple[str | None, str | None]:
+        """(section, stand) a deferred target belongs to — a canister, a stand
+        or a section name."""
+        if name in self.modes["stands"]:
+            return self.modes["stands"][name][0], name
+        if name in self.modes["sections"]:
+            return name, None
+        for section, stand, cname, _spec in iter_canisters(self.sheet):
+            if cname == name:
+                return (section.get("name") or "").strip(), (stand.get("name") or "").strip()
+        return None, None
+
     def binding(self, name: str) -> str:
         return (self.bindings.get(name) or "").strip()
 
     def live(self, name: str) -> dict:
         return self.canisters_live.get(name) or {}
 
+    def disposition(self, section: str | None, stand: str | None) -> str:
+        """``apply`` | ``manual`` | ``excluded`` | ``out_of_scope`` for an item
+        on (section, stand). Global items (no section) are applied unless the
+        run targets specific sections/stands."""
+        sc = self.scope
+        section = (section or "").strip() or None
+        stand = (stand or "").strip() or None
+        if (section and section in sc["exclude_sections"]) or (stand and stand in sc["exclude_stands"]):
+            return "excluded"
+        targeted_only = bool(sc["sections"] or sc["stands"])
+        targeted = (section in sc["sections"]) or (stand and stand in sc["stands"])
+        if targeted_only and not targeted:
+            return "out_of_scope"
+        if stand:
+            mode = (self.modes["stands"].get(stand) or (section, "auto"))[1]
+        elif section:
+            mode = self.modes["sections"].get(section, "auto")
+        else:
+            mode = "auto"
+        if mode == "manual" and not targeted:
+            return "manual"
+        return "apply"
+
     def add(self, kind, target, reason, **kw):
+        where = self.disposition((target or {}).get("section"), (target or {}).get("stand"))
+        if where != "apply":
+            self._divert(where, kind, target, reason, kw)
+            return
         self.items.append({
             "kind": kind,
             "target": target,
@@ -728,6 +791,9 @@ class _PlanContext:
                         "field": "domains",
                         "reason": "dns provider none on this environment",
                     })
+        # A placeholder waiting on a create that this run does not perform
+        # (manual or out-of-scope) is that scope's business, not an error.
+        self.deferred = [d for d in self.deferred if self.disposition(*self._scope_of(d["target"])) == "apply"]
         if self.deferred and not self.items:
             raise PlanningError([
                 f"{d['target']}.{d['field']} waits for {', '.join(d['waiting_for'])}, which nothing creates"
@@ -743,6 +809,9 @@ class _PlanContext:
             "env": self.env,
             "created_at_ns": self.now_ns,
             "items": self.items,
+            "manual": self.manual,
+            "skipped": self.skipped,
+            "scope": {k: sorted(v) for k, v in self.scope.items()},
             "drift": drift,
             "unmanaged": unmanaged,
             "unverifiable": unverifiable,
@@ -821,6 +890,18 @@ def _removes_principals(before: list, after: list) -> bool:
 
 def _has_non_self_commander(cmds: list, self_id: str) -> bool:
     return any(e["principal"] != self_id for e in cmds)
+
+
+def _normalize_scope(scope) -> dict:
+    out = {"sections": set(), "stands": set(), "exclude_sections": set(), "exclude_stands": set()}
+    if not isinstance(scope, dict):
+        return out
+    for key in out:
+        vals = scope.get(key) or []
+        if isinstance(vals, str):
+            vals = [vals]
+        out[key] = {str(v).strip() for v in vals if str(v).strip()}
+    return out
 
 
 def _lockout_controllers(name, live_ctls, desired_ctls, self_id) -> str | None:

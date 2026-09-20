@@ -1039,7 +1039,11 @@ def bind_conductor(args: text) -> text:
 
 @update
 def plan(args: text) -> Async[text]:
-    """Compute reconciliation plan from live IC state (§5.5)."""
+    """Compute reconciliation plan from live IC state (§5.5). Args (JSON,
+    optional): {scope?: {sections?, stands?, exclude_sections?,
+    exclude_stands?}} — a targeted run (#51): items outside the scope are
+    reported under `skipped`; `sync: manual` scopes are acted upon only when
+    named here, otherwise their drift is reported under `manual`."""
     try:
         _require_any_commander()
         params = json.loads(args) if args else {}

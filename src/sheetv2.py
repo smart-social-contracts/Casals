@@ -185,6 +185,38 @@ def publish_pins(sheet: dict) -> dict:
     return out
 
 
+SYNC_AUTO = "auto"
+SYNC_MANUAL = "manual"
+SYNC_MODES = (SYNC_AUTO, SYNC_MANUAL)
+
+
+def sync_mode(section: dict | None, stand: dict | None = None) -> str:
+    """`sync` of a stand (inherits its section's) or a section. ``manual``
+    sections/stands are observed by the planner — drift is reported — but
+    never acted upon unless a run targets them explicitly (#51)."""
+    for scope in (stand, section):
+        if isinstance(scope, dict):
+            mode = str(scope.get("sync") or "").strip().lower()
+            if mode:
+                return mode
+    return SYNC_AUTO
+
+
+def scope_modes(sheet: dict) -> dict:
+    """``{"sections": {name: mode}, "stands": {name: (section, mode)}}`` — the
+    effective sync mode of every declared section and stand."""
+    out = {"sections": {}, "stands": {}}
+    for section in sheet.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        sname = (section.get("name") or "").strip()
+        out["sections"][sname] = sync_mode(section)
+        for stand in section.get("stands") or []:
+            if isinstance(stand, dict) and (stand.get("name") or "").strip():
+                out["stands"][stand["name"].strip()] = (sname, sync_mode(section, stand))
+    return out
+
+
 def store_namespace_prefix(namespace: str) -> str:
     """Key prefix under which every file of ``namespace`` lives in the store."""
     ns = (namespace or "").strip().strip("/")
@@ -557,6 +589,8 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             errors.append(f"{spath} must be an object")
             continue
         _check_raw_principals(section, spath, errors)
+        if "sync" in section and section["sync"] not in SYNC_MODES:
+            errors.append(f"{spath}.sync must be one of {', '.join(SYNC_MODES)}")
         if "commanders" in section:
             _validate_commanders(section["commanders"], f"{spath}.commanders", errors)
         if "stand_template" in section:
@@ -567,6 +601,8 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                 errors.append(f"{stpath} must be an object")
                 continue
             _check_raw_principals(stand, stpath, errors)
+            if "sync" in stand and stand["sync"] not in SYNC_MODES:
+                errors.append(f"{stpath}.sync must be one of {', '.join(SYNC_MODES)}")
             if "commanders" in stand:
                 _validate_commanders(stand["commanders"], f"{stpath}.commanders", errors)
             if "baton" in stand and stand["baton"] is not None:

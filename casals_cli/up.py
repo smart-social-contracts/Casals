@@ -9,7 +9,7 @@ import os
 import sys
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, validate
+from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, env_block, iter_canisters, scope_modes, validate
 
 from casals_cli.bindings import Bindings, load_bindings
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
@@ -201,6 +201,19 @@ def print_plan_table(plan: dict) -> None:
             req = item.get("requires") or "self"
             dest = "yes" if item.get("destructive") else "no"
             _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
+    manual = plan.get("manual") or []
+    if manual:
+        _progress(f"manual (sync: manual — observed, not acted upon; target with --stand/--section): {len(manual)}")
+        for item in manual:
+            target = item.get("target") or {}
+            _progress(f"  {item.get('kind') or '?':20} {target.get('name') or '?':30} stand={target.get('stand') or '-'} "
+                      f"{item.get('reason') or ''}")
+    skipped = plan.get("skipped") or []
+    if skipped:
+        _progress(f"skipped (outside this run's scope): {len(skipped)}")
+        for item in skipped:
+            target = item.get("target") or {}
+            _progress(f"  {item.get('kind') or '?':20} {target.get('name') or '?':30} {item.get('scope')}")
     # Upgrades Casals filed on a baton: not items (Casals has done its part), but
     # the sheet is not live until the baton's commanders approve and it converges.
     for p in plan.get("pending") or []:
@@ -392,7 +405,13 @@ def _is_unauthorized(res: Any) -> bool:
     return "not a commander" in err or "unauthorized" in err
 
 
-def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int, wasm_by_hash=None) -> dict:
+def plan_args(scope: dict | None) -> str:
+    """JSON body of the conductor's `plan` call: `{}` or `{"scope": {...}}` (#51)."""
+    return json.dumps({"scope": scope}) if scope else "{}"
+
+
+def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int, wasm_by_hash=None,
+             scope: dict | None = None) -> dict:
     """plan → apply until the plan is empty. Returns the (empty) final plan.
     Each round the conductor applies what it can, then the deployer does the
     controller changes only it can; a round that changes nothing is an error.
@@ -407,7 +426,7 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
     while True:
         round_no += 1
         _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
-        plan_res = ic.call_update(backend_id, "plan", "{}")
+        plan_res = ic.call_update(backend_id, "plan", plan_args(scope))
         if not (isinstance(plan_res, dict) and plan_res.get("ok")):
             if handed_off and _is_unauthorized(plan_res):
                 _progress("  the conductor now answers to the multisig only; the deployer cannot plan any more — "
@@ -486,6 +505,39 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
         deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
 
 
+def _in_reach(section: str, stand: str, modes: dict, scope: dict | None) -> bool:
+    """Would this run act on (section, stand)? Mirrors the planner's
+    disposition: excluded → no; targeted run and not named → no; manual and
+    not named → no."""
+    sc = scope or {}
+    if section in (sc.get("exclude_sections") or []) or stand in (sc.get("exclude_stands") or []):
+        return False
+    named = section in (sc.get("sections") or []) or stand in (sc.get("stands") or [])
+    if (sc.get("sections") or sc.get("stands")) and not named:
+        return False
+    mode = (modes["stands"].get(stand) or (section, "auto"))[1]
+    return not (mode == "manual" and not named)
+
+
+def untouched_publish_rows(sheet: dict, scope: dict | None) -> list[dict]:
+    """`registry.publish` rows every consumer of which this run leaves alone
+    (sync: manual, excluded or outside a targeted run). Publishing them would
+    change store namespaces that only a manual/foreign frontend reads —
+    somebody else's decision, so `up` does not."""
+    modes = scope_modes(sheet)
+    consumers: dict[str, list[bool]] = {}
+    for section, stand, _name, spec in iter_canisters(sheet):
+        ns = spec.get("content")
+        if ns:
+            consumers.setdefault(ns, []).append(
+                _in_reach((section.get("name") or "").strip(), (stand.get("name") or "").strip(), modes, scope))
+    out = []
+    for entry in (sheet.get("registry") or {}).get("publish") or []:
+        if isinstance(entry, dict) and consumers.get(entry.get("path")) and not any(consumers[entry.get("path")]):
+            out.append(entry)
+    return out
+
+
 def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
     """CLI-side domain reconcile; provider:none → skipped."""
     block = env_block(sheet, env)
@@ -507,9 +559,16 @@ def run_up(
     project_root: str | None = None,
     dry_run: bool = False,
     upload_ic=None,
+    scope: dict | None = None,
 ) -> dict[str, Any]:
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
     `set_sheet` and returns the plan: it needs a conductor and never applies.
+
+    `scope` (#51): `{sections, stands, exclude_sections, exclude_stands}` —
+    a targeted run. The whole sheet is still validated and set (it stays the
+    source of truth); the conductor plans and applies only inside the scope,
+    and `sync: manual` scopes are acted upon only when named here. Store
+    uploads (step 4) skip publish rows whose consumers are all out of reach.
 
     `upload_ic`: a client for another identity that signs only the wasm-store
     uploads of step 4 (`ic`, a store controller, grants it Commit). Every
@@ -594,14 +653,28 @@ def run_up(
         _progress(f"  store uploads signed by {uploader_principal} ({upload_ic.identity})")
     if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, uploader_principal):
         _progress(f"  granted Commit on the wasm store {store_id} to {uploader_principal}")
+    upload_sheet = sheet
+    skipped_publish = untouched_publish_rows(sheet, scope)
+    if skipped_publish:
+        upload_sheet = {**sheet, "registry": {**(sheet.get("registry") or {}),
+                                              "publish": [e for e in (sheet.get("registry") or {}).get("publish") or []
+                                                          if e not in skipped_publish]}}
+        for e in skipped_publish:
+            _progress(f"  publish {e.get('path')}: skipped — its frontends are sync: manual or outside this run "
+                      f"(target them with --stand/--section to publish)")
     ensure_registry_uploads(
-        uploader, sheet,
+        uploader, upload_sheet,
         sheet_path=sheet_path,
         project_root=project_root,
         store_id=store_id,
         progress=_progress,
         strict_pins=(env == "production"),
     )
+    if skipped_publish:  # pins the upload wrote back belong in the sheet handed to the conductor
+        by_path = {e.get("path"): e for e in (upload_sheet.get("registry") or {}).get("publish") or []}
+        for e in (sheet.get("registry") or {}).get("publish") or []:
+            if e.get("path") in by_path and by_path[e.get("path")] is not e and by_path[e.get("path")].get("sha256"):
+                e["sha256"] = by_path[e.get("path")]["sha256"]
 
     # bind_conductor
     bind_map = {k: v for k, v in bindings.conductor.items() if v}
@@ -615,7 +688,7 @@ def run_up(
     _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
 
     if dry_run:
-        res = ic.call_update(backend_id, "plan", "{}")
+        res = ic.call_update(backend_id, "plan", plan_args(scope))
         if not (isinstance(res, dict) and res.get("ok")):
             raise RuntimeError(f"plan failed: {res}")
         _progress(f"dry run done in {_elapsed()}")
@@ -628,6 +701,7 @@ def run_up(
         wasm_by_hash=registry_wasm_by_hash(
             sheet, sheet_dir=os.path.dirname(os.path.abspath(sheet_path)), project_root=project_root,
         ),
+        scope=scope,
     )
 
     # 9. domains + verify

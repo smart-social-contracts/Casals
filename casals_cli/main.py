@@ -31,13 +31,25 @@ def _build_parser() -> argparse.ArgumentParser:
     _common_flags(ap)
     sub = ap.add_subparsers(dest="command", required=True)
 
+    def _scope_flags(p_):
+        p_.add_argument("--section", action="append", default=[], metavar="NAME",
+                        help="act only on this section (repeatable); also unlocks a sync: manual section")
+        p_.add_argument("--stand", action="append", default=[], metavar="NAME",
+                        help="act only on this stand (repeatable); also unlocks a sync: manual stand")
+        p_.add_argument("--exclude-section", action="append", default=[], metavar="NAME", help="leave this section alone")
+        p_.add_argument("--exclude-stand", action="append", default=[], metavar="NAME", help="leave this stand alone")
+
     up_p = sub.add_parser("up", help="validate, bootstrap, and reconcile a sheet")
     up_p.add_argument("sheet", help="path to casals.json")
     up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
     up_p.add_argument("--max-items", type=int, default=5)
+    _scope_flags(up_p)
+
+    plan_p = sub.add_parser("plan", help="compute reconciliation plan")
+    plan_p.add_argument("sheet", nargs="?", help="path to casals.json")
+    _scope_flags(plan_p)
 
     for name, help_text in (
-        ("plan", "compute reconciliation plan"),
         ("verify", "assert plan items empty"),
         ("export", "export live sheet + bindings"),
         ("status", "conductor status"),
@@ -117,6 +129,17 @@ def _ic_from_args(args) -> IcClient:
     )
 
 
+def scope_from_args(args) -> dict | None:
+    """--section/--stand/--exclude-section/--exclude-stand → the planner's scope (#51)."""
+    scope = {
+        "sections": list(getattr(args, "section", None) or []),
+        "stands": list(getattr(args, "stand", None) or []),
+        "exclude_sections": list(getattr(args, "exclude_section", None) or []),
+        "exclude_stands": list(getattr(args, "exclude_stand", None) or []),
+    }
+    return {k: v for k, v in scope.items() if v} or None
+
+
 def _upload_ic_from_args(args) -> IcClient | None:
     name = getattr(args, "upload_identity", None)
     if not name or name == getattr(args, "identity", None):
@@ -150,10 +173,11 @@ def main(argv: list[str] | None = None) -> None:
                 max_items=args.max_items,
                 project_root=REPO_ROOT,
                 upload_ic=_upload_ic_from_args(args),
+                scope=scope_from_args(args),
             )
             emit_json(result)
         elif cmd == "plan":
-            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args))
+            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args), scope=scope_from_args(args))
         elif cmd == "pin":
             commands.cmd_pin(args, REPO_ROOT)
         elif cmd == "bundle":
