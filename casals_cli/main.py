@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from casals_cli import commands, show, up, upgrade
+from casals_cli import __version__, commands, show, up, upgrade
 from casals_cli.bindings import live_bindings
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
@@ -28,6 +28,7 @@ def _common_flags(ap: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="casals", description="Casals declarative orchestra CLI")
+    ap.add_argument("-V", action="version", version=f"casals {__version__}")
     _common_flags(ap)
     sub = ap.add_subparsers(dest="command", required=True)
 

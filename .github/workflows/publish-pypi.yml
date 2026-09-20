@@ -1,0 +1,61 @@
+# Publish ic-casals to https://pypi.org/project/ic-casals/
+#
+# First run needs a PyPI trusted publisher (no long-lived token):
+#   https://pypi.org/manage/account/publishing/
+#   Owner: smart-social-contracts
+#   Repository: Casals
+#   Workflow: publish-pypi.yml
+#   Environment: pypi
+#
+# Sibling repos (basilisk, realms) use secrets.PYPI_API_TOKEN instead; add
+# that secret on this repo if you prefer a token upload.
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify version lockstep
+        run: |
+          PYPROJECT_VERSION=$(grep -Po '^version = "\K[^"]*' pyproject.toml)
+          INIT_VERSION=$(grep -Po '^__version__ = "\K[^"]*' casals_cli/__init__.py)
+          echo "pyproject.toml: ${PYPROJECT_VERSION}"
+          echo "casals_cli/__init__.py: ${INIT_VERSION}"
+          if [ "$PYPROJECT_VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::Version mismatch between pyproject.toml and casals_cli/__init__.py"
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: Smoke-install the wheel
+        run: |
+          python -m venv /tmp/ic-casals-wheel
+          /tmp/ic-casals-wheel/bin/pip install dist/*.whl
+          /tmp/ic-casals-wheel/bin/casals -V
+          /tmp/ic-casals-wheel/bin/python -c "import casals_cli, sheetv2, access_code, auth, ic_assets; print('imports ok', casals_cli.__version__)"
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

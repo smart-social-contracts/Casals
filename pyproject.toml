@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,16 +7,43 @@ name = "ic-casals"
 version = "0.2.0"
 description = "CLI for querying and commanding a deployed Casals canister orchestrator"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [
+    { name = "Smart Social Contracts", email = "contact@smartsocialcontracts.org" },
+]
+keywords = ["internet-computer", "icp", "casals", "canister", "orchestrator"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "cbor2>=5.4.0",
     "ic-py>=1.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/smart-social-contracts/Casals"
+Repository = "https://github.com/smart-social-contracts/Casals"
+Issues = "https://github.com/smart-social-contracts/Casals/issues"
+
 [project.scripts]
 casals = "casals_cli.main:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["casals_cli*"]
+# The CLI imports a few pure modules from src/ (sheetv2, access_code, auth,
+# ic_assets). Ship them as top-level modules so `pip install ic-casals` works
+# outside this checkout. Do not package the rest of src/ — that is the canister.
+[tool.setuptools]
+packages = ["casals_cli"]
+py-modules = ["sheetv2", "access_code", "auth", "ic_assets"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+casals_cli = "casals_cli"
