@@ -204,7 +204,12 @@ def _icp(argv: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[
 
 
 def status_ok() -> bool:
-    return _icp(["network", "status", "-e", "local"], timeout=30).returncode == 0
+    if _icp(["network", "status", "-e", "local"], timeout=30).returncode == 0:
+        return True
+    # This checkout's icp.yaml has no `environments:` block; the implicit
+    # local network still answers `network ping local` (tests/conftest.py).
+    ping = _icp(["network", "ping", "local"], timeout=30)
+    return ping.returncode == 0 and "healthy" in (ping.stdout or "").lower()
 
 
 def healthy(replica: Replica) -> bool:
@@ -224,8 +229,14 @@ def start(replica: Replica | None = None) -> Replica:
         _icp(["network", "stop", "-e", "local"], timeout=120)
     extra = ["--project-root-override", replica.home] if replica.home else []
     cwd = replica.home or os.getcwd()
+    # Isolated sidecars declare environment `local`. The repo icp.yaml does
+    # not; `icp network start --background` is the same as tests/conftest.py
+    # (`-d`) and is what GitHub CI already uses for the integration suite.
+    start_cmd = ["icp", "network", "start", "--background", *extra]
+    if replica.isolated:
+        start_cmd = ["icp", "network", "start", "-e", "local", "--background", *extra]
     res = run_icp_cmd(
-        ["icp", "network", "start", "-e", "local", "--background", *extra],
+        start_cmd,
         cwd=cwd,
         capture_output=True,
         text=True,

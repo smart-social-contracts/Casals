@@ -479,15 +479,10 @@ def run_up(
     max_items: int = 5,
     project_root: str | None = None,
     dry_run: bool = False,
-    upload_ic=None,
     bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
-    `set_sheet` and returns the plan: it needs a conductor and never applies.
-
-    `upload_ic`: a client for another identity that signs only the wasm-store
-    uploads of step 4 (`ic`, a store controller, grants it Commit). Every
-    other call — conductor bootstrap, set_sheet, apply — stays with `ic`."""
+    `set_sheet` and returns the plan: it needs a conductor and never applies."""
     project_root = project_root or os.getcwd()
     sheet = load_json_file(sheet_path)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
@@ -571,14 +566,10 @@ def run_up(
     # The dry run uploads too (it needs the store populated to plan), so the
     # grant is not gated on dry_run — only on being a controller, which the
     # dry run does not arrange.
-    uploader = upload_ic or ic
-    uploader_principal = upload_ic.deployer_principal() if upload_ic else deployer
-    if upload_ic:
-        _progress(f"  store uploads signed by {uploader_principal} ({upload_ic.identity})")
-    if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, uploader_principal):
-        _progress(f"  granted Commit on the wasm store {store_id} to {uploader_principal}")
+    if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
+        _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
     ensure_registry_uploads(
-        uploader, sheet,
+        ic, sheet,
         sheet_path=sheet_path,
         project_root=project_root,
         store_id=store_id,

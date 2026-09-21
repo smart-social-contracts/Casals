@@ -24,12 +24,12 @@ def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]
     return backend, bindings
 
 
-def cmd_plan(ic, args, project_root: str, upload_ic=None) -> None:
+def cmd_plan(ic, args, project_root: str) -> None:
     """What `casals up` would still do (a dry run: the sheet file diffed against
     the world); without a file, the conductor's plan for the sheet it holds."""
     if getattr(args, "sheet", None):
         res = run_up(ic, args.sheet, args.env, conductor_override=getattr(args, "conductor", None),
-                     project_root=project_root, dry_run=True, upload_ic=upload_ic)
+                     project_root=project_root, dry_run=True)
     else:
         backend, _ = _backend(args)
         res = ic.call_update(backend, "plan", "{}")

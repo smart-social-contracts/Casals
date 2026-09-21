@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from casals_cli.bindings import Bindings, load_bindings  # noqa: E402
 from casals_cli.ic import IcClient, RecordingIc  # noqa: E402
-from casals_cli.main import _build_parser  # noqa: E402
+from casals_cli.main import apply_local_flag, _build_parser, looks_like_checkout, project_root  # noqa: E402
+from casals_cli.local import cycles_balance, identity_names  # noqa: E402
 from casals_cli.oracle import run_oracle  # noqa: E402
 from casals_cli.registry import resolve_source, sha256_hex  # noqa: E402
 from casals_cli.show import build_live_view, mermaid_graph, render_show_text  # noqa: E402
@@ -62,6 +63,10 @@ class TestParser:
         args = parser.parse_args(["-e", "local", "up", CORPUS, "--yes", "--max-items", "3"])
         assert args.env == "local" and args.yes and args.max_items == 3
 
+    def test_up_local_flag(self, parser):
+        args = parser.parse_args(["up", CORPUS, "--yes", "--local"])
+        assert args.local is True and args.yes
+
     def test_apply_destructive_flag(self, parser):
         args = parser.parse_args(["apply", "--confirm-destructive", "--max-items", "2"])
         assert args.confirm_destructive and args.max_items == 2
@@ -69,6 +74,55 @@ class TestParser:
     def test_global_conductor(self, parser):
         args = parser.parse_args(["--conductor", "aaaaa-aa", "plan"])
         assert args.conductor == "aaaaa-aa"
+
+
+class TestProjectRoot:
+    def test_checkout_is_detected(self):
+        assert looks_like_checkout(REPO_ROOT)
+        assert project_root(packaged=REPO_ROOT, cwd="/tmp") == REPO_ROOT
+
+    def test_pip_install_uses_cwd_checkout(self, tmp_path):
+        packaged = tmp_path / "site-packages"
+        packaged.mkdir()
+        assert project_root(packaged=str(packaged), cwd=REPO_ROOT) == REPO_ROOT
+
+    def test_neither_is_cwd(self, tmp_path):
+        packaged = tmp_path / "site-packages"
+        cwd = tmp_path / "elsewhere"
+        packaged.mkdir()
+        cwd.mkdir()
+        assert project_root(packaged=str(packaged), cwd=str(cwd)) == str(cwd.resolve())
+
+
+class TestLocalFlag:
+    def test_identity_and_balance_parsers(self):
+        listed = "* local-dev   aaaaa-aa\n  other             bbbbb-bb\n"
+        assert identity_names(listed) == {"local-dev", "other"}
+        assert cycles_balance("Balance: 1_234_000_000_000 cycles\n") == 1_234_000_000_000
+        assert cycles_balance("1_234_000_000_000\n") == 1_234_000_000_000  # icp cycles balance -q
+        assert cycles_balance("nothing here") == 0
+
+    def test_refuses_production(self):
+        args = _build_parser().parse_args(["-e", "production", "up", CORPUS, "--yes", "--local"])
+        with pytest.raises(RuntimeError, match="local replica"):
+            apply_local_flag(args)
+
+    def test_prepares_identity(self, monkeypatch):
+        seen = {}
+
+        def _prepare(*, identity=None):
+            seen["identity"] = identity
+            return identity or "local-dev"
+
+        monkeypatch.setattr("casals_cli.local.prepare_local", _prepare)
+        args = _build_parser().parse_args(["up", CORPUS, "--yes", "--local"])
+        apply_local_flag(args)
+        assert args.identity == "local-dev" and seen["identity"] is None
+
+    def test_skipped_without_flag(self):
+        args = _build_parser().parse_args(["up", CORPUS, "--yes"])
+        apply_local_flag(args)
+        assert args.identity is None
 
 
 # ── util / candid ────────────────────────────────────────────────────────────
@@ -200,40 +254,6 @@ class TestUpSequencing:
         assert ic.store.grants == [(DEPLOYER, "Commit")]
         sequence = [c[1][1] for c in ic.calls if c[0] in ("call_candid", "call_update")]
         assert sequence.index("grant_permission") < sequence.index("set_sheet")
-
-    def test_upload_identity_signs_store_uploads_only(self, tmp_path, monkeypatch):
-        """--upload-identity: the commander grants Commit to the uploader and
-        the registry upload runs on the uploader's client; everything else
-        (bootstrap, set_sheet, plan) stays with the commander."""
-        ic = self._governed_ic()
-        ic.converged = True
-        uploader = RecordingIc(env="local", identity="store-uploader")
-        uploader.deployer = PREVIOUS_DEPLOYER
-        uploader.store = ic.store  # one store, two signers
-        uploader.candid.update(ic.store.handlers())
-        ic.store.permitted["Commit"] = set()
-        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
-
-        def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
-            bindings.conductor.setdefault("casals-backend", "backend-id")
-            bindings.conductor.setdefault("casals-wasms", "store-id")
-            bindings.backend_id = bindings.conductor["casals-backend"]
-            ic.controllers["store-id"] = [DEPLOYER]
-            return bindings
-
-        seen: list = []
-        monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
-        monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda _ic, *a, **k: seen.append(_ic) or [])
-        monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
-        run_up(ic, CORPUS, "local", yes=True, project_root=REPO_ROOT, upload_ic=uploader)
-
-        assert seen == [uploader]
-        assert ic.store.grants == [(PREVIOUS_DEPLOYER, "Commit")]
-        # the grant was signed by the commander (a controller), not the uploader
-        assert [c[1][1] for c in ic.calls if c[0] == "call_candid"] == ["list_permitted", "grant_permission"]
-        assert [c for c in uploader.calls if c[0] == "call_candid"] == []
-        assert "set_sheet" in [c[1][1] for c in ic.calls if c[0] == "call_update"]
-        assert "set_sheet" not in [c[1][1] for c in uploader.calls if c[0] == "call_update"]
 
     def test_second_up_skips_create_install(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
@@ -852,6 +872,24 @@ class TestIcClientNetwork:
         ic = IcClient(env="production", identity="hsm-deployer")
         assert "--identity-password-file" in ic._base_flags()
 
+    def test_hsm_pin_error_tells_the_export(self, monkeypatch):
+        from casals_cli.ic import hsm_pin_hint
+
+        monkeypatch.delenv("DFX_HSM_PIN", raising=False)
+        monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE", raising=False)
+        raw = (
+            "Error: failed to load identity\n"
+            "Caused by:\n"
+            "  0: failed to load HSM identity\n"
+            "    1: User PIN is required: IO error: not a terminal\n"
+        )
+        hint = hsm_pin_hint(raw)
+        assert hint is not None
+        assert " export DFX_HSM_PIN='<your PIV PIN>'" in hint
+        assert "leading space" in hint
+        monkeypatch.setenv("DFX_HSM_PIN", "already-set")
+        assert hsm_pin_hint(raw) is None
+
 
 class TestDestroy:
     def test_drains_managed_then_deletes_conductor(self):
@@ -1031,6 +1069,17 @@ class TestTransientRetry:
         monkeypatch.delenv("DFX_HSM_PIN", raising=False)
         return IcClient(env="production"), calls
 
+    def test_identity_principal_without_pin_names_the_export(self, monkeypatch):
+        ic, _calls = self._client(monkeypatch, [(
+            1,
+            "Error: failed to load identity\n"
+            "Caused by:\n"
+            "  0: failed to load HSM identity\n"
+            "    1: User PIN is required: IO error: not a terminal\n",
+        )])
+        with pytest.raises(RuntimeError, match=r" export DFX_HSM_PIN='<your PIV PIN>'"):
+            ic.icp(["identity", "principal"], env=False)
+
     def test_call_retries_a_502_then_succeeds(self, monkeypatch):
         ic, calls = self._client(monkeypatch, [
             (1, "Error: The replica returned an HTTP Error: Http Error: status 502 Bad Gateway"),
@@ -1092,7 +1141,7 @@ class TestProductionGuards:
         client._announce_signing(["canister", "call", "aaaaa-aa", "set_sheet", "--args-file", "x"])
         client._announce_signing(["canister", "link", "x", "y"])
         err = capsys.readouterr().err
-        assert err == "  signing canister call aaaaa-aa set_sheet as prod-identity — touch the key if it blinks\n"
+        assert err == "  signing canister call aaaaa-aa set_sheet as prod-identity\n"
         client._pin_file = None
         client._announce_signing(["canister", "call", "aaaaa-aa", "plan"])
         assert capsys.readouterr().err == ""

@@ -27,9 +27,15 @@ runbook.
 ## Local replica
 
 ```sh
+casals up path/to/casals.json --yes --local    # starts the replica, creates local-dev, mints cycles
+# equivalent, already-running replica:
 icp network start -e local --background        # once
 casals -e local --identity local-dev up path/to/casals.json --yes
 ```
+
+CI (`tests/e2e/pip_install_up.sh`) is the advertised install path against the
+corpus minimal sheet: `pip install ic-casals` then
+`casals up tests/e2e/orchestras/minimal/casals.json --yes --local`.
 
 One laptop can run several replicas at once. icp binds one gateway per project
 directory; Casals defaults to the implicit `local` network on `:8000`. To give
@@ -82,6 +88,46 @@ refuses (spending nothing) when it could not even reach the floor.
 Bindings (sheet name → canister id) live in `$CASALS_HOME` (default
 `~/.casals`) as `<orchestra>.<env>.json`; every other command reads them, so
 `-e` and the sheet path (or `--conductor <id>`) are all a command needs.
+
+## Hardware keys: one touch per run
+
+Every `icp` call Casals makes is a separate signature. With a YubiKey whose
+touch policy is `cached` that is a touch every 15 s for the whole run (an
+`up` with a dist publish is hundreds of calls). The touch policy is fixed at
+key generation, so the fix is `icp`'s **delegation**: the key signs one
+short-lived delegation to a throwaway session key, the session key signs
+everything after, and canisters still see the hardware key's principal.
+
+```sh
+# 1. a session key and a pending identity for it (no hardware involved)
+icp identity delegation request prod-session > /tmp/prod-session.pub.pem
+
+# 2. the one touch: the hardware identity signs a delegation to that key
+printf '%s' "$DFX_HSM_PIN" > /tmp/pin && chmod 600 /tmp/pin
+icp identity delegation sign --identity prod-identity --identity-password-file /tmp/pin \
+  --key-pem /tmp/prod-session.pub.pem --duration 2h > /tmp/prod-session.chain.json
+rm /tmp/pin
+
+# 3. attach the chain; the session identity is now usable
+icp identity delegation use --from-json /tmp/prod-session.chain.json prod-session
+
+# 4. run Casals as the session identity — no more touches, the key can be unplugged
+casals -e production --identity prod-session up sheet.json --yes
+casals -e production --identity prod-session upgrade sheet.json --content frontend/site/main
+
+# 5. when done
+icp identity delete prod-session
+```
+
+The session key carries the hardware key's full authority until the
+delegation expires, and it lives on this machine (`icp`'s keyring by default),
+so keep `--duration` to what the job needs and delete the identity after.
+`--canisters <ids>` can pin the delegation to specific canisters; note that
+management-canister calls (`set_controllers`, `install_code`) are checked
+against the *effective* canister id, so a restricted delegation must list
+every canister the run will touch. `casals` prints `signing <call> as
+<identity>` before each HSM-signed call (`CASALS_QUIET_SIGNING=1` silences
+it); with a session identity those lines no longer mean a touch.
 
 ## Day to day
 

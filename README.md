@@ -74,10 +74,15 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 ## Quick start
 
 ```bash
-pip install ic-basilisk-toolkit
-icp network start -e local          # terminal 1 — keep replica running
+pip install ic-casals ic-basilisk-toolkit
+casals up tests/e2e/orchestras/minimal/casals.json --yes --local
+```
 
-python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes   # bootstrap + build the demo orchestra
+`--local` starts a local replica if needed, creates the `local-dev` identity, and mints cycles. Without it:
+
+```bash
+icp network start -e local          # terminal 1 — keep replica running
+python3 -m casals_cli.main -e local --identity local-dev up tests/e2e/orchestras/minimal/casals.json --yes
 ```
 
 `casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
@@ -110,7 +115,7 @@ casals tree                                        # Section → Stand → Canis
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
 casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
-casals up sheet.json --yes                         # day one: build the orchestra the sheet declares
+casals up tests/e2e/orchestras/minimal/casals.json --yes --local   # day one, local replica
 casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the pinned build
 casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the pinned bundle
 casals cycles                                      # treasury + per-canister balances

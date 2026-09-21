@@ -45,6 +45,32 @@ def is_transient_ic_error(text: str) -> bool:
 _PIN_FILES: list[str] = []
 
 
+def hsm_pin_hint(output: str) -> str | None:
+    """How to feed icp a PIV PIN when it cannot prompt (stdout is captured).
+
+    icp ignores ``DFX_HSM_PIN``; casals reads it (or ``ICP_IDENTITY_PASSWORD_FILE``)
+    and passes ``--identity-password-file``. Do not put a real PIN in this string."""
+    text = output or ""
+    if "User PIN is required" not in text and "failed to load HSM identity" not in text:
+        return None
+    if (os.environ.get("DFX_HSM_PIN") or "").strip():
+        return None
+    if (os.environ.get("ICP_IDENTITY_PASSWORD_FILE") or "").strip():
+        return None
+    return (
+        "YubiKey / HSM identity: User PIN is required, and icp cannot prompt "
+        "because casals captures its output.\n"
+        "\n"
+        "Type this with a leading space so bash does not store the PIN "
+        "(needs HISTCONTROL=ignorespace or ignoreboth):\n"
+        "\n"
+        " export DFX_HSM_PIN='<your PIV PIN>'\n"
+        "\n"
+        "Then re-run the same casals command. casals reads DFX_HSM_PIN and "
+        "passes it to icp as --identity-password-file."
+    )
+
+
 def _hsm_pin_file() -> str | None:
     """Path to a PIN file icp will accept, or None.
 
@@ -161,7 +187,7 @@ class IcClient:
         if not self._pin_file or os.environ.get("CASALS_QUIET_SIGNING") or argv[:2] == ["canister", "link"]:
             return
         what = " ".join(argv[:4]) if argv[:2] == ["canister", "call"] else " ".join(argv[:3])
-        print(f"  signing {what} as {self.identity or 'default'} — touch the key if it blinks", file=sys.stderr, flush=True)
+        print(f"  signing {what} as {self.identity or 'default'}", file=sys.stderr, flush=True)
 
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True, env: bool = True) -> subprocess.CompletedProcess[str]:
         cmd = ["icp"] + argv + self._base_flags(env) + self._project_root_flag()
@@ -187,10 +213,13 @@ class IcClient:
                 )
                 time.sleep(delay)
                 continue
-            raise RuntimeError(
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            hint = hsm_pin_hint(combined)
+            detail = (
                 f"icp {' '.join(argv)} failed:\n"
                 f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
             )
+            raise RuntimeError(f"{hint}\n\n{detail}" if hint else detail)
         return result  # unreachable
 
     def _agent_client(self):

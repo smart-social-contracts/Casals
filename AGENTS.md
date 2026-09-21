@@ -12,7 +12,8 @@ deploy their own conductor instances and supply sheets from their own repos.
 ## Declarative model
 
 One `casals.json` sheet describes an environment on day one;
-`python -m casals_cli.main -e <env> up <sheet> --yes` builds it. `up` bootstraps
+`python -m casals_cli.main -e <env> up <sheet> --yes` builds it (`--local` starts
+a laptop replica, creates `local-dev`, and mints cycles). `up` bootstraps
 the conductor (backend, frontend, `casals-wasms` store) if it is not bound yet,
 publishes the wasms the `registry` block names, stores the sheet (`set_sheet`),
 then runs the conductor's `plan` → `apply` until the plan is empty (bootstrap
@@ -343,13 +344,12 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   grants itself `Commit` if it does not hold it (`wasm_store.ensure_commit`);
   this is what lets a new deployer identity take over a store its predecessor
   bootstrapped. A dist publish is hundreds of signed calls; with a touch-policy
-  HSM as `--identity` that means a touch every 15 s for half an hour, so
-  `--upload-identity <name>` (or `$CASALS_UPLOAD_IDENTITY`) names a second,
-  plaintext identity that signs step 4 only — `--identity` grants it `Commit`,
-  everything else (bootstrap, `set_sheet`, apply) stays on the HSM. The store is
-  content-addressed and installs are checked against the sheet's sha256 pins,
-  so the uploader can waste cycles, not smuggle code in. The Candid client lives
-  in `casals_cli/wasm_store.py`
+  HSM as `--identity` that would be a touch every 15 s for half an hour. Casals
+  has no workaround of its own for that: use `icp identity delegation` (one
+  HSM signature delegates to a short-lived session key, `--identity` is then
+  the session identity and the IC still sees the HSM principal — recipe in
+  `docs/OPERATIONS.md`, "Hardware keys"). The Candid client lives in
+  `casals_cli/wasm_store.py`
   (it carries its own `_BlobClass` — ic-py's stock `Vec(Nat8)` decode is ~20 s/MiB).
 - **Reading (backend).** `src/wasm_store.py` is the only read path:
   `stat_file` (size + sha256 from `get`), `iter_file` (`get` then `get_chunk`

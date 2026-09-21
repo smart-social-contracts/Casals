@@ -1,0 +1,52 @@
+# The advertised install path, against the corpus minimal sheet on a local replica:
+#
+#   pip install ic-casals
+#   casals up tests/e2e/orchestras/minimal/casals.json --yes --local
+#
+# Builds this checkout's wheel (same shape as PyPI) and runs the installed
+# `casals` entry point — not `python -m casals_cli.main` from the tree.
+
+name: pip install + casals up
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pip-install-up:
+    name: pip install ic-casals && casals up --local
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install icp-cli and ic-wasm
+        run: |
+          npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+          echo "$(npm config get prefix)/bin" >> "$GITHUB_PATH"
+          icp --version
+
+      - name: Create the test identity
+        run: icp identity new local-dev --storage plaintext || true
+
+      - name: pip install + casals up (minimal, local replica)
+        env:
+          CASALS_HOME: ${{ runner.temp }}/casals-pip-up
+          CASALS_PIP_UP_WORKDIR: ${{ runner.temp }}/ic-casals-pip-up
+          PYTHONUNBUFFERED: "1"
+        run: bash tests/e2e/pip_install_up.sh
+
+      - name: Stop local replica (safety net)
+        if: always()
+        run: icp network stop -e local || icp network stop || true

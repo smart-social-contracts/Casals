@@ -12,16 +12,37 @@ from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
 from casals_cli.util import emit_error, emit_json, load_json_file
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+def looks_like_checkout(path: str) -> bool:
+    """A Casals tree: the CLI package plus the committed template wasms `up` seeds."""
+    return os.path.isfile(os.path.join(path, "casals_cli", "main.py")) and os.path.isdir(
+        os.path.join(path, "seed", "templates")
+    )
+
+
+def project_root(*, packaged: str | None = None, cwd: str | None = None) -> str:
+    """Casals checkout when one is visible, else cwd.
+
+    `pip install ic-casals` puts `casals_cli` in site-packages; `build:` and
+    `local:seed/…` sources still live in the checkout the operator is in.
+    """
+    packaged = os.path.abspath(packaged or os.path.join(os.path.dirname(__file__), ".."))
+    cwd = os.path.abspath(cwd or os.getcwd())
+    if looks_like_checkout(packaged):
+        return packaged
+    if looks_like_checkout(cwd):
+        return cwd
+    return cwd
+
+
+REPO_ROOT = project_root()
 
 
 def _common_flags(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("-e", "--env", default="local", help="sheet environment (local|production); production talks to the IC")
-    ap.add_argument("--identity", default=None, help="icp identity")
-    ap.add_argument("--upload-identity", default=os.environ.get("CASALS_UPLOAD_IDENTITY") or None,
-                    help="icp identity that signs the wasm-store uploads in `up`/`plan` step 4 "
-                         "(hundreds of calls; a plaintext key spares a touch-policy HSM). "
-                         "--identity grants it Commit on the store. Default: $CASALS_UPLOAD_IDENTITY, else --identity")
+    ap.add_argument("--identity", default=None,
+                    help="icp identity (with a touch-policy HSM, pass a delegated session identity: "
+                         "`icp identity delegation` — see docs/OPERATIONS.md)")
     ap.add_argument("--conductor", default=None, help="conductor backend canister id override")
     ap.add_argument("--json", action="store_true", help="JSON output")
 
@@ -38,6 +59,12 @@ def _build_parser() -> argparse.ArgumentParser:
     up_p.add_argument("--max-items", type=int, default=5)
     up_p.add_argument("--bootstrap", action="store_true",
                       help="production only: allow creating a brand-new conductor when no bindings exist")
+    up_p.add_argument(
+        "--local",
+        action="store_true",
+        help="local replica: start it if needed, create identity local-dev "
+             "(or --identity) as plaintext, and mint cycles",
+    )
 
     plan_p = sub.add_parser("plan", help="what `up` would still do (a dry run)")
     plan_p.add_argument("sheet", nargs="?", help="path to casals.json")
@@ -124,19 +151,24 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _ic_from_args(args) -> IcClient:
+def _ic_from_args(args, root: str) -> IcClient:
     return IcClient(
         env=args.env,
         identity=getattr(args, "identity", None),
-        project_root=REPO_ROOT,
+        project_root=root,
     )
 
 
-def _upload_ic_from_args(args) -> IcClient | None:
-    name = getattr(args, "upload_identity", None)
-    if not name or name == getattr(args, "identity", None):
-        return None
-    return IcClient(env=args.env, identity=name, project_root=REPO_ROOT)
+def apply_local_flag(args) -> None:
+    """`--local` is a replica flag: refuse production, then prepare the laptop."""
+    if not getattr(args, "local", False):
+        return
+    if args.env != "local":
+        raise RuntimeError(f"--local is for a local replica; got -e {args.env}")
+    from casals_cli.local import prepare_local
+
+    args.identity = prepare_local(identity=getattr(args, "identity", None))
+    args.env = "local"
 
 
 def _sheet_name_from_args(args) -> str:
@@ -151,8 +183,14 @@ def main(argv: list[str] | None = None) -> None:
     ap = _build_parser()
     args = ap.parse_args(argv)
     args.sheet_name = _sheet_name_from_args(args) if getattr(args, "sheet", None) else ""
+    root = project_root()
 
-    ic = _ic_from_args(args)
+    try:
+        apply_local_flag(args)
+    except RuntimeError as exc:
+        emit_error(str(exc))
+
+    ic = _ic_from_args(args, root)
     try:
         cmd = args.command
         if cmd == "up":
@@ -163,17 +201,16 @@ def main(argv: list[str] | None = None) -> None:
                 yes=args.yes,
                 conductor_override=args.conductor,
                 max_items=args.max_items,
-                project_root=REPO_ROOT,
-                upload_ic=_upload_ic_from_args(args),
+                project_root=root,
                 bootstrap=args.bootstrap,
             )
             emit_json(result)
         elif cmd == "plan":
-            commands.cmd_plan(ic, args, REPO_ROOT, upload_ic=_upload_ic_from_args(args))
+            commands.cmd_plan(ic, args, root)
         elif cmd == "upgrade":
-            upgrade.cmd_upgrade(ic, args, REPO_ROOT)
+            upgrade.cmd_upgrade(ic, args, root)
         elif cmd == "pin":
-            commands.cmd_pin(args, REPO_ROOT)
+            commands.cmd_pin(args, root)
         elif cmd == "bundle":
             commands.cmd_bundle(args)
         elif cmd == "apply":
