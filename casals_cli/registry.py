@@ -258,17 +258,15 @@ def ensure_registry_uploads(
     store_id: str,
     namespace: str = WASM_NAMESPACE,
     progress=None,
-    strict_pins: bool = True,
 ) -> list[dict]:
-    """Upload missing/changed wasms to the store and pin each entry's ``sha256``
-    in ``sheet`` to the artifact actually uploaded: what the conductor then
-    plans against is exactly this build. Returns summary rows (one per
-    artifact).
+    """Upload missing/changed wasms to the store and write each entry's
+    ``sha256`` in ``sheet`` to the artifact actually uploaded: what the
+    conductor then plans against is exactly this build. Returns summary rows
+    (one per artifact).
 
-    A row's ``sha256`` is what production must install: with ``strict_pins`` a
-    source that builds to anything else is an error. Non-production runs pass
-    ``strict_pins=False`` — a laptop or CI builds its own artifacts, so a stale
-    pin is reported and the row is re-pinned to what was actually built."""
+    A row's ``sha256`` is an optional checksum: when declared, a source that
+    resolves to anything else is an error (``resolve_source`` raises); when
+    absent, whatever the source resolves to is what gets uploaded."""
     if not (store_id or "").strip():
         raise RuntimeError("no WASM store bound: the casals-wasms canister has no id (declare conductor.wasms)")
     targets = [StoreTarget(ic, store_id)]
@@ -282,17 +280,12 @@ def ensure_registry_uploads(
         family = str(entry.get("family") or "")
         version = str(entry.get("version") or "")
         source = str(entry.get("source") or "")
-        expected = (entry.get("sha256") or "").strip() or None
         data, digest = resolve_source(
             source,
             sheet_dir=sheet_dir,
             project_root=project_root,
-            expected_sha256=expected if strict_pins else None,
+            expected_sha256=(entry.get("sha256") or "").strip() or None,
         )
-        if expected and expected.lower() != digest:
-            if progress:
-                progress(f"  {family}@{version}: pinned {expected[:12]}… but the source builds to {digest[:12]}…; "
-                         f"using the build (pins are enforced in production only)")
         entry["sha256"] = digest
         resolved.append((entry, family, version, registry_path(family, version), data, digest))
 
@@ -315,7 +308,7 @@ def ensure_registry_uploads(
             if not isinstance(entry, dict):
                 continue
             published = publish_bundle(target, entry, sheet_dir=sheet_dir, project_root=project_root,
-                                       strict_pins=strict_pins, progress=progress)
+                                       progress=progress)
             if progress:
                 n_up = sum(1 for r in published if r["action"] == "uploaded")
                 n_del = sum(1 for r in published if r["action"] == "deleted")
@@ -326,25 +319,21 @@ def ensure_registry_uploads(
     return rows
 
 
-def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str,
-                   strict_pins: bool = True, progress=None) -> list[dict]:
+def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, progress=None) -> list[dict]:
     """`registry.publish` entry: the bundle at `source` becomes namespace `path`
     in ``target`` — exactly. Files with the same sha256 are skipped, changed
     or new ones uploaded, files the store has that left the bundle deleted,
     so the namespace's bundle hash equals the bundle's. The entry's `sha256`
-    (the bundle hash) is enforced with ``strict_pins`` and written back to the
-    entry either way, as for wasms."""
+    (the bundle hash) is an optional checksum — a source that hashes to
+    anything else is an error — and is written back to the entry, as for
+    wasms."""
     ns = str(entry.get("path") or "")
     files = resolve_bundle(str(entry.get("source") or ""), sheet_dir=sheet_dir, project_root=project_root)
     hashes = _bundle.file_hashes(files)
     digest = _bundle.bundle_hash(hashes)
     expected = (entry.get("sha256") or "").strip().lower()
     if expected and expected != digest:
-        if strict_pins:
-            raise ValueError(f"bundle sha256 mismatch for {ns}: pinned {expected}, source is {digest}")
-        if progress:
-            progress(f"  {ns}: pinned bundle {expected[:12]}… but the source is {digest[:12]}…; "
-                     f"using the source (pins are enforced in production only)")
+        raise ValueError(f"bundle sha256 mismatch for {ns}: expected {expected}, source is {digest}")
     entry["sha256"] = digest
     existing = target.file_hashes(ns)
     plan = _bundle.diff(existing, hashes)

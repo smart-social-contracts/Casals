@@ -69,8 +69,8 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_p = sub.add_parser("plan", help="what `up` would still do (a dry run)")
     plan_p.add_argument("sheet", nargs="?", help="path to casals.json")
 
-    upg_p = sub.add_parser("upgrade", help="ship the build the sheet pins to canisters that already exist")
-    upg_p.add_argument("sheet", help="path to casals.json (run `casals pin` first)")
+    upg_p = sub.add_parser("upgrade", help="ship a registry row's artifact to canisters that already exist")
+    upg_p.add_argument("sheet", help="path to casals.json")
     upg_p.add_argument("--wasm", action="append", default=[], metavar="FAMILY[@VERSION]",
                        help="upgrade every canister running this registry family (repeatable); "
                             "baton-governed members become a baton proposal (`pending`)")
@@ -97,10 +97,6 @@ def _build_parser() -> argparse.ArgumentParser:
     grp = send_p.add_mutually_exclusive_group(required=True)
     grp.add_argument("--amount", type=int, help="cycles to send")
     grp.add_argument("--all", action="store_true", help="everything above the treasury reserve")
-
-    pin_p = sub.add_parser("pin", help="write each registry.wasms artifact's sha256 and each registry.publish bundle hash into the sheet")
-    pin_p.add_argument("sheet", help="path to casals.json")
-    pin_p.add_argument("--check", action="store_true", help="only compare; exit 1 on unpinned or drifted rows")
 
     bundle_p = sub.add_parser("bundle", help="pack a built frontend (dist/) into a canonical hashed .tgz — see docs/BUNDLES.md")
     bundle_p.add_argument("source", help="dist directory (or, with --verify, a directory or .tgz)")
@@ -209,8 +205,6 @@ def main(argv: list[str] | None = None) -> None:
             commands.cmd_plan(ic, args, root)
         elif cmd == "upgrade":
             upgrade.cmd_upgrade(ic, args, root)
-        elif cmd == "pin":
-            commands.cmd_pin(args, root)
         elif cmd == "bundle":
             commands.cmd_bundle(args)
         elif cmd == "apply":

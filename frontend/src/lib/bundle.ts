@@ -1,6 +1,6 @@
 // Asset bundles in the browser — the same rules as docs/BUNDLES.md and
 // `casals_cli/bundle.py`, so the hash a commander sees before uploading is
-// the hash the store, the conductor and the sheet pin agree on.
+// the hash the store, the conductor and the sheet's `sha256` agree on.
 //
 // Pure TypeScript (no IC imports): unit-tested with node:test.
 

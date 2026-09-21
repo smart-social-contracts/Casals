@@ -2294,8 +2294,8 @@ def end_upload(args: text) -> Async[text]:
     outside its grant's namespace; with ``path`` also stats the uploaded file
     and returns its on-chain {key, size, sha256, content_type} so the
     Authorize form is filled from what the store holds; with ``bundle`` lists
-    the namespace and returns its on-chain {files, bundle_sha256} — the hash
-    the sheet's registry.publish row pins."""
+    the namespace and returns its on-chain {files, bundle_sha256} — the bundle
+    hash `casals upgrade --content` ships."""
     try:
         _require_wasm_upload_auth()
         params = json.loads(args) if args else {}
@@ -2709,7 +2709,7 @@ def propose_upgrade(args: text) -> Async[text]:
     `casals upgrade` moves a baton-governed stand.
 
     Args (JSON): {canister, wasm_key, source?} (`source`: the sheet file's
-    registry row source, recorded with the pin). Requires `canister.deploy` on
+    registry row source, recorded with the shipped hash). Requires `canister.deploy` on
     the stand. Returns {action_id, baton, baton_id, wasm_hash}."""
     try:
         params = json.loads(args)
@@ -2755,11 +2755,12 @@ def sync_content(args: text) -> Async[text]:
     frontend build after day one.
 
     Args (JSON): {canister, namespace?, bundle_sha256?, source?} — the namespace
-    defaults to the canister's `content` in the sheet; the store bundle must
-    hash to `bundle_sha256` (else to the stored sheet's pin, when it has one);
-    `source` is the sheet file's registry.publish source, recorded with the pin.
-    Requires `canister.deploy` on the stand. Returns {written, deleted,
-    remaining, bundle_sha256}."""
+    defaults to the canister's `content` in the sheet; `bundle_sha256` is an
+    optional checksum: when given, the store bundle must hash to it, otherwise
+    whatever the store holds is what gets served; `source` is the sheet file's
+    registry.publish source, recorded alongside the shipped hash. Requires
+    `canister.deploy` on the stand. Returns {written, deleted, remaining,
+    bundle_sha256}."""
     try:
         params = json.loads(args)
         name = (params.get("canister") or "").strip()
@@ -2785,18 +2786,13 @@ def sync_content(args: text) -> Async[text]:
             return _err(f"store namespace {ns} unreadable: {e}")
         if not published[ns]:
             return _err(f"store namespace {ns} is empty; publish the bundle first")
-        # Never sync unapproved content: the store bundle must be the one pinned —
-        # by the caller (`casals upgrade` passes the sheet file's pin) or, failing
-        # that, by the stored sheet's registry.publish row for this namespace.
+        # The caller's `bundle_sha256` is a checksum on the store→canister hop:
+        # what it saw in the store is what gets written, or nothing is.
         store_hash = bundle_hash({p: m.get("sha256", "") for p, m in published[ns].items()})
         expected = (params.get("bundle_sha256") or "").strip().lower()
-        if not expected:
-            for row in ((sheet or {}).get("registry") or {}).get("publish") or []:
-                if isinstance(row, dict) and (row.get("path") or "").strip() == ns:
-                    expected = (row.get("sha256") or "").strip().lower()
         if expected and expected != store_hash:
-            return _err(f"store bundle {ns} is {store_hash[:12]}…, the pin is {expected[:12]}…; "
-                        "publish the pinned bundle first")
+            return _err(f"store bundle {ns} is {store_hash[:12]}…, expected {expected[:12]}…; "
+                        "the store changed since it was read — check it and retry")
         desired = desired_assets(spec, published) or {}
         live = yield from _asset_hashes_gen(st.canister_id.strip())
         keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)

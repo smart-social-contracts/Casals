@@ -653,10 +653,10 @@ class TestOracle:
         assert not report.passed
         assert any(r.field.startswith(field.split("[")[0]) or field in r.field for r in report.rows if r.result == "FAIL")
 
-    def test_stale_pin_is_enforced_in_production_only(self):
-        """Same pin policy as `up`: a laptop's build is what the store holds and
-        what is live, so a stale sheet pin is not drift there; in production
-        the pin is what must be live."""
+    def test_a_declared_sha256_is_what_must_be_live_in_every_environment(self):
+        """A row's `sha256` is a checksum: when the sheet declares one, that is
+        the module hash the oracle expects, whatever the environment; only a
+        row without one defers to the build `up` uploaded to the store."""
         ic = RecordingIc()
         with open(CORPUS, encoding="utf-8") as f:
             sheet = json.load(f)
@@ -671,15 +671,18 @@ class TestOracle:
         }
         _governed_live(ic, sheet, bindings)
         entry = next(e for e in sheet["registry"]["wasms"] if e["family"] == "hello-world-motoko")
-        entry["sha256"] = "c" * 64  # pinned before the artifact was rebuilt
+        entry["sha256"] = "c" * 64  # declared before the artifact was rebuilt
         sheet["environments"]["production"] = sheet["environments"]["local"]  # the corpus has no production block
 
         def hash_row(env):
             return next(r for r in run_oracle(sheet, env, bindings, ic).rows
                         if r.canister == "motoko-backend" and r.field == "module_hash")
 
-        assert hash_row("local").result == "PASS"
+        assert hash_row("local").result == "FAIL"
         assert hash_row("production").result == "FAIL"
+        del entry["sha256"]  # no checksum: what the store holds is what must be live
+        assert hash_row("local").result == "PASS"
+        assert hash_row("production").result == "PASS"
 
 
 # ── show / graph ─────────────────────────────────────────────────────────────
@@ -1043,6 +1046,44 @@ class TestConvergeGuards:
         plan = converge(ic, "be", "dep", "ms", yes=True, max_items=5)
         assert plan["handed_off"] is True and plan["items"] == []
         assert any(c[0] == "settings_update" and c[1][0] == "be" for c in ic.calls)
+
+    def test_hand_off_waits_until_nothing_else_is_pending(self):
+        """ic-casals.tech: the sheet adds $self to casals-frontend's controllers
+        so the conductor can write /.well-known/ic-domains into it. Round one
+        plans that sync as `requires=multisig` next to the frontend controller
+        change and the conductor hand-off; had the deployer handed the backend
+        over in that same round, the sync (the conductor's to apply one round
+        later) would have been refused. The hand-off is the deployer's last
+        act only once it is the only item left."""
+        from casals_cli.up import converge
+
+        def ctl(name, cid, desired):
+            return {"seq": 0, "kind": "set_controllers", "target": {"name": name, "canister_id": cid},
+                    "reason": "controllers", "requires": "multisig", "destructive": True,
+                    "current": {"controllers": ["dep"]}, "desired": {"controllers": desired}}
+
+        def sync(requires):
+            return {"seq": 0, "kind": "sync_assets", "target": {"name": "casals-frontend", "canister_id": "fe"},
+                    "reason": "ic-domains", "requires": requires, "destructive": False,
+                    "current": {}, "desired": {"keys": ["/.well-known/ic-domains"]}}
+
+        plans = [
+            {"ok": True, "plan": {"hash": "h1", "items": [sync("multisig"), ctl("casals-frontend", "fe", ["self", "ms"]),
+                                                          ctl("casals-backend", "be", ["ms"])]}},
+            {"ok": True, "plan": {"hash": "h2", "items": [sync("self"), ctl("casals-backend", "be", ["ms"])]}},
+            {"ok": True, "plan": {"hash": "h3", "items": [ctl("casals-backend", "be", ["ms"])]}},
+            {"ok": False, "error": "unauthorized: caller is not a commander"},
+        ]
+        applied = {"ok": True, "applied": [{"kind": "sync_assets", "target": {"name": "casals-frontend"}}], "failed": None}
+        ic = _ScriptedIc(plans, applied, env="production")
+        ic.controllers["be"] = ["dep"]
+        ic.controllers["fe"] = ["dep"]
+        plan = converge(ic, "be", "dep", "ms", yes=True, max_items=5)
+        assert plan["handed_off"] is True and plan["items"] == []
+        order = [(c[0], c[1][0]) if c[0] == "settings_update" else (c[0], c[1][1]) for c in ic.calls
+                 if c[0] == "settings_update" or (c[0] == "call_update" and c[1][1] == "apply")]
+        # frontend controllers first, then the conductor applies the sync, and only then the hand-off
+        assert order == [("settings_update", "fe"), ("call_update", "apply"), ("settings_update", "be")]
 
     def test_unauthorized_without_a_hand_off_is_still_an_error(self):
         from casals_cli.up import converge

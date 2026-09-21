@@ -448,14 +448,26 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
                 )
             continue
         # Only deployer items left. Handing the conductor's own controllers to
-        # the multisig ends the deployer's reach: remember it, so the refusal
-        # the next plan gets is read as "done", not as a failure.
-        handed_off = handed_off or any(
-            i.get("kind") == "set_controllers"
-            and (i.get("target") or {}).get("canister_id") == backend_id
-            and deployer not in ((i.get("desired") or {}).get("controllers") or [])
-            for i in items
-        )
+        # the multisig ends the deployer's reach, so it is the deployer's very
+        # last act: while anything else is still planned (an item that only
+        # becomes the conductor's to apply once this round's controller changes
+        # land — e.g. writing /.well-known/ic-domains into casals-frontend
+        # after $self joined its controllers), the hand-off waits for a later
+        # round. Once it is all that is left, remember it, so the refusal the
+        # next plan gets is read as "done", not as a failure.
+        def _is_hand_off(i: dict) -> bool:
+            return (
+                i.get("kind") == "set_controllers"
+                and (i.get("target") or {}).get("canister_id") == backend_id
+                and deployer not in ((i.get("desired") or {}).get("controllers") or [])
+            )
+
+        rest = [i for i in items if not _is_hand_off(i)]
+        if rest and len(rest) < len(items):
+            _progress("  conductor hand-off deferred: other items are still pending")
+            deployer_items(ic, {**plan, "items": rest}, deployer, multisig_id, wasm_by_hash)
+            continue
+        handed_off = handed_off or len(rest) < len(items)
         deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
 
 
@@ -574,7 +586,6 @@ def run_up(
         project_root=project_root,
         store_id=store_id,
         progress=_progress,
-        strict_pins=(env == "production"),
     )
 
     # 5. bind_conductor + set_sheet — controller-only calls. Once the deployer has

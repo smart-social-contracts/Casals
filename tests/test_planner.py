@@ -350,21 +350,42 @@ def test_bundle_drift_names_both_hashes_and_removes_stale_keys():
     live["published"][ns] = old_store
 
 
-def test_pinned_bundle_must_be_in_the_store_before_any_sync():
+def test_an_unshipped_upload_is_not_drift_and_a_lost_bundle_is_unverifiable():
+    """The stored sheet's registry.publish sha256 is the bundle last shipped.
+    The store holding another one while the frontend still serves the shipped
+    one is an upload waiting for `casals upgrade --content` — noted, nothing
+    synced from it, rendered `files` still converge. A frontend serving
+    neither cannot be brought to the shipped bundle from that store."""
     resolved, env, bindings = _resolved("baton-stand")
     live = _converged_live(resolved, bindings)
-    ns = sv2.find_canister(resolved, "rust-frontend")[2]["content"]
+    spec = sv2.find_canister(resolved, "rust-frontend")[2]
+    ns = spec["content"]
     row = next(e for e in resolved["registry"]["publish"] if e["path"] == ns)
-    row["sha256"] = "ab" * 32  # the sheet pins a bundle the store does not hold
-    live["assets"]["rust-frontend"]["/index.html"] = "ff" * 32
+    shipped = sv2.bundle_hash({p: m["sha256"] for p, m in live["published"][ns].items()})
+    row["sha256"] = shipped  # what was shipped; the frontend serves exactly it
+    live["published"][ns] = {"index.html": {"sha256": "22" * 32, "content_type": "text/html"}}  # a newer upload
+    live["assets"]["rust-frontend"]["/canister_ids.js"] = "ff" * 32  # and a stale rendered file
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    items = [i for i in plan["items"] if i["kind"] == "sync_assets"]
+    assert [i["desired"]["keys"] for i in items] == [["/canister_ids.js"]]
+    assert items[0]["desired"]["delete_keys"] == [] and "bundle_sha256" not in items[0]["desired"]
+    notes = [n["note"] for n in plan["info"] if n["target"] == "rust-frontend"]
+    assert notes and "not shipped" in notes[0] and f"casals upgrade --content {ns}" in notes[0]
+    assert not [u for u in plan["unverifiable"] if u["target"] == "rust-frontend"]
+    # the frontend serves neither the shipped bundle nor the store's: unverifiable, no sync
+    live["assets"]["rust-frontend"]["/index.html"] = "dd" * 32
     plan = build_plan(resolved, env, live, self_id=SELF)
     assert not [i for i in plan["items"] if i["kind"] == "sync_assets"]
     reasons = [u["reason"] for u in plan["unverifiable"] if u["target"] == "rust-frontend"]
-    assert reasons and "sheet pins abababababab…" in reasons[0] and "publish the pinned bundle" in reasons[0]
-    # pin matches the store: the sync goes ahead
-    row["sha256"] = sv2.bundle_hash({p: m["sha256"] for p, m in live["published"][ns].items()})
+    assert reasons and f"should serve bundle {shipped[:12]}…" in reasons[0] and "casals upgrade --content" in reasons[0]
+    # the store holds the declared bundle: the sync goes ahead
+    row["sha256"] = sv2.bundle_hash({"index.html": "22" * 32})
     plan = build_plan(resolved, env, live, self_id=SELF)
-    assert [i["desired"]["keys"] for i in plan["items"] if i["kind"] == "sync_assets"] == [["/index.html"]]
+    assert [i["desired"]["keys"] for i in plan["items"] if i["kind"] == "sync_assets"] == [["/canister_ids.js", "/index.html"]]
+    # and a row without a sha256 follows the store
+    del row["sha256"]
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert [i["desired"]["keys"] for i in plan["items"] if i["kind"] == "sync_assets"] == [["/canister_ids.js", "/index.html"]]
 
 
 # ── single-stand plans (runtime stand builds) ────────────────────────────────

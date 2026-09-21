@@ -21,13 +21,11 @@
     namespace?: string;
     /** namespaces the sheet references (for the picker) */
     knownNamespaces?: string[];
-    /** bundle hash the sheet currently pins for `namespace`, if any */
-    pinned?: string;
     ondone?: () => void;
     oncancel?: () => void;
   }
 
-  let { namespace: initialNamespace = '', knownNamespaces = [], pinned = '', ondone, oncancel }: Props = $props();
+  let { namespace: initialNamespace = '', knownNamespaces = [], ondone, oncancel }: Props = $props();
 
   type Phase = 'pick' | 'hashing' | 'ready' | 'uploading' | 'verifying' | 'uploaded' | 'done';
 
@@ -53,7 +51,6 @@
   const canUpload = $derived(phase === 'ready' && nsOk && files.length > 0 && !nothingToDo);
   const hashMismatch = $derived(!!onChainHash && !!localHash && onChainHash !== localHash);
   const pct = $derived(progress.total ? Math.round((progress.sent / progress.total) * 100) : 0);
-  const pinDiffers = $derived(!!onChainHash && onChainHash !== pinned);
 
   function say(line: string) {
     log = [...log, line];
@@ -180,9 +177,8 @@
     <p class="text-sm text-primary-500 mb-4">
       A frontend's built <span class="font-mono">dist/</span> — a folder or a <span class="font-mono">.tgz</span> from
       <span class="font-mono">casals bundle</span>. Every file is hashed here; only changed files are written, files that
-      left the bundle are removed, all in one commit to the <span class="font-mono">casals-wasms</span> store. Shipping
-      it to a frontend is a release: pin the bundle hash in the sheet file (<span class="font-mono">casals pin</span>) and run
-      <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span>.
+      left the bundle are removed, all in one commit to the <span class="font-mono">casals-wasms</span> store. Uploading is
+      not shipping: <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span> makes the frontends serve it.
     </p>
 
     {#if error}
@@ -206,8 +202,6 @@
         </datalist>
         {#if namespace && !nsOk}
           <p class="text-xs text-red-600 mt-1">A namespace is a slash-separated path, not under <span class="font-mono">wasm/</span>.</p>
-        {:else if pinned}
-          <p class="text-xs text-primary-400 mt-1">Sheet pins bundle <span class="font-mono">{pinned.slice(0, 12)}…</span></p>
         {/if}
       </div>
 
@@ -275,10 +269,9 @@
           <div class="font-mono break-all mt-0.5">{onChainHash}</div>
           {#if !hashMismatch}<div class="mt-0.5">matches the files hashed in this browser</div>{/if}
         </div>
-        {#if !hashMismatch && pinDiffers}
-          <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            The sheet {pinned ? `pins ${pinned.slice(0, 12)}…` : 'has no pin for this namespace'}. To ship this build:
-            <span class="font-mono">casals pin</span> the sheet file, then
+        {#if !hashMismatch}
+          <div class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700">
+            In the store, not yet served. To ship it:
             <span class="font-mono">casals upgrade &lt;sheet&gt; --content {namespace.trim()}</span>.
           </div>
         {/if}

@@ -57,8 +57,6 @@
     bytes: number;
     /** bundle hash of what the store holds (computed here, same rule as the conductor) */
     storeHash: string;
-    /** sha256 the sheet's registry.publish row pins, if any */
-    pinned: string;
     source: string;
     /** canisters whose `content` is this namespace */
     consumers: string[];
@@ -67,7 +65,7 @@
   }
 
   let sheet = $state.raw<Sheet | null>(null);
-  let showUploadBundle = $state<{ namespace: string; pinned: string } | null>(null);
+  let showUploadBundle = $state<{ namespace: string } | null>(null);
   let storeHashes = $state.raw<Record<string, string>>({});
 
   // Store keys are `/<namespace>/<path>`; a namespace may itself contain
@@ -99,8 +97,8 @@
       arr.push(f);
       byNs.set(ns, arr);
     }
-    const pins = new Map<string, { sha256: string; source: string }>();
-    for (const row of sheet?.registry?.publish ?? []) if (row?.path) pins.set(row.path, { sha256: row.sha256 ?? '', source: row.source ?? '' });
+    const sources = new Map<string, string>();
+    for (const row of sheet?.registry?.publish ?? []) if (row?.path) sources.set(row.path, row.source ?? '');
     const consumers = new Map<string, string[]>();
     for (const sec of sheet?.sections ?? []) for (const st of sec.stands ?? []) for (const c of st.canisters ?? []) {
       if (c.content) consumers.set(c.content, [...(consumers.get(c.content) ?? []), c.name]);
@@ -114,8 +112,7 @@
         files: fs.length,
         bytes: fs.reduce((n, f) => n + f.size, 0),
         storeHash: storeHashes[ns] ?? '',
-        pinned: pins.get(ns)?.sha256 ?? '',
-        source: pins.get(ns)?.source ?? '',
+        source: sources.get(ns) ?? '',
         consumers: consumers.get(ns) ?? [],
         inSheet: known.has(ns),
         modifiedNs: Math.max(0, ...fs.map((f) => f.modified_ns || 0)),
@@ -124,14 +121,6 @@
     out.sort((a, b) => Number(b.inSheet) - Number(a.inSheet) || a.namespace.localeCompare(b.namespace));
     return out;
   });
-
-  function bundleStatus(b: BundleRow): { label: string; cls: string; title: string } {
-    if (!b.files) return { label: 'empty', cls: 'bg-amber-50 text-amber-800 border border-amber-200', title: 'the store holds no files for this namespace' };
-    if (!b.pinned) return { label: 'unpinned', cls: 'badge-neutral', title: 'the sheet pins no bundle hash for this namespace (required in production)' };
-    if (!b.storeHash) return { label: '…', cls: 'badge-neutral', title: 'hashing' };
-    if (b.storeHash === b.pinned) return { label: 'pinned', cls: 'bg-emerald-50 text-emerald-700 border border-emerald-200', title: 'the store holds exactly the bundle the sheet pins' };
-    return { label: 'differs from pin', cls: 'bg-red-50 text-red-700 border border-red-200', title: `store ${b.storeHash.slice(0, 12)}… vs sheet ${b.pinned.slice(0, 12)}…` };
-  }
 
   async function hashStoreBundles(files: StoreFile[], known: Set<string>) {
     const byNs = new Map<string, Record<string, string>>();
@@ -339,7 +328,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Files</h1>
-      <p class="text-sm text-primary-500 mt-1">What the <span class="font-mono">casals-wasms</span> store holds: WASM modules canisters may run, and asset bundles frontends serve</p>
+      <p class="text-sm text-primary-500 mt-1">What the <span class="font-mono">casals-wasms</span> store holds: WASM modules canisters may run, and asset bundles frontends serve.</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -349,7 +338,7 @@
           </svg>
           Upload WASM
         </button>
-        <button class="btn-primary btn-sm" onclick={() => (showUploadBundle = { namespace: '', pinned: '' })} title="A frontend's dist/ (folder or casals bundle .tgz) into a store namespace">
+        <button class="btn-primary btn-sm" onclick={() => (showUploadBundle = { namespace: '' })} title="A frontend's dist/ (folder or casals bundle .tgz) into a store namespace">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
           </svg>
@@ -462,7 +451,8 @@
       <h2 class="text-lg font-semibold text-primary-900">Authorized bundles</h2>
       <p class="text-sm text-primary-500">
         Asset bundles frontends serve — one store namespace each (<span class="font-mono">registry.publish</span> → a canister's
-        <span class="font-mono">content</span>). The sheet pins a bundle by its hash; the conductor syncs a frontend only when the store holds that bundle.
+        <span class="font-mono">content</span>). Upload a build here; <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span>
+        ships what the store holds to every frontend whose <span class="font-mono">content</span> is that namespace.
       </p>
     </div>
     {#if !$isAuthenticated}
@@ -478,9 +468,7 @@
             <thead>
               <tr class="text-left text-xs font-semibold text-primary-500 uppercase tracking-wider bg-primary-50/60">
                 <th class="px-4 py-3">Namespace</th>
-                <th class="px-4 py-3">Status</th>
                 <th class="px-4 py-3">Bundle hash (store)</th>
-                <th class="px-4 py-3">Pinned in sheet</th>
                 <th class="px-4 py-3">Files</th>
                 <th class="px-4 py-3">Served by</th>
                 <th class="px-4 py-3">Uploaded</th>
@@ -489,23 +477,21 @@
             </thead>
             <tbody class="divide-y divide-[var(--color-border-primary)]">
               {#each bundles as b (b.namespace)}
-                {@const st = bundleStatus(b)}
                 <tr class="hover:bg-primary-50/40 transition-colors {b.inSheet ? '' : 'text-primary-500'}">
                   <td class="px-4 py-3 font-mono text-xs text-primary-900">
                     {b.namespace}
                     {#if !b.inSheet}<span class="badge badge-neutral ml-1 font-sans" title="the sheet references no such namespace">not in sheet</span>{/if}
+                    {#if !b.files}<span class="badge bg-amber-50 text-amber-800 border border-amber-200 ml-1 font-sans" title="the store holds no files for this namespace">empty</span>{/if}
                     {#if b.source && b.source !== 'store:'}<div class="text-[11px] text-primary-400 font-sans mt-0.5" title="registry.publish source">{b.source}</div>{/if}
                   </td>
-                  <td class="px-4 py-3"><span class="badge {st.cls}" title={st.title}>{st.label}</span></td>
-                  <td class="px-4 py-3 font-mono text-xs text-primary-500" title={b.storeHash}>{b.storeHash ? shortHash(b.storeHash) : '—'}</td>
-                  <td class="px-4 py-3 font-mono text-xs text-primary-500" title={b.pinned}>{b.pinned ? shortHash(b.pinned) : '—'}</td>
+                  <td class="px-4 py-3 font-mono text-xs text-primary-500" title={b.storeHash}>{b.storeHash ? shortHash(b.storeHash) : b.files ? '…' : '—'}</td>
                   <td class="px-4 py-3 text-xs text-primary-600 whitespace-nowrap">{b.files} · {formatBytes(b.bytes)}</td>
                   <td class="px-4 py-3 text-xs text-primary-600">
                     {#if b.consumers.length}{b.consumers.join(', ')}{:else}<span class="text-primary-400">—</span>{/if}
                   </td>
                   <td class="px-4 py-3 text-xs text-primary-600 whitespace-nowrap">{formatUploadTime(uploadEpochMs({ modified_ns: b.modifiedNs })) || '—'}</td>
                   <td class="px-4 py-3 text-right">
-                    <button class="btn-secondary btn-sm" onclick={() => (showUploadBundle = { namespace: b.namespace, pinned: b.pinned })}>Upload bundle</button>
+                    <button class="btn-secondary btn-sm" onclick={() => (showUploadBundle = { namespace: b.namespace })}>Upload bundle</button>
                   </td>
                 </tr>
               {/each}
@@ -649,7 +635,6 @@
 {#if showUploadBundle}
   <UploadBundleModal
     namespace={showUploadBundle.namespace}
-    pinned={showUploadBundle.pinned}
     knownNamespaces={[...knownNamespaces]}
     ondone={afterUpload}
     oncancel={() => { showUploadBundle = null; loadStore(); }}

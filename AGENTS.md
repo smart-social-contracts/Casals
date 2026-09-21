@@ -83,7 +83,7 @@ rendered by `frontend/src/routes/+layout.svelte`:
 | Route | Purpose |
 |-------|---------|
 | `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
-| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — pin status, store contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
+| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — store bundle hash, contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, cycles autopilot |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
@@ -208,8 +208,7 @@ make cli ARGS="<command>"
 
 Commands (see `_build_parser` in `casals_cli/main.py`): `up`, `plan`,
 `upgrade` (`--wasm <family>[@version]` / `--content <namespace>`, optionally
-`--stand`/`--section`; see *Releases*), `pin` (write/check
-`registry.wasms[].sha256` and `registry.publish[].sha256`; offline), `bundle`
+`--stand`/`--section`; see *Releases*), `bundle`
 (pack a built frontend into a canonical hashed `.tgz`, `docs/BUNDLES.md`),
 `export`, `status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `apply`, `show`,
 `graph`, `oracle`, `destroy`, `register`, `code new` (mint a commander access
@@ -383,13 +382,15 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   under the same canister id (GaaS keeps its `file-registry` as a product
   canister: realm branding, extension packages live in it), and any other
   legacy row is pooled so a stand can reuse the canister.
-- **Production pins.** `validate(sheet, "production")` refuses a
-  `registry.wasms` row without `sha256`. `casals pin <sheet>` resolves every
-  source (building `build:` targets) and writes the digests into the file;
-  `casals pin --check` exits 1 on drift. `casals up -e production` errors on a
-  row whose source no longer builds to its pin; every other environment
-  re-pins to what was actually built and says so (`strict_pins`). Deploy
-  recipe: build → `casals pin` → review the diff → commit → `up -e production`.
+- **`sha256` is a checksum, nothing more.** A `registry.wasms` /
+  `registry.publish` row may declare one; when it does, a source that resolves
+  to anything else is an error (`resolve_source` / `publish_bundle`), in every
+  environment. When it does not, whatever the source resolves to is what gets
+  uploaded. No environment requires it, no command manages it: put one on a
+  fixed artifact (a seed template, a release URL) and leave it off a `build:`
+  target or a bundle that changes with every deploy. The CLI writes the
+  uploaded digest into the sheet it hands the conductor, so the stored sheet
+  records what the store holds.
 - Bindings: `casals_metadata().wasm_store_canister_id`; CLI bindings file key
   `conductor["casals-wasms"]`. Baton reads the same id via its
   `wasm_store_canister_id` config (`orchestration_bridge` propagates it).
@@ -406,19 +407,22 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
 - **Shipping.** `casals bundle dist/ -o app-1.2.0.tgz` writes a canonical
   gzip tarball (sorted entries, zeroed mtimes, `manifest.json` inside) and
   prints the bundle hash. A `registry.publish` row's `source` may be a
-  directory, a `.tgz` (`local:`), an `https://` URL or `release:`; `sha256` is
-  the bundle hash — `casals pin` computes it, production requires it, `up`
-  refuses a source that hashes differently.
-- **Day one.** The planner (`_plan_assets`) compares the store namespace's
-  bundle hash against the pin: mismatch → `unverifiable` ("publish the pinned
-  bundle first"), never a sync of unapproved content. When they match, a
-  `sync_assets` item writes changed files and **deletes** the keys that left
-  the bundle (`delete_keys`, `lifecycle._sync_assets_gen`).
+  directory, a `.tgz` (`local:`), an `https://` URL or `release:`; an optional
+  `sha256` is the bundle hash, a checksum on the source (`casals bundle
+  --verify` prints it; `up` / `upgrade` refuse a source that hashes differently).
+- **Day one.** The planner (`_plan_assets`) compares what the canister serves
+  with the store namespace: a `sync_assets` item writes changed files and
+  **deletes** the keys that left the bundle (`delete_keys`,
+  `lifecycle._sync_assets_gen`). The stored sheet's `registry.publish[].sha256`
+  is the bundle last uploaded / shipped: a store namespace holding a different
+  one while the frontend still serves the recorded one is an unshipped upload
+  (`info`, only the rendered `files` converge), not drift; a frontend serving
+  neither is `unverifiable`.
 - **Later.** `casals upgrade <sheet> --content <namespace>` (or the conductor's
-  `sync_content {canister, namespace}` directly) does the same for a frontend
-  that already exists — `sync_content` verifies the store bundle against the
-  sheet pin and writes one slice per call; the CLI repeats it until
-  `remaining` is 0.
+  `sync_content {canister, namespace, bundle_sha256?}` directly) ships what the
+  store holds to a frontend that already exists; `bundle_sha256` is an optional
+  checksum on the store→canister hop (the CLI passes what its upload step left
+  there). One slice per call; the CLI repeats it until `remaining` is 0.
 - **Browser upload.** `/files` → *Upload bundle*: pick a folder or `.tgz`,
   hashes computed client-side, one diff against the store namespace, one
   `commit_batch` (create/set/delete). `begin_upload {namespace}` records the
@@ -431,7 +435,7 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
 ### Releases: `casals upgrade` (issue #52)
 
 The sheet builds the orchestra once; a new build afterwards is an operation,
-not a re-apply. `casals pin` writes the new `sha256` into the sheet file, then
+not a re-apply. Build (or upload from `/files`), then
 `casals upgrade <sheet> --wasm <family>[@<version>]` / `--content <namespace>`
 (repeatable; `--stand`/`--section` narrow the targets):
 
@@ -442,12 +446,12 @@ not a re-apply. `casals pin` writes the new `sha256` into the sheet file, then
   reported as `pending` with the action id) when its stand's baton does;
   `mode: adopted` canisters are skipped;
 - for every frontend whose sheet `content` is the namespace: `sync_content`
-  (the store bundle must hash to the file's pin) until nothing remains.
+  with the bundle hash the upload step left in the store, until nothing remains.
 
 The stored sheet keeps saying what runs without anyone calling `set_sheet`:
 `upgrade_to`, `propose_upgrade` and `sync_content` record what they shipped
 (`sheet_api.record_wasm_release` / `record_content_release` — the canister's
-`wasm`/`content`, a runtime stand's template member, the registry row's pin,
+`wasm`/`content`, a runtime stand's template member, the registry row's `sha256`,
 the row itself when the CLI passes the file's `source`), so a later `casals
 up` / `plan` finds nothing to do. `set_sheet`, `bind_conductor` and `apply`
 are controller-only; once the deployer has handed the conductor to the

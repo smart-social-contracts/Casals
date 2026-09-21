@@ -1,0 +1,382 @@
+{
+  "version": 2,
+  "name": "casals",
+  "description": "The public Casals orchestra on the IC: the landing site at ic-casals.tech (section Website) and the Casals demo instance at demo.ic-casals.tech (section Demo: one hello-world stand per backend language, each with its own Baton). This conductor is the demo instance; its own UI (casals-frontend) is what demo.ic-casals.tech serves. Governed by the orchestration multisig. `casals up casals.json -e production` from this checkout builds or reconciles it.",
+  "environments": {
+    "local": {
+      "network": "local",
+      "dns": {
+        "provider": "none"
+      },
+      "website_host": "",
+      "website_www_host": "",
+      "demo_host": "",
+      "flags": {
+        "test_mode": true,
+        "ii_bypass": true
+      },
+      "principals": {
+        "operator": "$deployer",
+        "$comment": "access-code slot (`casals code new` / claim_commander): admin=CASALS (everything)",
+        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+      },
+      "cycles": {
+        "min_balance_tc": 0.5,
+        "budget_tc": 100
+      }
+    },
+    "production": {
+      "network": "ic",
+      "$comment": "operator is prod-identity (YubiKey). Deploy through an icp delegation from it (`prod-session`, docs/OPERATIONS.md, Hardware keys): the IC sees the same principal. DNS lives in the Cloudflare zone ic-casals.tech; the API token is read from $CLOUDFLARE_API_TOKEN, never written here. The CLI does not write Cloudflare records yet (`reconcile_domains` reports unverifiable): per host add, DNS only (grey cloud), CNAME <host> -> <host>.icp1.io, TXT _canister-id.<host> -> <canister id from bindings>, CNAME _acme-challenge.<host> -> _acme-challenge.<host>.icp2.io, then POST https://icp0.io/custom-domains/v1/<host>. Keep the service A record (165.22.84.246, the hosted monitor) and the MX/SPF rows.",
+      "dns": {
+        "provider": "cloudflare",
+        "zone": "ic-casals.tech",
+        "token_env": "CLOUDFLARE_API_TOKEN",
+        "ttl": 60
+      },
+      "website_host": "ic-casals.tech",
+      "website_www_host": "www.ic-casals.tech",
+      "demo_host": "demo.ic-casals.tech",
+      "flags": {
+        "test_mode": false,
+        "ii_bypass": false
+      },
+      "principals": {
+        "operator": "rd4en-sizpv-vnamr-6vbfc-uljz5-vvz7c-g4nzy-uflq2-zbj3x-mrwjs-gqe",
+        "$comment": "access-code slot: admin=CASALS (everything). Redeem on the Access Denied dialog at demo.ic-casals.tech.",
+        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+      },
+      "cycles": {
+        "min_balance_tc": 2.0,
+        "budget_tc": 40
+      }
+    }
+  },
+  "conductor": {
+    "backend": {
+      "wasm": "casals-backend",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": [
+        "$multisig"
+      ]
+    },
+    "frontend": {
+      "$comment": "The Casals UI of this orchestra, served at demo.ic-casals.tech (see domains). $self is a controller so the conductor can write /.well-known/ic-domains into it (sync_assets needs Commit on the asset canister); the multisig stays the governing controller.",
+      "wasm": "casals-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": [
+        "$self",
+        "$multisig"
+      ]
+    },
+    "wasms": {
+      "$comment": "WASM store. The operator stays a controller so `casals up` can upload into it.",
+      "wasm": "certified-assets@0.3.0",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": [
+        "$self",
+        "$principal:operator"
+      ]
+    },
+    "commanders": [
+      {
+        "principal": "$principal:operator",
+        "permissions": "*"
+      },
+      {
+        "principal": "$principal:admin",
+        "permissions": "*"
+      }
+    ],
+    "settings": {
+      "orchestra_name": "casals"
+    }
+  },
+  "governance": {
+    "multisig": {
+      "wasm": "orchestration-multisig@1.6.0",
+      "kind": "backend",
+      "mode": "managed",
+      "signers": [
+        "$principal:operator"
+      ],
+      "threshold": 1,
+      "controllers": [
+        "$multisig"
+      ]
+    }
+  },
+  "domains": [
+    {
+      "host": "$env.website_host",
+      "canister": "website"
+    },
+    {
+      "host": "$env.website_www_host",
+      "canister": "website"
+    },
+    {
+      "host": "$env.demo_host",
+      "canister": "casals-frontend"
+    }
+  ],
+  "registry": {
+    "$comment": "Sources resolve from this checkout (the sheet's directory): templates under seed/, the conductor wasm by the CLI (build:). The landing site is ../casals-website/dist (run ../casals-website/scripts/build.sh first). A row's sha256 is an optional checksum on its source (mismatch is an error): the fixed seed templates carry one; the build: row and the website bundle, which change with every deploy, do not — `casals upgrade --content frontend/website/main` ships whatever the store holds.",
+    "wasms": [
+      {
+        "family": "casals-backend",
+        "version": "main",
+        "source": "build:casals_backend"
+      },
+      {
+        "family": "certified-assets",
+        "version": "0.3.0",
+        "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz",
+        "sha256": "75df75f39763077fd0333b4ac46ba03b2b23ec313fa85f79a2097bd98bb363d1"
+      },
+      {
+        "family": "certified-assets",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-frontend.wasm.gz",
+        "sha256": "63d122d0149a29f4e48603efdd7d2bce656a6a83bac1e3207897c68e8e225bb6"
+      },
+      {
+        "family": "orchestration-multisig",
+        "version": "1.6.0",
+        "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz",
+        "sha256": "c8d3adecf9bea8d9e7811cfa5d9eda8f61723c770f85132b91c8b2cffb37974f"
+      },
+      {
+        "family": "orchestration-baton",
+        "version": "1.5.1",
+        "source": "local:seed/templates/orchestration-baton@1.5.1.wasm.gz",
+        "sha256": "2143faa8bc8e8e516ff065d30149ca2439aef733a0a23b8e104710e89a9b9ae1"
+      },
+      {
+        "family": "hello-world-motoko",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-motoko.wasm.gz",
+        "sha256": "782bba4db1649343e562e4005776073e87e5e4babe2ddd3c60b3ee1883df81a3"
+      },
+      {
+        "family": "hello-world-rust",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-rust.wasm.gz",
+        "sha256": "b5403f98ce4a9bf21a4116a6128a7122094617606e81037e437ed113542ac9af"
+      },
+      {
+        "family": "hello-world-basilisk",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz",
+        "sha256": "d6ba35295c1ba72303b60ea3d0afd4338fc778354cc8deb07b225a237449ef29"
+      },
+      {
+        "family": "hello-world-frontend",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-frontend.wasm.gz",
+        "sha256": "63d122d0149a29f4e48603efdd7d2bce656a6a83bac1e3207897c68e8e225bb6"
+      }
+    ],
+    "publish": [
+      {
+        "path": "frontend/website/main",
+        "source": "local:../casals-website/dist"
+      }
+    ]
+  },
+  "sections": [
+    {
+      "name": "Website",
+      "description": "Landing site served at ic-casals.tech (and www).",
+      "$comment": "The live orchestra was bootstrapped with this section named Public. `casals up` registers sections by name and never moves a stand, so rename it in place first (admin, one call): rename_section {\"section\": \"Public\", \"new_name\": \"Website\"} from the Casals UI or `icp canister call <casals-backend> rename_section`.",
+      "stands": [
+        {
+          "name": "Website",
+          "canisters": [
+            {
+              "name": "website",
+              "mode": "managed",
+              "kind": "frontend",
+              "wasm": "certified-assets@1.0.0",
+              "content": "frontend/website/main",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ],
+              "health": [
+                {
+                  "http": "/index.html",
+                  "status": 200
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Demo",
+      "description": "The Casals demo: one full-stack hello-world stand per backend language (Motoko, Rust, Python); each stand owns a Baton. Browse it at demo.ic-casals.tech.",
+      "stands": [
+        {
+          "name": "Motoko",
+          "description": "Motoko hello-world + Baton + certified-assets frontend.",
+          "baton": {
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
+            "threshold": 2,
+            "manages": [
+              "backend",
+              "frontend"
+            ],
+            "hand_off": true
+          },
+          "canisters": [
+            {
+              "name": "motoko-baton",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "orchestration-baton@1.5.1",
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig"
+              ]
+            },
+            {
+              "name": "motoko-backend",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "hello-world-motoko@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            },
+            {
+              "name": "motoko-frontend",
+              "mode": "managed",
+              "kind": "frontend",
+              "wasm": "hello-world-frontend@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Rust",
+          "description": "Rust hello-world + Baton + certified-assets frontend.",
+          "baton": {
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
+            "threshold": 2,
+            "manages": [
+              "backend",
+              "frontend"
+            ],
+            "hand_off": true
+          },
+          "canisters": [
+            {
+              "name": "rust-baton",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "orchestration-baton@1.5.1",
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig"
+              ]
+            },
+            {
+              "name": "rust-backend",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "hello-world-rust@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            },
+            {
+              "name": "rust-frontend",
+              "mode": "managed",
+              "kind": "frontend",
+              "wasm": "hello-world-frontend@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Python",
+          "description": "Basilisk hello-world + Baton + certified-assets frontend.",
+          "baton": {
+            "commanders": [
+              "$self",
+              "$stand.backend"
+            ],
+            "threshold": 2,
+            "manages": [
+              "backend",
+              "frontend"
+            ],
+            "hand_off": true
+          },
+          "canisters": [
+            {
+              "name": "python-baton",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "orchestration-baton@1.5.1",
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig"
+              ]
+            },
+            {
+              "name": "python-backend",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "hello-world-basilisk@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            },
+            {
+              "name": "python-frontend",
+              "mode": "managed",
+              "kind": "frontend",
+              "wasm": "hello-world-frontend@1.0.0",
+              "controllers": [
+                "$self",
+                "$multisig"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "cycles": {
+    "min_balance_tc": 0.5,
+    "top_up_from": "$self",
+    "conductor_min_balance_tc": 2.0
+  }
+}

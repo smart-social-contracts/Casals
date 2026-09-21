@@ -116,8 +116,8 @@ casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
 casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
 casals up tests/e2e/orchestras/minimal/casals.json --yes --local   # day one, local replica
-casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the pinned build
-casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the pinned bundle
+casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the new build
+casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the store's bundle
 casals cycles                                      # treasury + per-canister balances
 casals pool                                        # canister pool
 casals export sheet.json                           # the sheet the conductor was built from + bindings

@@ -18,7 +18,7 @@ from sheetv2 import (
     baton_managed_members,
     bundle_hash,
     iter_canisters,
-    publish_pins,
+    publish_hashes,
     registry_path,
     stand_member,
     MULTISIG_NAME,
@@ -137,7 +137,7 @@ class _PlanContext:
         self.config_queries = live_state.get("config_queries") or {}
         self.assets = live_state.get("assets") or {}
         self.published = live_state.get("published") or {}
-        self.publish_pins = publish_pins(self.sheet)
+        self.publish_hashes = publish_hashes(self.sheet)
         self.reuse_pool = bool((sheet.get("cycles") or {}).get("reuse_pool"))
         self.default_min_tc = float((sheet.get("cycles") or {}).get("min_balance_tc") or 0)
 
@@ -174,31 +174,44 @@ class _PlanContext:
             return
         if self.defer_if_unresolved(spec.get("files"), name, "files"):
             return
-        # With `content` the served set is a bundle (docs/BUNDLES.md): the store
-        # namespace must hold exactly the bundle the sheet pins, and the
-        # canister must serve exactly that bundle plus its rendered `files`.
-        store_bundle = bundle_hash({p: m.get("sha256", "") for p, m in self.published[ns].items()}) if ns else ""
-        pinned = self.publish_pins.get(ns, "") if ns else ""
-        if pinned and store_bundle != pinned:
-            self.unverifiable.append({
-                "target": name, "field": "content",
-                "reason": f"store namespace {ns} holds bundle {store_bundle[:12]}… but the sheet pins "
-                          f"{pinned[:12]}…; publish the pinned bundle (casals up / Upload bundle) first",
-            })
-            return
         live = self.assets.get(name)
         if not isinstance(live, dict) or live.get("error"):
             self.unverifiable.append({"target": name, "field": "assets",
                                       "reason": (live or {}).get("error") or "asset list unavailable"})
             return
+        # With `content` the served set is a bundle (docs/BUNDLES.md): the
+        # canister serves the store namespace's bundle plus its rendered
+        # `files`. A registry.publish `sha256` is a checksum on that bundle —
+        # in a stored sheet, the one last uploaded or shipped. The store
+        # holding another bundle is not drift while the frontend serves the
+        # declared one (an upload is not a release: `casals upgrade --content`
+        # ships it), but nothing can be synced from it until then.
+        file_keys = set(spec.get("files") or {})
+        store_bundle = bundle_hash({p: m.get("sha256", "") for p, m in self.published[ns].items()}) if ns else ""
+        live_bundle = bundle_hash({k.lstrip("/"): sha for k, sha in live.items() if k not in file_keys}) if ns else ""
+        expected = self.publish_hashes.get(ns, "") if ns else ""
+        unshipped = bool(expected) and store_bundle != expected
+        if unshipped and live_bundle != expected:
+            self.unverifiable.append({
+                "target": name, "field": "content",
+                "reason": f"{name} should serve bundle {expected[:12]}… but store namespace {ns} holds "
+                          f"{store_bundle[:12]}…; upload that bundle, or ship the store's "
+                          f"(casals upgrade --content {ns})",
+            })
+            return
+        if unshipped:
+            self.info.append({
+                "target": name,
+                "note": f"store namespace {ns} holds bundle {store_bundle[:12]}…, not shipped; {name} serves "
+                        f"{expected[:12]}… (casals upgrade --content {ns} ships it)",
+            })
+            desired = {k: sha for k, sha in desired.items() if k in file_keys}  # only the rendered files converge
         keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)
-        delete_keys = sorted(k for k in live if k not in desired) if ns else []
+        delete_keys = sorted(k for k in live if k not in desired) if ns and not unshipped else []
         if keys or delete_keys:
             reason = f"sync {len(keys)} asset(s) into {name}"
             extra: dict = {}
-            if ns:
-                file_keys = set(spec.get("files") or {})
-                live_bundle = bundle_hash({k.lstrip("/"): sha for k, sha in live.items() if k not in file_keys})
+            if ns and not unshipped:
                 reason = (f"{name}: bundle {live_bundle[:12]}… → {store_bundle[:12]}… "
                           f"({len(keys)} file(s) to write, {len(delete_keys)} to remove)")
                 extra = {"bundle_sha256": store_bundle, "live_bundle_sha256": live_bundle}

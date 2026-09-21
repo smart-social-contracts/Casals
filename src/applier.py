@@ -161,7 +161,7 @@ def _execute_item(item: dict, sheet: dict):
         if not sha:
             raise Exception(f"{key}: neither the sheet nor the store reports a sha256 for {ns}/{path}")
         if registry_sha and sha != registry_sha:
-            raise Exception(f"{key}: sheet pins sha256 {sha} but the store holds {registry_sha}")
+            raise Exception(f"{key}: sheet declares sha256 {sha} but the store holds {registry_sha}")
         list(AuthorizedWasm.instances())
         w = AuthorizedWasm[key]
         if w is None:

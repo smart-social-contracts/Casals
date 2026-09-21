@@ -204,7 +204,8 @@ def test_registry_wasm_missing_fields():
     assert any("registry.wasms[0].version is required" in e for e in sv2.validate(sheet, "local"))
 
 
-def test_production_sha256_required():
+def test_production_does_not_require_sha256():
+    """A registry row's sha256 is an optional checksum in every environment."""
     sheet = {
         "version": 2,
         "environments": {
@@ -219,7 +220,7 @@ def test_production_sha256_required():
         },
         "sections": [],
     }
-    assert any("sha256 is required for production" in e for e in sv2.validate(sheet, "production"))
+    assert not [e for e in sv2.validate(sheet, "production") if "sha256" in e]
 
 
 def test_production_deployer_forbidden():

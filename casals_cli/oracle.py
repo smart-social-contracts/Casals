@@ -163,8 +163,9 @@ def run_oracle(
     )
     tree = ic.query(backend_id, "get_tree") if backend_id else {}
     resolved = resolve(materialize(sheet, live_stands(tree)), env, ctx)
-    # Expected module hashes come from the WASM store (what `casals up` uploaded),
-    # or from the sheet when pinned — never from the conductor's catalog.
+    # Expected module hashes come from the sheet's declared sha256 when there is
+    # one, else from the WASM store (what `casals up` uploaded) — never from
+    # the conductor's catalog.
     registry_hashes = bound_store_hashes(ic, bindings, WASM_NAMESPACE)
 
     # commanders: Casals' own state (get_tree) is the truth for its own permissions
@@ -193,12 +194,11 @@ def run_oracle(
         family, version = wasm_ref(str(canister.get("wasm") or ""))
         entry = next((e for e in (sheet.get("registry") or {}).get("wasms") or []
                       if e.get("family") == family and (not version or e.get("version") == version)), {})
-        pinned = (entry.get("sha256") or "").strip()
+        declared = (entry.get("sha256") or "").strip()
         in_store = registry_hashes.get(registry_path(family, entry.get("version") or version)) or ""
-        # Same pin policy as `up`: production installs the pinned artifact, so
-        # the pin is what must be live; elsewhere the build `up` uploaded wins
-        # over a pin that has gone stale (pins are enforced in production only).
-        expected_hash = (pinned or in_store) if env == "production" else (in_store or pinned)
+        # A declared sha256 is a checksum: that is what must be live. Without
+        # one, the build `up` uploaded to the store is.
+        expected_hash = declared or in_store
         if mode == "managed" and expected_hash:
             if live_hash and live_hash.lower() == expected_hash.lower():
                 report.add(cname, "module_hash", "PASS", live_hash)

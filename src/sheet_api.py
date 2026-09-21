@@ -338,10 +338,10 @@ def _store_if_changed(sheet: dict, env: str, changed: bool) -> str | None:
 def record_wasm_release(name: str, stand_name: str, section_name: str, wasm_key: str, wasm_hash: str,
                         source: str | None = None) -> str | None:
     """``name`` now runs ``wasm_key`` (``wasm_hash``): point its sheet block (or its
-    template member) at that key and pin the registry row — added when the
-    sheet has none and the caller names its ``source`` (the sheet file's row,
-    passed along by `casals upgrade`). Returns the new sheet hash when the
-    document changed."""
+    template member) at that key and record the hash on the registry row —
+    added when the sheet has none and the caller names its ``source`` (the
+    sheet file's row, passed along by `casals upgrade`). Returns the new sheet
+    hash when the document changed."""
     sheet, env, _sh = load_sheet_doc()
     if not sheet:
         return None
@@ -353,13 +353,13 @@ def record_wasm_release(name: str, stand_name: str, section_name: str, wasm_key:
     if spec is not None and spec.get("mode") != "adopted":
         cur_family, cur_version = wasm_ref(spec.get("wasm") or "")
         # A bare `family` reference means "the family's (only) registry row" and
-        # is kept — the row's pin moves below; otherwise follow the shipped key.
+        # is kept — the row's sha256 moves below; otherwise follow the shipped key.
         keep_bare = cur_family == family and not cur_version and len(family_rows) <= 1
         target = spec.get("wasm") if keep_bare else wasm_key
         if (spec.get("wasm") or "") != target:
             spec["wasm"] = target
             changed = True
-    # The registry row's pin follows. A key the sheet has no row for gets one
+    # The registry row's sha256 follows. A key the sheet has no row for gets one
     # only when its source is known: the conductor does not invent sources.
     row = next((r for r in family_rows if not version or (r.get("version") or "").strip() == version), None)
     if row is None and version and (source or "").strip():
@@ -379,8 +379,8 @@ def record_content_release(namespace: str, bundle_sha256: str, *, canister: str 
                            section_name: str = "", source: str | None = None) -> str | None:
     """``canister`` now serves bundle ``bundle_sha256`` from store namespace
     ``namespace``: its sheet block's `content` names that namespace and the
-    registry.publish row is pinned — added when the sheet has none and the
-    caller names its ``source``."""
+    registry.publish row's sha256 is that bundle — the row is added when the
+    sheet has none and the caller names its ``source``."""
     sheet, env, _sh = load_sheet_doc()
     if not sheet:
         return None

@@ -1,9 +1,10 @@
 """casals upgrade — ship a new build to canisters that already exist.
 
 The sheet builds the orchestra once (`casals up`); after that a release is an
-operation, not a re-apply of the sheet. `casals upgrade` reads what the sheet
-file now pins (`casals pin` writes it), uploads the artifact to the store when
-it is missing, and moves the live canisters:
+operation, not a re-apply of the sheet. `casals upgrade` resolves the registry
+row's source (a declared `sha256` is a checksum on it: mismatch is an error),
+uploads the artifact to the store when it is missing, and moves the live
+canisters:
 
   --wasm <family>[@<version>]   upgrade every canister running that family —
                                 through `upgrade_to` when Casals controls it,
@@ -15,8 +16,8 @@ it is missing, and moves the live canisters:
                                 (`sync_content`, repeated while files remain).
 
 Each conductor endpoint records what it shipped in the stored sheet (the
-canister's `wasm`, the registry pins), so a later `casals up` / `plan` is a
-no-op; a controller additionally gets the whole file stored.
+canister's `wasm`, the registry row's sha256), so a later `casals up` / `plan`
+is a no-op; a controller additionally gets the whole file stored.
 """
 
 from __future__ import annotations
@@ -75,9 +76,10 @@ def _in_selection(row: dict, stands: list[str], sections: list[str]) -> bool:
 
 
 def _upload_rows(ic, sheet: dict, *, sheet_path: str, project_root: str, store_id: str, deployer: str,
-                 wasm_families: set[str], namespaces: set[str], strict_pins: bool) -> dict:
+                 wasm_families: set[str], namespaces: set[str]) -> dict:
     """Upload just the registry rows a release touches; returns the sheet slice
-    with its pins written back (what the conductor must authorize / sync)."""
+    with each row's sha256 written back to what the store now holds (what the
+    conductor must authorize / sync)."""
     registry = sheet.get("registry") or {}
     slice_ = {**sheet, "registry": {
         **registry,
@@ -91,7 +93,7 @@ def _upload_rows(ic, sheet: dict, *, sheet_path: str, project_root: str, store_i
     if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
         _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
     ensure_registry_uploads(ic, slice_, sheet_path=sheet_path, project_root=project_root, store_id=store_id,
-                            progress=_progress, strict_pins=strict_pins)
+                            progress=_progress)
     return slice_
 
 
@@ -114,7 +116,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
         raise RuntimeError("no casals-wasms store id in the bindings")
     deployer = ic.deployer_principal()
 
-    # what the sheet pins for each requested artifact
+    # the registry rows behind each requested artifact
     registry_rows: dict[str, dict[str, dict]] = {}  # family → version → row
     for e in (sheet.get("registry") or {}).get("wasms") or []:
         if isinstance(e, dict) and (e.get("family") or "").strip():
@@ -131,10 +133,10 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
         if ns not in publish:
             raise RuntimeError(f"--content {ns}: no registry.publish row for it in {sheet_path}")
 
-    # 1. the artifacts are in the store (pins written back into `sheet`)
+    # 1. the artifacts are in the store (each row's sha256 written back into `sheet`)
     _progress("upgrade: store upload")
     _upload_rows(ic, sheet, sheet_path=sheet_path, project_root=project_root, store_id=store_id, deployer=deployer,
-                 wasm_families={f for f, _v in wanted}, namespaces=set(contents), strict_pins=(env == "production"))
+                 wasm_families={f for f, _v in wanted}, namespaces=set(contents))
 
     tree = ic.query(backend_id, "get_tree")
     if not isinstance(tree, dict) or "sections" not in tree:
@@ -146,7 +148,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     authorized: set[str] = set()
 
     def authorize(family: str, version: str) -> tuple[str, str]:
-        """The conductor knows the pinned build under its key; returns (key, sha256)."""
+        """The conductor knows the uploaded build under its key; returns (key, sha256)."""
         entry = registry_rows[family][version]
         key = f"{family}@{version}" if version else family
         sha = (entry.get("sha256") or "").strip().lower()
@@ -218,14 +220,16 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
                    and canisters[name].get("canister_id") and _in_selection(canisters[name], stands, sections)]
         if not targets:
             rows.append({"content": ns, "canister": "-", "result": "skipped", "detail": "no frontend declares this content"})
-        pin = (publish[ns].get("sha256") or "").strip().lower()  # written by the upload step / `casals pin`
+        # The upload step left the store holding exactly this bundle; the conductor
+        # checks it still does before writing (a checksum, not a permission).
+        store_hash = (publish[ns].get("sha256") or "").strip().lower()
         for name, _row in sorted(targets):
             written = deleted = 0
             result, detail = "synced", ""
             for _round in range(200):
                 res = ic.call_update(backend_id, "sync_content", json.dumps(
                     {"canister": name, "namespace": ns, "source": (publish[ns].get("source") or "").strip(),
-                     **({"bundle_sha256": pin} if pin else {})}), timeout=900)
+                     **({"bundle_sha256": store_hash} if store_hash else {})}), timeout=900)
                 if not _ok(res):
                     result, detail = "failed", _err_text(res)
                     break
@@ -240,14 +244,14 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             _progress(f"  {result:9} {name}: {detail}")
 
     # 4. The conductor recorded each release in its stored sheet (`upgrade_to`,
-    #    `propose_upgrade`, `sync_content` pin what they shipped). A controller
+    #    `propose_upgrade`, `sync_content` record what they shipped). A controller
     #    also gets the whole file stored, so other edits travel with the release.
     res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
     stored = _ok(res)
     if stored:
         _progress(f"  stored sheet replaced by this file (hash {res.get('sheet_hash', '?')})")
     else:
-        _progress("  stored sheet kept (only controllers replace it); the conductor pinned what was shipped")
+        _progress("  stored sheet kept (only controllers replace it); the conductor recorded what was shipped")
 
     failed = [r for r in rows if r["result"] == "failed"]
     return {"ok": not failed, "sheet_name": sheet_name, "env": env, "backend_id": backend_id,

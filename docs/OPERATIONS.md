@@ -141,10 +141,10 @@ it); with a session identity those lines no longer mean a touch.
 | the sheet the conductor runs, with bindings | `casals -e local export sheet.json` |
 | the audit log / cycles / wasm catalog | `casals -e local events\|cycles\|wasms sheet.json` |
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
-| ship a new wasm | build, `casals pin sheet.json` (or bump the `wasm` version in the sheet and pin), then `casals -e <env> upgrade sheet.json --wasm <family>[@<version>]`: uploads the build to the store when missing, authorizes it, and runs `upgrade_to` on every canister that runs the family (`--stand`/`--section` to narrow). Rows print `upgraded` / `skipped` (already at that hash) / `failed`. The Orchestra page's per-canister *Upgrade* does the same for one canister |
+| ship a new wasm | build (or bump the `wasm` version in the sheet), then `casals -e <env> upgrade sheet.json --wasm <family>[@<version>]`: uploads the build to the store when missing, authorizes it, and runs `upgrade_to` on every canister that runs the family (`--stand`/`--section` to narrow). Rows print `upgraded` / `skipped` (already at that hash) / `failed`. The Orchestra page's per-canister *Upgrade* does the same for one canister |
 | upgrade a member its baton controls (`hand_off: "sole"`) | same `casals upgrade --wasm`: Casals files the proposal on the baton and votes; the row is `pending` with the `action_id` (`deferred` while the baton is running another action — a baton takes one at a time; run again once it finishes). The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers |
-| pin the artifacts a production sheet installs | build, then `casals pin sheet.json` (writes `registry.wasms[].sha256` and the bundle hash into `registry.publish[].sha256`); `casals pin --check sheet.json` exits non-zero on drift. `up -e production` refuses a row whose source builds to something else; other environments re-pin to the local build and say so |
-| ship a new frontend build | `casals bundle dist/ -o app-1.2.0.tgz` (canonical hashed tarball, `docs/BUNDLES.md`); point the `registry.publish` row at it (`local:app-1.2.0.tgz`, a release URL, …), `casals pin`, then `casals -e <env> upgrade sheet.json --content <namespace>`: the bundle is uploaded when missing and every frontend whose `content` is that namespace serves exactly it (`sync_content`, repeated until no file remains). A commander may upload the bundle from the browser instead (`/files` → *Upload bundle*), then pin and run `casals upgrade --content` |
+| checksum an artifact a sheet installs | put its sha256 on the `registry.wasms` / `registry.publish` row (`sha256sum` for a wasm, `casals bundle --verify <dist\|tgz>` for a bundle). Optional; when present, `up` / `upgrade` refuse a source that resolves to anything else, in every environment. Leave it off a `build:` target or a bundle that changes with every deploy |
+| ship a new frontend build | build `dist/` (or `casals bundle dist/ -o app-1.2.0.tgz`, `docs/BUNDLES.md`) and have the `registry.publish` row's `source` point at it, then `casals -e <env> upgrade sheet.json --content <namespace>`: the bundle is uploaded when missing and every frontend whose `content` is that namespace serves exactly what the store holds (`sync_content`, repeated until no file remains). A commander may upload the bundle from the browser instead (`/files` → *Upload bundle*) and then run `casals upgrade --content` |
 | move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
 
@@ -162,11 +162,11 @@ running canister is `casals upgrade --wasm` (or *Upgrade* in the UI), new
 frontend content is `casals upgrade --content`, a controller change is *Set
 controllers* in the UI (`set_canister_controllers`), a commander change is
 *Operator access*, retiring a canister is *Destroy* / `casals destroy`. Keep
-the sheet file in step (`casals pin` after a release, edits after a structural
-change) so a future rebuild — a new environment, a disaster — reproduces what
-you run; `casals export` prints what the conductor stored, and the conductor
-records each release in it (the canister's `wasm`/`content`, the registry
-pins), so that document stays true on its own.
+the sheet file in step after a structural change so a future rebuild — a new
+environment, a disaster — reproduces what you run; `casals export` prints what
+the conductor stored, and the conductor records each release in it (the
+canister's `wasm`/`content`, the registry row's `sha256`), so that document
+stays true on its own.
 
 `set_sheet` and `apply` are controller-only. On a governed orchestra the
 deployer hands the conductor to the multisig at the end of day one, so its
@@ -204,10 +204,9 @@ to the conductor. To revoke, remove the alias (or the claimed commander) and
 
 An environment deployed before the wasm store (its conductor block still had
 `file_registry` / `file_registry_frontend`) is migrated by the same `up`,
-with a sheet that declares `conductor.wasms` and `sha256` pins:
+with a sheet that declares `conductor.wasms`:
 
 ```bash
-casals pin casals.json                       # build, write each artifact's sha256; review, commit
 casals up -e production casals.json --conductor <casals-backend id>
 ```
 
@@ -274,10 +273,10 @@ orchestra between runs.
 - `busy: an apply is in progress`: a stand build (`create_stand`) or another
   operator's apply is running; `up` waits and re-plans by itself.
 - A runtime stand stays unbuilt: `casals tree` shows its `build_error`; fix
-  the cause (usually a missing/unauthorized wasm or an unpinned bundle) and
-  call `create_stand` for it again.
+  the cause (usually a missing/unauthorized wasm or an empty store namespace)
+  and call `create_stand` for it again.
 - Frontend serves 404 for a file the sheet declares: `casals upgrade
-  --content <namespace>` syncs the pinned bundle to every frontend that uses
+  --content <namespace>` syncs the store's bundle to every frontend that uses
   it.
 - Replica calls "timed out": the local replica is slow under load; every
   `read_state` retries, and `up` can simply be re-run.

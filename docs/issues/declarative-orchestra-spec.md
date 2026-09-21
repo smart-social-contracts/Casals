@@ -247,7 +247,7 @@ included, and reports the rest under `plan.skipped`; `apply` re-plans under the
 stored plan's scope. On a `stand_template` section the mint is the act: a
 stand `create_stand` minted is built to completion (its `built` flag is set
 when a whole-sheet plan first finds it converged; adding members clears it)
-and frozen from then on. A manual frontend's `content` must be pinned.
+and frozen from then on. A manual frontend's `content` must name a published namespace.
 
 Stands may declare a `baton` **policy**. The baton canister itself is an
 ordinary member of `canisters` (name ending `-baton`, its own `wasm`,
@@ -330,9 +330,9 @@ A `publish` entry is a **bundle** (`docs/BUNDLES.md`): its `source` — a
 `local:` directory or canonical `.tgz` (`casals bundle dist/`), an `https://`
 URL or a `release:` — uploads every file to `<path>/<relative file path>`
 (content type from the extension), and its `sha256` is the *bundle hash*
-(sha256 of the sorted `sha256sum` listing; `casals pin` computes it, production
-requires it). The planner refuses to sync a namespace whose bundle hash differs
-from the pin. A `kind: frontend` canister then declares what it serves:
+(sha256 of the sorted `sha256sum` listing; `casals bundle --verify` prints it),
+an optional checksum: a source that hashes to anything else is refused. A
+`kind: frontend` canister then declares what it serves:
 
 ```jsonc
 { "name": "marketplace-frontend", "kind": "frontend", "wasm": "assets@…",
@@ -346,19 +346,19 @@ usual placeholders — how a frontend learns its backend id) is the desired asse
 set. Planner compares `(key, sha256)` against the asset canister's `list` and
 emits `sync_assets` for the keys that differ — writing changed files and
 deleting the keys that left the bundle, so the canister serves exactly the
-pinned bundle plus `files` (keys under `files` are never bundle keys); the
+store's bundle plus `files` (keys under `files` are never bundle keys); the
 applier copies a bounded slice per `apply` (the next plan lists what is still
 missing). A new build is a new `publish` path and a new `content` value — the
 same "new desired state" rule as a wasm hash — or, from the browser, a bundle
-uploaded on `/files` under the same namespace and pinned in the sheet. The oracle grades assets by
-fetching every key over HTTP and hashing the body.
+uploaded on `/files` under the same namespace and shipped with `casals upgrade
+--content`. The oracle grades assets by fetching every key over HTTP and
+hashing the body.
 
-**DECISION (recommended):** `sha256` is mandatory for anything a `production`
-environment installs. `version: main` without a hash is allowed for
-`local`/`test` only: `casals up` then pins the hash of the artifact it just
-resolved/uploaded into the sheet it submits, so the conductor always plans
-against a fully hashed sheet (a new build is a new desired state and yields
-`upgrade_code` items).
+**DECISION:** `sha256` on a registry row is an optional checksum and nothing
+else — no environment requires it, no command manages it. `casals up` writes
+the hash of the artifact it just resolved/uploaded into the sheet it submits,
+so the conductor always plans against a fully hashed sheet (a new build is a
+new desired state and yields `upgrade_code` items).
 
 ### 4.6 `conductor` — Casals itself
 

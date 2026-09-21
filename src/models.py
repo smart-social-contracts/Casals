@@ -226,8 +226,8 @@ class AuthorizedWasm(Entity, TimestampedMixin):
 
     The list is governed: adding/removing an entry represents an approved
     decision (e.g. a project community voting in a new release). The bytes
-    live in the casals-wasms store, addressed by (namespace, path) and pinned by
-    sha256 — which is also the module hash verified after install.
+    live in the casals-wasms store, addressed by (namespace, path) and identified
+    by sha256 — which is also the module hash verified after install.
     """
 
     __alias__ = "key"

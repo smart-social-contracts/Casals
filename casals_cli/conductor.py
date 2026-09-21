@@ -48,25 +48,17 @@ def _wasm_path_for_key(key: str, project_root: str) -> str:
     raise FileNotFoundError(f"no wasm path for conductor.{key}")
 
 
-def _pinned_digest(entry: dict, *, sheet_dir: str, project_root: str, strict_pins: bool, progress=None):
-    """Resolve a `registry.wasms` row → (bytes, sha256), applying the pin policy
-    the store upload uses: production installs exactly the pinned artifact
-    (a source that builds to anything else is an error); elsewhere a stale
-    pin is reported and the build is what gets installed."""
-    source = str(entry.get("source") or "")
-    expected = (entry.get("sha256") or "").strip() or None
-    data, digest = resolve_source(
-        source, sheet_dir=sheet_dir, project_root=project_root,
-        expected_sha256=expected if strict_pins else None,
+def _resolved_digest(entry: dict, *, sheet_dir: str, project_root: str):
+    """Resolve a `registry.wasms` row → (bytes, sha256). The row's `sha256`, when
+    declared, is a checksum: a source that builds to anything else is an
+    error, the same rule the store upload applies."""
+    return resolve_source(
+        str(entry.get("source") or ""), sheet_dir=sheet_dir, project_root=project_root,
+        expected_sha256=(entry.get("sha256") or "").strip() or None,
     )
-    if expected and expected.lower() != digest and progress:
-        progress(f"  {entry.get('family')}@{entry.get('version') or 'main'}: pinned {expected[:12]}... but the source "
-                 f"builds to {digest[:12]}...; using the build (pins are enforced in production only)")
-    return data, digest
 
 
-def _store_wasm_path(key: str, sheet: dict, *, sheet_dir: str, project_root: str,
-                     strict_pins: bool = True, progress=None) -> tuple[str, str]:
+def _store_wasm_path(key: str, sheet: dict, *, sheet_dir: str, project_root: str) -> tuple[str, str]:
     """(path, sha256) of the store canister's own wasm: the `registry.wasms`
     entry for the family `conductor.<key>.wasm` names, resolved to a temp file
     the installer can read."""
@@ -80,8 +72,7 @@ def _store_wasm_path(key: str, sheet: dict, *, sheet_dir: str, project_root: str
             f"conductor.{key}: wasm {wasm_ref!r} has no registry.wasms entry "
             f"(declare the certified-assets wasm, e.g. local:seed/templates/certified-assets@0.3.0.wasm.gz)"
         )
-    data, digest = _pinned_digest(entry, sheet_dir=sheet_dir, project_root=project_root,
-                                  strict_pins=strict_pins, progress=progress)
+    data, digest = _resolved_digest(entry, sheet_dir=sheet_dir, project_root=project_root)
     tmp = tempfile.NamedTemporaryFile(prefix=f"{CONDUCTOR_NAMES[key]}-", suffix=".wasm", delete=False)
     tmp.write(data)
     tmp.close()
@@ -173,7 +164,6 @@ def bootstrap_conductor(
     conductor = sheet.get("conductor") or {}
     sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
     sheet_name = bindings.sheet_name or str(sheet.get("name") or "")
-    strict_pins = bindings.env == "production"
 
     project_dir = bindings.icp_project_dir or icp_project_dir(sheet_name, bindings.env)
     bindings.icp_project_dir = project_dir
@@ -201,9 +191,7 @@ def bootstrap_conductor(
 
         wasm_path = None
         if key in STORE_KEYS:
-            wasm_path, expected_hash = _store_wasm_path(
-                key, sheet, sheet_dir=sheet_dir, project_root=project_root,
-                strict_pins=strict_pins, progress=progress)
+            wasm_path, expected_hash = _store_wasm_path(key, sheet, sheet_dir=sheet_dir, project_root=project_root)
         else:
             wasm_ref = str((conductor.get(key) or {}).get("wasm") or "")
             family = wasm_ref.split("@")[0] if wasm_ref else ""
@@ -211,9 +199,7 @@ def bootstrap_conductor(
             registry_entry = _find_registry_entry(sheet, family, version)
             expected_hash = None
             if registry_entry:
-                _data, expected_hash = _pinned_digest(
-                    registry_entry, sheet_dir=sheet_dir, project_root=project_root,
-                    strict_pins=strict_pins, progress=progress)
+                _data, expected_hash = _resolved_digest(registry_entry, sheet_dir=sheet_dir, project_root=project_root)
 
         try:
             _bootstrap_wasm_canister(

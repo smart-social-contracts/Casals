@@ -181,8 +181,9 @@ def bundle_hash(hashes: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def publish_pins(sheet: dict) -> dict:
-    """``{namespace: bundle sha256}`` for every pinned `registry.publish` row."""
+def publish_hashes(sheet: dict) -> dict:
+    """``{namespace: bundle sha256}`` for every `registry.publish` row that
+    declares one (in a stored sheet: the bundle last uploaded / shipped)."""
     out = {}
     for entry in (sheet.get("registry") or {}).get("publish") or []:
         if isinstance(entry, dict) and entry.get("path") and entry.get("sha256"):
@@ -596,8 +597,6 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
 
     for target_env in env_targets:
         _validate_placeholders_for_env(sheet, target_env, names, errors)
-        if target_env == "production":
-            _validate_production_rules(sheet, errors)
 
     return errors
 
@@ -943,8 +942,8 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
                 errors.append(f"{path}.{field} is required")
         if entry.get("path", "").startswith(WASM_NAMESPACE + "/"):
             errors.append(f"{path}.path may not start with '{WASM_NAMESPACE}/'")
-        pin = entry.get("sha256")
-        if pin is not None and not _is_hex64(pin):
+        declared = entry.get("sha256")
+        if declared is not None and not _is_hex64(declared):
             errors.append(f"{path}.sha256 must be a 64-hex bundle hash (docs/BUNDLES.md)")
         published.add(entry.get("path"))
     for _section, _stand, name, canister in iter_canisters(sheet):
@@ -1222,16 +1221,6 @@ def _env_get(data: dict, dotted: str) -> Any:
             return _MISSING
         cur = cur[part]
     return cur
-
-
-def _validate_production_rules(sheet: dict, errors: list[str]) -> None:
-    registry = sheet.get("registry") or {}
-    for i, entry in enumerate(registry.get("wasms") or []):
-        if isinstance(entry, dict) and not entry.get("sha256"):
-            errors.append(f"registry.wasms[{i}].sha256 is required for production")
-    for i, entry in enumerate(registry.get("publish") or []):
-        if isinstance(entry, dict) and not entry.get("sha256"):
-            errors.append(f"registry.publish[{i}].sha256 (bundle hash) is required for production")
 
 
 def _env_lookup_root(sheet: dict, env: str, ctx: ResolveContext) -> dict:

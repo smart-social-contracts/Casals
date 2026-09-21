@@ -3,7 +3,7 @@
 A **bundle** is a frontend's built output (`dist/`) as one versioned, hashed
 release artifact — the frontend counterpart of a backend's `<name>.wasm.gz`.
 Neither `dfx` nor `icp` defines one: they push a build directory straight into a
-canister. Casals needs an artifact because the sheet pins it, the store holds it,
+canister. Casals needs an artifact because the sheet names it, the store holds it,
 the conductor syncs it, and a commander uploads it from the browser, and all of
 them must agree on what "the same bundle" means.
 
@@ -21,7 +21,7 @@ The files a `certified-assets` canister should serve, and nothing else:
 
 ## The bundle hash
 
-One number every consumer compares — the sheet's pin, the store, the planner
+One number every consumer compares — the sheet's `sha256`, the store, the planner
 (from what a canister actually serves), the browser (from the files it just
 hashed). Defined over content, not over any container:
 
@@ -69,7 +69,7 @@ validated); one with a manifest that disagrees with its contents is refused.
 
 ```sh
 casals bundle src/marketplace_frontend/dist --name marketplace-frontend --version 0.5.0
-#  marketplace-frontend-0.5.0.tgz, .tgz.sha256; prints the bundle sha256 to pin
+#  marketplace-frontend-0.5.0.tgz, .tgz.sha256; prints the bundle sha256
 
 casals bundle marketplace-frontend-0.5.0.tgz --verify      # validate, print bundle hash
 casals bundle src/marketplace_frontend/dist --verify       # same, for a directory
@@ -81,15 +81,17 @@ Python API: `casals_cli.bundle` — `read_dir`, `read_tgz`, `write_tgz`,
 ## Where bundles appear in Casals
 
 - **Sheet.** A `registry.publish` row names a namespace and a source
-  (`local:<dir>`, `local:<file>.tgz`, or an `https://` release URL) and, in
-  production, pins `sha256` — the *bundle* hash. A canister row consumes it via
-  `"content": "<namespace>"`. `casals pin` writes bundle pins the same way it
-  writes wasm pins.
+  (`local:<dir>`, `local:<file>.tgz`, or an `https://` release URL) and may
+  declare `sha256` — the *bundle* hash, an optional checksum: a source that
+  hashes to anything else is refused. A canister row consumes it via
+  `"content": "<namespace>"`.
 - **Store.** `casals up` step 4 (or the browser's *Upload bundle*) puts the
   files under `/<namespace>/<path>`. The store's namespace *is* a bundle: its
   hash is computed from its files.
-- **Planner.** Compares the pinned hash, the store namespace, and what the
-  canister serves. Drift reads "bundle X → bundle Y", and a `sync_assets` item
-  brings the canister to the namespace; files that left the bundle are deleted.
+- **Planner.** Compares the store namespace with what the canister serves.
+  Drift reads "bundle X → bundle Y", and a `sync_assets` item brings the
+  canister to the namespace; files that left the bundle are deleted. A store
+  namespace holding a newer upload than the bundle the frontend was last
+  shipped is not drift — `casals upgrade --content <namespace>` ships it.
 - **Releases.** A frontend repo's release publishes the `.tgz` and `.tgz.sha256`
   next to its backend's `.wasm.gz`; the sheet can then point at the release URL.

@@ -4,7 +4,7 @@ The spec is ``docs/BUNDLES.md``. In short:
 
 * A bundle is a set of files (``path -> bytes``); ``path`` is relative, uses ``/``,
   never starts with ``/`` or contains ``..``. ``index.html`` must be at the root.
-* Every consumer — the sheet pin, the store, the conductor, the browser — agrees
+* Every consumer — the sheet's `sha256`, the store, the conductor, the browser — agrees
   on one **bundle hash**: sha256 over the text ``"<sha256>  <path>\\n"`` per
   file, sorted by path (the ``sha256sum`` format, so ``sha256sum -c`` can
   check an unpacked bundle against its manifest). Only content files count;
@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(man, f, indent=2, sort_keys=True)
             f.write("\n")
     print(f"{args.output}: {len(man['files'])} file(s), {len(data)} bytes gzipped")
-    print(f"  bundle sha256 {man['bundle_sha256']}   (pin this in registry.publish)")
+    print(f"  bundle sha256 {man['bundle_sha256']}   (registry.publish sha256, optional)")
     return 0
 
 

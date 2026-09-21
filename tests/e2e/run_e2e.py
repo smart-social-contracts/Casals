@@ -334,7 +334,7 @@ def baton_upgrade(o: Orchestra) -> None:
             raise Fail(f"{baton} controllers {ic.read_controllers(ids[baton])} != [multisig]")
 
     # the release: hello-world-rust 1.0.0 → 1.0.1 (same code, new module hash),
-    # shipped with `casals upgrade` — the sheet file pins the new build, `up` is
+    # shipped with `casals upgrade` — the sheet file names the new build, `up` is
     # not run. A sole-handed member is not Casals' to install: the CLI files a
     # baton proposal (Casals votes) and reports `pending`.
     upgradable = [(n, b, s) for n, b, s, _w in targets if s["wasm"] == "hello-world-rust@1.0.0"]
@@ -472,7 +472,7 @@ def _frontends_of(sheet: dict, namespace: str) -> list[str]:
 
 def _v2_sheet(o: Orchestra, tag: str) -> tuple[dict, str, list[str]]:
     """A second frontend build as docs/BUNDLES.md wants it shipped: `casals bundle`
-    packs dist/ (+ one new file) into a hashed .tgz, and the sheet pins that
+    packs dist/ (+ one new file) into a hashed .tgz, and the sheet declares that
     hash under a new namespace version. Returns (sheet, marker, frontends)."""
     entry = ((o.sheet.get("registry") or {}).get("publish") or [])[0]
     src = os.path.join(os.path.dirname(o.sheet_path), entry["source"][len("local:"):])
@@ -511,7 +511,7 @@ def _serves(o: Orchestra, name: str, path: str) -> bytes | None:
 
 
 def content_change(o: Orchestra) -> None:
-    """A new frontend build (#50): packed with `casals bundle`, pinned in the sheet
+    """A new frontend build (#50): packed with `casals bundle`, declared in the sheet
     under a new namespace version and shipped with `casals upgrade --content` —
     the canister serves exactly that bundle: the new file appears, and
     disappears again when the declared build is shipped back."""

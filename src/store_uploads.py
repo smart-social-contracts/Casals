@@ -177,7 +177,7 @@ def begin_upload(principal: str, key_prefix: str = "", now_s: int | None = None,
 def namespace_bundle(namespace: str):
     """Generator → {namespace, files: {path: {sha256, size}}, bundle_sha256}
     from what the store holds under ``namespace`` — the on-chain view the UI
-    shows and the sheet pins (docs/BUNDLES.md)."""
+    shows and `sync_content` ships (docs/BUNDLES.md)."""
     ns = _check_namespace(namespace)
     entries = yield from wasm_store.list_files(ns)
     files = {e["path"]: {"sha256": e.get("sha256", ""), "size": int(e.get("size") or 0)} for e in entries if e.get("path")}
@@ -218,7 +218,8 @@ def end_upload(principal: str, namespace: str = "", path: str = "", now_s: int |
     caller wrote outside the grant's prefix. With ``path`` the uploaded file
     is stat'ed on the store and its on-chain size + sha256 returned for the
     Authorize form; with ``bundle`` the whole ``namespace`` is listed and its
-    bundle hash computed on-chain, for the sheet's pin."""
+    bundle hash computed on-chain, so the uploader can check it against
+    what was hashed locally."""
     now = _now_s() if now_s is None else now_s
     yield from _revoke(principal)
     list(StoreUploadGrant.instances())

@@ -205,7 +205,7 @@ def test_publish_bundle_makes_the_namespace_equal_the_bundle(tmp_path):
     _write(str(tmp_path / "dist"), FILES)
     target = _Target({"index.html": b"<html>v0</html>", "old.js": b"gone", "favicon.svg": FILES["favicon.svg"]})
     entry = {"path": "frontend/web/main", "source": "local:dist"}
-    rows = publish_bundle(target, entry, sheet_dir=str(tmp_path), project_root=str(tmp_path), strict_pins=False)
+    rows = publish_bundle(target, entry, sheet_dir=str(tmp_path), project_root=str(tmp_path))
     assert target.uploaded == ["_app/immutable/chunks/a.js", "index.html"]
     assert target.deleted == ["old.js"]
     assert target.files == FILES
@@ -214,48 +214,35 @@ def test_publish_bundle_makes_the_namespace_equal_the_bundle(tmp_path):
     assert all(r["bundle_sha256"] == entry["sha256"] for r in rows)
 
 
-def test_publish_bundle_accepts_a_tgz_source_and_enforces_the_pin(tmp_path):
+def test_publish_bundle_accepts_a_tgz_source_and_checks_a_declared_sha256(tmp_path):
+    """A row's `sha256` is a checksum: a source that hashes to anything else is
+    refused, in every environment; a matching one (or none) uploads."""
     from casals_cli.registry import publish_bundle
 
     data, man = B.write_tgz(FILES)
     (tmp_path / "web.tgz").write_bytes(data)
     entry = {"path": "frontend/web/main", "source": "local:web.tgz", "sha256": "0" * 64}
     with pytest.raises(ValueError, match="bundle sha256 mismatch"):
-        publish_bundle(_Target(), entry, sheet_dir=str(tmp_path), project_root=str(tmp_path), strict_pins=True)
+        publish_bundle(_Target(), entry, sheet_dir=str(tmp_path), project_root=str(tmp_path))
     entry["sha256"] = man["bundle_sha256"]
     target = _Target()
-    publish_bundle(target, entry, sheet_dir=str(tmp_path), project_root=str(tmp_path), strict_pins=True)
+    publish_bundle(target, entry, sheet_dir=str(tmp_path), project_root=str(tmp_path))
     assert target.files == FILES
 
 
-def test_pin_writes_bundle_hashes_for_publish_rows(tmp_path, capsys):
-    _write(str(tmp_path / "dist"), FILES)
-    sheet = {
-        "registry": {"wasms": [], "publish": [{"path": "frontend/web/main", "source": "local:dist"}]},
-    }
-    path = tmp_path / "casals.json"
-    path.write_text(json.dumps(sheet, indent=2))
-    main(["--json", "pin", str(path)])
-    out = json.loads(capsys.readouterr().out)
-    assert out["written"] and out["rows"][0]["state"] == "unpinned" and out["rows"][0]["version"] == "bundle"
-    pinned = json.loads(path.read_text())["registry"]["publish"][0]["sha256"]
-    assert pinned == B.bundle_hash(B.file_hashes(FILES))
-    main(["--json", "pin", str(path), "--check"])
-    assert json.loads(capsys.readouterr().out)["ok"]
-    (tmp_path / "dist" / "index.html").write_bytes(b"<html>v2</html>")
+def test_there_is_no_pin_command():
+    """`sha256` is an optional checksum on a row, not a lifecycle the CLI manages."""
     with pytest.raises(SystemExit):
-        main(["--json", "pin", str(path), "--check"])
+        main(["pin", "casals.json"])
 
 
-def test_production_requires_bundle_pins():
-    from sheetv2 import _validate_production_rules, _validate_registry
+def test_bundle_sha256_is_optional_in_production_but_must_be_hex64_when_given():
+    from sheetv2 import _validate_registry, validate
 
-    sheet = {"registry": {"wasms": [{"family": "f", "version": "1", "source": "local:x", "sha256": "a" * 64}],
+    sheet = {"registry": {"wasms": [{"family": "f", "version": "1", "source": "local:x"}],
                           "publish": [{"path": "frontend/web/main", "source": "local:dist"}]}, "sections": []}
-    errors: list[str] = []
-    _validate_production_rules(sheet, errors)
-    assert errors == ["registry.publish[0].sha256 (bundle hash) is required for production"]
+    assert not [e for e in validate(sheet, "production") if "sha256" in e]
     sheet["registry"]["publish"][0]["sha256"] = "nothex"
-    errors = []
+    errors: list[str] = []
     _validate_registry(sheet, None, errors)
     assert any("64-hex bundle hash" in e for e in errors)
