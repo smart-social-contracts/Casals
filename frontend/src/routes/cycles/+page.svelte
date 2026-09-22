@@ -206,6 +206,8 @@
   let windowKey = $state<WindowKey>('1d');
   /** Window whose history is currently shown in the chart (lags UI while fetching). */
   let loadedWindowKey = $state<WindowKey>('1d');
+  /** Seconds of history currently loaded. 0 means inception (unbounded). */
+  let loadedHistorySecs = $state<number | null>(null);
   let cyclesChartRef = $state<
     | {
         toggleMeasure(): void;
@@ -265,12 +267,31 @@
     }
   }
 
+  /** Chart and treemap share one history fetch. Cover whichever window is longer. */
+  function historySpanSecs(chart: WindowKey, tree: WindowKey): number {
+    const chartSecs = WINDOWS[chart];
+    const treeSecs = WINDOWS[tree];
+    if (chartSecs === 0 || treeSecs === 0) return 0;
+    return Math.max(chartSecs, treeSecs);
+  }
+
   async function loadHistoryForWindow(w: WindowKey = windowKey) {
+    const secs = historySpanSecs(w, treemapWindow);
     history = await getCycleHistory(
-      w === 'inception' ? {} : { window_secs: WINDOWS[w] },
+      secs === 0 ? {} : { window_secs: secs },
     );
     loadedWindowKey = w;
+    loadedHistorySecs = secs;
     await loadChartEvents(w);
+  }
+
+  function setTreemapWindow(w: WindowKey) {
+    if (w === treemapWindow) return;
+    treemapWindow = w;
+    const secs = historySpanSecs(windowKey, w);
+    const have = loadedHistorySecs;
+    const covers = have === 0 || (have != null && secs !== 0 && have >= secs);
+    if (!covers && !historyFetching) void reloadHistory();
   }
 
   function canisterNameForId(id: string): string | undefined {
@@ -345,10 +366,7 @@
 
   async function loadDeferredHistory() {
     try {
-      const h = await getCycleHistory({ window_secs: WINDOWS[windowKey] });
-      history = h;
-      loadedWindowKey = windowKey;
-      await loadChartEvents(windowKey);
+      await loadHistoryForWindow();
     } catch {
       // History and chart markers are non-critical for the initial treasury view.
     }
@@ -914,8 +932,9 @@
     return colors;
   });
 
-  // Section ⊃ stand ⊃ canister tree sized by balance (latest) or burn (window).
-  const treemapRoot = $derived.by<TreemapInput>(() => {
+  // Section ⊃ stand ⊃ canister tree. `value` sizes the tile (burn or balance).
+  // `balance` is cycles held now; `burn` is consumption across the samples in view.
+  const treemapView = $derived.by(() => {
     const byCan = new Map<string, { section: string; stand: string; canister: string; canister_id: string; pts: typeof treemapSamples }>();
     for (const s of treemapSamples) {
       let e = byCan.get(s.canister_id);
@@ -923,23 +942,36 @@
       e.pts.push(s);
       e.section = s.section; e.stand = s.stand; e.canister = s.canister;
     }
+    const liveBalance = new Map<string, number>();
+    for (const c of report?.canisters ?? []) {
+      if (c.cycles !== undefined) liveBalance.set(c.canister_id, c.cycles);
+    }
     const sections = new Map<string, Map<string, TreemapInput[]>>();
+    let periodStart = Infinity;
+    let periodEnd = -Infinity;
     for (const e of byCan.values()) {
       e.pts.sort((a, b) => a.ts - b.ts);
       const end = e.pts[e.pts.length - 1];
-      let value: number;
-      if (metric === 'balance') {
-        value = end.cycles;
-      } else {
-        const start = [...e.pts].reverse().find((s) => s.ts <= treemapSince) ?? e.pts[0];
-        value = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
-      }
+      const start = [...e.pts].reverse().find((s) => s.ts <= treemapSince) ?? e.pts[0];
+      const balance = liveBalance.get(e.canister_id) ?? end.cycles;
+      const burn = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
+      if (start.ts < periodStart) periodStart = start.ts;
+      if (end.ts > periodEnd) periodEnd = end.ts;
+      const value = metric === 'balance' ? balance : burn;
       const secName = e.section || '(none)';
       const standName = e.stand || '(none)';
       if (!sections.has(secName)) sections.set(secName, new Map());
       const stands = sections.get(secName)!;
       if (!stands.has(standName)) stands.set(standName, []);
-      stands.get(standName)!.push({ name: e.canister || e.canister_id, value, section: secName, stand: standName, canister_id: e.canister_id });
+      stands.get(standName)!.push({
+        name: e.canister || e.canister_id,
+        value,
+        balance,
+        burn,
+        section: secName,
+        stand: standName,
+        canister_id: e.canister_id,
+      });
     }
     const children: TreemapInput[] = [];
     for (const [secName, stands] of sections) {
@@ -949,7 +981,39 @@
       }
       children.push({ name: secName, section: secName, value: standNodes.reduce((a, d) => a + d.value, 0), children: standNodes });
     }
-    return { name: 'root', value: 0, children };
+    const period = periodStart <= periodEnd ? { start: periodStart, end: periodEnd } : null;
+    return { root: { name: 'root', value: 0, children } satisfies TreemapInput, period };
+  });
+
+  const treemapRoot = $derived(treemapView.root);
+
+  function formatTreemapStamp(ts: number): string {
+    return new Date(ts * 1000).toLocaleString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function formatTreemapDuration(seconds: number): string {
+    const hours = seconds / 3600;
+    if (hours < 48) return `${Math.max(1, Math.round(hours))} hours`;
+    return `${Math.round(hours / 24)} days`;
+  }
+
+  const treemapPeriodLabel = $derived.by(() => {
+    const period = treemapView.period;
+    if (!period) return null;
+    const seconds = Math.max(0, period.end - period.start);
+    const requested = treemapWindow === 'inception' ? 0 : treemapWinSecs;
+    const shortOfRequest = requested > 0 && seconds + 2 * 3600 < requested;
+    return {
+      range: `${formatTreemapStamp(period.start)} – ${formatTreemapStamp(period.end)}`,
+      duration: formatTreemapDuration(seconds),
+      shortOfRequest,
+    };
   });
 
   const hasHistory = $derived(samples.length > 0);
@@ -2209,16 +2273,13 @@
             Cycles by section / stand / canister
             <CalculatedAtHint at={treemapCalculatedAt} label="Treemap calculated" />
           </h2>
-          <p class="text-xs text-primary-400">
-            {metric === 'burn' ? `Cycles consumed in the last ${WINDOW_LABELS[treemapWindow]}` : 'Current balance'}, tiled by section ⊃ stand ⊃ canister.
-          </p>
         </div>
         <div class="flex flex-wrap gap-2 self-start">
           <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
             {#each Object.keys(WINDOWS) as w (w)}
               <button
                 class="px-3 py-1.5 text-xs font-medium {treemapWindow === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => (treemapWindow = w as WindowKey)}
+                onclick={() => setTreemapWindow(w as WindowKey)}
               >{w}</button>
             {/each}
           </div>
@@ -2232,6 +2293,25 @@
           </div>
         </div>
       </div>
+      {#if treemapPeriodLabel}
+        <div class="mb-3 rounded-lg bg-primary-50 px-3 py-2 text-xs text-primary-800">
+          <p class="font-medium">
+            Burn period · {treemapPeriodLabel.range} · {treemapPeriodLabel.duration} of samples
+          </p>
+          {#if treemapPeriodLabel.shortOfRequest}
+            <p class="mt-0.5 text-amber-800">
+              Recorded samples cover {treemapPeriodLabel.duration}, not the full {WINDOW_LABELS[treemapWindow]} selected above.
+            </p>
+          {/if}
+          <p class="mt-0.5 text-primary-600 inline-flex items-center gap-1 flex-wrap">
+            Each tile shows cycles held now, then
+            <svg class="inline-block w-3.5 h-3.5 text-amber-500" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M15.362 5.214A8.252 8.252 0 0 1 12 21 8.25 8.25 0 0 1 6.038 7.048 8.287 8.287 0 0 0 9 9.6a8.983 8.983 0 0 1 3.361-6.867 8.21 8.21 0 0 0 3 2.48z"/>
+            </svg>
+            cycles burned in that period. Area follows {metric === 'burn' ? 'burn' : 'cycles held'}.
+          </p>
+        </div>
+      {/if}
       <Treemap root={treemapRoot} format={formatCycles} />
     </div>
 
