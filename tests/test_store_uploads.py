@@ -327,6 +327,35 @@ def test_catalog_view_flags_authorized_files(env):
     assert {r["key"] for r in only_wasm} == {k for k in flags if k.startswith("/wasm/")}
 
 
+def test_catalog_view_paths_are_relative_to_the_requested_namespace(env):
+    """Regression for the Upload bundle dialog's endless 'bundle hash mismatch':
+    for `frontend/app/main` the rows came back as namespace `frontend`, path
+    `app/main/_app/x.js`, so nothing matched the bundle's own paths (every
+    file "to write", none "unchanged") and the delete keys the dialog built,
+    `/frontend/app/main/app/main/_app/x.js`, pointed at nothing — old builds
+    were never removed and the store's hash never equalled the bundle's."""
+    import store_uploads
+
+    env.files.update({
+        "/frontend/app/main/index.html": b"<html>",
+        "/frontend/app/main/_app/immutable/chunks/x.js": b"js",
+        "/frontend/other/main/index.html": b"<other>",
+        "/wasm/app@1.0.0.wasm.gz": b"a",
+    })
+    rows = _drive(store_uploads.catalog_view("frontend/app/main"))
+    assert sorted((r["namespace"], r["path"]) for r in rows) == [
+        ("frontend/app/main", "_app/immutable/chunks/x.js"),
+        ("frontend/app/main", "index.html"),
+    ]
+    # `/<namespace>/<path>` rebuilds the store key — what the dialog deletes by.
+    assert all(f"/{r['namespace']}/{r['path']}" == r["key"] for r in rows)
+    # A leading/trailing slash on the filter is tolerated.
+    assert {r["path"] for r in _drive(store_uploads.catalog_view("/frontend/app/main/"))} == {"index.html", "_app/immutable/chunks/x.js"}
+    # Unfiltered: the first segment is still the split (a namespace is unknown).
+    unfiltered = {r["key"]: (r["namespace"], r["path"]) for r in _drive(store_uploads.catalog_view())}
+    assert unfiltered["/wasm/app@1.0.0.wasm.gz"] == ("wasm", "app@1.0.0.wasm.gz")
+
+
 def test_listing_pages_through_the_store(env):
     import store_uploads
 

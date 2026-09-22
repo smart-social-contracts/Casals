@@ -4,6 +4,7 @@
   import { identity } from '$lib/auth';
   import { beginUpload, endUpload, listStoreFiles } from '$lib/api';
   import { formatBytes, uploadBundleToStore } from '$lib/wasmStoreClient';
+  import { pathUnderNamespace } from '$lib/wasmStorePath';
   import type { BundleUploadProgress } from '$lib/wasmStoreClient';
   import {
     bundleDiff,
@@ -59,7 +60,14 @@
   async function compare() {
     // What the store holds for this namespace right now → what changes.
     const rows = await listStoreFiles(namespace.trim());
-    existing = Object.fromEntries(rows.map((r) => [r.path, r.sha256]));
+    // Paths come from the key, relative to *this* namespace — the listing's own
+    // `path` field is not guaranteed to be (it once split on the first slash).
+    existing = Object.fromEntries(
+      rows.flatMap((r) => {
+        const path = pathUnderNamespace(r.key, namespace.trim());
+        return path ? [[path, r.sha256] as const] : [];
+      }),
+    );
     diff = bundleDiff(existing, hashesOf(files));
     say(`store ${namespace.trim()}: ${rows.length} file(s) → ${diff.upload.length} to write, ${diff.unchanged.length} unchanged, ${diff.delete.length} to remove`);
   }
@@ -146,7 +154,18 @@
       say(`store now holds ${onChainFiles} file(s), bundle sha256 ${onChainHash.slice(0, 12)}…`);
       if (outOfScope.length) say(`removed ${outOfScope.length} file(s) written outside ${ticket.key_prefix}`);
       if (onChainHash !== localHash) {
-        error = `bundle hash mismatch: browser ${localHash.slice(0, 12)}… vs store ${onChainHash.slice(0, 12)}…`;
+        // Name the difference: files the store has that the bundle does not,
+        // and vice versa — a mismatch should never be a bare pair of hashes.
+        const want = hashesOf(files);
+        const have = receipt.files ?? {};
+        const extra = Object.keys(have).filter((p) => !(p in want));
+        const missing = Object.keys(want).filter((p) => !(p in have));
+        const changed = Object.keys(want).filter((p) => p in have && have[p]?.sha256 !== want[p]);
+        say(`mismatch: ${extra.length} extra in store, ${missing.length} missing, ${changed.length} differ`);
+        for (const p of extra.slice(0, 8)) say(`  extra   ${p}`);
+        for (const p of missing.slice(0, 8)) say(`  missing ${p}`);
+        for (const p of changed.slice(0, 8)) say(`  differs ${p}`);
+        error = `bundle hash mismatch: browser ${localHash.slice(0, 12)}… vs store ${onChainHash.slice(0, 12)}… (${extra.length} extra, ${missing.length} missing, ${changed.length} differ — see log)`;
       }
       phase = 'uploaded';
     } catch (e: any) {

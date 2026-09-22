@@ -10,6 +10,22 @@ export function storeKey(namespace: string, path: string): string {
   return ns ? `/${ns}/${p}` : `/${p}`;
 }
 
+/**
+ * The bundle-relative path of a store key under `namespace`, or null when the
+ * key is not under it. `/frontend/app/main/_app/x.js` → `_app/x.js`.
+ *
+ * Derive paths from the *key*, never from a listing's `path` field: for a
+ * multi-segment namespace the conductor's listing once split on the first
+ * slash (`frontend` / `app/main/_app/x.js`), and a dialog that trusted it
+ * matched no file and deleted by keys that did not exist.
+ */
+export function pathUnderNamespace(key: string, namespace: string): string | null {
+  const prefix = storeKey(namespace, '');
+  const k = key.startsWith('/') ? key : `/${key}`;
+  if (!k.startsWith(prefix) || k.length <= prefix.length) return null;
+  return k.slice(prefix.length);
+}
+
 /** Candid `()` — what every non-asset canister takes on install/upgrade
  * (an empty byte string is not Candid; Basilisk canisters trap decoding it). */
 export const CANDID_EMPTY_ARG = new Uint8Array([0x44, 0x49, 0x44, 0x4c, 0x00, 0x00]);

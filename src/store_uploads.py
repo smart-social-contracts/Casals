@@ -274,18 +274,29 @@ def _authorized_by(key: str, keys: set, prefixes: list) -> bool:
 
 def catalog_view(namespace: str = ""):
     """Generator → [{key, namespace, path, size, sha256, content_type,
-    modified_ns, authorized}] for the whole store (or one namespace)."""
+    modified_ns, authorized}] for the whole store (or one namespace).
+
+    With a ``namespace`` filter, ``path`` is relative to *that* namespace
+    (`frontend/app/main` → `_app/x.js`), so a caller can compare it with a
+    bundle's own paths and build keys back with ``/<namespace>/<path>``.
+    Without a filter a namespace is unknown, so the first key segment is the
+    best split available (`wasm` → `app@1.0.0.wasm.gz`). The Upload bundle
+    dialog used to get the unfiltered split for a filtered call and so never
+    matched a file nor deleted one (its delete keys pointed nowhere)."""
     keys, prefixes = catalog_keys()
     entries = yield from wasm_store.list_store_entries()
-    ns_filter = (namespace or "").strip()
+    ns_filter = (namespace or "").strip().strip("/")
     prefix = store_namespace_prefix(ns_filter) if ns_filter else ""
     rows = []
     for e in entries:
         key = e["key"]
         if prefix and not key.startswith(prefix):
             continue
-        parts = key.lstrip("/").split("/", 1)
-        ns, path = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
+        if prefix:
+            ns, path = ns_filter, key[len(prefix):]
+        else:
+            parts = key.lstrip("/").split("/", 1)
+            ns, path = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
         rows.append({
             **e,
             "namespace": ns,

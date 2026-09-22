@@ -11,6 +11,7 @@ import {
   hexToBytes,
   uploadEpochMs,
   parseWasmFilename,
+  pathUnderNamespace,
   readWasmBytes,
   sha256Hex,
   storeKey,
@@ -138,4 +139,19 @@ test('upgradeMemoryKeepForWasm is opt-in for Motoko EOP modules only', () => {
   assert.equal(upgradeMemoryKeepForWasm({ key: 'hello-world-rust@1.0.0', wasm_type: 'rust' }), false);
   assert.equal(upgradeMemoryKeepForWasm({ key: 'certified-assets@0.3.0' }), false);
   assert.equal(upgradeMemoryKeepForWasm({ key: 'unknown-thing@1' }), false);
+});
+
+test('pathUnderNamespace: bundle-relative path from a store key, for multi-segment namespaces too', () => {
+  // The Upload bundle dialog once keyed the store's files by the listing's
+  // `path` (split on the first slash), so `frontend/casals-ui/main` never
+  // matched a bundle file and deleted by keys that did not exist.
+  assert.equal(pathUnderNamespace('/frontend/casals-ui/main/_app/x.js', 'frontend/casals-ui/main'), '_app/x.js');
+  assert.equal(pathUnderNamespace('/frontend/casals-ui/main/index.html', '/frontend/casals-ui/main/'), 'index.html');
+  assert.equal(pathUnderNamespace('frontend/casals-ui/main/index.html', 'frontend/casals-ui/main'), 'index.html');
+  assert.equal(pathUnderNamespace('/wasm/app@1.0.0.wasm.gz', 'wasm'), 'app@1.0.0.wasm.gz');
+  assert.equal(pathUnderNamespace('/frontend/other/main/index.html', 'frontend/casals-ui/main'), null);
+  assert.equal(pathUnderNamespace('/frontend/casals-ui/main/', 'frontend/casals-ui/main'), null);
+  // Round-trips with storeKey.
+  const key = '/frontend/casals-ui/main/_app/immutable/chunks/a.js';
+  assert.equal(storeKey('frontend/casals-ui/main', pathUnderNamespace(key, 'frontend/casals-ui/main')!), key);
 });
