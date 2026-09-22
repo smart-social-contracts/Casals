@@ -40,7 +40,9 @@
       "principals": {
         "operator": "rd4en-sizpv-vnamr-6vbfc-uljz5-vvz7c-g4nzy-uflq2-zbj3x-mrwjs-gqe",
         "$comment": "access-code slot: admin=CASALS (everything)",
-        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980",
+        "$comment_deployer": "Demo exception: the identity that ran casals up stays an IC controller of every canister. Listing the token here is what allows $deployer on production.",
+        "deployer": "$deployer"
       },
       "cycles": {
         "min_balance_tc": 2.0,
@@ -49,12 +51,14 @@
     }
   },
   "conductor": {
+    "$comment_deployer": "Demo exception: $deployer is an IC controller of every canister in this orchestra.",
     "backend": {
       "wasm": "casals-backend",
       "kind": "backend",
       "mode": "managed",
       "controllers": [
-        "$multisig"
+        "$multisig",
+        "$deployer"
       ]
     },
     "frontend": {
@@ -65,7 +69,8 @@
       "content": "frontend/casals-ui/main",
       "controllers": [
         "$self",
-        "$multisig"
+        "$multisig",
+        "$deployer"
       ]
     },
     "wasms": {
@@ -75,7 +80,8 @@
       "mode": "managed",
       "controllers": [
         "$self",
-        "$principal:operator"
+        "$principal:operator",
+        "$deployer"
       ]
     },
     "commanders": [
@@ -102,7 +108,8 @@
       ],
       "threshold": 1,
       "controllers": [
-        "$multisig"
+        "$multisig",
+        "$deployer"
       ]
     }
   },
@@ -229,7 +236,8 @@
               "wasm": "certified-assets@1.0.0",
               "content": "frontend/website/main",
               "controllers": [
-                "$self"
+                "$self",
+                "$deployer"
               ],
               "health": [
                 {
@@ -271,7 +279,8 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig"
+                "$multisig",
+                "$deployer"
               ]
             },
             {
@@ -280,7 +289,8 @@
               "kind": "backend",
               "wasm": "hello-world-motoko@1.1.0",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "config": [
                 {
@@ -302,7 +312,8 @@
               "wasm": "certified-assets@0.3.0",
               "content": "frontend/hello-world/main",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "files": {
                 "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
@@ -335,7 +346,8 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig"
+                "$multisig",
+                "$deployer"
               ]
             },
             {
@@ -344,7 +356,8 @@
               "kind": "backend",
               "wasm": "hello-world-rust@1.1.0",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "config": [
                 {
@@ -366,7 +379,8 @@
               "wasm": "certified-assets@0.3.0",
               "content": "frontend/hello-world/main",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "files": {
                 "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
@@ -399,7 +413,8 @@
                 "top_commander": "$self"
               },
               "controllers": [
-                "$multisig"
+                "$multisig",
+                "$deployer"
               ]
             },
             {
@@ -408,7 +423,8 @@
               "kind": "backend",
               "wasm": "hello-world-basilisk@1.4.0",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "config": [
                 {
@@ -430,7 +446,8 @@
               "wasm": "certified-assets@0.3.0",
               "content": "frontend/hello-world/main",
               "controllers": [
-                "$stand.baton"
+                "$stand.baton",
+                "$deployer"
               ],
               "files": {
                 "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
