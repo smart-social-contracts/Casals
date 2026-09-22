@@ -1,7 +1,7 @@
 {
   "version": 2,
   "name": "casals",
-  "description": "The public Casals orchestra on the IC: the landing site at ic-casals.tech (section Website) and the Casals demo instance at demo.ic-casals.tech (section Demo: one hello-world stand per backend language, each with its own Baton). This conductor is the demo instance; its own UI (casals-frontend) is what demo.ic-casals.tech serves. Governed by the orchestration multisig. `casals up casals.json -e production` from this checkout builds or reconciles it.",
+  "description": "Casals Demo",
   "environments": {
     "local": {
       "network": "local",
@@ -17,7 +17,7 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slot (`casals code new` / claim_commander): admin=CASALS (everything)",
+        "$comment": "access-code slot: admin=CASALS (everything)",
         "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
       },
       "cycles": {
@@ -37,13 +37,9 @@
       "website_host": "ic-casals.tech",
       "website_www_host": "www.ic-casals.tech",
       "demo_host": "demo.ic-casals.tech",
-      "flags": {
-        "test_mode": false,
-        "ii_bypass": false
-      },
       "principals": {
         "operator": "rd4en-sizpv-vnamr-6vbfc-uljz5-vvz7c-g4nzy-uflq2-zbj3x-mrwjs-gqe",
-        "$comment": "access-code slot: admin=CASALS (everything). Redeem on the Access Denied dialog at demo.ic-casals.tech.",
+        "$comment": "access-code slot: admin=CASALS (everything)",
         "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
       },
       "cycles": {
@@ -62,7 +58,7 @@
       ]
     },
     "frontend": {
-      "$comment": "The Casals UI of this orchestra, served at demo.ic-casals.tech (see domains). $self is a controller so the conductor can write /.well-known/ic-domains and the UI bundle into it (Commit on the asset canister); the multisig stays the governing controller. `content` names the store namespace the UI ships from (registry.publish frontend/casals-ui/main).",
+      "$comment": "Casals Demo",
       "wasm": "casals-frontend",
       "kind": "frontend",
       "mode": "managed",
@@ -73,7 +69,7 @@
       ]
     },
     "wasms": {
-      "$comment": "WASM store. The operator stays a controller so `casals up` can upload into it.",
+      "$comment": "WASM store",
       "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
       "mode": "managed",
@@ -179,6 +175,25 @@
         "version": "1.0.0",
         "source": "local:seed/templates/hello-world-frontend.wasm.gz",
         "sha256": "63d122d0149a29f4e48603efdd7d2bce656a6a83bac1e3207897c68e8e225bb6"
+      },
+      {
+        "$comment": "Hello-world backends that can vote on their stand's Baton (actions / approve / reject). The unversioned 1.0.0 rows above stay for older sheets.",
+        "family": "hello-world-motoko",
+        "version": "1.1.0",
+        "source": "local:seed/templates/hello-world-motoko@1.1.0.wasm.gz",
+        "sha256": "d79d514b41857546c3da7eba25bae726da647c59633abedc73c036394f59ba03"
+      },
+      {
+        "family": "hello-world-rust",
+        "version": "1.1.0",
+        "source": "local:seed/templates/hello-world-rust@1.1.0.wasm.gz",
+        "sha256": "b03837952de584d44b80d0749913736f356ae3800a3879213268dba7a0c96f9d"
+      },
+      {
+        "family": "hello-world-basilisk",
+        "version": "1.4.0",
+        "source": "local:seed/templates/hello-world-basilisk@1.4.0.wasm.gz",
+        "sha256": "f95e4cd6729ffcc6931b1ac302fe76dee366ffa10c72b50d9bd2688105859063"
       }
     ],
     "publish": [
@@ -190,6 +205,11 @@
         "$comment": "The Casals UI itself (frontend/ → repo-root dist/, `npm --prefix frontend run build` or scripts/release.sh). Ships like any bundle: Files → Upload bundle, then Orchestra → Deploy frontend bundle (or a multisig proposal), or `casals upgrade --content frontend/casals-ui/main`.",
         "path": "frontend/casals-ui/main",
         "source": "local:dist"
+      },
+      {
+        "$comment": "Shared greeting + Baton vote page for the three Demo stands. /canister_ids.js is rendered per canister from its `files` (backend and baton ids), not from this bundle.",
+        "path": "frontend/hello-world/main",
+        "source": "local:seed/assets/hello-world"
       }
     ]
   },
@@ -209,8 +229,7 @@
               "wasm": "certified-assets@1.0.0",
               "content": "frontend/website/main",
               "controllers": [
-                "$self",
-                "$multisig"
+                "$self"
               ],
               "health": [
                 {
@@ -240,7 +259,7 @@
               "backend",
               "frontend"
             ],
-            "hand_off": true
+            "hand_off": "sole"
           },
           "canisters": [
             {
@@ -259,21 +278,35 @@
               "name": "motoko-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-motoko@1.0.0",
+              "wasm": "hello-world-motoko@1.1.0",
               "controllers": [
-                "$self",
-                "$multisig"
+                "$stand.baton"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "motoko-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
-                "$self",
-                "$multisig"
-              ]
+                "$stand.baton"
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         },
@@ -290,7 +323,7 @@
               "backend",
               "frontend"
             ],
-            "hand_off": true
+            "hand_off": "sole"
           },
           "canisters": [
             {
@@ -309,21 +342,35 @@
               "name": "rust-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-rust@1.0.0",
+              "wasm": "hello-world-rust@1.1.0",
               "controllers": [
-                "$self",
-                "$multisig"
+                "$stand.baton"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "rust-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
-                "$self",
-                "$multisig"
-              ]
+                "$stand.baton"
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         },
@@ -340,7 +387,7 @@
               "backend",
               "frontend"
             ],
-            "hand_off": true
+            "hand_off": "sole"
           },
           "canisters": [
             {
@@ -359,21 +406,35 @@
               "name": "python-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-basilisk@1.0.0",
+              "wasm": "hello-world-basilisk@1.4.0",
               "controllers": [
-                "$self",
-                "$multisig"
+                "$stand.baton"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "python-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
-                "$self",
-                "$multisig"
-              ]
+                "$stand.baton"
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         }
