@@ -175,6 +175,7 @@ service : {
   "grant_stand_backend_commit" : (text) -> (text);
   "upgrade_to" : (text) -> (text);
   "propose_upgrade" : (text) -> (text);
+  "propose_assets" : (text) -> (text);
   "sync_content" : (text) -> (text);
   "deploy_content" : (text) -> (text);
   "content_deploys" : (text) -> (text) query;

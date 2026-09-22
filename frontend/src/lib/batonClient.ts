@@ -31,6 +31,7 @@ const batonIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) =>
     add_managed_canister: I.Func([I.Text], [I.Text], []),
     remove_managed_canister: I.Func([I.Text], [I.Text], []),
     propose_managed_upgrade: I.Func([I.Text], [I.Text], []),
+    propose_asset_provision: I.Func([I.Text], [I.Text], []),
     submit_approval: I.Func([I.Text], [I.Text], []),
     reject_action: I.Func([I.Text], [I.Text], []),
     execute_action: I.Func([I.Text], [I.Text], []),
@@ -317,6 +318,19 @@ export interface BatonManagedUpgradeTarget {
   upgrade_args_hex?: string;
   upgrade_memory_keep?: boolean;
   smoke_test?: BatonSmokeTest;
+}
+
+export async function batonProposeAssetProvision(
+  canisterId: string,
+  args: {
+    action_id?: string;
+    affected_canisters: string[];
+    payload: { targets: { canister_id: string; bundle_namespace: string }[] };
+  },
+  identity: Identity,
+): Promise<BatonUpdateResult> {
+  const a = await batonActor(canisterId, identity);
+  return parseUpdate(await a.propose_asset_provision(JSON.stringify(args)));
 }
 
 export async function batonProposeManagedUpgrade(

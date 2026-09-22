@@ -82,6 +82,8 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     assign_pool_canister:   IDL.Func([IDL.Text], [IDL.Text], []),
     create_canister:          IDL.Func([IDL.Text], [IDL.Text], []),
     upgrade_to:            IDL.Func([IDL.Text], [IDL.Text], []),
+    propose_upgrade:       IDL.Func([IDL.Text], [IDL.Text], []),
+    propose_assets:        IDL.Func([IDL.Text], [IDL.Text], []),
     create_snapshot:       IDL.Func([IDL.Text], [IDL.Text], []),
     revert_snapshot:       IDL.Func([IDL.Text], [IDL.Text], []),
     stop_canister:         IDL.Func([IDL.Text], [IDL.Text], []),

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hello from Casals</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 2rem 1rem;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: radial-gradient(120% 120% at 50% 0%, #1e293b, #0f172a);
+        color: #e2e8f0;
+      }
+      .stack { display: grid; gap: 1.25rem; width: min(100%, 34rem); }
+      .card {
+        padding: 2rem 2.25rem;
+        border-radius: 1rem;
+        background: rgba(148, 163, 184, 0.08);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      }
+      .card.hero { text-align: center; }
+      h1 { margin: 0 0 0.25rem; font-size: 2rem; min-height: 2.4rem; transition: opacity .15s; }
+      h1.loading { opacity: 0.4; }
+      h2 { margin: 0 0 0.25rem; font-size: 1.05rem; font-weight: 600; }
+      .meta { margin: 0 0 0.5rem; font-size: 0.8rem; color: #64748b; }
+      .info { margin: 0.25rem 0; color: #94a3b8; font-size: 0.9rem; }
+      code { color: #7dd3fc; word-break: break-all; font-size: 0.85em; }
+      .row { display: flex; gap: 0.5rem; margin: 1.5rem 0 0.5rem; }
+      input {
+        flex: 1; padding: 0.6rem 0.8rem; border-radius: 0.6rem;
+        border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.6); color: inherit; font: inherit;
+      }
+      button {
+        padding: 0.6rem 1rem; border-radius: 0.6rem; border: 0; font: inherit; font-weight: 600; cursor: pointer;
+        background: #38bdf8; color: #0f172a;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.ghost { background: rgba(148, 163, 184, 0.16); color: #e2e8f0; }
+      button.danger { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+      button.small { padding: 0.4rem 0.75rem; font-size: 0.85rem; }
+      .status { font-size: 0.75rem; color: #475569; margin-top: 0.5rem; min-height: 1em; }
+      .head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+      .head .meta { margin: 0; }
+      ul.actions { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.6rem; }
+      li.action {
+        padding: 0.8rem 0.9rem; border-radius: 0.7rem;
+        background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(148, 163, 184, 0.14);
+        display: grid; gap: 0.35rem; font-size: 0.85rem;
+      }
+      li.action .top { display: flex; justify-content: space-between; gap: 0.75rem; align-items: center; }
+      .pill { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.15rem 0.5rem; border-radius: 999px;
+              background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+      .pill.pending { background: rgba(251, 191, 36, 0.18); color: #fcd34d; }
+      .pill.approved, .pill.completed, .pill.executed, .pill.baking { background: rgba(52, 211, 153, 0.18); color: #6ee7b7; }
+      .pill.rejected, .pill.failed, .pill.rolled_back { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+      .dim { color: #94a3b8; }
+      .votes { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
+      .empty { color: #64748b; font-size: 0.85rem; margin-top: 0.75rem; }
+      .explain { color: #94a3b8; font-size: 0.85rem; margin: 0.25rem 0 0; line-height: 1.45; }
+    </style>
+  </head>
+  <body>
+    <div class="stack">
+      <section class="card hero">
+        <h1 id="greeting">Hello, World 👋</h1>
+        <p class="meta" id="source"></p>
+        <p class="info">Managed by <code>Casals</code></p>
+        <div class="row">
+          <input id="name" type="text" placeholder="Your name" autocomplete="off" />
+          <button id="go" disabled>…</button>
+        </div>
+        <div class="status" id="status"></div>
+      </section>
+
+      <section class="card" id="baton-card" hidden>
+        <div class="head">
+          <h2>Your Baton</h2>
+          <p class="meta" id="baton-id"></p>
+        </div>
+        <p class="explain">
+          New bundle: Upgrades to this stand are proposed by the team and run only once <em>this</em> stand approves them.
+          The vote is cast by the backend canister — as one of the Baton's commanders — when you press a button here.
+        </p>
+        <div class="head" style="margin-top:1rem">
+          <span class="dim" id="actions-summary">Loading actions…</span>
+          <button class="ghost small" id="reload">Reload</button>
+        </div>
+        <ul class="actions" id="actions"></ul>
+        <div class="empty" id="actions-empty" hidden>No actions yet. When the team proposes an upgrade it appears here for your approval.</div>
+        <div class="status" id="baton-status"></div>
+      </section>
+    </div>
+
+    <!-- Casals writes this file at deploy time: the sheet's `files` entry with
+         `$stand.backend` / `$stand.baton` resolved to canister ids. -->
+    <script src="/canister_ids.js"></script>
+    <script type="module">
+      const IDS = (globalThis.__CANISTER_IDS || {});
+      const BACKEND_ID = IDS.backend || '';
+      const BATON_ID = IDS.baton || '';
+
+      const $ = (id) => document.getElementById(id);
+      const btn = $('go'), input = $('name'), greeting = $('greeting'), source = $('source'), status = $('status');
+      const card = $('baton-card'), list = $('actions'), empty = $('actions-empty'), summary = $('actions-summary'), bstatus = $('baton-status');
+
+      const short = (id) => (id && id.length > 16 ? id.slice(0, 5) + '…' + id.slice(-5) : id || '');
+      const isLocal = location.hostname.endsWith('localhost') || location.hostname === '127.0.0.1';
+      const host = isLocal ? `${location.protocol}//${location.hostname}:${location.port || 8000}` : 'https://ic0.app';
+
+      // ── Fallback: nothing wired ─────────────────────────────────────────
+      if (!BACKEND_ID) {
+        btn.textContent = 'Greet'; btn.disabled = false; source.textContent = 'client-side only';
+        btn.addEventListener('click', () => {
+          const n = input.value.trim();
+          greeting.textContent = (n ? 'Hello, ' + n : 'Hello, World') + ' 👋';
+        });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+      } else {
+        source.innerHTML = 'backend: <code>' + BACKEND_ID + '</code>';
+        status.textContent = 'Loading agent…';
+
+        import('https://esm.sh/@dfinity/agent@2.1.3').then(async ({ HttpAgent, Actor }) => {
+          const agent = new HttpAgent({ host });
+          if (isLocal) await agent.fetchRootKey().catch(() => {});
+
+          // The backend: greet, and the vote (approve / reject act as the Baton commander).
+          const backend = Actor.createActor(({ IDL }) => IDL.Service({
+            greet: IDL.Func([IDL.Text], [IDL.Text], []),
+            approve: IDL.Func([IDL.Text], [IDL.Text], []),
+            reject: IDL.Func([IDL.Text], [IDL.Text], []),
+          }), { agent, canisterId: BACKEND_ID });
+
+          // The Baton: read-only. Listing is a query, so it is read here directly.
+          const baton = BATON_ID ? Actor.createActor(({ IDL }) => IDL.Service({
+            list_actions: IDL.Func([], [IDL.Text], ['query']),
+          }), { agent, canisterId: BATON_ID }) : null;
+
+          // ── Greet ─────────────────────────────────────────────────────────
+          btn.textContent = 'Greet'; btn.disabled = false; status.textContent = '';
+          async function greet() {
+            const name = input.value.trim() || 'World';
+            btn.disabled = true; btn.textContent = '…'; greeting.classList.add('loading'); status.textContent = 'Calling canister…';
+            try {
+              greeting.textContent = (await backend.greet(name)) + ' 👋';
+              greeting.classList.remove('loading'); status.textContent = '';
+            } catch (e) {
+              greeting.classList.remove('loading'); status.textContent = 'Error: ' + (e?.message || e);
+            } finally { btn.disabled = false; btn.textContent = 'Greet'; }
+          }
+          btn.addEventListener('click', greet);
+          input.addEventListener('keydown', (e) => { if (e.key === 'Enter') greet(); });
+
+          // ── Baton ─────────────────────────────────────────────────────────
+          if (!baton) return;
+          card.hidden = false;
+          $('baton-id').innerHTML = 'baton: <code>' + BATON_ID + '</code>';
+
+          const statusOf = (a) => String(a.status || '').toLowerCase();
+          const when = (ns) => { const n = Number(ns); return n ? new Date(n / 1e6).toLocaleString() : ''; };
+          const targetsOf = (a) => (a.payload?.targets || []).map((t) =>
+            `${short(t.canister_id)} → ${String(t.registry_path || '').split('/').pop() || short(t.wasm_hash)}`);
+
+          function render(actions) {
+            list.textContent = '';
+            const sorted = [...actions].sort((x, y) => Number(y.proposed_at || 0) - Number(x.proposed_at || 0));
+            const pending = sorted.filter((a) => statusOf(a) === 'pending').length;
+            summary.textContent = sorted.length ? `${sorted.length} action(s), ${pending} pending` : '';
+            empty.hidden = sorted.length > 0;
+            for (const a of sorted) {
+              const li = document.createElement('li'); li.className = 'action';
+              const top = document.createElement('div'); top.className = 'top';
+              const left = document.createElement('div');
+              left.innerHTML = `<strong>${a.action_type === 'asset_provision' ? 'Ship frontend bundle' : 'Upgrade'}</strong> <span class="dim">· ${when(a.proposed_at)}</span>`;
+              const pill = document.createElement('span'); pill.className = 'pill ' + statusOf(a); pill.textContent = a.status || '?';
+              top.append(left, pill);
+              const details = document.createElement('div'); details.className = 'dim';
+              details.innerHTML = targetsOf(a).map((t) => `<code>${t}</code>`).join('<br>') || '<code>' + short(a.action_id) + '</code>';
+              const votes = document.createElement('div'); votes.className = 'dim';
+              votes.textContent = `proposed by ${short(a.proposed_by)} · approvals: ${(a.approvals || []).length ? (a.approvals || []).map((p) => short(typeof p === 'string' ? p : p.principal)).join(', ') : 'none yet'}`;
+              li.append(top, details, votes);
+              if (statusOf(a) === 'pending') {
+                const row = document.createElement('div'); row.className = 'votes';
+                const ok = document.createElement('button'); ok.className = 'small'; ok.textContent = 'Approve';
+                const no = document.createElement('button'); no.className = 'small danger'; no.textContent = 'Reject';
+                ok.onclick = () => vote('approve', a.action_id, [ok, no]);
+                no.onclick = () => vote('reject', a.action_id, [ok, no]);
+                row.append(ok, no); li.append(row);
+              }
+              list.append(li);
+            }
+          }
+
+          async function load() {
+            bstatus.textContent = '';
+            try {
+              const raw = await baton.list_actions();
+              const parsed = JSON.parse(raw);
+              render(Array.isArray(parsed) ? parsed : []);
+            } catch (e) {
+              summary.textContent = ''; bstatus.textContent = 'Could not read the Baton: ' + (e?.message || e);
+            }
+          }
+
+          async function vote(kind, actionId, buttons) {
+            buttons.forEach((b) => (b.disabled = true));
+            bstatus.textContent = (kind === 'approve' ? 'Approving' : 'Rejecting') + ' ' + short(actionId) + ' — the backend casts the vote…';
+            try {
+              const reply = JSON.parse(await backend[kind](actionId));
+              if (reply.ok === false) throw new Error(reply.error || 'refused');
+              bstatus.textContent = kind === 'approve'
+                ? (reply.status === 'approved' ? 'Approved — quorum met, the Baton is running the upgrade.' : 'Your approval is in; waiting for the other commander(s).')
+                : 'Rejected.';
+            } catch (e) {
+              bstatus.textContent = 'Error: ' + (e?.message || e);
+            } finally {
+              await load();
+            }
+          }
+
+          $('reload').addEventListener('click', load);
+          await load();
+          setInterval(load, 20000);
+        }).catch((e) => { status.textContent = 'Could not load @dfinity/agent: ' + (e?.message || e); });
+      }
+    </script>
+  </body>
+</html>

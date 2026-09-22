@@ -74,7 +74,9 @@ from bootstrap import (  # noqa: F401 — `_is_retire_protected` re-exported for
     is_core_stand,
     orphan_canisters,
 )
-from orchestration_bridge import _baton_in_stand_optional, _baton_propose_upgrade_gen, _multisig_configure_gen
+from orchestration_bridge import (
+    _baton_in_stand_optional, _baton_propose_assets_gen, _baton_propose_targets_gen, _multisig_configure_gen,
+)
 from control_rules import controller_change_error
 from audit import _append_event, _last_event, find_canister_deployment
 import cycles as _cycles_mod
@@ -968,6 +970,7 @@ def list_authorized_wasms(args: text) -> text:
             "wasm_hash": w.wasm_hash,
             "kind": w.kind,
             "wasm_type": (w.wasm_type or "").strip() or infer_wasm_type(w.key),
+            "memory_keep": (getattr(w, "memory_keep", "") or "").strip().lower(),
             "description": w.description,
             "asset_namespace": w.asset_namespace,
             "asset_path": w.asset_path,
@@ -2166,6 +2169,17 @@ def add_authorized_wasm(args: text) -> text:
                 "set wasm_type explicitly in the catalog entry"
             )
         w.wasm_type = explicit_wasm_type[:32]
+        if "memory_keep" in params:
+            raw_keep = params.get("memory_keep")
+            if raw_keep is None or raw_keep == "":
+                w.memory_keep = ""
+            elif isinstance(raw_keep, bool):
+                w.memory_keep = "true" if raw_keep else "false"
+            else:
+                keep_text = str(raw_keep).strip().lower()
+                if keep_text not in ("true", "false"):
+                    return _err("memory_keep must be true, false, or omitted")
+                w.memory_keep = keep_text
         w.description = (params.get("description") or "")[:512]
         w.asset_namespace = (params.get("asset_namespace") or "").strip()
         w.asset_path = (params.get("asset_path") or "").strip()
@@ -2782,46 +2796,126 @@ def upgrade_to(args: text) -> Async[text]:
 
 @update
 def propose_upgrade(args: text) -> Async[text]:
-    """Upgrade a member its stand's baton controls (Casals does not): file a
-    managed-upgrade proposal on the baton and cast Casals' own vote. The
-    baton's commanders approve; the baton runs the pipeline. This is how
-    `casals upgrade` moves a baton-governed stand.
+    """File one managed-upgrade proposal on a stand's baton and cast Casals' vote.
 
-    Args (JSON): {canister, wasm_key, source?} (`source`: the sheet file's
-    registry row source, recorded with the shipped hash). Requires `canister.deploy` on
-    the stand. Returns {action_id, baton, baton_id, wasm_hash}."""
+    A Casals commander with ``canister.deploy`` asks Casals to propose. Casals
+    is the baton commander; the caller's principal is not. One proposal may
+    name several canisters, each with its own wasm. The baton snapshots every
+    one of them and rolls them all back if an install fails. The baton's other
+    commanders (on these stands, the stand backend) still have to approve.
+
+    Args (JSON): ``{canister, wasm_key, source?}`` or
+    ``{targets: [{canister, wasm_key, source?}]}``. Every target must sit on
+    the same stand. Returns ``{action_id, baton, baton_id, targets}``."""
     try:
         params = json.loads(args)
-        name = (params.get("canister") or "").strip()
+        raw = params.get("targets")
+        if isinstance(raw, list) and raw:
+            items = raw
+        elif (params.get("canister") or "").strip():
+            items = [{"canister": params.get("canister"), "wasm_key": params.get("wasm_key"),
+                      "source": params.get("source")}]
+        else:
+            return _err("expected 'canister' or 'targets'")
         list(Canister.instances())
-        st = Canister[name]
-        if st is None or not (st.canister_id or "").strip():
-            return _err(f"unknown canister '{name}'")
-        dk = st.stand
+        chosen = []
+        for item in items:
+            if not isinstance(item, dict):
+                return _err("each target must be an object")
+            name = (item.get("canister") or "").strip()
+            st = Canister[name]
+            if st is None or not (st.canister_id or "").strip():
+                return _err(f"unknown canister '{name}'")
+            chosen.append((st, item))
+        stand_names = {(st.stand.name if st.stand is not None else "") for st, _item in chosen}
+        if len(stand_names) != 1 or not next(iter(stand_names)):
+            return _err("every target must belong to the same stand")
+        dk = chosen[0][0].stand
         _require_commander(dk, "canister.deploy")
         baton = _baton_in_stand_optional(dk)
         if baton is None:
-            return _err(f"{name}: its stand has no baton; use upgrade_to")
-        w = _resolve_authorized_wasm((params.get("wasm_key") or "").strip(), dk.section if dk else None)
+            return _err(f"{chosen[0][0].name}: its stand has no baton; use upgrade_to")
         sheet, _env, _sh = load_sheet_doc()
-        spec = find_canister(sheet or {}, name) if sheet else None
-        health = any(isinstance(h, dict) and (h.get("query") or "").strip() == "health_check"
-                     for h in ((spec[2] if spec else {}).get("health") or []))
-        action_id = yield from _baton_propose_upgrade_gen(
-            baton.canister_id.strip(), st.canister_id.strip(),
-            registry_namespace=w.registry_namespace, registry_path=w.registry_path,
-            wasm_hash=w.wasm_hash, health_check=health,
-        )
-        # The stored sheet states the intent now; `plan` reports the member as
-        # `pending` on the baton until its commanders approve and it finishes.
-        try:
-            record_wasm_release(name, dk.name if dk else "", dk.section.name if dk and dk.section else "",
-                                w.key, w.wasm_hash, source=params.get("source"))
-        except Exception as e:
-            _log.error(f"propose_upgrade: sheet bookkeeping for {name} failed: {e}")
-        return _ok(action_id=action_id, baton=baton.name, baton_id=baton.canister_id.strip(), wasm_hash=w.wasm_hash)
+        section = dk.section if dk else None
+        from wasm_types import memory_keep_for_wasm, wasm_type_of_wasm
+        payload = []
+        booked = []
+        for st, item in chosen:
+            w = _resolve_authorized_wasm((item.get("wasm_key") or "").strip(), section)
+            spec = find_canister(sheet or {}, st.name) if sheet else None
+            health = any(isinstance(h, dict) and (h.get("query") or "").strip() == "health_check"
+                         for h in ((spec[2] if spec else {}).get("health") or []))
+            payload.append({
+                "canister_id": st.canister_id.strip(),
+                "registry_namespace": w.registry_namespace,
+                "registry_path": w.registry_path,
+                "wasm_hash": w.wasm_hash,
+                "require_health": health,
+                "memory_keep": memory_keep_for_wasm(wasm_type_of_wasm(w), getattr(w, "memory_keep", "")),
+            })
+            booked.append((st, w, item.get("source")))
+        action_id = yield from _baton_propose_targets_gen(baton.canister_id.strip(), payload)
+        for st, w, source in booked:
+            try:
+                record_wasm_release(st.name, dk.name if dk else "",
+                                    dk.section.name if dk and dk.section else "",
+                                    w.key, w.wasm_hash, source=source)
+            except Exception as e:
+                _log.error(f"propose_upgrade: sheet bookkeeping for {st.name} failed: {e}")
+        reported = [{"canister": st.name, "wasm_key": w.key, "wasm_hash": w.wasm_hash} for st, w, _s in booked]
+        return _ok(action_id=action_id, baton=baton.name, baton_id=baton.canister_id.strip(),
+                   targets=reported, wasm_hash=reported[0]["wasm_hash"] if len(reported) == 1 else "")
     except Exception as e:
         _log.error(f"propose_upgrade error: {e}")
+        return _err(str(e))
+
+
+@update
+def propose_assets(args: text) -> Async[text]:
+    """File one frontend-bundle proposal on a stand's baton and cast Casals' vote.
+
+    Args (JSON): ``{canister, namespace}`` or
+    ``{targets: [{canister, namespace}]}``. Every target is a frontend on the
+    same stand. Requires ``canister.deploy``. Returns ``{action_id, baton, baton_id, targets}``."""
+    try:
+        params = json.loads(args)
+        raw = params.get("targets")
+        if isinstance(raw, list) and raw:
+            items = raw
+        elif (params.get("canister") or "").strip():
+            items = [{"canister": params.get("canister"), "namespace": params.get("namespace")}]
+        else:
+            return _err("expected 'canister' or 'targets'")
+        list(Canister.instances())
+        chosen = []
+        for item in items:
+            if not isinstance(item, dict):
+                return _err("each target must be an object")
+            name = (item.get("canister") or "").strip()
+            namespace = (item.get("namespace") or "").strip()
+            st = Canister[name]
+            if st is None or not (st.canister_id or "").strip():
+                return _err(f"unknown canister '{name}'")
+            wasm_type = (getattr(st, "wasm_type", "") or "").strip().lower()
+            if (st.kind or "") != "frontend" and wasm_type != "assets":
+                return _err(f"{name}: a bundle deploys to a frontend")
+            if not namespace or namespace == "wasm" or namespace.startswith("wasm/"):
+                return _err(f"{name}: namespace must be a frontend bundle path")
+            chosen.append((st, namespace))
+        stand_names = {(st.stand.name if st.stand is not None else "") for st, _ns in chosen}
+        if len(stand_names) != 1 or not next(iter(stand_names)):
+            return _err("every target must belong to the same stand")
+        dk = chosen[0][0].stand
+        _require_commander(dk, "canister.deploy")
+        baton = _baton_in_stand_optional(dk)
+        if baton is None:
+            return _err(f"{chosen[0][0].name}: its stand has no baton; use deploy_content")
+        payload = [{"canister_id": st.canister_id.strip(), "bundle_namespace": namespace} for st, namespace in chosen]
+        action_id = yield from _baton_propose_assets_gen(baton.canister_id.strip(), payload)
+        reported = [{"canister": st.name, "namespace": namespace} for st, namespace in chosen]
+        return _ok(action_id=action_id, baton=baton.name, baton_id=baton.canister_id.strip(), targets=reported)
+    except Exception as e:
+        _log.error(f"propose_assets error: {e}")
         return _err(str(e))
 
 

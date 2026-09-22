@@ -84,3 +84,19 @@ def upgrade_uses_memory_keep(wasm_type: str) -> bool:
     IC reject the upgrade with code 5 — so it is strictly opt-in by type.
     """
     return (wasm_type or "").strip().lower() in _EOP_TYPES
+
+
+def memory_keep_for_wasm(wasm_type: str, override=None) -> bool:
+    """Heap retention for an upgrade. A catalog override (``True``/``False``,
+    or the strings ``"true"``/``"false"``) wins. Anything else, including
+    ``""`` and ``None``, uses the wasm-type rule. A health check does not
+    belong here."""
+    if isinstance(override, bool):
+        return override
+    if isinstance(override, str):
+        s = override.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no"):
+            return False
+    return upgrade_uses_memory_keep(wasm_type)

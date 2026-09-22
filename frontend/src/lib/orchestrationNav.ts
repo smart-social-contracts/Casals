@@ -44,7 +44,16 @@ export function findStandForCanister(
   return null;
 }
 
-/** Managed backend canisters in Baton's stand, excluding Baton/Multisig and the Baton itself. */
+function isUpgradeableMember(c: Canister, batonCanisterId: string, managed: Set<string>): boolean {
+  return !!c.canister_id
+    && c.canister_id !== batonCanisterId
+    && managed.has(c.canister_id)
+    && (c.kind === 'backend' || c.kind === 'frontend')
+    && !isBatonWasm(c.wasm_key)
+    && !isMultisigWasm(c.wasm_key);
+}
+
+/** Managed backend and frontend canisters in the Baton's stand. The Baton itself is excluded. */
 export function managedStandUpgradeCandidates(
   tree: Tree | null | undefined,
   batonCanisterId: string,
@@ -56,23 +65,23 @@ export function managedStandUpgradeCandidates(
     return managedIds
       .filter((id) => id !== batonCanisterId)
       .map((id) => findCanisterInTree(tree, id))
-      .filter((c): c is Canister => !!c && c.kind === 'backend');
+      .filter((c): c is Canister => !!c && isUpgradeableMember(c, batonCanisterId, managed));
   }
   for (const sec of tree.sections) {
     for (const stand of sec.stands) {
       if (sec.name !== loc.section || stand.name !== loc.stand) continue;
-      return stand.canisters.filter(
-        (c) =>
-          !!c.canister_id &&
-          c.canister_id !== batonCanisterId &&
-          managed.has(c.canister_id) &&
-          c.kind === 'backend' &&
-          !isBatonWasm(c.wasm_key) &&
-          !isMultisigWasm(c.wasm_key),
-      );
+      return stand.canisters.filter((c) => isUpgradeableMember(c, batonCanisterId, managed));
     }
   }
   return [];
+}
+
+/** Canister id of the stand's Baton, or "" when the stand has none. */
+export function batonIdInStand(stand: { canisters: { canister_id?: string; wasm_key?: string }[] } | null | undefined): string {
+  for (const c of stand?.canisters ?? []) {
+    if (c.canister_id && isBatonWasm(c.wasm_key)) return c.canister_id;
+  }
+  return '';
 }
 
 export function canisterNameById(tree: Tree | null | undefined, canisterId: string): string {

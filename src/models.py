@@ -247,6 +247,9 @@ class AuthorizedWasm(Entity, TimestampedMixin):
     kind = String(max_length=16, default=CanisterKind.BACKEND)
     # Implementation family — see Canister.wasm_type.
     wasm_type = String(max_length=32, default="")
+    # "" = decide from wasm_type. "true"/"false" = this module overrides that
+    # (a Motoko build with --legacy-persistence needs "false").
+    memory_keep = String(max_length=8, default="")
     description = String(max_length=512, default="")
     added_by = String(max_length=64, default="")
     # Optional asset to upload into canisters built from this WASM (for frontend

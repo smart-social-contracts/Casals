@@ -1582,6 +1582,25 @@ export async function upgradeTo(args: {
   return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
 }
 
+/** Ask Casals to file one Baton upgrade proposal and cast Casals' vote.
+ *  ``targets`` may name several canisters on the same stand, each with its own wasm. */
+export async function proposeUpgrade(args: {
+  canister?: string;
+  wasm_key?: string;
+  targets?: { canister: string; wasm_key: string }[];
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).propose_upgrade(JSON.stringify(args)));
+}
+
+/** Ask Casals to file one Baton frontend-bundle proposal and cast Casals' vote. */
+export async function proposeAssets(args: {
+  canister?: string;
+  namespace?: string;
+  targets?: { canister: string; namespace: string }[];
+}): Promise<UpdateResult> {
+  return _parseUpdate(await (await _actor(true)).propose_assets(JSON.stringify(args)));
+}
+
 export async function createSnapshot(canister: string): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ canister })));
 }

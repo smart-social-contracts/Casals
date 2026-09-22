@@ -50,6 +50,8 @@
   let onChainSize = $state(initial?.size ?? 0);
   let kind = $state<'backend' | 'frontend'>('backend');
   let wasmType = $state('');
+  /** "" follows the wasm type. "true"/"false" overrides it for this catalog row. */
+  let memoryKeep = $state('');
   let description = $state('');
 
   const key = $derived(version ? `${family}@${version}` : family);
@@ -151,6 +153,7 @@
       if (version.trim()) args.version = version.trim();
       if (section.trim()) args.section = section.trim();
       if (wasmType) args.wasm_type = wasmType;
+      if (memoryKeep === 'true' || memoryKeep === 'false') args.memory_keep = memoryKeep;
       if (description.trim()) args.description = description.trim();
       await addAuthorizedWasm(args as any);
       say(`authorized ${key}`);
@@ -281,6 +284,17 @@
               <option value="assets">Assets (certified)</option>
             </select>
           </div>
+        </div>
+        <div>
+          <label class="label" for="upload-memory-keep">Wasm heap on upgrade</label>
+          <select id="upload-memory-keep" class="input" bind:value={memoryKeep} disabled={phase === 'done'}>
+            <option value="">Follow the wasm type</option>
+            <option value="true">Keep (Motoko enhanced persistence)</option>
+            <option value="false">Do not keep (legacy Motoko)</option>
+          </select>
+          <p class="text-xs text-primary-400 mt-1">
+            Current Motoko keeps the heap. Rust, Basilisk, and asset canisters must not. Override only for a Motoko build compiled with <span class="font-mono">--legacy-persistence</span>.
+          </p>
         </div>
         <div>
           <label class="label" for="upload-section">Section</label>

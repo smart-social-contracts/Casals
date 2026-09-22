@@ -262,10 +262,12 @@ def _execute_item(item: dict, sheet: dict):
         w = _resolve_authorized_wasm((found.get("wasm") or "").strip(), None)
         if (desired.get("module_hash") or "").lower() != (w.wasm_hash or "").lower():
             raise Exception(f"{name}: sheet wants {desired.get('module_hash')} but the registry holds {w.wasm_hash}")
+        from wasm_types import memory_keep_for_wasm, wasm_type_of_wasm
         yield from _baton_propose_upgrade_gen(
             (desired.get("baton_id") or "").strip(), cid,
             registry_namespace=w.registry_namespace, registry_path=w.registry_path,
             wasm_hash=w.wasm_hash, health_check=bool(desired.get("health_check")),
+            memory_keep=memory_keep_for_wasm(wasm_type_of_wasm(w), getattr(w, "memory_keep", "")),
         )
         return
     if kind == "hand_off":

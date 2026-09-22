@@ -64,7 +64,12 @@ BASILISK_WASM="$REPO_ROOT/.basilisk/hello_world_basilisk/hello_world_basilisk.wa
 embed_candid "$BASILISK_WASM" "$REPO_ROOT/templates/hello-world-basilisk/hello_world_basilisk.did"
 emit "hello-world-basilisk@$BASILISK_VERSION" "$BASILISK_WASM"
 
-echo "==> Rust hello-world"
+# Rust and Motoko are versioned the same way (Cargo.toml `version`, `let version`
+# in main.mo): hello-world-<lang>@<version>.wasm.gz. The unversioned
+# hello-world-rust.wasm.gz / hello-world-motoko.wasm.gz are the 1.0.0 builds
+# sheets still reference; they stay committed.
+RUST_VERSION="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$REPO_ROOT/templates/hello-world-rust/Cargo.toml" | head -1)"
+echo "==> Rust hello-world (v${RUST_VERSION:-?})"
 ( cd "$REPO_ROOT/templates/hello-world-rust" && \
   cargo build --quiet --target wasm32-unknown-unknown --release )
 RUST_WASM="$REPO_ROOT/templates/hello-world-rust/target/wasm32-unknown-unknown/release/hello_world_rust.wasm"
@@ -72,7 +77,7 @@ if command -v ic-wasm >/dev/null 2>&1; then
   ic-wasm "$RUST_WASM" -o "$RUST_WASM" shrink >/dev/null 2>&1 || true
 fi
 embed_candid "$RUST_WASM" "$REPO_ROOT/templates/hello-world-rust/hello_world_rust.did"
-emit "hello-world-rust" "$RUST_WASM"
+emit "hello-world-rust@${RUST_VERSION:-1.0.0}" "$RUST_WASM"
 
 echo "==> Rust cycles-sweep"
 ( cd "$REPO_ROOT/templates/cycles-sweep-rust" && \
@@ -84,10 +89,14 @@ fi
 embed_candid "$SWEEP_WASM" "$REPO_ROOT/templates/cycles-sweep-rust/cycles_sweep_rust.did"
 python3 "$REPO_ROOT/scripts/embed_cycle_sweep_wasm.py"
 
-echo "==> Motoko hello-world"
+MOTOKO_VERSION="$(sed -n 's/^ *let version *= *"\([^"]*\)".*/\1/p' "$REPO_ROOT/templates/hello-world-motoko/src/main.mo" | head -1)"
+echo "==> Motoko hello-world (v${MOTOKO_VERSION:-?})"
 ( cd "$REPO_ROOT/templates/hello-world-motoko" && \
   mops toolchain use moc 1.9.0 >/dev/null 2>&1 || true && \
   icp build >/dev/null )
-emit "hello-world-motoko" "$REPO_ROOT/templates/hello-world-motoko/.icp/cache/artifacts/hello_world_motoko"
+MOTOKO_WASM="$REPO_ROOT/templates/hello-world-motoko/.icp/cache/artifacts/hello_world_motoko"
+# moc is run with --omit-metadata candid:service by the icp recipe; add it back.
+embed_candid "$MOTOKO_WASM" "$REPO_ROOT/templates/hello-world-motoko/hello_world_motoko.did"
+emit "hello-world-motoko@${MOTOKO_VERSION:-1.0.0}" "$MOTOKO_WASM"
 
 echo "Done. Artifacts in seed/templates/"

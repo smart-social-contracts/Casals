@@ -1385,6 +1385,21 @@ def test_install_mode_candid_motoko_requests_memory_keep():
     assert "keep" in mode
 
 
+def test_memory_keep_for_wasm_type_rule_and_catalog_override():
+    from wasm_types import memory_keep_for_wasm
+
+    assert memory_keep_for_wasm("motoko") is True
+    assert memory_keep_for_wasm("multisig") is True
+    assert memory_keep_for_wasm("rust") is False
+    assert memory_keep_for_wasm("basilisk") is False
+    assert memory_keep_for_wasm("") is False
+    # A catalog override wins, including legacy Motoko that must not keep the heap.
+    assert memory_keep_for_wasm("motoko", "false") is False
+    assert memory_keep_for_wasm("rust", True) is True
+    assert memory_keep_for_wasm("motoko", "") is True
+    assert memory_keep_for_wasm("motoko", None) is True
+
+
 # ── Principal aliases ─────────────────────────────────────────────────────────
 
 import util  # noqa: E402

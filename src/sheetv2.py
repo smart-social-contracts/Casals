@@ -51,8 +51,10 @@ _BARE_PLACEHOLDERS = ("$multisig", "$self", "$deployer", "$this")
 _PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
 # `baton.hand_off`: false/absent = no hand-off; true = the baton co-controls
 # what it manages (Casals stays a controller); "sole" = the baton is the
-# controller — Casals installs, hands over and leaves (the sheet must not list
-# $self/$deployer on managed members; a realm may list $this to keep its exit key).
+# controller — Casals installs, writes content/files while it still controls
+# the canister, then hands over and leaves (the sheet must not list $self on
+# managed members; a realm may list $this to keep its exit key; a sheet may
+# also list $deployer, as this demo orchestra does).
 HAND_OFF_SOLE = "sole"
 
 
@@ -282,6 +284,14 @@ def baton_manages(stand: dict) -> list[dict]:
             if m not in out:
                 out.append(m)
     return out
+
+
+def sole_managed_names(stand: dict) -> set[str]:
+    """Names of members whose only IC controller, after install, is the baton
+    (plus `$this` when the member lists it). Empty unless `hand_off` is `"sole"`."""
+    if baton_hand_off_mode((stand or {}).get("baton")) != HAND_OFF_SOLE:
+        return set()
+    return {(m.get("name") or "") for m in baton_manages(stand)}
 
 
 def baton_managed_members(stand: dict) -> list[dict]:
@@ -581,7 +591,10 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                 cname = canister.get("name")
                 if isinstance(cname, str):
                     _register_name(names, cname, cpath, errors)
-                _validate_canister(canister, cpath, errors, in_sections=True)
+                _validate_canister(
+                    canister, cpath, errors, in_sections=True,
+                    sole_managed=isinstance(cname, str) and cname in sole_managed_names(stand),
+                )
                 _check_raw_principals(canister, cpath, errors)
             if isinstance(stand.get("baton"), dict):
                 _check_raw_principals(stand["baton"], f"{stpath}.baton", errors)
@@ -641,7 +654,8 @@ def _register_name(names: dict[str, str], name: str, path: str, errors: list[str
         names[name] = path
 
 
-def _validate_canister(canister: dict, path: str, errors: list[str], *, in_sections: bool) -> None:
+def _validate_canister(canister: dict, path: str, errors: list[str], *, in_sections: bool,
+                       sole_managed: bool = False) -> None:
     mode = canister.get("mode", "managed")
     if mode not in MODES:
         errors.append(f"{path}.mode must be one of {sorted(MODES)}")
@@ -705,7 +719,7 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
     if "content" in canister or files:
         if kind != "frontend":
             errors.append(f"{path}: content/files are for kind frontend")
-        if isinstance(controllers, list) and "$self" not in controllers:
+        if isinstance(controllers, list) and "$self" not in controllers and not sole_managed:
             errors.append(f"{path}: content/files need $self among controllers (Casals writes the assets)")
     if "optional" in canister and not isinstance(canister["optional"], bool):
         errors.append(f"{path}.optional must be a boolean")
@@ -833,22 +847,18 @@ def _validate_baton(value: Any, path: str, errors: list[str], stand: dict | None
             errors.append(f"{path}: the baton canister's install_arg.top_commander must be $self (Casals configures it)")
         if hand_off == HAND_OFF_SOLE and member is not None:
             # Sole hand-off: after install the baton (plus the member itself, when it
-            # keeps `$this`) is the controller. Casals and the deployer would be a
-            # way around the baton's approvals, and Casals could no longer write
-            # assets into a `content`/`files` frontend.
+            # keeps `$this`) is the controller. Casals (`$self`) would be a way
+            # around the baton's approvals. A sheet may still list `$deployer`
+            # (this demo orchestra does, so the deploying identity can reach
+            # every canister). A frontend may still declare content/files:
+            # Casals writes them while provisioning, then leaves.
             for m in baton_manages(stand):
                 mname = m.get("name") or "?"
                 ctls = m.get("controllers") if isinstance(m.get("controllers"), list) else []
-                for banned in ("$self", "$deployer"):
-                    if banned in ctls:
-                        errors.append(
-                            f"{path}: hand_off \"{HAND_OFF_SOLE}\" but managed member {mname} lists {banned} "
-                            "among its controllers (the baton, and optionally $this, control it)"
-                        )
-                if m.get("content") or m.get("files"):
+                if "$self" in ctls:
                     errors.append(
-                        f"{path}: hand_off \"{HAND_OFF_SOLE}\" but managed member {mname} has content/files "
-                        "(Casals writes those as a controller) — leave it out of manages"
+                        f"{path}: hand_off \"{HAND_OFF_SOLE}\" but managed member {mname} lists $self "
+                        "among its controllers (the baton, and optionally $this, control it)"
                     )
 
 
@@ -873,7 +883,10 @@ def _validate_stand_template(value: Any, spath: str, names: dict[str, str], erro
             cname = canister.get("name")
             if isinstance(cname, str) and "*" not in cname:
                 _register_name(names, cname, cpath, errors)
-            _validate_canister(canister, cpath, errors, in_sections=True)
+            _validate_canister(
+                canister, cpath, errors, in_sections=True,
+                sole_managed=(canister.get("name") or "") in sole_managed_names(value),
+            )
     if "controllers" in value and not isinstance(value["controllers"], list):
         errors.append(f"{path}.controllers must be a list")
     if "commanders" in value:

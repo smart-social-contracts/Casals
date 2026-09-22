@@ -1,3 +1,14 @@
 service : {
-  "greet" : (text) -> (text);
+  /// The Baton's action list (`list_actions`), as the Baton returns it.
+  /// An update, not a query: a query cannot make inter-canister calls.
+  actions: () -> (text);
+  /// Cast this stand's vote for a pending Baton action (`submit_approval`).
+  /// Once the Baton's quorum is met it runs the pipeline on its own.
+  approve: (action_id: text) -> (text);
+  get_canister_config_json: () -> (text) query;
+  greet: (name: text) -> (text);
+  health_check: () -> (text) query;
+  /// Reject a pending Baton action (`reject_action`).
+  reject: (action_id: text) -> (text);
+  set_canister_config_json: (args: text) -> (text);
 }

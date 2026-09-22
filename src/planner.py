@@ -162,23 +162,27 @@ class _PlanContext:
         return True
 
     def _plan_assets(self, spec: dict, name: str, cid: str, section: str, stand: str,
-                     live_ctls: list, si: int, sj: int) -> None:
+                     live_ctls: list, si: int, sj: int) -> bool:
         """`content` (a published registry namespace) and `files` (rendered text)
         are the frontend's desired asset set, compared by sha256 per key. Keys
-        the asset canister has beyond that set are left alone."""
+        the asset canister has beyond that set are left alone.
+
+        Returns True while that set is not yet being served (a sync is planned,
+        or the live set could not be read). Sole hand-off waits on this: Casals
+        writes the assets, then drops its controller key."""
         desired = desired_assets(spec, self.published)
         ns = spec.get("content") or ""
         if desired is None:
             self.unverifiable.append({"target": name, "field": "content",
                                       "reason": f"registry namespace {ns} unreadable"})
-            return
+            return True
         if self.defer_if_unresolved(spec.get("files"), name, "files"):
-            return
+            return True
         live = self.assets.get(name)
         if not isinstance(live, dict) or live.get("error"):
             self.unverifiable.append({"target": name, "field": "assets",
                                       "reason": (live or {}).get("error") or "asset list unavailable"})
-            return
+            return True
         # With `content` the served set is a bundle (docs/BUNDLES.md): the
         # canister serves the store namespace's bundle plus its rendered
         # `files`. A registry.publish `sha256` is a checksum on that bundle —
@@ -198,7 +202,7 @@ class _PlanContext:
                           f"{store_bundle[:12]}…; upload that bundle, or ship the store's "
                           f"(casals upgrade --content {ns})",
             })
-            return
+            return True
         if unshipped:
             self.info.append({
                 "target": name,
@@ -223,6 +227,8 @@ class _PlanContext:
                 desired={"content": ns, "keys": keys, "all_keys": sorted(desired), "delete_keys": delete_keys, **extra},
                 section_order=si, stand_order=sj,
             )
+            return True
+        return False
 
     def _stand_of(self, name: str) -> str:
         """The stand a deferred target belongs to — a canister, a stand or a
@@ -654,8 +660,9 @@ class _PlanContext:
                     section_order=si, stand_order=sj,
                 )
 
+        assets_pending = False
         if not stopped and (spec.get("content") or spec.get("files")):
-            self._plan_assets(spec, name, cid, section, stand, live_ctls, si, sj)
+            assets_pending = self._plan_assets(spec, name, cid, section, stand, live_ctls, si, sj)
 
         if live_ctls != desired_ctls and not self.defer_if_unresolved(desired_ctls, name, "controllers"):
             err = _lockout_controllers(name, live_ctls, desired_ctls)
@@ -676,8 +683,13 @@ class _PlanContext:
             sole_handback = sole and removes_self and removed <= provisioners and baton_id in desired_ctls
             if err:
                 self.errors.append(err)
-            elif sole_handback and code_pending:
-                self.deferred.append({"target": name, "field": "controllers", "waiting_for": ["install_code"]})
+            elif sole_handback and (code_pending or assets_pending):
+                waiting = []
+                if code_pending:
+                    waiting.append("install_code")
+                if assets_pending:
+                    waiting.append("sync_assets")
+                self.deferred.append({"target": name, "field": "controllers", "waiting_for": waiting})
             else:
                 # Casals does it when it is a controller (even when that removes itself:
                 # the sheet says so, and the item is ordered last); otherwise the

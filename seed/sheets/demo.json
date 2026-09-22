@@ -109,6 +109,30 @@
         "family": "hello-world-frontend",
         "version": "1.0.0",
         "source": "local:seed/templates/hello-world-frontend.wasm.gz"
+      },
+      {
+        "family": "hello-world-motoko",
+        "version": "1.1.0",
+        "source": "local:seed/templates/hello-world-motoko@1.1.0.wasm.gz",
+        "sha256": "d79d514b41857546c3da7eba25bae726da647c59633abedc73c036394f59ba03"
+      },
+      {
+        "family": "hello-world-rust",
+        "version": "1.1.0",
+        "source": "local:seed/templates/hello-world-rust@1.1.0.wasm.gz",
+        "sha256": "b03837952de584d44b80d0749913736f356ae3800a3879213268dba7a0c96f9d"
+      },
+      {
+        "family": "hello-world-basilisk",
+        "version": "1.4.0",
+        "source": "local:seed/templates/hello-world-basilisk@1.4.0.wasm.gz",
+        "sha256": "f95e4cd6729ffcc6931b1ac302fe76dee366ffa10c72b50d9bd2688105859063"
+      }
+    ],
+    "publish": [
+      {
+        "path": "frontend/hello-world/main",
+        "source": "local:seed/assets/hello-world"
       }
     ]
   },
@@ -149,21 +173,37 @@
               "name": "motoko-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-motoko@1.0.0",
+              "wasm": "hello-world-motoko@1.1.0",
               "controllers": [
                 "$self",
                 "$multisig"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "motoko-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
                 "$self",
                 "$multisig"
-              ]
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         },
@@ -199,21 +239,37 @@
               "name": "rust-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-rust@1.0.0",
+              "wasm": "hello-world-rust@1.1.0",
               "controllers": [
                 "$self",
                 "$multisig"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "rust-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
                 "$self",
                 "$multisig"
-              ]
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         },
@@ -249,21 +305,37 @@
               "name": "python-backend",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "hello-world-basilisk@1.0.0",
+              "wasm": "hello-world-basilisk@1.4.0",
               "controllers": [
                 "$self",
                 "$multisig"
+              ],
+              "config": [
+                {
+                  "method": "set_canister_config_json",
+                  "args": {
+                    "baton": "$stand.baton"
+                  },
+                  "converged_when": {
+                    "query": "get_canister_config_json",
+                    "equals_args": true
+                  }
+                }
               ]
             },
             {
               "name": "python-frontend",
               "mode": "managed",
               "kind": "frontend",
-              "wasm": "hello-world-frontend@1.0.0",
+              "wasm": "certified-assets@0.3.0",
+              "content": "frontend/hello-world/main",
               "controllers": [
                 "$self",
                 "$multisig"
-              ]
+              ],
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS={\"backend\":\"$stand.backend\",\"baton\":\"$stand.baton\"};"
+              }
             }
           ]
         }

@@ -1,0 +1,16 @@
+[
+  {
+    // The page is one inline module that loads @dfinity/agent from esm.sh and
+    // calls the stand's backend and Baton. No dfx "standard" policy: that
+    // blocks both the inline script and esm.sh.
+    "match": "**/*",
+    "headers": {
+      "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' https://esm.sh; connect-src 'self' https://ic0.app https://*.ic0.app https://icp0.io https://*.icp0.io https://icp-api.io https://esm.sh; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    },
+    "allow_raw_access": true
+  },
+  {
+    "match": "index.html",
+    "enable_aliasing": true
+  }
+]

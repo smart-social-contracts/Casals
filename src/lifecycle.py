@@ -580,7 +580,13 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
     did, so callers report real counts."""
     asset = AssetCanisterService(Principal.from_str(canister_id))
     grant_res = yield asset.grant_permission({"to_principal": ic.id(), "permission": {"Commit": None}})
-    unwrap_call_result(grant_res)
+    try:
+        unwrap_call_result(grant_res)
+    except Exception as e:
+        # Sole hand-off leaves the baton as the only controller, so a later
+        # sync cannot grant itself Commit. The provisioning sync already did;
+        # store and delete still succeed on that grant.
+        _log.info(f"grant Commit on {canister_id} skipped: {e}")
     from live_state import _asset_encodings_gen  # local: live_state imports this module
     live_encodings = yield from _asset_encodings_gen(canister_id)
     listing: dict = {}

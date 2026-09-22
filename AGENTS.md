@@ -309,6 +309,12 @@ placement; enforced on create via CMC (`lifecycle.py` + `subnets.py`).
 A **sheet** is a single declarative document describing the desired orchestra —
 `Sections ⊃ Stands ⊃ Canisters`, where each canister references an authorized WASM.
 The hello-world demo is `seed/sheets/demo.json` (`casals up seed/sheets/demo.json`).
+Each stand's backend (Motoko, Rust, Basilisk) is a Baton commander: `approve` /
+`reject` cast that stand's vote, and the shared page at
+`seed/assets/hello-world` lists the Baton's actions and calls them. Proposing
+stays with the team (`casals upgrade --wasm`). The sheet's `config` item writes
+the Baton id (`set_canister_config_json`); `/canister_ids.js` on each frontend
+is the stand's `files` entry.
 
 The live sheet is **persistent**: it is stored in stable storage and survives
 restarts/upgrades. `set_sheet` edits + persists it; nothing changes on-chain
@@ -485,19 +491,23 @@ baton's `top_commander` (Casals) gets no approval bypass. `manages` is a role li
 or `"*"` (every member but the baton). `hand_off`:
 
 - `true` — co-control: Casals stays a controller and upgrades members directly.
-- `"sole"` — Casals installs a member, then hands its controllers back to
+- `"sole"` — Casals installs a member, writes its `content`/`files` while it
+  still controls the canister, then hands its controllers back to
   `[$stand.baton]` (plus `$this` when the member controls itself, as realm
   backends do so they can secede). The provisioning controllers (Casals, the
   multisig, the stand's `created_by` canister) leave non-destructively, so the
   stand-build timer finishes a runtime-minted stand by itself; the baton's own
   timers drive its pipeline (`_arm_resume_timer`: the callback must be the
-  generator). From then on a release is `casals upgrade --wasm` → the
-  conductor's `propose_upgrade`: it files `propose_managed_upgrade` on the
-  baton, votes with its own weight, and reports the action as `pending` until
-  the other commanders approve and the baton finishes (on day one the planner's
-  `upgrade_via_baton` item does the same). Sole-managed members can't carry
-  `content`/`files` (Casals could not sync assets afterwards); `validate`
-  enforces that.
+  generator). The hand-over waits until the module is installed and, for a
+  frontend, until the asset set matches. From then on a wasm release is
+  `casals upgrade --wasm` → the conductor's `propose_upgrade`: it files
+  `propose_managed_upgrade` on the baton, votes with its own weight, and
+  reports the action as `pending` until the other commanders approve and the
+  baton finishes (on day one the planner's `upgrade_via_baton` item does the
+  same). A later `casals upgrade --content` still stores assets with the
+  Commit permission that first sync granted. The sheet must not list `$self`
+  on a sole-managed member. It may list `$deployer`; this demo orchestra does,
+  on every canister.
 
 Baton controllers must be `[$multisig]` (the orchestra multisig can unbrick).
 `hand_off: "sole"` lets Casals only reach a member through `canister_info`; the

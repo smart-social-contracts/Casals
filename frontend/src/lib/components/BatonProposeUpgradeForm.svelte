@@ -5,7 +5,9 @@
   import {
     batonCanApprove,
     batonCanPropose,
+    batonProposeAssetProvision,
     batonRunPipeline,
+    batonSubmitApproval,
     batonSkipBakeAndComplete,
     type BatonActionRecord,
     type BatonCommander,
@@ -26,10 +28,13 @@
     prepareBatonManagedUpgrade,
     wasmsForCanister,
   } from '$lib/batonUpgrade';
+  import { getSheetDocument, proposeAssets, proposeUpgrade, type Sheet } from '$lib/api';
+  import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
   import { identity, isAuthenticated, loginInternetIdentity, principal } from '$lib/auth';
   import {
     findStandForCanister,
     isBatonWasm,
+    isMultisigWasm,
     managedStandUpgradeCandidates,
   } from '$lib/orchestrationNav';
   import { toasts } from '$lib/stores/toast';
@@ -41,6 +46,8 @@
     managed: string[];
     tree?: Tree | null;
     blockingAction?: BatonActionRecord | null;
+    /** Logged-in Casals commander holds `canister.deploy` on this stand. */
+    casalsDeploy?: boolean;
     onsuccess?: () => void;
   }
 
@@ -51,6 +58,7 @@
     managed,
     tree = null,
     blockingAction = null,
+    casalsDeploy = false,
     onsuccess,
   }: Props = $props();
 
@@ -62,6 +70,11 @@
   let wasms = $state<AuthorizedWasm[]>([]);
   let selectedIds = $state<Record<string, boolean>>({});
   let wasmKeysByCanister = $state<Record<string, string>>({});
+  /** Frontend rows default to a bundle. `'wasm'` opts that row back to a module upgrade. */
+  let shipModeByCanister = $state<Record<string, 'wasm' | 'bundle'>>({});
+  let namespaceByCanister = $state<Record<string, string>>({});
+  let bundleNamespaces = $state<string[]>([]);
+  let contentSheet = $state<Sheet | null>(null);
   let applyAllWasmKey = $state('');
   let autoApprove = $state(true);
   let runPipeline = $state(true);
@@ -80,9 +93,12 @@
       $principal.toLowerCase() === config.top_commander.toLowerCase(),
   );
 
-  const canPropose = $derived(
+  const directPropose = $derived(
     $isAuthenticated && batonCanPropose($principal, config, commanders),
   );
+  /** A Casals commander with deploy permission proposes through Casals, which is the Baton commander. */
+  const viaCasals = $derived($isAuthenticated && casalsDeploy && !directPropose);
+  const canPropose = $derived(directPropose || viaCasals);
   const canApprove = $derived(
     $isAuthenticated && batonCanApprove($principal, config, commanders),
   );
@@ -105,9 +121,24 @@
 
   const backendWasms = $derived(catalogBackendWasms(wasms));
 
+  /** A page canister. Live rows sometimes keep kind `backend` while wasm_type is `assets`. */
+  function isPageCanister(c: Canister): boolean {
+    return c.kind === 'frontend' || (c.wasm_type || '').toLowerCase() === 'assets';
+  }
+
+  function shipMode(c: Canister): 'wasm' | 'bundle' {
+    if (!isPageCanister(c)) return 'wasm';
+    return shipModeByCanister[c.canister_id] === 'wasm' ? 'wasm' : 'bundle';
+  }
+
+  const bundleTargets = $derived(selectedTargets.filter((c) => shipMode(c) === 'bundle'));
+  const wasmTargets = $derived(selectedTargets.filter((c) => shipMode(c) === 'wasm'));
+  const bundleOnly = $derived(selectedTargets.length > 0 && wasmTargets.length === 0);
+
   const allTargetsReady = $derived(
     selectedTargets.length > 0 &&
       selectedTargets.every((c) => {
+        if (shipMode(c) === 'bundle') return namespaceOk(namespaceByCanister[c.canister_id] || '');
         const key = wasmKeysByCanister[c.canister_id]?.trim();
         return !!key && backendWasms.some((w) => w.key === key);
       }),
@@ -117,7 +148,7 @@
 
   function catalogBackendWasms(list: AuthorizedWasm[]): AuthorizedWasm[] {
     return list
-      .filter((w) => (w.kind || 'backend') === 'backend' && !isBatonWasm(w.key))
+      .filter((w) => !isBatonWasm(w.key) && !isMultisigWasm(w.key))
       .sort((a, b) => a.key.localeCompare(b.key));
   }
 
@@ -154,6 +185,18 @@
     bakeWindowSeconds = '0';
     selectedIds = defaultSelection();
     wasmKeysByCanister = {};
+    shipModeByCanister = {};
+    namespaceByCanister = {};
+  }
+
+  function fillNamespaces(sheet: Sheet | null) {
+    const next = { ...namespaceByCanister };
+    for (const c of upgradeCandidates) {
+      if (isPageCanister(c) && c.canister_id && !next[c.canister_id]) {
+        next[c.canister_id] = defaultNamespaceFor(sheet, c.name);
+      }
+    }
+    namespaceByCanister = next;
   }
 
   async function loadWasms() {
@@ -167,12 +210,25 @@
     }
   }
 
+  async function loadNamespaces() {
+    try {
+      const doc = await getSheetDocument();
+      contentSheet = doc.sheet;
+      bundleNamespaces = knownContentNamespaces(doc.sheet);
+    } catch {
+      contentSheet = null;
+      bundleNamespaces = [];
+    }
+    if (open) fillNamespaces(contentSheet);
+  }
+
   function toggle() {
     if (busy) return;
     open = !open;
     if (open) {
       resetFields();
       void loadWasms();
+      void loadNamespaces();
     }
   }
 
@@ -192,7 +248,7 @@
     if (!key) return;
     const next = { ...wasmKeysByCanister };
     for (const c of selectedTargets) {
-      if (c.canister_id) next[c.canister_id] = key;
+      if (c.canister_id && shipMode(c) === 'wasm') next[c.canister_id] = key;
     }
     wasmKeysByCanister = next;
     applyAllWasmKey = key;
@@ -292,11 +348,17 @@
       error = 'Select at least one target canister';
       return;
     }
-    if (!allTargetsReady) {
-      error = 'Choose a WASM version for each selected canister';
+    if (bundleTargets.length && wasmTargets.length) {
+      error = 'One proposal is either wasm upgrades or a frontend bundle. Uncheck one group and send the other after this proposal is finished.';
       return;
     }
-    if (smokeEnabled && !smokeMethod.trim()) {
+    if (!allTargetsReady) {
+      error = bundleOnly
+        ? 'Choose a bundle namespace for each selected frontend'
+        : 'Choose a WASM version for each selected canister';
+      return;
+    }
+    if (!bundleOnly && smokeEnabled && !smokeMethod.trim()) {
       error = 'Smoke test method name is required';
       return;
     }
@@ -305,9 +367,75 @@
     busy = true;
     try {
       const plan = selectedTargets.map((c) => {
+        if (shipMode(c) === 'bundle') {
+          return `${c.name || c.canister_id.slice(0, 8)} ← ${namespaceByCanister[c.canister_id]}`;
+        }
         const wasm = resolveWasm(c.canister_id)!;
         return `${c.name || c.canister_id.slice(0, 8)}→${wasm.key}`;
       }).join(', ');
+      if (viaCasals && bundleOnly) {
+        appendClientLog(`Asking Casals to propose a bundle: ${plan}`);
+        const filed = await proposeAssets({
+          targets: bundleTargets.map((c) => ({
+            canister: c.name,
+            namespace: (namespaceByCanister[c.canister_id] || '').trim(),
+          })),
+        });
+        if (!filed.ok) throw new Error(filed.error || 'propose_assets failed');
+        const actionId = String(filed.action_id || '');
+        appendClientLog(`Bundle proposal ${actionId} filed. Casals has voted.`);
+        toasts.success(
+          `Bundle proposal filed${actionId ? ` (${actionId})` : ''}. Casals has voted — the stand still needs to approve it.`,
+        );
+        open = false;
+        onsuccess?.();
+        return;
+      }
+      if (viaCasals) {
+        appendClientLog(`Asking Casals to propose: ${plan}`);
+        const filed = await proposeUpgrade({
+          targets: selectedTargets.map((c) => ({
+            canister: c.name,
+            wasm_key: resolveWasm(c.canister_id)!.key,
+          })),
+        });
+        if (!filed.ok) throw new Error(filed.error || 'propose_upgrade failed');
+        const actionId = String(filed.action_id || '');
+        appendClientLog(`Proposal ${actionId} filed. Casals has voted.`);
+        toasts.success(
+          `Proposal filed${actionId ? ` (${actionId})` : ''}. Casals has voted — the stand still needs to approve it.`,
+        );
+        open = false;
+        onsuccess?.();
+        return;
+      }
+      if (bundleOnly) {
+        appendClientLog(`Proposing bundle: ${plan}`);
+        const filed = await batonProposeAssetProvision(
+          batonCanisterId,
+          {
+            affected_canisters: bundleTargets.map((c) => c.canister_id),
+            payload: {
+              targets: bundleTargets.map((c) => ({
+                canister_id: c.canister_id,
+                bundle_namespace: (namespaceByCanister[c.canister_id] || '').trim(),
+              })),
+            },
+          },
+          id,
+        );
+        if (!filed.ok) throw new Error(filed.error || 'propose_asset_provision failed');
+        const actionId = String(filed.action_id || '');
+        if (autoApprove && canApprove && actionId) {
+          const approve = await batonSubmitApproval(batonCanisterId, actionId, id);
+          if (!approve.ok) throw new Error(approve.error || 'submit_approval failed');
+          appendClientLog(approvalResultMessage(approve));
+        }
+        toasts.success(`Bundle proposal filed${actionId ? ` (${actionId})` : ''}.`);
+        open = false;
+        onsuccess?.();
+        return;
+      }
       appendClientLog(`Proposing upgrade: ${plan}`);
       const result = await prepareBatonManagedUpgrade({
         batonId: batonCanisterId,
@@ -374,8 +502,8 @@
     <p class="text-sm text-primary-500">
       {#if !$isAuthenticated}
         Log in to propose managed upgrades.
-      {:else}
-        You need the <code class="font-mono text-xs">propose:managed_upgrade</code> capability (or be top commander).
+        {:else}
+        You need Deploy / upgrade canisters on this stand, or the Baton's <code class="font-mono text-xs">propose:managed_upgrade</code> capability.
       {/if}
     </p>
     {#if !$isAuthenticated}
@@ -457,7 +585,7 @@
         </div>
         {#if standLocation}
           <p class="text-xs text-primary-500 mb-2">
-            Stand <strong>{standLocation.stand}</strong> — managed backends only (Baton excluded).
+            Stand <strong>{standLocation.stand}</strong> — managed canisters (Baton excluded).
           </p>
         {/if}
         {#if !upgradeCandidates.length}
@@ -481,6 +609,12 @@
                       if (checked && !wasmKeysByCanister[cid]) {
                         setWasmForCanister(cid, defaultWasmKeyForCanister(c, backendWasms));
                       }
+                      if (checked && isPageCanister(c) && !namespaceByCanister[cid]) {
+                        namespaceByCanister = {
+                          ...namespaceByCanister,
+                          [cid]: defaultNamespaceFor(contentSheet, c.name),
+                        };
+                      }
                     }}
                   />
                   <span class="min-w-0 flex-1">
@@ -491,7 +625,48 @@
                     {/if}
                   </span>
                 </label>
-                {#if selected}
+                {#if selected && isPageCanister(c)}
+                  <div class="mt-2 pl-6 flex gap-4 text-xs text-primary-700">
+                    <label class="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="ship-{cid}"
+                        checked={shipMode(c) === 'bundle'}
+                        disabled={busy}
+                        onchange={() => (shipModeByCanister = { ...shipModeByCanister, [cid]: 'bundle' })}
+                      />
+                      Bundle
+                    </label>
+                    <label class="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="ship-{cid}"
+                        checked={shipMode(c) === 'wasm'}
+                        disabled={busy}
+                        onchange={() => (shipModeByCanister = { ...shipModeByCanister, [cid]: 'wasm' })}
+                      />
+                      Wasm
+                    </label>
+                  </div>
+                {/if}
+                {#if selected && shipMode(c) === 'bundle'}
+                  <div class="mt-2 pl-6">
+                    <label class="label text-xs" for="bundle-{cid}">Bundle namespace</label>
+                    <input
+                      id="bundle-{cid}"
+                      class="input font-mono text-xs w-full"
+                      list="bundle-namespaces-{cid}"
+                      value={namespaceByCanister[cid] ?? ''}
+                      disabled={busy}
+                      oninput={(e) => (namespaceByCanister = { ...namespaceByCanister, [cid]: (e.currentTarget as HTMLInputElement).value })}
+                    />
+                    <datalist id="bundle-namespaces-{cid}">
+                      {#each bundleNamespaces as ns (ns)}
+                        <option value={ns}></option>
+                      {/each}
+                    </datalist>
+                  </div>
+                {:else if selected}
                   <div class="mt-2 pl-6">
                     <label class="label text-xs" for="wasm-{cid}">Upgrade to</label>
                     <select
@@ -511,7 +686,7 @@
               </li>
             {/each}
           </ul>
-          {#if selectedTargets.length > 1}
+          {#if wasmTargets.length > 1}
             <div class="mt-2 flex flex-wrap items-end gap-2">
               <div class="flex-1 min-w-[12rem]">
                 <label class="label text-xs" for="baton-apply-all-wasm">Apply WASM to all selected</label>
@@ -531,7 +706,7 @@
             </div>
           {/if}
           <p class="text-xs text-primary-400 mt-1">
-            {selectedTargets.length} of {upgradeCandidates.length} selected — each canister can target a different catalog WASM.
+            {selectedTargets.length} of {upgradeCandidates.length} selected. A frontend can ship a bundle instead of a wasm. One proposal is one kind of change.
           </p>
         {/if}
       </div>
@@ -547,6 +722,10 @@
             Run upgrade pipeline immediately
           </label>
         {/if}
+      {:else if viaCasals}
+        <p class="text-xs text-primary-500">
+          Casals files this proposal and casts its vote. The stand still has to approve it.
+        </p>
       {:else}
         <p class="text-xs text-primary-500">
           You can propose but cannot approve — another commander must approve on this page.
@@ -562,6 +741,7 @@
         </p>
       {/if}
 
+      {#if !bundleOnly}
       <div>
         <label class="label" for="baton-bake">Bake window (seconds)</label>
         <input
@@ -634,6 +814,7 @@
           </div>
         {/if}
       </div>
+      {/if}
 
       {#if busy || pipelineLines.length || error}
         <BatonPipelineLog

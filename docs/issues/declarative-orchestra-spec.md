@@ -279,9 +279,9 @@ multisig and, on a template stand, the canister that called `create_stand` — a
 nobody else; non-destructive, so the reconcile timer finishes a runtime-minted
 stand unattended; ordered after the `hand_off`, and only once the code is in.
 The multisig keeps its say through the baton it controls). Managed members must not list
-`$self` or `$deployer` (validation), and a member with `content`/`files` —
-assets Casals writes as a controller — cannot be managed sole. A realm keeps
-`$this` among its controllers so it can leave.
+`$self` (validation). A sheet may list `$deployer`; the demo orchestra does, on every canister. A frontend may still declare `content`/`files`:
+Casals writes them while it is a controller, then leaves; later asset syncs use the
+Commit permission that write granted. A realm keeps `$this` among its controllers so it can leave.
 
 From then on a code change on a sole-managed member is not an install but a
 proposal: the plan emits `upgrade_via_baton` (Casals `propose_managed_upgrade`s

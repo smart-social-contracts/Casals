@@ -36,6 +36,8 @@
     formatApprovalSummary,
   } from '$lib/batonApproval';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
+  import { canActOnStand, orchestraSection } from '$lib/commanderPermissions';
+  import { findStandForCanister } from '$lib/orchestrationNav';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
 
@@ -63,6 +65,16 @@
   const displayCommanders = $derived(
     config ? batonDisplayCommanders(config, commanders) : [],
   );
+
+  const casalsDeploy = $derived.by(() => {
+    if (!$isAuthenticated || !tree || !canisterId || !$principal) return false;
+    const loc = findStandForCanister(tree, canisterId);
+    if (!loc) return false;
+    const section = tree.sections.find((s) => s.name === loc.section);
+    const stand = section?.stands.find((s) => s.name === loc.stand);
+    if (!section || !stand) return false;
+    return canActOnStand(section, stand, $principal, 'canister.deploy', orchestraSection(tree));
+  });
 
   const isTopCommander = $derived(
     $isAuthenticated &&
@@ -446,6 +458,7 @@
           {managed}
           {tree}
           {blockingAction}
+          {casalsDeploy}
           onsuccess={() => load()}
         />
       {/if}

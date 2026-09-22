@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import {
     getTree,
     getStatus,
@@ -44,6 +45,7 @@
     getSheetDocument,
   } from '$lib/api';
   import { hydrateTreeControllers } from '$lib/controllerAccess';
+  import { batonConsoleUrl, batonIdInStand } from '$lib/orchestrationNav';
   import {
     browserTreeStorage,
     orchestraOpenPlan,
@@ -896,6 +898,11 @@
   }
 
   function openUpgradeStand(stand: Stand) {
+    const batonId = batonIdInStand(stand);
+    if (batonId) {
+      goto(batonConsoleUrl(batonId));
+      return;
+    }
     const fams = standFamilies(stand);
     const opts = fams.length === 1 ? versionOptions(fams[0], catalog) : [];
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
@@ -927,6 +934,14 @@
   }
 
   function openUpgradeCanister(canister: Canister) {
+    const home = (tree?.sections ?? []).flatMap((sec) => sec.stands).find((stand) =>
+      stand.canisters.some((c) => c.canister_id === canister.canister_id),
+    );
+    const batonId = batonIdInStand(home);
+    if (batonId) {
+      goto(batonConsoleUrl(batonId));
+      return;
+    }
     const family = familyOf(canister.wasm_key);
     const opts = versionOptions(family, catalog);
     const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));

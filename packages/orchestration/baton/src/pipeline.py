@@ -390,7 +390,13 @@ def phase_verify_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
                 append_phase_log(record, phase_entry("VERIFY", _now(), "failed", detail))
                 return False, detail
             continue
-        require_health = target.get("upgrade_memory_keep", True)
+        # ``require_health`` is the probe. Older proposals only set
+        # ``upgrade_memory_keep``, which used to mean both "keep the Wasm heap"
+        # and "call health_check".
+        if "require_health" in target:
+            require_health = target.get("require_health")
+        else:
+            require_health = target.get("upgrade_memory_keep", True)
         if isinstance(require_health, str):
             require_health = require_health.lower() not in ("0", "false", "no")
         if not require_health:

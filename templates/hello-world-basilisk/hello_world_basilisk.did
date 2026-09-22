@@ -90,12 +90,16 @@ type Archives = record { archives : vec Archive };
 type SymbolResult = record { symbol : text };
 type NameResult = record { name : text };
 type DecimalsResult = record { decimals : nat32 };
+type Baton = service { list_actions : () -> (text) query; submit_approval : (text) -> (text); reject_action : (text) -> (text) };
 
 service : {
   "health_check" : () -> (text) query;
   "greet" : (text) -> (text);
   "set_canister_config_json" : (text) -> (text);
   "get_canister_config_json" : () -> (text) query;
+  "actions" : () -> (text);
+  "approve" : (text) -> (text);
+  "reject" : (text) -> (text);
   "__shell__" : (text) -> (text);
   "__browse__" : (text) -> (text) query;
   "__get_candid_interface_tmp_hack" : () -> (text) query;

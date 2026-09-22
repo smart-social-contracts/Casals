@@ -574,6 +574,65 @@ def test_sole_handoff_validation():
     assert any("must include $multisig" in e for e in sv2.validate(sheet, "local"))
 
 
+def test_sole_handoff_allows_frontend_assets():
+    """A sole-managed frontend may declare content/files with the baton as its
+    only controller. Casals writes the assets before the hand-over."""
+    sheet = _load("dynamic-stands")
+    tmpl = sheet["sections"][1]["stand_template"]
+    fe = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-frontend")
+    fe["content"] = "frontend/realm/main"
+    fe["files"] = {"/canister_ids.js": "ids"}
+    sheet["registry"].setdefault("publish", []).append(
+        {"path": "frontend/realm/main", "source": "local:seed/assets/hello-world"})
+    assert sv2.validate(sheet, "local") == []
+    fe["controllers"] = ["$self", "$stand.baton"]
+    errs = sv2.validate(sheet, "local")
+    assert any('lists $self' in e for e in errs)
+
+
+def test_product_demo_stands_are_sole_batonned():
+    path = os.path.join(os.path.dirname(__file__), "..", "casals.json")
+    with open(path, encoding="utf-8") as fh:
+        sheet = json.load(fh)
+    assert sv2.validate(sheet, "local") == []
+    assert sv2.validate(sheet, "production") == []
+    for _section, _stand, name, canister in sv2.iter_canisters(sheet):
+        assert "$deployer" in (canister.get("controllers") or []), name
+    demo = next(s for s in sheet["sections"] if s["name"] == "Demo")
+    assert [st["name"] for st in demo["stands"]] == ["Motoko", "Rust", "Python"]
+    for stand in demo["stands"]:
+        assert stand["baton"]["hand_off"] == "sole"
+        assert stand["baton"]["manages"] == ["backend", "frontend"]
+        for canister in stand["canisters"]:
+            if canister["name"].endswith("-baton"):
+                assert canister["controllers"] == ["$multisig", "$deployer"]
+            else:
+                assert canister["controllers"] == ["$stand.baton", "$deployer"]
+
+
+def test_sole_handoff_waits_for_frontend_assets():
+    """Controllers are not handed to the baton while the frontend still has
+    assets to write: Casals must still be a controller for that sync."""
+    resolved, live, b = _realm_world()
+    _section, _stand, fe, _name = sv2.find_canister(resolved, "realm-e2e-frontend")
+    fe["content"] = "frontend/realm/main"
+    fe["files"] = {"/canister_ids.js": "ids"}
+    live["published"]["frontend/realm/main"] = {"index.html": {"sha256": "11" * 32, "content_type": "text/html"}}
+    live["assets"]["realm-e2e-frontend"] = {}
+    live["canisters"]["realm-e2e-frontend"]["controllers"] = sorted([MS, SELF])
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    kinds = [(it["kind"], it["target"]["name"]) for it in plan["items"]]
+    assert ("sync_assets", "realm-e2e-frontend") in kinds
+    assert ("set_controllers", "realm-e2e-frontend") not in kinds
+    assert {"target": "realm-e2e-frontend", "field": "controllers", "waiting_for": ["sync_assets"]} in plan["deferred"]
+
+    live["assets"]["realm-e2e-frontend"] = desired_assets(fe, live["published"])
+    plan = build_plan(resolved, "local", live, self_id=SELF)
+    ctl = [it for it in plan["items"] if it["kind"] == "set_controllers" and it["target"]["name"] == "realm-e2e-frontend"]
+    assert len(ctl) == 1 and ctl[0]["destructive"] is False
+    assert ctl[0]["desired"]["controllers"] == [b["realm-e2e-baton"]]
+
+
 def test_optional_member_only_when_chosen():
     tmpl = {"canisters": [
         {"name": "{stand}-backend", "kind": "backend", "wasm": "x", "controllers": ["$self"]},

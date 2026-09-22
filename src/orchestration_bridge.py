@@ -241,33 +241,94 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
 
 
 def _baton_propose_upgrade_gen(baton_id: str, target_cid: str, *, registry_namespace: str,
-                               registry_path: str, wasm_hash: str, health_check: bool):
+                               registry_path: str, wasm_hash: str, health_check: bool,
+                               memory_keep: bool = False):
     """Generator: file a managed-upgrade proposal on a baton for one canister and
-    cast Casals' own vote. Casals is a commander like any other (its weight is
-    whatever the sheet gives it); the baton's threshold decides, and the baton
-    runs the pipeline once approved. Returns the action id."""
-    payload = {"targets": [{
+    cast Casals' own vote. ``memory_keep`` is the Wasm-heap option; ``health_check``
+    is whether to probe ``health_check`` after install. Returns the action id."""
+    return (yield from _baton_propose_targets_gen(baton_id, [{
         "canister_id": target_cid,
         "registry_namespace": registry_namespace,
         "registry_path": registry_path,
         "wasm_hash": wasm_hash,
-        # The baton probes `health_check` after the install only when the sheet
-        # declares that query on the member; otherwise the module hash is the check.
-        "upgrade_memory_keep": bool(health_check),
-    }]}
+        "require_health": health_check,
+        "memory_keep": memory_keep,
+    }]))
+
+
+def _baton_propose_targets_gen(baton_id: str, targets: list):
+    """Generator: one managed-upgrade proposal covering every target, then
+    Casals' own vote. Each target is ``{canister_id, registry_namespace,
+    registry_path, wasm_hash, health_check}`` — wasm hashes may differ. The
+    baton snapshots every canister and rolls them all back if one install
+    fails. Returns the action id."""
+    if not targets:
+        raise Exception("no upgrade targets")
+    payload_targets = []
+    affected = []
+    for target in targets:
+        cid = (target.get("canister_id") or "").strip()
+        if not cid:
+            raise Exception("upgrade target is missing canister_id")
+        affected.append(cid)
+        payload_targets.append({
+            "canister_id": cid,
+            "registry_namespace": target.get("registry_namespace") or "",
+            "registry_path": target.get("registry_path") or "",
+            "wasm_hash": target.get("wasm_hash") or "",
+            # Heap retention. Motoko EOP requires it; other modules reject it.
+            "upgrade_memory_keep": bool(target.get("memory_keep", False)),
+        })
+        if "require_health" in target:
+            payload_targets[-1]["require_health"] = bool(target.get("require_health"))
     reply = yield from _call_text_method(baton_id, "propose_managed_upgrade", json.dumps({
-        "affected_canisters": [target_cid], "payload": payload,
+        "affected_canisters": affected, "payload": {"targets": payload_targets},
     }))
     data = _parse_baton_reply(reply)
     action_id = str(data.get("action_id") or "")
     if not action_id:
         raise Exception(f"baton {baton_id} returned no action id: {data}")
-    # Casals' own approval: one vote of its weight. A refusal (Casals is not a
-    # commander on this baton) is not an error — the proposal stands.
+    # Casals' own approval: one vote of its weight, for the whole proposal.
+    # A refusal (Casals is not a commander on this baton) is not an error —
+    # the proposal stands.
     approval = yield from _call_text_method(baton_id, "submit_approval", action_id)
     voted = _parse_baton_json_reply(approval)
-    _append_event("baton_upgrade_proposed", target_cid, {
-        "baton": baton_id, "action_id": action_id, "wasm_hash": wasm_hash,
+    _append_event("baton_upgrade_proposed", affected[0], {
+        "baton": baton_id, "action_id": action_id,
+        "canisters": affected,
+        "wasm_hashes": [t.get("wasm_hash") or "" for t in payload_targets],
+        "casals_vote": voted if isinstance(voted, dict) else {"raw": str(voted)[:200]},
+    })
+    return action_id
+
+
+def _baton_propose_assets_gen(baton_id: str, targets: list):
+    """Generator: one asset-provision proposal (a frontend bundle per canister),
+    then Casals' own vote. Each target is ``{canister_id, bundle_namespace}``.
+    Returns the action id."""
+    if not targets:
+        raise Exception("no bundle targets")
+    affected = []
+    payload_targets = []
+    for target in targets:
+        cid = (target.get("canister_id") or "").strip()
+        namespace = (target.get("bundle_namespace") or "").strip()
+        if not cid or not namespace:
+            raise Exception("bundle target needs canister_id and bundle_namespace")
+        affected.append(cid)
+        payload_targets.append({"canister_id": cid, "bundle_namespace": namespace})
+    reply = yield from _call_text_method(baton_id, "propose_asset_provision", json.dumps({
+        "affected_canisters": affected, "payload": {"targets": payload_targets},
+    }))
+    data = _parse_baton_reply(reply)
+    action_id = str(data.get("action_id") or "")
+    if not action_id:
+        raise Exception(f"baton {baton_id} returned no action id: {data}")
+    approval = yield from _call_text_method(baton_id, "submit_approval", action_id)
+    voted = _parse_baton_json_reply(approval)
+    _append_event("baton_assets_proposed", affected[0], {
+        "baton": baton_id, "action_id": action_id, "canisters": affected,
+        "namespaces": [t["bundle_namespace"] for t in payload_targets],
         "casals_vote": voted if isinstance(voted, dict) else {"raw": str(voted)[:200]},
     })
     return action_id
