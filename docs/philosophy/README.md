@@ -19,6 +19,12 @@ with a *Therefore* that motivates the next step:
 The step texts live in `STEPS` in `build.py`; the progress rail, side panel
 and authority slide badges are all generated from that list.
 
+After the vocabulary, one more slide answers a question the eight steps raise
+but do not settle: if the orchestra is declared in a sheet, why does Casals not
+reconcile it? *The sheet is a genesis document, not a control loop* — because
+authority is on-chain and shared, convergence depends on other signers, and the
+orchestra mutates itself. Its bullets live in `steps.md` like any content slide.
+
 ## Build HTML
 
 ```bash

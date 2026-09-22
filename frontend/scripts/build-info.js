@@ -13,8 +13,17 @@ import { join } from 'path';
 
 const ISO_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
-function isoUtcNow() {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+/**
+ * The build stamp. `SOURCE_DATE_EPOCH` (seconds, the reproducible-builds
+ * convention) wins when set — `scripts/release.sh` pins it to the commit's
+ * time so the same commit yields a byte-identical dist and bundle hash.
+ * Otherwise the wall clock, as a dev build always has.
+ */
+function buildStamp(env = process.env) {
+  const raw = (env.SOURCE_DATE_EPOCH ?? '').trim();
+  const secs = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  const d = Number.isFinite(secs) ? new Date(secs * 1000) : new Date();
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function gitShortSha(repoRoot) {
@@ -55,8 +64,8 @@ export function buildVersionPayload(canisterName, repoRoot) {
   const sha = gitShortSha(repoRoot);
   if (sha) payload.sha = sha;
 
-  // The build clock is the build stamp: always known at build time.
-  payload.built_at = isoUtcNow();
+  // Always known at build time: the clock, or SOURCE_DATE_EPOCH when pinned.
+  payload.built_at = buildStamp();
 
   const tag = gitReleaseTag(repoRoot);
   if (tag) payload.version = tag;
@@ -85,4 +94,4 @@ export function writeVersionFile(distDir, canisterName, repoRoot) {
   return payload;
 }
 
-export { ISO_Z };
+export { ISO_Z, buildStamp };

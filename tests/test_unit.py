@@ -1305,6 +1305,68 @@ def test_pull_and_install_raises_on_zero_size(monkeypatch):
         gen.send(first)
 
 
+def test_sync_assets_drops_stale_encodings_and_reports_real_counts(monkeypatch):
+    """Regression for the demo.ic-casals.tech reload loop: `store` writes the
+    identity encoding only, so the `gzip` index.html an earlier `icp sync`
+    left behind kept being served to browsers (which prefer compressed) while
+    curl saw the new page. Every stale encoding of a written key is dropped,
+    and the round reports what it stored/deleted, not what it was asked."""
+    import live_state
+    from unittest.mock import MagicMock
+
+    calls = []
+
+    class FakeAsset:
+        def __init__(self, _principal):
+            pass
+
+        def grant_permission(self, arg):
+            calls.append(("grant", arg["permission"])); return {"Ok": None}
+
+        def list(self, arg):
+            return {"Ok": [
+                {"key": "/index.html", "content_type": "text/html",
+                 "encodings": [{"content_encoding": "identity", "sha256": b"\x01" * 32, "length": 1, "modified": 0},
+                               {"content_encoding": "gzip", "sha256": b"\x02" * 32, "length": 1, "modified": 0}]},
+                {"key": "/old-chunk.js", "content_type": "application/javascript",
+                 "encodings": [{"content_encoding": "identity", "sha256": b"\x03" * 32, "length": 1, "modified": 0}]},
+            ]}
+
+        def store(self, arg):
+            calls.append(("store", arg["key"], arg["content_encoding"])); return {"Ok": None}
+
+        def unset_asset_content(self, arg):
+            calls.append(("unset", arg["key"], arg["content_encoding"])); return {"Ok": None}
+
+        def delete_asset(self, arg):
+            calls.append(("delete", arg["key"])); return {"Ok": None}
+
+    monkeypatch.setattr(lifecycle, "AssetCanisterService", FakeAsset)
+    monkeypatch.setattr(live_state, "AssetCanisterService", FakeAsset)
+    monkeypatch.setattr(lifecycle, "Principal", MagicMock(from_str=lambda s: s))
+    monkeypatch.setattr(live_state, "Principal", MagicMock(from_str=lambda s: s))
+    monkeypatch.setattr(lifecycle, "unwrap_call_result", lambda res: res["Ok"] if isinstance(res, dict) and "Ok" in res else res)
+    monkeypatch.setattr(live_state, "unwrap_call_result", lambda res: res["Ok"] if isinstance(res, dict) and "Ok" in res else res)
+    monkeypatch.setattr(lifecycle, "ic", MagicMock(id=lambda: "self"))
+    monkeypatch.setattr(lifecycle, "_append_event", lambda *a, **k: None)
+
+    gen = lifecycle._sync_assets_gen("fe-id", "", ["/index.html"], {"/index.html": "<html>new</html>"},
+                                     ["/index.html"], ["/old-chunk.js"])
+    try:
+        value = next(gen)
+        while True:
+            value = gen.send(value)
+    except StopIteration as stop:
+        result = stop.value
+
+    assert ("store", "/index.html", "identity") in calls
+    assert ("unset", "/index.html", "gzip") in calls, "the stale gzip encoding must go"
+    assert not any(c[0] == "unset" and c[1] == "/old-chunk.js" for c in calls), "only written keys are touched"
+    assert calls.index(("unset", "/index.html", "gzip")) > calls.index(("store", "/index.html", "identity"))
+    assert ("delete", "/old-chunk.js") in calls
+    assert result == {"stored": ["/index.html"], "deleted": ["/old-chunk.js"]}
+
+
 def test_render_canister_ids_js_drops_retired_placeholders():
     import json as _json
 
@@ -2156,6 +2218,373 @@ def test_destroy_stand_auth_rejects_unauthorized(monkeypatch):
     monkeypatch.setattr(main, "_parse_delegated_destroy_principals", lambda: [])
     with pytest.raises(Exception, match="governance multisig"):
         main._require_admin_or_delegated_destroy()
+
+
+# ── bounded delegation: set_commander / set_permissions / remove_commander ───
+#
+# Regression guard for the escalation hole re-opened by f33cc92 (2026-09-17):
+# 8108e8f (2026-06-04) kept section-commander assignment controller-only "to
+# prevent escalation"; f33cc92 let conductor commanders with commander.assign
+# manage every rung but added no bound, so any holder could grant `*` to anyone
+# (including themselves) through set_commander, while set_permissions stayed on
+# the old controller-only check. Both now share one rule (commanders.
+# delegation_error): never yourself, never upward, never above what you hold.
+
+import commanders as _cmd  # noqa: E402
+
+OPERATOR = "operator-xx"
+OTHER = "other-yy"
+BOSS = "boss-zz"
+ORCH = "Casals"
+
+
+class _Entity:
+    """The two attributes commanders.py reads/writes on a Section/Stand."""
+
+    def __init__(self, name, section=None):
+        self.name = name
+        self.section = section
+        self.commanders_json = ""
+        self.commander_principal = ""
+        self.permissions = ""
+
+
+def _orchestra(monkeypatch, *, controller=False, caller=OPERATOR, open_access=False):
+    """A conductor section (orchestra rung), one section and one stand, wired
+    into ``main`` so the real endpoints run against real commander storage."""
+    import main
+    from unittest.mock import MagicMock
+
+    orch, sec = _Entity(ORCH), _Entity("sec-a")
+    stand = _Entity("st-1", section=sec)
+    by_sec = {ORCH: orch, "sec-a": sec}
+    monkeypatch.setattr(main, "_caller", lambda: caller)
+    monkeypatch.setattr(main, "_is_controller", lambda: controller)
+    monkeypatch.setattr(main, "Section", MagicMock(instances=lambda: [], __getitem__=lambda _s, k: by_sec.get(k)))
+    monkeypatch.setattr(main, "Stand", MagicMock(instances=lambda: [], __getitem__=lambda _s, k: stand if k == "st-1" else None))
+    monkeypatch.setattr(main, "_settings", lambda: MagicMock(open_access=open_access))
+    monkeypatch.setattr(main, "_append_event", lambda *a, **k: None)
+    return orch, sec, stand
+
+
+def _call(method, **args):
+    import json
+    import main
+    return json.loads(getattr(main, method)(json.dumps(args)))
+
+
+def _grant(entity, principal):
+    return _cmd.permissions_for(entity, principal)
+
+
+# --- the pure rule ------------------------------------------------------------
+
+def test_grant_keys_full_access_and_legacy_implication():
+    assert _cmd.grant_keys("") == set(auth.PERMISSION_KEYS)
+    assert _cmd.grant_keys("*") == set(auth.PERMISSION_KEYS)
+    assert _cmd.grant_keys(["*"]) == set(auth.PERMISSION_KEYS)
+    # commander.assign has always implied subnet.whitelist on legacy rows;
+    # the ceiling must say so too or a legal grant would be refused.
+    assert _cmd.grant_keys("commander.assign") == {"commander.assign", "subnet.whitelist"}
+
+
+def test_delegation_error_three_checks():
+    ceiling = {"canister.deploy", "commander.assign", "subnet.whitelist"}
+    ok = _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, ["canister.deploy"])
+    assert ok == ""
+    assert "own grant" in _cmd.delegation_error(OPERATOR, ceiling, OPERATOR, "canister.deploy", ["canister.deploy"])
+    assert "holds permissions you do not" in _cmd.delegation_error(OPERATOR, ceiling, OTHER, "*", ["canister.deploy"])
+    assert "only grant permissions you hold" in _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, ["canister.delete"])
+    # "*" (and its aliases: "", [], None-as-default) needs "*".
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, "*")
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, [])
+    assert _cmd.delegation_error(OPERATOR, set(auth.PERMISSION_KEYS), OTHER, None, "*") == ""
+    # Removal (new=None) only checks self + upward.
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, "canister.deploy", None) == ""
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, "canister.delete", None)
+
+
+def test_effective_grant_is_the_union_across_rungs():
+    orch, sec = _Entity(ORCH), _Entity("sec-a")
+    _cmd.add_commander(orch, OPERATOR, ["canister.deploy"])
+    _cmd.add_commander(sec, OPERATOR, ["stand.create"])
+    assert _cmd.effective_grant(OPERATOR, orch, sec) == {"canister.deploy", "stand.create"}
+    assert _cmd.effective_grant(OPERATOR, orch, None) == {"canister.deploy"}
+    # An unclaimed slot grants nothing towards the ceiling.
+    _cmd.add_commander(sec, "sha256:" + "ab" * 32, "*")
+    assert _cmd.effective_grant("sha256:" + "ab" * 32, sec) == set()
+
+
+# --- the bug as seen from the Commanders page ---------------------------------
+
+def test_full_access_orchestra_operator_can_edit_another_operator(monkeypatch):
+    """The user-facing bug: a `*` conductor commander (not an IC controller)
+    got 'unauthorized' editing another operator's grant through set_permissions,
+    while set_commander would have accepted the same rewrite."""
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, "*")
+    _cmd.add_commander(orch, OTHER, "*")
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=["wasm.upload"])
+    assert res["ok"] is True, res
+    assert _grant(orch, OTHER) == "wasm.upload"
+
+
+def test_set_permissions_rejects_commander_without_assign(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["wasm.upload"])
+    _cmd.add_commander(orch, OTHER, ["wasm.upload"])
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=["wasm.upload"])
+    assert res["ok"] is False and "commander.assign" in res["error"]
+
+
+# --- no self-promotion ----------------------------------------------------------
+
+@pytest.mark.parametrize("method", ["set_permissions", "set_commander"])
+def test_commander_cannot_raise_their_own_grant(monkeypatch, method):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign", "wasm.upload"])
+    res = _call(method, section=ORCH, commander_principal=OPERATOR, permissions="*")
+    assert res["ok"] is False and "own grant" in res["error"], res
+    assert _grant(orch, OPERATOR) == "commander.assign,wasm.upload"
+
+
+def test_commander_cannot_remove_themselves(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign"])
+    res = _call("remove_commander", section=ORCH, commander_principal=OPERATOR)
+    assert res["ok"] is False and "own grant" in res["error"]
+    assert _cmd.is_commander(orch, OPERATOR)
+
+
+# --- no sideways escalation via a second principal ---------------------------------
+
+@pytest.mark.parametrize("target", [{"section": ORCH}, {"section": "sec-a"}, {"stand": "st-1"}])
+def test_assign_holder_cannot_grant_more_than_they_hold(monkeypatch, target):
+    """The realistic attack: appoint a principal you control with `*`, then act
+    through it. commander.assign delegates downward only."""
+    orch, sec, st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign", "canister.deploy"])
+    res = _call("set_commander", **target, commander_principal=OTHER, permissions="*")
+    assert res["ok"] is False and "only grant permissions you hold" in res["error"], res
+    res = _call("set_commander", **target, commander_principal=OTHER, permissions=["canister.delete"])
+    assert res["ok"] is False and "canister.delete" in res["error"]
+    for e in (orch, sec, st):
+        assert not _cmd.has_entry(e, OTHER)
+    # Default (no permissions field) has always meant full access — so it is
+    # refused too, rather than silently minting a `*` commander.
+    res = _call("set_commander", **target, commander_principal=OTHER)
+    assert res["ok"] is False, res
+
+
+@pytest.mark.parametrize("target", [{"section": ORCH}, {"section": "sec-a"}, {"stand": "st-1"}])
+def test_assign_holder_can_grant_a_subset_of_what_they_hold(monkeypatch, target):
+    orch, sec, st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign", "canister.deploy", "wasm.upload"])
+    res = _call("set_commander", **target, commander_principal=OTHER, permissions=["canister.deploy", "wasm.upload"])
+    assert res["ok"] is True, res
+    entity = {ORCH: orch, "sec-a": sec}.get(target.get("section"), st)
+    assert _grant(entity, OTHER) == "canister.deploy,wasm.upload"
+    # …and may hand out commander.assign itself (delegation of delegation), still bounded.
+    res = _call("set_permissions", **target, commander_principal=OTHER, permissions=["commander.assign"])
+    assert res["ok"] is True, res
+
+
+def test_full_access_holder_may_grant_full_access(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, "*")
+    res = _call("set_commander", section="sec-a", commander_principal=OTHER, permissions="*")
+    assert res["ok"] is True, res
+
+
+# --- no touching anyone above you ---------------------------------------------------
+
+@pytest.mark.parametrize("method,extra", [
+    ("set_permissions", {"permissions": ["wasm.upload"]}),
+    ("set_commander", {"permissions": ["wasm.upload"]}),
+    ("remove_commander", {}),
+])
+def test_cannot_demote_or_remove_a_commander_holding_more(monkeypatch, method, extra):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign", "wasm.upload"])
+    _cmd.add_commander(orch, BOSS, "*")
+    res = _call(method, section=ORCH, commander_principal=BOSS, **extra)
+    assert res["ok"] is False and "holds permissions you do not" in res["error"], res
+    assert _grant(orch, BOSS) == "*"
+
+
+def test_peer_with_equal_grant_may_be_edited(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign", "wasm.upload"])
+    _cmd.add_commander(orch, OTHER, ["commander.assign", "wasm.upload"])
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=["wasm.upload"])
+    assert res["ok"] is True, res
+    assert _grant(orch, OTHER) == "wasm.upload"
+
+
+# --- section commanders: stands only, bounded by orchestra ∪ section ---------------
+
+def test_section_commander_bounded_on_stands_and_locked_out_of_sections(monkeypatch):
+    orch, sec, st = _orchestra(monkeypatch)
+    _cmd.add_commander(sec, OPERATOR, ["commander.assign", "canister.deploy"])
+    ok = _call("set_commander", stand="st-1", commander_principal=OTHER, permissions=["canister.deploy"])
+    assert ok["ok"] is True, ok
+    too_much = _call("set_permissions", stand="st-1", commander_principal=OTHER, permissions=["canister.delete"])
+    assert too_much["ok"] is False and "canister.delete" in too_much["error"]
+    assert _grant(st, OTHER) == "canister.deploy"
+    # Not a conductor commander: no say over section or orchestra grants at all.
+    for target in ({"section": "sec-a"}, {"section": ORCH}):
+        res = _call("set_commander", **target, commander_principal=OTHER, permissions=["canister.deploy"])
+        assert res["ok"] is False and "commander.assign" in res["error"], res
+    res = _call("set_permissions", section="sec-a", commander_principal=OPERATOR, permissions="*")
+    assert res["ok"] is False
+    assert _grant(sec, OPERATOR) == "canister.deploy,commander.assign"
+
+
+def test_stand_ceiling_is_orchestra_union_section(monkeypatch):
+    orch, sec, st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, ["commander.assign"])
+    _cmd.add_commander(sec, OPERATOR, ["canister.deploy"])
+    res = _call("set_commander", stand="st-1", commander_principal=OTHER, permissions=["canister.deploy"])
+    assert res["ok"] is True, res
+
+
+# --- controllers stay unbounded; create_stand is not a side door -------------------
+
+def test_controller_is_unbounded(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch, controller=True, caller="deployer")
+    _cmd.add_commander(orch, BOSS, "*")
+    assert _call("set_permissions", section=ORCH, commander_principal=BOSS, permissions=["wasm.upload"])["ok"]
+    assert _call("set_commander", section=ORCH, commander_principal=OTHER, permissions="*")["ok"]
+    assert _call("remove_commander", section=ORCH, commander_principal=OTHER)["ok"]
+
+
+def test_create_stand_initial_commanders_are_bounded(monkeypatch):
+    import main
+    orch, sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(sec, OPERATOR, ["stand.create", "canister.deploy"])
+    with pytest.raises(Exception, match="only grant permissions you hold"):
+        main._require_bounded_initial_commanders(sec, {"commander_principal": OPERATOR})  # default = full
+    with pytest.raises(Exception, match="canister.delete"):
+        main._require_bounded_initial_commanders(sec, {"commanders": [{"principal": OTHER, "permissions": ["canister.delete"]}]})
+    main._require_bounded_initial_commanders(sec, {"commander_principal": OPERATOR, "permissions": ["canister.deploy"]})
+    main._require_bounded_initial_commanders(sec, {})
+
+
+def test_create_stand_initial_commanders_unbounded_for_controller_and_open_access(monkeypatch):
+    import main
+    _orch, sec, _st = _orchestra(monkeypatch, controller=True)
+    main._require_bounded_initial_commanders(sec, {"commander_principal": OTHER})
+    _orch, sec, _st = _orchestra(monkeypatch, open_access=True)
+    main._require_bounded_initial_commanders(sec, {"commander_principal": OTHER})
+
+
+# ── deploy_content: all rounds, one call ─────────────────────────────────────
+
+def _run_gen(gen):
+    """Drive a Basilisk-style generator to its return value (no awaits here)."""
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+def _content_deploy_harness(monkeypatch, rounds):
+    """`deploy_content` against a scripted `_sync_content_round_gen`: `rounds` is
+    the list of round results it will return, in order. Returns the call log
+    and the timers armed."""
+    import main
+    from unittest.mock import MagicMock
+
+    calls, timers = [], []
+    script = list(rounds)
+
+    def fake_round(name, params):
+        calls.append((name, dict(params)))
+        if False:
+            yield
+        return script.pop(0)
+
+    fe = MagicMock(); fe.name = "web"; fe.canister_id = "fe-id"
+    monkeypatch.setattr(main, "Canister", MagicMock(instances=lambda: [], __getitem__=lambda _s, k: fe if k == "web" else None))
+    monkeypatch.setattr(main, "_require_commander", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_sync_content_round_gen", fake_round)
+    monkeypatch.setattr(main, "_append_event", lambda *a, **k: None)
+    monkeypatch.setattr(main, "_now_ns", lambda: 7)
+    monkeypatch.setattr(main.ic, "set_timer", lambda _d, cb: timers.append(cb) or len(timers), raising=False)
+    main._content_deploys.clear(); main._content_deploy_params.clear(); main._content_deploy_queue.clear()
+    main._content_deploy_timer["id"] = None
+    return calls, timers
+
+
+def _ok_round(written, remaining):
+    return {"ok": True, "written": written, "deleted": 0 if remaining else 2, "remaining": remaining,
+            "bundle_sha256": "ab" * 32, "namespace": "frontend/x/main"}
+
+
+def test_deploy_content_small_bundle_finishes_in_the_call(monkeypatch):
+    import json, main
+    calls, timers = _content_deploy_harness(monkeypatch, [_ok_round(4, 0)])
+    res = json.loads(_run_gen(main.deploy_content(json.dumps({"canister": "web", "namespace": "frontend/x/main"}))))
+    assert res["ok"] is True and res["status"] == "done"
+    assert (res["written"], res["deleted"], res["remaining"], res["rounds"]) == (4, 2, 0, 1)
+    assert res["bundle_sha256"] == "ab" * 32
+    assert timers == [], "nothing left: no timer"
+    assert calls == [("web", {"canister": "web", "namespace": "frontend/x/main"})]
+    assert json.loads(main.content_deploys("{}"))["deploys"][0]["status"] == "done"
+
+
+def test_deploy_content_keeps_going_on_the_timer_and_accumulates(monkeypatch):
+    import json, main
+    calls, timers = _content_deploy_harness(monkeypatch, [_ok_round(10, 12), _ok_round(10, 2), _ok_round(2, 0)])
+    res = json.loads(_run_gen(main.deploy_content(json.dumps({"canister": "web", "bundle_sha256": "AB" * 32}))))
+    assert res["status"] == "running" and res["remaining"] == 12 and res["written"] == 10
+    assert len(timers) == 1
+    # round 2 (timer) → still running, re-armed
+    _run_gen(timers[0]())
+    rec = json.loads(main.content_deploys("{}"))["deploys"][0]
+    assert (rec["status"], rec["written"], rec["remaining"], rec["rounds"]) == ("running", 20, 2, 2)
+    assert len(timers) == 2
+    # round 3 (timer) → done; the checksum travelled with every round
+    _run_gen(timers[1]())
+    rec = json.loads(main.content_deploys("{}"))["deploys"][0]
+    assert (rec["status"], rec["written"], rec["deleted"], rec["remaining"], rec["rounds"]) == ("done", 22, 2, 0, 3)
+    assert all(c[1].get("bundle_sha256") == "AB" * 32 for c in calls) and len(calls) == 3
+    assert len(timers) == 2, "done: no further timer"
+    assert "web" not in main._content_deploy_params
+
+
+def test_deploy_content_first_round_error_is_the_calls_error(monkeypatch):
+    import json, main
+    _calls, timers = _content_deploy_harness(monkeypatch, [{"ok": False, "error": "store namespace frontend/x/main is empty; publish the bundle first"}])
+    res = json.loads(_run_gen(main.deploy_content(json.dumps({"canister": "web"}))))
+    assert res["ok"] is False and "publish the bundle first" in res["error"]
+    assert res["status"] == "failed" and timers == []
+
+
+def test_deploy_content_later_round_error_marks_failed(monkeypatch):
+    import json, main
+    _calls, timers = _content_deploy_harness(monkeypatch, [_ok_round(10, 5), {"ok": False, "error": "store changed"}])
+    _run_gen(main.deploy_content(json.dumps({"canister": "web"})))
+    _run_gen(timers[0]())
+    rec = json.loads(main.content_deploys("{}"))["deploys"][0]
+    assert rec["status"] == "failed" and rec["error"] == "store changed" and rec["written"] == 10
+    assert len(timers) == 1
+
+
+def test_deploy_content_refuses_a_second_deploy_while_one_runs(monkeypatch):
+    import json, main
+    _calls, _timers = _content_deploy_harness(monkeypatch, [_ok_round(10, 5)])
+    _run_gen(main.deploy_content(json.dumps({"canister": "web"})))
+    res = json.loads(_run_gen(main.deploy_content(json.dumps({"canister": "web"}))))
+    assert res["ok"] is False and "already running" in res["error"]
+
+
+def test_deploy_content_unknown_canister(monkeypatch):
+    import json, main
+    _content_deploy_harness(monkeypatch, [])
+    res = json.loads(_run_gen(main.deploy_content(json.dumps({"canister": "nope"}))))
+    assert res["ok"] is False and "unknown canister" in res["error"]
 
 
 # ── canister pool ────────────────────────────────────────────────────────────

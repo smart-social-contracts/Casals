@@ -569,10 +569,20 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
     policy file itself is among ``keys`` every key in ``all_keys`` is
     re-propertied. ``delete_keys`` (assets that left the bundle) are removed
     after the writes, so a visitor never sees a half-updated set missing
-    files. The planner lists whatever is still missing next round."""
+    files. The planner lists whatever is still missing next round.
+
+    `store` writes the `identity` encoding only; any other encoding the key
+    already carries (`gzip`/`br` from an `icp sync` deploy) is dropped right
+    after, otherwise a browser — which asks for compressed — would keep being
+    served the previous build while `curl` sees the new one.
+
+    Returns ``{"stored": [...], "deleted": [...]}`` — what this round actually
+    did, so callers report real counts."""
     asset = AssetCanisterService(Principal.from_str(canister_id))
     grant_res = yield asset.grant_permission({"to_principal": ic.id(), "permission": {"Commit": None}})
     unwrap_call_result(grant_res)
+    from live_state import _asset_encodings_gen  # local: live_state imports this module
+    live_encodings = yield from _asset_encodings_gen(canister_id)
     listing: dict = {}
     if namespace and any(k not in files for k in keys):
         registry_files = yield from _list_registry_files(namespace)
@@ -600,6 +610,9 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
             "content": content, "sha256": None,
         })
         unwrap_call_result(store_res)
+        for stale in sorted(e for e in (live_encodings.get(key) or {}) if e != "identity"):
+            res = yield asset.unset_asset_content({"key": key, "content_encoding": stale})
+            unwrap_call_result(res)
         stored.append(key)
         sent += len(content)
         if sent >= SYNC_MAX_BYTES:
@@ -630,6 +643,7 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
     _append_event("assets_synced", canister_id,
                   {"namespace": namespace, "keys": stored, "deleted": deleted, "rules": len(rules),
                    "propertied": propertied})
+    return {"stored": stored, "deleted": deleted}
 
 
 def _batch_id(reply_text: str) -> str:

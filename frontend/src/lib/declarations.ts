@@ -48,6 +48,8 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     begin_upload:          IDL.Func([IDL.Text], [IDL.Text], []),
     end_upload:            IDL.Func([IDL.Text], [IDL.Text], []),
     store_bundle:          IDL.Func([IDL.Text], [IDL.Text], []),
+    deploy_content:        IDL.Func([IDL.Text], [IDL.Text], []),
+    content_deploys:       IDL.Func([IDL.Text], [IDL.Text], ['query']),
     list_upload_grants:    IDL.Func([], [IDL.Text], ['query']),
     list_store_files:      IDL.Func([IDL.Text], [IDL.Text], []),
     store_retention:       IDL.Func([IDL.Text], [IDL.Text], []),

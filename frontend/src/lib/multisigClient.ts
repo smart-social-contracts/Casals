@@ -2,6 +2,7 @@ import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
+import { DEPLOY_CONTENT_METHOD, deployBundleArgJson, describeDeployBundle, parseDeployBundleCall } from './contentDeploy';
 import { icHost, isLocalHost } from './ic-host';
 import { CANDID_EMPTY_ARG } from './wasmStorePath';
 
@@ -169,8 +170,11 @@ function actionSummary(action: Record<string, unknown>): string {
     }
     case 'ApplySheet':
       return `Apply sheet ${String(payload?.plan_hash ?? '').slice(0, 12) || '—'}`;
-    case 'CallCanister':
+    case 'CallCanister': {
+      const deploy = parseDeployBundleCall({ method: String(payload?.method ?? ''), arg_json: String(payload?.arg_json ?? '') });
+      if (deploy) return describeDeployBundle(deploy);
       return `Call ${String(payload?.method ?? '—')} on ${fmtPrincipal(payload?.canister)}`;
+    }
     case 'UpgradeCanister': {
       const key = String(payload?.key ?? '');
       const file = key.slice(key.lastIndexOf('/') + 1) || '—';
@@ -278,7 +282,8 @@ export type MultisigActionType =
   | 'DestroyStand'
   | 'DestroyCanister'
   | 'DestroyCanisters'
-  | 'UpgradeCanister';
+  | 'UpgradeCanister'
+  | 'DeployBundle';
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.trim().toLowerCase().replace(/^0x/, '');
@@ -491,6 +496,27 @@ export function buildMultisigAction(
           sha256: sha,
           arg,
           wasm_memory_keep: Boolean(fields.wasm_memory_keep),
+        },
+      };
+    }
+    case 'DeployBundle': {
+      // A frontend release under governance: the multisig, an IC controller of
+      // the conductor, calls `deploy_content`; the conductor (Commit on the asset
+      // canister) writes the store's bundle in rounds. `bundle_sha256` pins what
+      // the signers saw in the store.
+      const casals = fieldStr(fields.casals_backend);
+      const canister = fieldStr(fields.target_name);
+      const namespace = fieldStr(fields.namespace);
+      const bundle_sha256 = fieldStr(fields.bundle_sha256);
+      if (!casals) throw new Error('Casals backend canister id is unknown');
+      if (!canister) throw new Error('Pick the frontend to deploy to');
+      if (!namespace) throw new Error('Store namespace is required');
+      if (!bundle_sha256) throw new Error('Store bundle hash is unknown — wait for the store read, or check the namespace');
+      return {
+        CallCanister: {
+          canister: Principal.fromText(casals),
+          method: DEPLOY_CONTENT_METHOD,
+          arg_json: deployBundleArgJson({ canister, namespace, bundle_sha256 }),
         },
       };
     }

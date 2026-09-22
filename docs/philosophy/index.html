@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Casals · Built for · Architecture design rationale · Why Casals · Authority · Vocabulary · Running today</title>
+  <title>Casals · Built for · Architecture design rationale · Why Casals · Authority · Vocabulary · The sheet is a genesis document, not a control loop · Running today</title>
   <style>
     :root {
       --gray-50: #fafafa;
@@ -1420,6 +1420,27 @@
         </div>
 
         <div class="page" data-slide="6" data-steps="1">
+            
+            <div class="page-step active">
+              <section class="arch-box casals-box-slide">
+                <header class="box-header">
+                  <h2>The sheet is a genesis document, not a control loop</h2>
+                </header>
+                <div class="box-body">
+                  <ul class="bullets-hollow">
+  <li><strong>Day one only</strong> — <code>casals up</code> reads the sheet once, builds the orchestra, hands the conductor to the multisig. After that the document is history, not instruction.</li>
+  <li><strong>Reconcilers assume</strong> complete authority, reachable convergence, and that every difference is drift. Terraform and Kubernetes get all three; a governed orchestra gets none.</li>
+  <li><strong>Authority is on-chain and shared</strong> — a file has none. A signer added by proposal, a redeemed access code, a baton that ran an upgrade: all legitimate, none of it in your document.</li>
+  <li><strong>Convergence needs other people</strong> — an N-of-M approval may never come. A loop that reads waiting as failure nags forever; it should file a proposal and stop.</li>
+  <li><strong>The orchestra is an actor too</strong> — stands minted at runtime, a tenant growing a canister. Not drift, the system working — true with a single controller too.</li>
+  <li><strong>Therefore</strong> — the chain is the truth, <code>casals export</code> regenerates the sheet, a diff is a report (<code>plan</code>, <code>oracle</code>), never an enforcer. Never assert the file over the chain.</li>
+</ul>
+                </div>
+              </section>
+            </div>
+        </div>
+
+        <div class="page" data-slide="7" data-steps="1">
             
             <div class="page-step active">
               <section class="arch-box examples-slide wide-slide">

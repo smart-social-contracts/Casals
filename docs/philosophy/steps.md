@@ -36,4 +36,16 @@
 
 # Casals — single slide
 
+## The sheet is a genesis document, not a control loop
+
+- **Day one only** — `casals up` reads the sheet once, builds the orchestra, hands the conductor to the multisig. After that the document is history, not instruction.
+- **Reconcilers assume** complete authority, reachable convergence, and that every difference is drift. Terraform and Kubernetes get all three; a governed orchestra gets none.
+- **Authority is on-chain and shared** — a file has none. A signer added by proposal, a redeemed access code, a baton that ran an upgrade: all legitimate, none of it in your document.
+- **Convergence needs other people** — an N-of-M approval may never come. A loop that reads waiting as failure nags forever; it should file a proposal and stop.
+- **The orchestra is an actor too** — stands minted at runtime, a tenant growing a canister. Not drift, the system working — true with a single controller too.
+- **Therefore** — the chain is the truth, `casals export` regenerates the sheet, a diff is a report (`plan`, `oracle`), never an enforcer. Never assert the file over the chain.
+
+
+# Casals — single slide
+
 ## today

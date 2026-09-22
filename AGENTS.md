@@ -82,13 +82,13 @@ rendered by `frontend/src/routes/+layout.svelte`:
 
 | Route | Purpose |
 |-------|---------|
-| `/` (Orchestra) | Section → Stand → Canister tree; create/upgrade/delete; subnet flags |
+| `/` (Orchestra) | Three views, remembered per browser (`lib/orchestraList.ts`). **List** (default): one row per canister matching the filter — checkbox, name/alias, section, stand, principal, controllers (the alias when one, a count badge when more), tags; an unfold arrow opens the detail panel (runtime, balance, events, logs, Basilisk inspect/console). A toolbar under the filter acts on the *selection*: Deploy / Rename / Tags take exactly one canister; Snapshot, Revert, Stop, Start, Delete run over the batch; each button is enabled only when the session holds the matching `canister.*` key on every selected row (controllers bypass) and the state allows it (Revert needs snapshots, Stop/Start follow cached run status, core canisters are never renamed/deleted). **Topology** carries the section/stand context and their management (add stand / canister, register, deploy stand, add commander, rename, delete). **Control** is the controller/commander graph |
 | `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — store bundle hash, contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, cycles autopilot |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
 | `/commanders` | Operator access: orchestra / section / stand commanders and granular permissions (a commander at one rung acts on everything beneath it) |
-| `/multisig` | Platform committee: on-chain multisig for IC controller actions |
+| `/multisig` | Platform committee: on-chain multisig for IC controller actions; *Propose → Deploy frontend bundle* files a `CallCanister → deploy_content` so a UI release is approved like a wasm upgrade |
 | `/settings` | Instance settings; **subnet whitelist** matrix |
 
 `/baton` (Baton upgrade pipeline view) exists as a route but is not linked from the nav.
@@ -247,7 +247,8 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `set_sheet` | store the day-one sheet (controllers only; `casals up` / `casals upgrade`) |
 | `plan` / `get_plan` | compute what the sheet would still add (`{only_stand}` for one stand) / read the stored plan |
 | `apply` / `last_apply` | execute plan items (controllers only) / last apply result |
-| `propose_upgrade` / `sync_content` | imperative release of a baton-governed member / of a frontend's `content` bundle (`casals upgrade`) |
+| `propose_upgrade` / `sync_content` | imperative release of a baton-governed member / one bounded round of a frontend's `content` bundle (`casals upgrade --content` loops it) |
+| `deploy_content` / `content_deploys` | the one-call frontend release: first round inline (bad namespace / checksum fails the call), the rest on the conductor's timer; the query reports progress. The UI's *Deploy frontend bundle* (Orchestra toolbar) and the multisig's *Deploy frontend bundle* proposal (`CallCanister → deploy_content`; the committee is a conductor controller) both use it |
 | `export_sheet` / `get_bindings` / `bind_conductor` | stored sheet + bindings (name → canister id) |
 
 ### Orchestra structure & governance
@@ -562,6 +563,27 @@ granular keys (e.g. `canister.create`, `canister.deploy`, `stand.create`,
 `subnet.whitelist`) configured on the **Commanders** page or via
 `set_permissions`. Empty / `*` = full access. The deploy/conductor principal is
 also a canister controller and bypasses commander checks for admin operations.
+
+Who may appoint, remove or re-grant other commanders is one rule shared by
+`set_commander`, `remove_commander`, `set_permissions` and the commanders a
+`create_stand` is born with (`commanders.delegation_error`):
+
+- **Who**: a controller (deployer, multisig) at any rung, unbounded. A conductor
+  (orchestra-level) commander holding `commander.assign` at any rung; a section
+  commander holding it, for stands in that section.
+- **Bounded delegation** for every non-controller — `commander.assign` delegates
+  *downward*, never sideways or up:
+  - never your own entry (no self-promotion, no removing yourself);
+  - never a target who holds more than you (you cannot demote, rewrite or
+    remove a `*` commander unless you hold `*`; equals may edit equals);
+  - never a grant above your own *ceiling* — the union of what you hold on the
+    orchestra rung and, for a stand, on its section. A missing `permissions`
+    means full access, so appointing without a grant requires holding `*`.
+
+History: 8108e8f kept section-level appointment controller-only "to prevent
+escalation"; f33cc92 opened it to `commander.assign` holders without a bound,
+which let any holder mint a `*` commander (or `*` themselves). The bound above
+closes that; `tests/test_unit.py` (bounded delegation) is the regression guard.
 
 ### Access codes (inviting an operator whose principal is unknown)
 

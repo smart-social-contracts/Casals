@@ -1490,6 +1490,40 @@ export async function storeBundle(namespace: string): Promise<StoreBundle> {
   return _parseUpdate<StoreBundle>(await (await _actor(true)).store_bundle(JSON.stringify({ namespace })));
 }
 
+/** Progress of one `deploy_content` run (the conductor ships a store bundle to a frontend in rounds). */
+export interface ContentDeploy {
+  canister: string;
+  namespace?: string;
+  bundle_sha256?: string;
+  status: 'running' | 'done' | 'failed';
+  written: number;
+  deleted: number;
+  remaining?: number;
+  rounds: number;
+  error?: string;
+  updated_at?: number;
+}
+
+/**
+ * Ship the store's bundle to a frontend — every round, one call. The first round
+ * runs inside the call (a bad namespace or checksum rejects here); when files
+ * remain the conductor continues on its own timer: poll `contentDeploys()`.
+ * `bundle_sha256` pins what the store must still hold when writing.
+ */
+export async function deployContent(args: {
+  canister: string;
+  namespace?: string;
+  bundle_sha256?: string;
+  source?: string;
+}): Promise<ContentDeploy> {
+  return _parseUpdate<ContentDeploy>(await (await _actor(true)).deploy_content(JSON.stringify(args)));
+}
+
+export async function contentDeploys(): Promise<ContentDeploy[]> {
+  const res = _parseQuery<{ deploys?: ContentDeploy[] }>(await (await _actor()).content_deploys('{}'));
+  return res.deploys ?? [];
+}
+
 export async function listStoreFiles(namespace = ''): Promise<StoreFile[]> {
   return _parseQuery<StoreFile[]>(
     await (await _actor(true)).list_store_files(JSON.stringify(namespace ? { namespace } : {})),

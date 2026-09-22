@@ -105,7 +105,8 @@ type GetChunkArg = record { key : text; content_encoding : text; index : nat; sh
 type ChunkContent = record { content : blob };
 type RevokePermissionArg = record { of_principal : principal; permission : AssetPermission };
 type DeleteAssetArg = record { key : text };
-type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); revoke_permission : (RevokePermissionArg) -> (); store : (StoreArg) -> (); delete_asset : (DeleteAssetArg) -> (); list : (ListArgs) -> (vec AssetEntry) query; get : (GetArg) -> (EncodedAsset) query; get_chunk : (GetChunkArg) -> (ChunkContent) query };
+type UnsetAssetContentArg = record { key : text; content_encoding : text };
+type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); revoke_permission : (RevokePermissionArg) -> (); store : (StoreArg) -> (); delete_asset : (DeleteAssetArg) -> (); unset_asset_content : (UnsetAssetContentArg) -> (); list : (ListArgs) -> (vec AssetEntry) query; get : (GetArg) -> (EncodedAsset) query; get_chunk : (GetChunkArg) -> (ChunkContent) query };
 type BasiliskIntrospectionService = service { __browse__ : (text) -> (text) query; __shell__ : (text) -> (text) };
 
 service : {
@@ -175,6 +176,8 @@ service : {
   "upgrade_to" : (text) -> (text);
   "propose_upgrade" : (text) -> (text);
   "sync_content" : (text) -> (text);
+  "deploy_content" : (text) -> (text);
+  "content_deploys" : (text) -> (text) query;
   "create_snapshot" : (text) -> (text);
   "revert_snapshot" : (text) -> (text);
   "stop_canister" : (text) -> (text);

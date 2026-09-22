@@ -221,19 +221,27 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
     return state
 
 
-def _asset_hashes_gen(cid: str) -> dict[str, str]:
-    """Generator: `{"/key": sha256hex}` of the identity encoding of every asset
-    (`list` is paged: 100 entries per call by default)."""
+def _asset_encodings_gen(cid: str) -> dict[str, dict[str, str]]:
+    """Generator: `{"/key": {encoding: sha256hex}}` for every asset and every
+    encoding it carries (`list` is paged: 100 entries per call by default)."""
     asset = AssetCanisterService(Principal.from_str(cid))
-    out = {}
+    out: dict[str, dict[str, str]] = {}
     start, page = 0, 100
     while True:
         res = yield asset.list({"start": start, "length": page})
         entries = unwrap_call_result(res) or []
         for entry in entries:
+            encs = out.setdefault(entry["key"], {})
             for enc in entry.get("encodings") or []:
-                if enc.get("content_encoding") == "identity" and enc.get("sha256"):
-                    out[entry["key"]] = bytes(enc["sha256"]).hex()
+                name = enc.get("content_encoding") or ""
+                if name:
+                    encs[name] = bytes(enc["sha256"]).hex() if enc.get("sha256") else ""
         if len(entries) < page:
             return out
         start += page
+
+
+def _asset_hashes_gen(cid: str) -> dict[str, str]:
+    """Generator: `{"/key": sha256hex}` of the identity encoding of every asset."""
+    encodings = yield from _asset_encodings_gen(cid)
+    return {key: encs["identity"] for key, encs in encodings.items() if encs.get("identity")}

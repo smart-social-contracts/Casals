@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 
 from access_code import checksums_equal, is_code_checksum, normalize_code_checksum
-from auth import _has_permission, _normalize_permissions, _parse_permissions
+from auth import PERMISSION_KEYS, _has_permission, _normalize_permissions, _parse_permissions
 
 
 def _entry(principal: str, permissions, code_checksum: str = "") -> dict:
@@ -323,6 +323,60 @@ def lifecycle_access(
     if section is not None and active_commanders(section):
         return entity_has_permission(section, caller, permission)
     return bool(open_access) and caller != anonymous
+
+
+def grant_keys(stored) -> set:
+    """Every permission key a stored grant confers — "" / "*" is every key,
+    and the legacy ``commander.assign`` ⇒ ``subnet.whitelist`` implication is
+    honoured, so this is exactly what ``_has_permission`` would say yes to."""
+    normalized = stored if isinstance(stored, str) else _normalize_permissions(stored)
+    return {k for k in PERMISSION_KEYS if _has_permission(normalized, k)}
+
+
+def effective_grant(caller: str, *entities) -> set:
+    """Union of the keys ``caller`` holds as a claimed commander across the
+    given rungs (``None`` entries are skipped). This is the *ceiling* a
+    non-controller may delegate: nothing above it can be handed out."""
+    keys: set = set()
+    for e in entities:
+        if e is not None and is_commander(e, caller):
+            keys |= grant_keys(permissions_for(e, caller))
+    return keys
+
+
+def delegation_error(caller: str, ceiling: set, target: str, current, new) -> str:
+    """Bounded delegation — the rule every commander-mutating path applies to
+    a non-controller. Returns "" when allowed, else the reason.
+
+    ``ceiling`` is the caller's ``effective_grant`` at the target's rung and
+    above; ``current`` is the target's stored grant (``None`` when the target
+    is not listed yet); ``new`` is the grant being written — ``None`` means
+    *a removal, nothing is written* (callers must pass ``""`` for "full
+    access by default", never ``None``). Three checks, all needed — dropping
+    any one re-opens the hole:
+
+      1. never yourself: a commander cannot edit or remove their own entry
+         (no self-promotion, no orphaning a rung by mistake);
+      2. never upward: the target's current grant must fit under the ceiling
+         (you cannot demote, rewrite or remove someone who holds more than you);
+      3. never above yourself: the grant written must fit under the ceiling
+         (``commander.assign`` delegates downward — a subset of what you hold —
+         never sideways or up; ``*`` therefore requires holding ``*``).
+    """
+    t = (target or "").strip()
+    if t and t == (caller or "").strip():
+        return "unauthorized: a commander cannot change or remove their own grant"
+    if current is not None:
+        above = grant_keys(current) - ceiling
+        if above:
+            return ("unauthorized: that commander holds permissions you do not "
+                    f"({', '.join(sorted(above))})")
+    if new is not None:
+        above = grant_keys(_normalize_permissions(new)) - ceiling
+        if above:
+            return ("unauthorized: you can only grant permissions you hold yourself; "
+                    f"not granted to you: {', '.join(sorted(above))}")
+    return ""
 
 
 def apply_commanders_from_spec(entity, spec: dict) -> None:

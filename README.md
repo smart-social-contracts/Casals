@@ -87,6 +87,38 @@ python3 -m casals_cli.main -e local --identity local-dev up tests/e2e/orchestras
 
 `casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
 
+### Why the sheet stops being the truth after day one
+
+Casals is deliberately **not** a reconciler. Terraform and Kubernetes converge the
+world onto a desired-state document, which works because the reconciler holds
+complete authority over what it manages, convergence is therefore always
+reachable, and any difference between file and world is drift to be erased. An
+orchestra under shared governance satisfies none of those:
+
+- **Authority is on-chain and shared; a file has none of it.** A signer added by
+  multisig proposal, a commander who redeemed an access code, a baton that ran an
+  upgrade — all legitimate, none of them in your document. A diff between sheet
+  and chain is genuinely ambiguous: it may mean "someone should approve this" or
+  "the file is stale", and no control loop can tell which.
+- **Convergence needs other people.** An item that requires N-of-M approval may
+  wait days or never pass. A loop that treats that as failure blocks or nags
+  forever; the right behaviour is to file a proposal and stop.
+- **The orchestra is itself an actor.** Stands minted at runtime, a tenant's
+  instance growing a canister (`sync: manual`, issue #51) — not drift, the system
+  working. This holds even with a single controller, so it is not only a
+  consequence of decentralized control.
+
+So the chain is the source of truth. The conductor records each release into its
+stored document, `casals export` regenerates a sheet from what is live, and
+`casals plan` / `casals oracle` **report** divergence rather than erase it. After
+hand-off the tooling may read, ship artifacts the conductor authorizes, and file
+proposals — it must never assert the file over the chain. Keeping a sheet
+hand-edited and re-running `up` on a governed orchestra is the one way to get
+this wrong: it will plan to undo governance changes it knows nothing about.
+
+The full argument is the *genesis document* slide in
+[docs/philosophy](docs/philosophy/README.md).
+
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
 
 After code changes: re-run `casals up` (it rebuilds the conductor WASM when sources changed).
@@ -151,7 +183,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | query | `list_permissions` | assignable commander permission keys |
 | query | `list_backend_controllers` | Casals canister IC controllers (for Commanders UI) |
 | update | `create_section` / `create_stand` / `create_canister` | structure |
-| update | `propose_upgrade` / `sync_content` | imperative release of a baton-governed member / a frontend bundle |
+| update | `propose_upgrade` / `sync_content` / `deploy_content` | imperative release of a baton-governed member / a frontend bundle (one round / all rounds) |
 | update | `set_commander` / `set_permissions` | commander principals + permission grants |
 | update | `upgrade_to` | stand/canister upgrade with snapshot rollback |
 | update | `add_authorized_wasm` / `remove_authorized_wasm` | WASM catalog |

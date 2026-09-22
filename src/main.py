@@ -54,6 +54,8 @@ from commanders import (
     apply_commanders_from_spec,
     claim_code_slot,
     commander_principals,
+    delegation_error,
+    effective_grant,
     entity_has_permission,
     has_entry,
     is_commander,
@@ -227,6 +229,7 @@ from wasm_types import infer_wasm_type, wasm_type_of_wasm
 # the earlier imports have initialised the WASI import system.
 from sheet_api import (
     _declared_world,
+    _now_ns,
     apply_gen as _apply_plan_gen,
     bind_conductor_impl,
     build_stand_round_gen as _build_stand_round_gen,
@@ -239,7 +242,7 @@ from sheet_api import (
     set_sheet_impl,
 )
 from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc
-from live_state import _asset_hashes_gen
+from live_state import _asset_encodings_gen
 from planner import desired_assets
 
 # IC HTTP gateway types (GET /version — gos-as-a-service#39).
@@ -650,6 +653,61 @@ def _can_assign_commanders() -> bool:
 def _require_assign_commanders() -> None:
     if not _can_assign_commanders():
         raise Exception("unauthorized: caller is not a Casals controller or a conductor commander with 'commander.assign'")
+
+
+def _require_bounded_delegation(entity, section, target: str, new_perms, *, removing: bool = False) -> None:
+    """Bounded delegation for every commander-mutating path (set_commander,
+    set_permissions, remove_commander, create_stand's initial commanders).
+
+    Controllers (deployer, multisig) are unbounded. Anyone else may only act
+    within ``commanders.effective_grant`` — the union of what they hold on the
+    orchestra rung and, for a stand target, on its section — and never on
+    their own entry (``commanders.delegation_error``). ``entity`` is the
+    section or stand being edited; ``section`` its parent (``None`` for a
+    section target, whose ceiling is the orchestra rung alone)."""
+    if _is_controller():
+        return
+    if is_code_checksum(target):
+        target = normalize_code_checksum(target)
+    list(Section.instances())
+    ceiling = effective_grant(_caller(), Section[SYNTHETIC_SECTION_CONDUCTOR], section)
+    current = permissions_for(entity, target) if has_entry(entity, target) else None
+    # A missing ``permissions`` has always meant full access ("") — the bound
+    # must see it as such, not as "nothing to check".
+    new = None if removing else ("" if new_perms is None else new_perms)
+    why = delegation_error(_caller(), ceiling, target, current, new)
+    if why:
+        raise Exception(why)
+
+
+def _require_bounded_initial_commanders(section, spec: dict) -> None:
+    """The commanders a new stand is born with (``create_stand``'s
+    ``commanders`` / ``commander_principal`` + ``permissions``) go through the
+    same bound as ``set_commander`` — otherwise ``stand.create`` alone would be
+    a side door to a ``*`` grant. Controllers are unbounded; so are open-access
+    callers, where the whole point is that anyone may run their own stand."""
+    if _is_controller() or (_settings().open_access and _caller() != ANONYMOUS):
+        return
+    declared = spec.get("commanders")
+    if isinstance(declared, list) and declared:
+        pairs = [
+            (item.get("principal"), item.get("permissions", "")) if isinstance(item, dict) else (item, "")
+            for item in declared
+        ]
+    else:
+        legacy = (spec.get("commander_principal") or "").strip()
+        pairs = [(legacy, spec.get("permissions"))] if legacy else []
+    if not pairs:
+        return
+    list(Section.instances())
+    ceiling = effective_grant(_caller(), Section[SYNTHETIC_SECTION_CONDUCTOR], section)
+    for principal, perms in pairs:
+        # A brand-new stand: the creator naming themselves is fine (there is no
+        # own entry to inflate), so only the grant bound applies here. A missing
+        # ``permissions`` is full access, as everywhere else.
+        why = delegation_error("", ceiling, principal, None, "" if perms is None else perms)
+        if why:
+            raise Exception(why)
 
 
 def _section_commander_can(sec, permission: str) -> bool:
@@ -1373,6 +1431,7 @@ def create_stand(args: text) -> text:
                 _schedule_stand_build(name)
             return _ok(name=name, members=merged, created=False)
         _require_can_add_in_section(sec, "stand.create")
+        _require_bounded_initial_commanders(sec, params)
         dk = Stand(name=name)
         dk.section = sec
         dk.description = (params.get("description") or "")[:512]
@@ -1731,8 +1790,12 @@ def set_commander(args: text) -> text:
     """Add or update a commander for a section or stand (does not remove others).
 
     Authorization:
-      - Casals controllers may set any section or stand commander.
-      - A section commander may appoint stand commanders within that section.
+      - Casals controllers may set any section or stand commander, any grant.
+      - A conductor commander holding ``commander.assign`` may set section and
+        stand commanders; a section commander holding it, stand commanders in
+        that section. Both are *bounded* (``_require_bounded_delegation``):
+        never their own entry, never a target holding more than they do, never
+        a grant exceeding what they hold (``*`` needs ``*``).
 
     Args (JSON): {"section": str} or {"stand": str} + {"commander_principal": str}.
 
@@ -1761,6 +1824,7 @@ def set_commander(args: text) -> text:
                         "unauthorized: must be a Casals controller, a conductor commander or "
                         "a section commander with 'commander.assign' to set a stand commander"
                     )
+            _require_bounded_delegation(dk, dk.section, commander, perms)
             add_commander(dk, commander, perms)
             _append_event("commander_set", "", {"stand": dk.name, "commander": commander})
         elif params.get("section"):
@@ -1769,6 +1833,7 @@ def set_commander(args: text) -> text:
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
+            _require_bounded_delegation(sec, None, commander, perms)
             add_commander(sec, commander, perms)
             _append_event("commander_set", "", {"section": sec.name, "commander": commander})
         else:
@@ -1782,7 +1847,8 @@ def set_commander(args: text) -> text:
 def remove_commander(args: text) -> text:
     """Remove a commander from a section or stand.
 
-    Authorization mirrors set_commander.
+    Authorization mirrors set_commander, including bounded delegation: a
+    non-controller cannot remove themselves or anyone holding more than they do.
     Args (JSON): {"section"|"stand": str, "commander_principal": str}.
     """
     try:
@@ -1804,6 +1870,7 @@ def remove_commander(args: text) -> text:
                         "unauthorized: must be a Casals controller, a conductor commander or "
                         "a section commander with 'commander.assign' to remove a stand commander"
                     )
+            _require_bounded_delegation(dk, dk.section, commander, None, removing=True)
             if not _remove_commander_entity(dk, commander):
                 return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
             _append_event("commander_removed", "", {"stand": dk.name, "commander": commander})
@@ -1813,6 +1880,7 @@ def remove_commander(args: text) -> text:
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
+            _require_bounded_delegation(sec, None, commander, None, removing=True)
             if not _remove_commander_entity(sec, commander):
                 return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
             _append_event("commander_removed", "", {"section": sec.name, "commander": commander})
@@ -1827,10 +1895,16 @@ def remove_commander(args: text) -> text:
 def set_permissions(args: text) -> text:
     """Update the permission grant for one commander on a section or stand.
 
-    Authorization mirrors set_commander.
+    Authorization mirrors set_commander (which can already rewrite an existing
+    commander's grant, so the two must agree), bounded delegation included:
+      - Casals controllers may edit any grant.
+      - A conductor commander holding ``commander.assign`` may edit section and
+        stand grants; a section commander holding it, stand grants in that
+        section — never their own entry, never a target holding more than they
+        do, never to a grant exceeding what they hold.
 
     Args (JSON): {"section"|"stand": str, "commander_principal": str,
-                  "permissions": [str]|"*"}. 
+                  "permissions": [str]|"*"}.
     """
     try:
         params = json.loads(args)
@@ -1845,12 +1919,16 @@ def set_permissions(args: text) -> text:
             dk = Stand[params["stand"].strip()]
             if dk is None:
                 return _err(f"unknown stand '{params['stand']}'")
-            if not _is_controller():
+            if not _can_assign_commanders():
                 sec = dk.section
                 if not sec or not entity_has_permission(sec, caller, "commander.assign"):
-                    raise Exception("unauthorized: must be a controller or the section commander")
+                    raise Exception(
+                        "unauthorized: must be a Casals controller, a conductor commander or "
+                        "a section commander with 'commander.assign' to set a stand commander's permissions"
+                    )
             if not has_entry(dk, commander):
                 return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
+            _require_bounded_delegation(dk, dk.section, commander, perms)
             add_commander(dk, commander, perms)
             _append_event("permissions_set", "", {
                 "stand": dk.name,
@@ -1858,13 +1936,14 @@ def set_permissions(args: text) -> text:
                 "permissions": _parse_permissions(permissions_for(dk, commander)),
             })
         elif params.get("section"):
-            _require_admin()
+            _require_assign_commanders()
             list(Section.instances())
             sec = Section[params["section"].strip()]
             if sec is None:
                 return _err(f"unknown section '{params['section']}'")
             if not has_entry(sec, commander):
                 return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
+            _require_bounded_delegation(sec, None, commander, perms)
             add_commander(sec, commander, perms)
             _append_event("permissions_set", "", {
                 "section": sec.name,
@@ -2746,13 +2825,90 @@ def propose_upgrade(args: text) -> Async[text]:
         return _err(str(e))
 
 
+def _sync_content_round_gen(name: str, params: dict) -> dict:
+    """One bounded round of shipping a store bundle to a frontend (the body
+    shared by ``sync_content`` and the ``deploy_content`` timer): every file of
+    the store namespace plus the canister's rendered `files` from the sheet,
+    compared by sha256; files that left the bundle are removed once the last
+    round has written everything. Authorization is the caller's job. Returns
+    the ``_ok``/``_err`` payload as a dict."""
+    list(Canister.instances())
+    st = Canister[name]
+    if st is None or not (st.canister_id or "").strip():
+        return {"ok": False, "error": f"unknown canister '{name}'"}
+    sheet, env, _sh = load_sheet_doc()
+    spec = {}
+    if sheet:
+        found = find_canister(_declared_world(env, sheet), name)
+        spec = dict(found[2]) if found else {}
+    ns = (params.get("namespace") or spec.get("content") or "").strip()
+    if not ns:
+        return {"ok": False, "error": f"{name}: no namespace given and the sheet declares no content for it"}
+    spec["content"] = ns
+    published = {}
+    try:
+        files = yield from _list_registry_files(ns)
+        published[ns] = {f["path"]: {"sha256": f.get("sha256", "")} for f in files if f.get("path")}
+    except Exception as e:
+        return {"ok": False, "error": f"store namespace {ns} unreadable: {e}"}
+    if not published[ns]:
+        return {"ok": False, "error": f"store namespace {ns} is empty; publish the bundle first"}
+    # The caller's `bundle_sha256` is a checksum on the store→canister hop:
+    # what it saw in the store is what gets written, or nothing is.
+    store_hash = bundle_hash({p: m.get("sha256", "") for p, m in published[ns].items()})
+    expected = (params.get("bundle_sha256") or "").strip().lower()
+    if expected and expected != store_hash:
+        return {"ok": False, "error": f"store bundle {ns} is {store_hash[:12]}…, expected {expected[:12]}…; "
+                                       "the store changed since it was read — check it and retry"}
+    desired = desired_assets(spec, published) or {}
+    encodings = yield from _asset_encodings_gen(st.canister_id.strip())
+    live = {k: e["identity"] for k, e in encodings.items() if e.get("identity")}
+    # Out of sync: a different identity hash, or a leftover compressed
+    # encoding (an `icp sync` deploy's gzip/br) — browsers would be served that
+    # instead of the identity bytes, so the key is rewritten and it is dropped.
+    keys = sorted(k for k, sha in desired.items()
+                  if live.get(k) != sha or any(e != "identity" for e in encodings.get(k, {})))
+    delete_keys = sorted(k for k in encodings if k not in desired)
+    record = dict(canister=name, stand_name=st.stand.name if st.stand else "",
+                  section_name=st.stand.section.name if st.stand and st.stand.section else "",
+                  source=params.get("source"))
+    if not keys and not delete_keys:
+        record_content_release(ns, store_hash, **record)
+        return {"ok": True, "written": 0, "deleted": 0, "remaining": 0, "bundle_sha256": store_hash, "namespace": ns}
+    done = yield from _sync_assets_gen(st.canister_id.strip(), ns, keys, spec.get("files") or {},
+                                       sorted(desired), delete_keys if len(keys) <= SYNC_MAX_FILES else [])
+    written = len(done.get("stored") or [])
+    deleted = len(done.get("deleted") or [])
+    # Left for the next round: files still to write, and — once every write has
+    # landed — files that left the bundle and are still on the canister. A
+    # deploy is not done while a stale asset (an old build's chunk) is served.
+    remaining = max(0, len(keys) - written) + max(0, len(delete_keys) - deleted)
+    _append_event("content_synced", st.canister_id.strip(),
+                  {"name": name, "namespace": ns, "written": written, "deleted": deleted, "remaining": remaining})
+    if not remaining:
+        record_content_release(ns, store_hash, **record)
+    return {"ok": True, "written": written, "deleted": deleted,
+            "remaining": remaining, "bundle_sha256": store_hash, "namespace": ns}
+
+
+def _content_target(params: dict):
+    """(Canister, error) for a content endpoint's ``canister`` argument, after the
+    `canister.deploy` check on its stand."""
+    name = (params.get("canister") or "").strip()
+    list(Canister.instances())
+    st = Canister[name]
+    if st is None or not (st.canister_id or "").strip():
+        return None, f"unknown canister '{name}'"
+    _require_commander(st.stand, "canister.deploy")
+    return st, ""
+
+
 @update
 def sync_content(args: text) -> Async[text]:
-    """Make a frontend serve exactly a published bundle: every file of the store
-    namespace plus the canister's rendered `files` from the sheet, compared by
-    sha256; files that left the bundle are removed. Bounded per call — repeat
-    while `remaining` > 0. This is how `casals upgrade --content` ships a new
-    frontend build after day one.
+    """Make a frontend serve exactly a published bundle — one bounded round
+    (``SYNC_MAX_FILES`` files); repeat while `remaining` > 0. This is how
+    `casals upgrade --content` ships a new frontend build after day one; the
+    UI and the multisig use ``deploy_content``, which runs the rounds itself.
 
     Args (JSON): {canister, namespace?, bundle_sha256?, source?} — the namespace
     defaults to the canister's `content` in the sheet; `bundle_sha256` is an
@@ -2763,59 +2919,130 @@ def sync_content(args: text) -> Async[text]:
     bundle_sha256}."""
     try:
         params = json.loads(args)
-        name = (params.get("canister") or "").strip()
-        list(Canister.instances())
-        st = Canister[name]
-        if st is None or not (st.canister_id or "").strip():
-            return _err(f"unknown canister '{name}'")
-        _require_commander(st.stand, "canister.deploy")
-        sheet, env, _sh = load_sheet_doc()
-        spec = {}
-        if sheet:
-            found = find_canister(_declared_world(env, sheet), name)
-            spec = dict(found[2]) if found else {}
-        ns = (params.get("namespace") or spec.get("content") or "").strip()
-        if not ns:
-            return _err(f"{name}: no namespace given and the sheet declares no content for it")
-        spec["content"] = ns
-        published = {}
-        try:
-            files = yield from _list_registry_files(ns)
-            published[ns] = {f["path"]: {"sha256": f.get("sha256", "")} for f in files if f.get("path")}
-        except Exception as e:
-            return _err(f"store namespace {ns} unreadable: {e}")
-        if not published[ns]:
-            return _err(f"store namespace {ns} is empty; publish the bundle first")
-        # The caller's `bundle_sha256` is a checksum on the store→canister hop:
-        # what it saw in the store is what gets written, or nothing is.
-        store_hash = bundle_hash({p: m.get("sha256", "") for p, m in published[ns].items()})
-        expected = (params.get("bundle_sha256") or "").strip().lower()
-        if expected and expected != store_hash:
-            return _err(f"store bundle {ns} is {store_hash[:12]}…, expected {expected[:12]}…; "
-                        "the store changed since it was read — check it and retry")
-        desired = desired_assets(spec, published) or {}
-        live = yield from _asset_hashes_gen(st.canister_id.strip())
-        keys = sorted(k for k, sha in desired.items() if live.get(k) != sha)
-        delete_keys = sorted(k for k in live if k not in desired)
-        record = dict(canister=name, stand_name=st.stand.name if st.stand else "",
-                      section_name=st.stand.section.name if st.stand and st.stand.section else "",
-                      source=params.get("source"))
-        if not keys and not delete_keys:
-            record_content_release(ns, store_hash, **record)
-            return _ok(written=0, deleted=0, remaining=0, bundle_sha256=store_hash)
-        yield from _sync_assets_gen(st.canister_id.strip(), ns, keys, spec.get("files") or {},
-                                    sorted(desired), delete_keys if len(keys) <= SYNC_MAX_FILES else [])
-        written = min(len(keys), SYNC_MAX_FILES)
-        remaining = max(0, len(keys) - written)
-        _append_event("content_synced", st.canister_id.strip(),
-                      {"name": name, "namespace": ns, "written": written, "remaining": remaining})
-        if not remaining:
-            record_content_release(ns, store_hash, **record)
-        return _ok(written=written, deleted=len(delete_keys) if not remaining else 0, remaining=remaining,
-                   bundle_sha256=store_hash)
+        st, err = _content_target(params)
+        if st is None:
+            return _err(err)
+        res = yield from _sync_content_round_gen(st.name, params)
+        return json.dumps(res)
     except Exception as e:
         _log.error(f"sync_content error: {e}")
         return _err(str(e))
+
+
+# ── Content deploys ───────────────────────────────────────────────────────────
+# `deploy_content` is the one-call form of `sync_content`: the first round runs
+# inline (so a bad namespace or checksum fails the call itself — the multisig
+# gets a real result text), the rest on a one-shot timer like a stand build.
+# Progress lives in `_content_deploys` (a deploy takes seconds; it is not kept
+# across upgrades) and every round leaves a `content_synced` event.
+
+_CONTENT_DEPLOY_DELAY_S = 1
+_CONTENT_DEPLOY_MAX_ROUNDS = 100   # SYNC_MAX_FILES per round
+_content_deploys: dict = {}        # canister name → progress record
+_content_deploy_params: dict = {}  # canister name → the request (re-checked each round)
+_content_deploy_queue: list = []
+_content_deploy_timer = {"id": None}
+
+
+def _content_deploy_apply(name: str, res: dict) -> dict:
+    """Fold one round's result into the canister's record; return the record."""
+    rec = _content_deploys.get(name) or {"canister": name, "written": 0, "deleted": 0, "rounds": 0}
+    rec["rounds"] = int(rec.get("rounds") or 0) + 1
+    rec["updated_at"] = _now_ns()
+    if res.get("ok"):
+        rec["written"] = int(rec.get("written") or 0) + int(res.get("written") or 0)
+        rec["deleted"] = int(rec.get("deleted") or 0) + int(res.get("deleted") or 0)
+        rec["remaining"] = int(res.get("remaining") or 0)
+        rec["bundle_sha256"] = res.get("bundle_sha256") or rec.get("bundle_sha256") or ""
+        rec["namespace"] = res.get("namespace") or rec.get("namespace") or ""
+        rec["status"] = "done" if not rec["remaining"] else "running"
+        rec["error"] = ""
+    else:
+        rec["status"] = "failed"
+        rec["error"] = str(res.get("error") or "")[:600]
+    if rec["status"] == "running" and rec["rounds"] >= _CONTENT_DEPLOY_MAX_ROUNDS:
+        rec["status"] = "failed"
+        rec["error"] = f"not finished after {rec['rounds']} rounds"
+    _content_deploys[name] = rec
+    if rec["status"] != "running":
+        _content_deploy_params.pop(name, None)
+        _append_event("content_deployed" if rec["status"] == "done" else "content_deploy_failed", "",
+                      {k: rec.get(k) for k in ("canister", "namespace", "bundle_sha256", "written", "deleted",
+                                               "rounds", "error") if rec.get(k) not in (None, "")})
+    return rec
+
+
+def _schedule_content_deploy(name: str, delay_s: int = _CONTENT_DEPLOY_DELAY_S) -> None:
+    if name not in _content_deploy_queue:
+        _content_deploy_queue.append(name)
+    if _content_deploy_timer["id"] is None:
+        try:
+            _content_deploy_timer["id"] = ic.set_timer(Duration(delay_s), _content_deploy_cb)
+        except Exception as e:  # pragma: no cover - host tests without a timer API
+            _log.error(f"could not schedule the content deploy of {name}: {e}")
+
+
+def _content_deploy_cb():
+    """Timer callback (generator; never raises): one more round for the deploy
+    at the head of the queue, then re-arm while anything is still running."""
+    _content_deploy_timer["id"] = None
+    if not _content_deploy_queue:
+        return
+    name = _content_deploy_queue.pop(0)
+    params = _content_deploy_params.get(name)
+    if params is None:
+        return
+    try:
+        res = yield from _sync_content_round_gen(name, params)
+    except Exception as e:  # pragma: no cover - defensive
+        res = {"ok": False, "error": str(e)}
+    rec = _content_deploy_apply(name, res)
+    if rec["status"] == "running":
+        _content_deploy_queue.append(name)
+    if _content_deploy_queue:
+        _schedule_content_deploy(_content_deploy_queue[0])
+
+
+@update
+def deploy_content(args: text) -> Async[text]:
+    """Ship the store's bundle to a frontend — all rounds, one call. The first
+    round runs now (a bad namespace or checksum is this call's error); when
+    files remain, the conductor keeps going on its own timer and
+    ``content_deploys`` reports progress. Requires `canister.deploy` on the
+    stand (conductor controllers — the governance multisig — bypass, so a
+    ``CallCanister`` proposal is the governed form of a frontend release).
+
+    Args (JSON): as ``sync_content``. Returns the deploy record:
+    {canister, namespace, bundle_sha256, status: running|done|failed,
+     written, deleted, remaining, rounds, error}."""
+    try:
+        params = json.loads(args)
+        st, err = _content_target(params)
+        if st is None:
+            return _err(err)
+        name = st.name
+        if (_content_deploys.get(name) or {}).get("status") == "running":
+            return _err(f"a content deploy of '{name}' is already running")
+        _content_deploys.pop(name, None)
+        _content_deploy_params[name] = dict(params)
+        res = yield from _sync_content_round_gen(name, params)
+        rec = _content_deploy_apply(name, res)
+        if rec["status"] == "running":
+            _schedule_content_deploy(name)
+        elif rec["status"] == "failed":
+            return json.dumps({**rec, "ok": False})
+        return _ok(**rec)
+    except Exception as e:
+        _log.error(f"deploy_content error: {e}")
+        return _err(str(e))
+
+
+@query
+def content_deploys(_args: text) -> text:
+    """Progress of every content deploy this conductor has run since its last
+    upgrade (``deploy_content``), newest first."""
+    rows = sorted(_content_deploys.values(), key=lambda r: -int(r.get("updated_at") or 0))
+    return _ok(deploys=rows)
 
 
 @update

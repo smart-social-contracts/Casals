@@ -107,6 +107,11 @@ class DeleteAssetArg(Record):
     key: text
 
 
+class UnsetAssetContentArg(Record):
+    key: text
+    content_encoding: text
+
+
 class AssetCanisterService(Service):
     @service_update
     def grant_permission(self, arg: GrantPermissionArg) -> void: ...
@@ -119,6 +124,12 @@ class AssetCanisterService(Service):
 
     @service_update
     def delete_asset(self, arg: DeleteAssetArg) -> void: ...
+
+    # Drop one encoding of an asset. `store` writes the `identity` encoding
+    # only and leaves any `gzip`/`br` a previous `icp sync` uploaded, so a
+    # browser (which prefers compressed) would keep getting the old bytes.
+    @service_update
+    def unset_asset_content(self, arg: UnsetAssetContentArg) -> void: ...
 
     @service_query
     def list(self, arg: ListArgs) -> Vec[AssetEntry]: ...

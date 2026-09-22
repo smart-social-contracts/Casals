@@ -62,10 +62,11 @@
       ]
     },
     "frontend": {
-      "$comment": "The Casals UI of this orchestra, served at demo.ic-casals.tech (see domains). $self is a controller so the conductor can write /.well-known/ic-domains into it (sync_assets needs Commit on the asset canister); the multisig stays the governing controller.",
+      "$comment": "The Casals UI of this orchestra, served at demo.ic-casals.tech (see domains). $self is a controller so the conductor can write /.well-known/ic-domains and the UI bundle into it (Commit on the asset canister); the multisig stays the governing controller. `content` names the store namespace the UI ships from (registry.publish frontend/casals-ui/main).",
       "wasm": "casals-frontend",
       "kind": "frontend",
       "mode": "managed",
+      "content": "frontend/casals-ui/main",
       "controllers": [
         "$self",
         "$multisig"
@@ -184,6 +185,11 @@
       {
         "path": "frontend/website/main",
         "source": "local:../casals-website/dist"
+      },
+      {
+        "$comment": "The Casals UI itself (frontend/ → repo-root dist/, `npm --prefix frontend run build` or scripts/release.sh). Ships like any bundle: Files → Upload bundle, then Orchestra → Deploy frontend bundle (or a multisig proposal), or `casals upgrade --content frontend/casals-ui/main`.",
+        "path": "frontend/casals-ui/main",
+        "source": "local:dist"
       }
     ]
   },

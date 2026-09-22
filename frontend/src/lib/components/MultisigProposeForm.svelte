@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { AuthorizedWasm, Tree } from '$lib/api';
-  import { backendCanisterId, casalsMetadata, getTree, listAuthorizedWasms } from '$lib/api';
+  import type { AuthorizedWasm, Sheet, Tree } from '$lib/api';
+  import { backendCanisterId, casalsMetadata, getSheetDocument, getTree, listAuthorizedWasms, storeBundle } from '$lib/api';
+  import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
+  import { isFrontend } from '$lib/orchestraList';
   import { get } from 'svelte/store';
   import { identity } from '$lib/auth';
   import { resolveCanisterControllers } from '$lib/controllerAccess';
@@ -57,6 +59,51 @@
   let catalogLoading = $state(false);
   let storeId = $state('');
   let wasmKey = $state('');
+
+  // Deploy frontend bundle: the committee asks the conductor (`deploy_content`)
+  // to ship a store namespace to a frontend; the store's bundle hash is pinned.
+  let storedSheet = $state<Sheet | null>(null);
+  let bundleNamespace = $state('');
+  let bundleHash = $state('');
+  let bundleFiles = $state(0);
+  let bundleReading = $state(false);
+  let bundleError = $state('');
+  const isBundleAction = $derived(actionType === 'DeployBundle');
+  const bundleNamespaces = $derived(knownContentNamespaces(storedSheet));
+  const bundleTargets = $derived(canisterOptions.filter((o) => isFrontend({ kind: 'backend', wasm_key: o.wasm_key, wasm_type: o.wasm_type })));
+
+  async function ensureStoredSheet() {
+    if (storedSheet) return;
+    storedSheet = await getSheetDocument().then((d) => d.sheet).catch(() => null);
+  }
+
+  async function readBundle() {
+    bundleHash = '';
+    bundleFiles = 0;
+    bundleError = '';
+    const ns = bundleNamespace.trim();
+    if (!ns || !namespaceOk(ns)) return;
+    bundleReading = true;
+    try {
+      const b = await storeBundle(ns);
+      bundleFiles = Object.keys(b.files ?? {}).length;
+      if (!bundleFiles) bundleError = 'The store holds nothing under this namespace — upload the bundle first (Files → Upload bundle).';
+      else bundleHash = b.bundle_sha256;
+    } catch (e: unknown) {
+      bundleError = e instanceof Error ? e.message : String(e);
+    } finally {
+      bundleReading = false;
+    }
+  }
+
+  async function syncBundleTarget() {
+    if (!isBundleAction) return;
+    await ensureStoredSheet();
+    if (!bundleTargets.some((o) => o.id === targetCanister)) targetCanister = bundleTargets[0]?.id ?? '';
+    const name = canisterOptions.find((o) => o.id === targetCanister)?.label ?? '';
+    bundleNamespace = defaultNamespaceFor(storedSheet, name);
+    await readBundle();
+  }
 
   const isControllerAction = $derived(
     actionType === 'SetCanisterControllers' ||
@@ -256,6 +303,11 @@
   async function onActionTypeChange() {
     pickDefaultTarget();
     syncControllersTextForAction();
+    if (isBundleAction) {
+      clearControllerFetchState();
+      await syncBundleTarget();
+      return;
+    }
     if (isUpgradeAction) {
       clearControllerFetchState();
       await ensureCatalog();
@@ -271,6 +323,10 @@
 
   async function onCanisterChange() {
     syncControllersTextForAction();
+    if (isBundleAction) {
+      await syncBundleTarget();
+      return;
+    }
     if (isUpgradeAction) {
       syncWasmKey();
       return;
@@ -397,6 +453,9 @@
         add_controllers: '',
         remove_controllers: '',
         casals_backend: backendCanisterId(),
+        target_name: selectedOption?.label ?? '',
+        namespace: bundleNamespace,
+        bundle_sha256: bundleHash,
         stand: standName,
         canister_id: targetCanister,
         canister_ids: destroyIdsText || targetCanister,
@@ -433,6 +492,7 @@
         <option value="AddCanisterControllers">Add controllers</option>
         <option value="RemoveCanisterControllers">Remove controllers</option>
         <option value="UpgradeCanister">Upgrade canister</option>
+        <option value="DeployBundle">Deploy frontend bundle</option>
         <option value="ManageSigners">Manage signers</option>
         <option value="AddCommander">Add baton commander</option>
         <option value="RemoveCommander">Remove baton commander</option>
@@ -483,6 +543,37 @@
             placeholder="aaaaa-aa"
             onchange={onCanisterChange}
           />
+        {/if}
+      {/if}
+
+      {#if isBundleAction}
+        <label class="label" for="ms-bundle-target">Frontend</label>
+        {#if bundleTargets.length}
+          <select id="ms-bundle-target" class="input text-xs font-mono" bind:value={targetCanister} onchange={onCanisterChange}>
+            {#each bundleTargets as opt (opt.id)}
+              <option value={opt.id}>{opt.label}</option>
+            {/each}
+          </select>
+        {:else}
+          <p class="text-xs text-red-700">No frontend (asset canister) in the orchestra.</p>
+        {/if}
+        <label class="label" for="ms-bundle-ns">Store namespace</label>
+        <input id="ms-bundle-ns" class="input text-xs font-mono" list="ms-bundle-namespaces" bind:value={bundleNamespace} onchange={readBundle} placeholder="frontend/<app>-assets/main" />
+        <datalist id="ms-bundle-namespaces">
+          {#each bundleNamespaces as ns (ns)}<option value={ns}></option>{/each}
+        </datalist>
+        {#if bundleReading}
+          <p class="text-xs text-[var(--color-text-secondary)]">Reading the store…</p>
+        {:else if bundleError}
+          <p class="text-xs text-amber-700">{bundleError}</p>
+        {:else if bundleHash}
+          <p class="text-xs text-[var(--color-text-secondary)] font-mono break-all">
+            Store bundle {bundleFiles} file(s) · {bundleHash}
+          </p>
+          <p class="text-xs text-[var(--color-text-secondary)]">
+            On approval the committee calls the conductor's <span class="font-mono">deploy_content</span>; the conductor writes this
+            bundle into the frontend in rounds, refusing if the store changed meanwhile.
+          </p>
         {/if}
       {/if}
 

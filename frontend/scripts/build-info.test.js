@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { buildVersionPayload, writeVersionFile, ISO_Z, gitReleaseTag, displayVersion } from './build-info.js';
+import { buildVersionPayload, writeVersionFile, ISO_Z, gitReleaseTag, displayVersion, buildStamp } from './build-info.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -15,6 +15,15 @@ test('buildVersionPayload always includes canister and ISO-8601 UTC built_at', (
   // In a git checkout the sha is stamped; outside git it is omitted honestly.
   if (payload.sha !== undefined) {
     assert.match(payload.sha, /^[0-9a-f]{7,}$/);
+  }
+});
+
+test('SOURCE_DATE_EPOCH pins built_at (reproducible release builds); otherwise the clock', () => {
+  assert.equal(buildStamp({ SOURCE_DATE_EPOCH: '1758470400' }), '2025-09-21T16:00:00Z');
+  assert.equal(buildStamp({ SOURCE_DATE_EPOCH: ' 1758470400 ' }), '2025-09-21T16:00:00Z');
+  // Unset, empty or malformed → wall clock, still ISO-8601 UTC.
+  for (const env of [{}, { SOURCE_DATE_EPOCH: '' }, { SOURCE_DATE_EPOCH: 'yesterday' }]) {
+    assert.match(buildStamp(env), ISO_Z);
   }
 });
 
