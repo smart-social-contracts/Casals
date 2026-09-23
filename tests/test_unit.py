@@ -29,6 +29,16 @@ def test_canister_url_frontend_vs_backend():
     assert util.canister_url("backend", "") == ""
 
 
+def test_normalize_notification_email():
+    assert util.normalize_notification_email("") == ""
+    assert util.normalize_notification_email("  ops@example.com  ") == "ops@example.com"
+    assert util.normalize_notification_email(None) == ""
+    with pytest.raises(ValueError, match="single"):
+        util.normalize_notification_email("ops@example.com, alerts@example.org")
+    with pytest.raises(ValueError, match="valid"):
+        util.normalize_notification_email("not-an-email")
+
+
 def test_to_hex_handles_bytes_list_str():
     assert util.to_hex(b"\x01\x02") == "0102"
     assert util.to_hex([1, 2]) == "0102"

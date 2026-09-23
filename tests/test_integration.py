@@ -162,13 +162,32 @@ class TestSettingsAndCommander:
         # disable so the off-chain monitor isn't wired into unrelated tests
         _ok("set_settings", {"monitor_enabled": False})
 
-    def test_alert_emails_roundtrip(self, canister):
-        _ok("set_settings", {
-            "alert_emails": "ops@example.com, alerts@example.org",
-        })
+    def test_my_notification_email(self, canister):
+        _ok("set_my_settings", {"notification_email": "me@example.com"})
+        mine = call_canister("get_my_settings")
+        assert mine["notification_email"] == "me@example.com"
         md = call_canister("casals_metadata")
-        assert md["alert_emails"] == "ops@example.com, alerts@example.org"
+        assert "me@example.com" in md["notification_emails"]
+        _ok("set_my_settings", {"notification_email": ""})
+        mine = call_canister("get_my_settings")
+        assert mine["notification_email"] == ""
+        md = call_canister("casals_metadata")
+        assert "me@example.com" not in (md.get("notification_emails") or [])
+
+    def test_notification_email_roundtrip(self, canister):
+        _ok("set_settings", {"notification_email": "ops@example.com"})
+        md = call_canister("casals_metadata")
+        assert md["notification_email"] == "ops@example.com"
+        # Same column, so monitors that still read the old key keep working.
+        assert md["alert_emails"] == "ops@example.com"
+        res = call_canister("set_settings", json.dumps({
+            "notification_email": "ops@example.com, alerts@example.org",
+        }))
+        assert res.get("ok") is False
+        assert "single" in res.get("error", "")
         _ok("set_settings", {"alert_emails": ""})
+        md = call_canister("casals_metadata")
+        assert md["notification_email"] == ""
 
     def test_set_commander_on_section(self, canister):
         _ok("create_section", {"name": "sec-cmd"})

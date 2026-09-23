@@ -133,6 +133,8 @@ service : {
   "get_plan" : (text) -> (text) query;
   "last_apply" : () -> (text) query;
   "get_bindings" : () -> (text) query;
+  "get_my_settings" : () -> (text) query;
+  "set_my_settings" : (text) -> (text);
   "set_settings" : (text) -> (text);
   "create_section" : (text) -> (text);
   "create_stand" : (text) -> (text);

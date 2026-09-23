@@ -198,6 +198,7 @@ from models import (
     Section,
     Settings,
     StoreUploadGrant,
+    UserSettings,
     Canister,
     CanisterKind,
     CanisterStatus,
@@ -346,6 +347,40 @@ def _valid_user_tag(t: str) -> bool:
         if not (("a" <= ch <= "z") or ("0" <= ch <= "9") or ch in "-_"):
             return False
     return True
+
+
+def _normalize_notification_email(raw) -> str:
+    """Inline copy of util.normalize_notification_email.
+
+    Basilisk lazy modules can miss a new ``util`` export on upgrade, and a
+    ``from util import`` of that name traps ``post_upgrade``.
+    """
+    addr = ("" if raw is None else str(raw)).strip()
+    if not addr:
+        return ""
+    if any(ch.isspace() for ch in addr) or "," in addr or ";" in addr:
+        raise ValueError("enter a single email address")
+    if len(addr) > 254:
+        raise ValueError("notification email is too long")
+    at = addr.find("@")
+    dot = addr.rfind(".")
+    if at <= 0 or dot < at + 2 or dot >= len(addr) - 1 or "@" in addr[at + 1:]:
+        raise ValueError("enter a valid email address")
+    return addr
+
+
+def _user_notification_emails() -> list:
+    """Addresses users asked the monitor to use. One per principal, deduped."""
+    list(UserSettings.instances())
+    out = []
+    seen = set()
+    for row in UserSettings.instances():
+        addr = (getattr(row, "notification_email", "") or "").strip()
+        if not addr or addr in seen:
+            continue
+        seen.add(addr)
+        out.append(addr)
+    return out
 
 
 def _normalize_user_tags(tags) -> list:
@@ -866,7 +901,11 @@ def casals_metadata() -> text:
         # never as a controller; its convert requests are throttled on-chain.
         "monitor_access": "allowed_viewer",
         "monitor_convert_min_interval_secs": MONITOR_CONVERT_MIN_INTERVAL_SECS,
+        # Legacy orchestra-wide address (both names). Per-user addresses are
+        # ``notification_emails``.
+        "notification_email": (s.alert_emails or ""),
         "alert_emails": (s.alert_emails or ""),
+        "notification_emails": _user_notification_emails(),
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
         "treasury_reserve": int(s.treasury_reserve or 0),
@@ -1256,6 +1295,45 @@ def get_bindings() -> text:
         return _err(str(e))
 
 
+@query
+def get_my_settings() -> text:
+    """The caller's own settings. Notification email is per principal."""
+    caller = _caller()
+    if caller == ANONYMOUS:
+        return _err("authentication required")
+    row = UserSettings[caller]
+    email = (row.notification_email or "") if row is not None else ""
+    return _ok(notification_email=email)
+
+
+@update
+def set_my_settings(args: text) -> text:
+    """The caller sets their own notification email.
+
+    Any commander or controller may write this row. It is not a platform
+    setting and does not require being an IC controller. Args (JSON):
+    {notification_email: str}. Empty clears it.
+    """
+    try:
+        _require_any_commander()
+        params = json.loads(args) if args else {}
+        if "notification_email" not in params:
+            return _err("expected notification_email")
+        email = _normalize_notification_email(params.get("notification_email"))
+        caller = _caller()
+        row = UserSettings[caller]
+        if not email:
+            if row is not None:
+                row.delete()
+            return _ok(notification_email="")
+        if row is None:
+            row = UserSettings(principal=caller)
+        row.notification_email = email
+        return _ok(notification_email=email)
+    except Exception as e:
+        return _err(str(e))
+
+
 @update
 def set_settings(args: text) -> text:
     """Controller only. Args (JSON): any of
@@ -1263,7 +1341,7 @@ def set_settings(args: text) -> text:
      casals_frontend_canister_id: str,
      delegated_destroy_principals: [str],
      monitor_enabled: bool, monitor_principal: str, monitor_service_url: str,
-     alert_emails: str,
+     notification_email: str, alert_emails: str,
      orchestra_name: str, orchestra_description: str,
      default_min_cycles: int, default_topup_cycles: int, treasury_reserve: int,
      cycles_autopilot: bool, cycles_check_interval_secs: int,
@@ -1298,8 +1376,18 @@ def set_settings(args: text) -> text:
             s.monitor_principal = mid
         if "monitor_service_url" in params:
             s.monitor_service_url = (params["monitor_service_url"] or "").strip()
-        if "alert_emails" in params:
-            s.alert_emails = (params["alert_emails"] or "").strip()[:512]
+        # ``notification_email`` is the setting. ``alert_emails`` is the previous
+        # name and writes the same column when the new key is absent.
+        if "notification_email" in params or "alert_emails" in params:
+            raw = (
+                params["notification_email"]
+                if "notification_email" in params
+                else params["alert_emails"]
+            )
+            try:
+                s.alert_emails = _normalize_notification_email(raw)
+            except ValueError as e:
+                return _err(str(e))
         if "orchestra_name" in params:
             name = (params["orchestra_name"] or "").strip()
             if "\n" in name or "\r" in name:

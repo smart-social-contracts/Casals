@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, setSettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree, backendCanisterId } from '$lib/api';
+  import { casalsMetadata, setSettings, setMySettings, getMySettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree, backendCanisterId } from '$lib/api';
   import {
     describeMonitorState,
     fetchMonitorInstanceStatus,
@@ -31,11 +31,13 @@
   }
 
   const FALLBACK_CURRENCIES = ['USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CNY', 'CAD', 'AUD'];
+  const NOTIFICATION_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   let meta = $state<Metadata | null>(null);
   let loading = $state(true);
   let error = $state('');
   let saving = $state(false);
+  let savingUser = $state(false);
 
   // Editable form state — populated from the backend after load() (not in an
   // $effect, to keep reactivity explicit).
@@ -56,7 +58,7 @@
   let monitorStatus = $state<MonitorInstanceStatus | null>(null);
   let monitorStatusLoading = $state(false);
   let registerNote = $state('');
-  let alertEmails = $state('');
+  let notificationEmail = $state('');
   // Native cycles management
   let cyclesAutopilot = $state(false);
   let cyclesIcpAutoconvert = $state(true);
@@ -118,7 +120,6 @@
       monitorPrincipal = meta.monitor_principal ?? '';
       hostedBase = monitorBaseFromInstanceUrl(monitorServiceUrl) || hostedBase;
       if (meta.monitor_enabled && monitorServiceUrl) void refreshMonitorStatus();
-      alertEmails = meta.alert_emails ?? '';
       cyclesAutopilot = meta.cycles_autopilot;
       cyclesIcpAutoconvert = meta.cycles_icp_autoconvert ?? true;
       cyclesIntervalHours = Math.max(1, Math.round((meta.cycles_check_interval_secs || 3600) / 3600));
@@ -137,12 +138,27 @@
 
   onMount(load);
 
+  async function loadUserSettings() {
+    if (!get(isAuthenticated)) {
+      notificationEmail = '';
+      return;
+    }
+    try {
+      const mine = await getMySettings();
+      notificationEmail = mine.notification_email ?? '';
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Could not load your settings');
+    }
+  }
+
   // Re-check when auth or controller probe completes.
   $effect(() => {
     if ($isAuthenticated && $principal) {
       void refreshSubnetEditAccess();
+      void loadUserSettings();
     } else {
       canEditSubnetWhitelist = false;
+      notificationEmail = '';
     }
   });
 
@@ -232,7 +248,6 @@
         monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
         monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta?.monitor_principal ?? ''),
         cycles_sampling: cycleMode === 'onchain',
-        alert_emails: alertEmails.trim(),
       };
       const minC = parseTcAmount(defaultMinCycles);
       const topupC = parseTcAmount(defaultTopupCycles);
@@ -288,7 +303,6 @@
           cycles_icp_autoconvert: cyclesIcpAutoconvert,
           cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
           display_currency: displayCurrency,
-          alert_emails: alertEmails.trim(),
           ...( !Number.isNaN(minC) ? { default_min_cycles: minC } : {} ),
           ...( !Number.isNaN(topupC) ? { default_topup_cycles: topupC } : {} ),
           ...( !Number.isNaN(reserveC) ? { treasury_reserve: reserveC } : {} ),
@@ -303,6 +317,25 @@
       saving = false;
     }
   }
+
+  async function saveUser(event: Event) {
+    event.preventDefault();
+    const email = notificationEmail.trim();
+    if (email && !NOTIFICATION_EMAIL_RE.test(email)) {
+      toasts.error('Enter a single email address');
+      return;
+    }
+    savingUser = true;
+    try {
+      await setMySettings(email);
+      notificationEmail = email;
+      toasts.success(email ? 'Notification email saved' : 'Notification email cleared');
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed to save your settings');
+    } finally {
+      savingUser = false;
+    }
+  }
 </script>
 
 <svelte:head><title>Casals · Settings</title></svelte:head>
@@ -311,7 +344,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Settings</h1>
-      <p class="text-sm text-primary-500 mt-1">Platform configuration and cycles management</p>
+      <p class="text-sm text-primary-500 mt-1">Your notification email, and platform configuration</p>
     </div>
     <button class="btn-secondary btn-sm self-start" onclick={load}>
       <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -454,16 +487,46 @@
       </dl>
     </div>
 
-    <!-- Editable settings (controller only) -->
     <div class="card p-5">
-      <h2 class="text-sm font-semibold text-primary-800 mb-1">Configuration</h2>
-      <p class="text-xs text-primary-400 mb-4">Requires a Casals controller principal.</p>
-
+      <h2 class="text-sm font-semibold text-primary-800 mb-1">Your settings</h2>
+      <p class="text-xs text-primary-400 mb-4">
+        Your email for notifications. The off-chain monitor sends operational notices to this address —
+        a treasury that cannot fund a top-up, withdrawn monitor consent, and later notices of the same kind.
+      </p>
       {#if !$isAuthenticated}
         <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
-          Log in as a controller to change these settings.
+          Log in to set your notification email.
         </div>
       {:else}
+        <form class="space-y-3" onsubmit={saveUser}>
+          <div>
+            <label class="label" for="notificationEmail">Notification email</label>
+            <input
+              id="notificationEmail"
+              type="email"
+              class="input"
+              autocomplete="email"
+              placeholder="you@example.com"
+              bind:value={notificationEmail}
+            />
+            <p class="text-xs text-primary-400 mt-1">
+              Saved for this principal. Leave it empty and the monitor skips you.
+            </p>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="btn-primary btn-sm" disabled={savingUser}>
+              {savingUser ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      {/if}
+    </div>
+
+    <div class="card p-5">
+      <h2 class="text-sm font-semibold text-primary-800 mb-1">Platform settings</h2>
+      <p class="text-xs text-primary-400 mb-4">Orchestra configuration. Requires a Casals controller principal.</p>
+
+      {#if $isController === true}
         <form class="space-y-5" onsubmit={save}>
           <div class="space-y-4">
             <div>
@@ -802,19 +865,6 @@
               </div>
             </div>
 
-            <div>
-              <label class="label" for="alertEmails">Alert emails</label>
-              <input
-                id="alertEmails"
-                type="text"
-                class="input"
-                placeholder="ops@example.com, alerts@example.com"
-                bind:value={alertEmails}
-              />
-              <p class="text-xs text-primary-400 mt-1">
-                Comma-separated recipients. When the treasury cannot fund a top-up (no spendable cycles and no convertible ICP), the off-chain monitor sends an email alert.
-              </p>
-            </div>
           </div>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-3">
@@ -855,11 +905,19 @@
                 </svg>
                 Saving…
               {:else}
-                Save settings
+                Save platform settings
               {/if}
             </button>
           </div>
         </form>
+      {:else if $isAuthenticated && $isController === null}
+        <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
+          Checking whether this principal is a Casals controller…
+        </div>
+      {:else}
+        <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
+          Platform settings can be changed by a Casals controller.
+        </div>
       {/if}
     </div>
 

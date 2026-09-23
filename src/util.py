@@ -212,3 +212,24 @@ def normalize_user_tags(tags) -> list:
         if len(out) > _MAX_USER_TAGS:
             raise ValueError(f"at most {_MAX_USER_TAGS} tags")
     return out
+
+
+# One address the off-chain monitor emails for operational notices.
+_NOTIFICATION_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def normalize_notification_email(raw) -> str:
+    """Return a single notification address, or "" to send no email.
+
+    Raises ValueError when the value is present and is not one address.
+    """
+    addr = ("" if raw is None else str(raw)).strip()
+    if not addr:
+        return ""
+    if any(ch.isspace() for ch in addr) or "," in addr or ";" in addr:
+        raise ValueError("enter a single email address")
+    if len(addr) > 254:
+        raise ValueError("notification email is too long")
+    if not _NOTIFICATION_EMAIL_RE.match(addr):
+        raise ValueError("enter a valid email address")
+    return addr

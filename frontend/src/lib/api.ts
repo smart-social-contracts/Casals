@@ -111,8 +111,11 @@ export interface Metadata {
   monitor_enabled?: boolean;
   monitor_principal?: string;
   monitor_service_url?: string;
-  /** Comma-separated emails for treasury exhaustion alerts (sent by casals-monitor). */
+  /** Legacy orchestra-wide address. Per-user addresses are `notification_emails`. */
+  notification_email?: string;
   alert_emails?: string;
+  /** Addresses users saved for themselves. The monitor emails this list. */
+  notification_emails?: string[];
   default_min_cycles: number;
   default_topup_cycles: number;
   treasury_reserve: number;
@@ -1172,6 +1175,8 @@ export interface SettingsPatch {
   monitor_enabled?: boolean;
   monitor_principal?: string;
   monitor_service_url?: string;
+  /** Legacy orchestra-wide address. Users save their own address with `setMySettings`. */
+  notification_email?: string;
   alert_emails?: string;
   default_min_cycles?: number;
   default_topup_cycles?: number;
@@ -1209,6 +1214,18 @@ export async function refreshControllersCache(): Promise<{
     updated?: { name: string; canister_id: string; controllers: string[] }[];
     failed?: { name: string; canister_id?: string; error: string }[];
   };
+}
+
+export async function getMySettings(): Promise<{ notification_email?: string }> {
+  return _parseQuery(await (await _actor(true)).get_my_settings());
+}
+
+export async function setMySettings(notificationEmail: string): Promise<UpdateResult> {
+  return _parseUpdate(
+    await (await _actor(true)).set_my_settings(
+      JSON.stringify({ notification_email: notificationEmail }),
+    ),
+  );
 }
 
 export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {

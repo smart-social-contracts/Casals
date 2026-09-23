@@ -10,6 +10,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     get_status:            IDL.Func([], [IDL.Text], ['query']),
     casals_metadata:       IDL.Func([], [IDL.Text], ['query']),
     get_settings:          IDL.Func([], [IDL.Text], ['query']),
+    get_my_settings:       IDL.Func([], [IDL.Text], ['query']),
     get_tree:              IDL.Func([], [IDL.Text], ['query']),
     list_sections:         IDL.Func([], [IDL.Text], ['query']),
     list_authorized_wasms: IDL.Func([IDL.Text], [IDL.Text], ['query']),
@@ -43,6 +44,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
 
     // ── governance / registration ──
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
+    set_my_settings:       IDL.Func([IDL.Text], [IDL.Text], []),
     set_subnet_whitelist:    IDL.Func([IDL.Text], [IDL.Text], []),
     // ── casals-wasms store: browser uploads + housekeeping ──
     begin_upload:          IDL.Func([IDL.Text], [IDL.Text], []),

@@ -304,7 +304,9 @@ class Settings(Entity):
     monitor_service_url = String(max_length=128, default="")
     # Last convert_treasury_icp triggered by the monitor (unix secs) — throttle.
     monitor_last_convert_ts = Integer(default=0)
-    # Comma-separated alert recipients when treasury cannot fund a top-up.
+    # Legacy orchestra-wide address list. New addresses live on UserSettings.
+    # Still published as ``alert_emails`` / ``notification_email`` so an older
+    # monitor keeps a recipient that was saved before the split.
     alert_emails = String(max_length=512, default="")
     # ── Native cycles management (the conductor as the orchestra's paymaster) ──
     # Platform-default cycle policy, used when a canister/stand/section sets no
@@ -372,6 +374,18 @@ class CyclesSnapshot(Entity):
     key = String(max_length=32, default="singleton")
     snapshot_json = String(max_length=16384, default="")
     updated_at = Integer(default=0)
+
+
+class UserSettings(Entity):
+    """Preferences for one principal. The caller may write only their own row.
+
+    ``notification_email`` is where the off-chain monitor sends that person's
+    operational notices. Empty means this principal gets no email.
+    """
+
+    __alias__ = "principal"
+    principal = String(min_length=1, max_length=64)
+    notification_email = String(max_length=254, default="")
 
 
 class PrincipalAlias(Entity, TimestampedMixin):
