@@ -2711,7 +2711,7 @@ def test_apply_plan_failed_item_is_an_event(monkeypatch):
         return True
         yield  # pragma: no cover - generator marker
 
-    def execute(item, _sheet):
+    def execute(item, _sheet, _env=""):
         if item["kind"] == "install_code":
             raise RuntimeError("IC0503: canister trapped: Failed to execute Python code")
         return None

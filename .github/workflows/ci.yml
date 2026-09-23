@@ -23,11 +23,32 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      # tests/test_unit.py covers pure helpers (util, auth, wasm_helpers, views,
-      # lifecycle controller merge). lifecycle imports basilisk types but tests
-      # do not need a replica.
+      # Replica-free modules only (#57). test_sheetv2.py is the casals.json
+      # syntax suite (validate + placeholder resolution); test_planner.py,
+      # test_access_code.py, and test_control_rules.py cover what a valid
+      # sheet means. The rest are pure helpers. None of these start a replica.
+      # Live conductor coverage stays in the replica workflows.
       - name: Run unit tests
-        run: pytest tests/test_unit.py tests/test_version_http.py -v
+        run: >
+          pytest -v
+          tests/test_unit.py
+          tests/test_version_http.py
+          tests/test_sheetv2.py
+          tests/test_planner.py
+          tests/test_access_code.py
+          tests/test_control_rules.py
+          tests/test_bundle.py
+          tests/test_core_layout.py
+          tests/test_release_bookkeeping.py
+          tests/test_store_uploads.py
+          tests/test_wasm_store.py
+          tests/test_cli_wasm_store.py
+          tests/test_wasm_types.py
+          tests/test_ic_assets.py
+          tests/test_destroy_orchestra.py
+          tests/test_replica.py
+          tests/test_meter.py
+          tests/test_asset_permission_did.py
 
   cli-unit:
     name: CLI unit tests
