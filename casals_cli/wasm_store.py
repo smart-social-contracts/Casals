@@ -190,6 +190,7 @@ def upload_bytes(
     content_type: str = "application/wasm",
     *,
     exists: bool | None = None,
+    on_chunk=None,
 ) -> str:
     """Chunk-upload ``data`` to ``/<namespace>/<path>`` and commit it with its
     sha256 (the canister verifies). Returns the sha256 hex. ``exists`` skips the
@@ -212,6 +213,8 @@ def upload_bytes(
             timeout=600,
         )
         chunk_ids.append(int(_dec(raw, _CreateChunkRet)["chunk_id"]))
+        if on_chunk:
+            on_chunk(i + 1, total)
 
     ops: list[dict] = []
     if not exists:

@@ -235,10 +235,19 @@ class StoreTarget:
         prefix = store_namespace_prefix(namespace)
         return {e["key"][len(prefix):]: e["sha256"] for e in entries if e["key"].startswith(prefix) and len(e["key"]) > len(prefix)}
 
-    def upload(self, namespace: str, path: str, data: bytes, sha256: str, content_type: str = "application/wasm") -> str:
+    def upload(self, namespace: str, path: str, data: bytes, sha256: str, content_type: str = "application/wasm",
+               *, meter=None, meter_label: str = "") -> str:
         key = store_key(namespace, path)
         exists = (key in self._keys) if self._keys is not None else None
-        digest = _store.upload_bytes(self.ic, self.canister_id, namespace, path, data, sha256, content_type, exists=exists)
+
+        def on_chunk(i: int, n: int) -> None:
+            if meter is not None:
+                meter.advance(1, f"{meter_label} chunk {i}/{n}" if meter_label else f"chunk {i}/{n}")
+
+        digest = _store.upload_bytes(
+            self.ic, self.canister_id, namespace, path, data, sha256, content_type,
+            exists=exists, on_chunk=on_chunk if meter is not None else None,
+        )
         if self._keys is not None:
             self._keys.add(key)
         return digest
@@ -258,6 +267,7 @@ def ensure_registry_uploads(
     store_id: str,
     namespace: str = WASM_NAMESPACE,
     progress=None,
+    meter=None,
 ) -> list[dict]:
     """Upload missing/changed wasms to the store and write each entry's
     ``sha256`` in ``sheet`` to the artifact actually uploaded: what the
@@ -308,7 +318,7 @@ def ensure_registry_uploads(
             if not isinstance(entry, dict):
                 continue
             published = publish_bundle(target, entry, sheet_dir=sheet_dir, project_root=project_root,
-                                       progress=progress)
+                                       progress=progress, meter=meter)
             if progress:
                 n_up = sum(1 for r in published if r["action"] == "uploaded")
                 n_del = sum(1 for r in published if r["action"] == "deleted")
@@ -319,7 +329,7 @@ def ensure_registry_uploads(
     return rows
 
 
-def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, progress=None) -> list[dict]:
+def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, progress=None, meter=None) -> list[dict]:
     """`registry.publish` entry: the bundle at `source` becomes namespace `path`
     in ``target`` — exactly. Files with the same sha256 are skipped, changed
     or new ones uploaded, files the store has that left the bundle deleted,
@@ -337,17 +347,31 @@ def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, pr
     entry["sha256"] = digest
     existing = target.file_hashes(ns)
     plan = _bundle.diff(existing, hashes)
+    uploads = [p for p in sorted(hashes) if p in plan["upload"]]
+    if meter is not None:
+        from casals_cli.wasm_store import CHUNK_BYTES
+        chunk_units = sum(max(1, (len(files[p]) + CHUNK_BYTES - 1) // CHUNK_BYTES) for p in uploads)
+        # One unit per store chunk or deletion, plus one per bundle file for the
+        # later canister sync (adjusted if that hop is larger than the bundle).
+        meter.add(chunk_units + len(plan["delete"]) + len(files), f"store {ns}")
+        meter.note(ns, len(files))
     rows = []
     for path in sorted(hashes):
         action = "skipped"
         if path in plan["upload"]:
             ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-            target.upload(ns, path, files[path], hashes[path], content_type=ctype)
+            kw = {"content_type": ctype}
+            if meter is not None:
+                kw["meter"] = meter
+                kw["meter_label"] = f"store {ns}/{path}"
+            target.upload(ns, path, files[path], hashes[path], **kw)
             action = "uploaded"
         rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action,
                      "sha256": hashes[path], "store": target.label, "bundle_sha256": digest})
     for path in plan["delete"]:
         target.delete(ns, path)
+        if meter is not None:
+            meter.advance(1, f"store delete {ns}/{path}")
         rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": "deleted",
                      "sha256": existing.get(path, ""), "store": target.label, "bundle_sha256": digest})
     return rows

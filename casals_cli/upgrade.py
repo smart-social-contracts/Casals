@@ -76,7 +76,7 @@ def _in_selection(row: dict, stands: list[str], sections: list[str]) -> bool:
 
 
 def _upload_rows(ic, sheet: dict, *, sheet_path: str, project_root: str, store_id: str, deployer: str,
-                 wasm_families: set[str], namespaces: set[str]) -> dict:
+                 wasm_families: set[str], namespaces: set[str], meter=None) -> dict:
     """Upload just the registry rows a release touches; returns the sheet slice
     with each row's sha256 written back to what the store now holds (what the
     conductor must authorize / sync)."""
@@ -93,13 +93,13 @@ def _upload_rows(ic, sheet: dict, *, sheet_path: str, project_root: str, store_i
     if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
         _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
     ensure_registry_uploads(ic, slice_, sheet_path=sheet_path, project_root=project_root, store_id=store_id,
-                            progress=_progress)
+                            progress=_progress, meter=meter)
     return slice_
 
 
 def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: list[str],
                 stands: list[str], sections: list[str], conductor_override: str | None = None,
-                project_root: str, yes: bool = False) -> dict:
+                project_root: str, yes: bool = False, meter=None) -> dict:
     sheet = load_json_file(sheet_path)
     errors = validate(sheet, env)
     if errors:
@@ -136,7 +136,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     # 1. the artifacts are in the store (each row's sha256 written back into `sheet`)
     _progress("upgrade: store upload")
     _upload_rows(ic, sheet, sheet_path=sheet_path, project_root=project_root, store_id=store_id, deployer=deployer,
-                 wasm_families={f for f, _v in wanted}, namespaces=set(contents))
+                 wasm_families={f for f, _v in wanted}, namespaces=set(contents), meter=meter)
 
     tree = ic.query(backend_id, "get_tree")
     if not isinstance(tree, dict) or "sections" not in tree:
@@ -226,16 +226,37 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
         for name, _row in sorted(targets):
             written = deleted = 0
             result, detail = "synced", ""
+            sync_budget = int(meter.notes.get(ns, 0)) if meter is not None else 0
+            sync_used = 0
             for _round in range(200):
+                if meter is not None:
+                    meter.set_label(f"sync {name} ({sync_used}/{sync_budget or '?'})")
                 res = ic.call_update(backend_id, "sync_content", json.dumps(
                     {"canister": name, "namespace": ns, "source": (publish[ns].get("source") or "").strip(),
                      **({"bundle_sha256": store_hash} if store_hash else {})}), timeout=900)
                 if not _ok(res):
                     result, detail = "failed", _err_text(res)
                     break
-                written += int(res.get("written") or 0)
-                deleted += int(res.get("deleted") or 0)
-                if not int(res.get("remaining") or 0):
+                step_w = int(res.get("written") or 0)
+                step_d = int(res.get("deleted") or 0)
+                written += step_w
+                deleted += step_d
+                remaining = int(res.get("remaining") or 0)
+                if meter is not None:
+                    step = step_w + step_d
+                    left = sync_budget - sync_used
+                    if step + remaining > left:
+                        extra = step + remaining - left
+                        meter.add(extra)
+                        sync_budget += extra
+                    if remaining == 0:
+                        meter.advance(max(0, sync_budget - sync_used), f"synced {name}")
+                        sync_used = sync_budget
+                    elif step:
+                        take = min(step, sync_budget - sync_used)
+                        sync_used += take
+                        meter.advance(take, f"sync {name} ({sync_used}/{sync_budget})")
+                if not remaining:
                     detail = f"bundle {str(res.get('bundle_sha256'))[:12]}…, {written} file(s) written, {deleted} removed"
                     break
             else:

@@ -37,6 +37,23 @@ _TRANSIENT_MARKERS = (
 )
 
 
+def icp_failure_detail(argv: list[str], stdout: str, stderr: str) -> str:
+    """Keep the canister trap line. The Rust backtrace otherwise fills the tail."""
+    err = stderr or ""
+    marker = ""
+    for needle in ("Failed to execute Python code:", "Panicked at", "Canister called `ic0.trap`"):
+        i = err.find(needle)
+        if i >= 0:
+            marker = err[i:].split("\n", 1)[0][:500]
+            break
+    tail = err[-800:]
+    head = f"{marker}\n" if marker and marker not in tail else ""
+    return (
+        f"icp {' '.join(argv)} failed:\n"
+        f"stdout: {(stdout or '')[-400:]}\nstderr: {head}{tail}"
+    )
+
+
 def is_transient_ic_error(text: str) -> bool:
     t = (text or "").lower()
     return any(m in t for m in _TRANSIENT_MARKERS)
@@ -215,10 +232,7 @@ class IcClient:
                 continue
             combined = f"{result.stdout or ''}{result.stderr or ''}"
             hint = hsm_pin_hint(combined)
-            detail = (
-                f"icp {' '.join(argv)} failed:\n"
-                f"stdout: {result.stdout[-800:]}\nstderr: {result.stderr[-800:]}"
-            )
+            detail = icp_failure_detail(argv, result.stdout, result.stderr)
             raise RuntimeError(f"{hint}\n\n{detail}" if hint else detail)
         return result  # unreachable
 

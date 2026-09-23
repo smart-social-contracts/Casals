@@ -57,7 +57,7 @@ For production deployments, cycle observation and auto top-ups can run in **[cas
 
 A self-hosted `casals-monitor` works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
 
-This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Optional **Alert emails** in Settings notify operators when the treasury cannot fund a top-up or when the monitor sees consent withdrawn.
+This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor sends operational notices (treasury cannot fund a top-up, monitor consent withdrawn, and later notices of the same kind) to those addresses. A legacy orchestra-wide address, if one was saved before this split, is included too.
 
 For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `monitor_url`, `monitor_principal`, `casals_backend`, `casals_frontend`).
 
@@ -121,13 +121,27 @@ The full argument is the *genesis document* slide in
 
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
 
-After code changes: re-run `casals up` (it rebuilds the conductor WASM when sources changed).
+### Shipping this conductor
 
-Mainnet:
+`casals up` is day one. A later change to **this** repo's backend or UI is [`scripts/deploy.sh`](scripts/deploy.sh): it rebuilds what you name and ships it with a delegated session identity. The production YubiKey signs that session once ([docs/OPERATIONS.md](docs/OPERATIONS.md#hardware-keys-one-touch-per-run)); the deploy itself does not touch the key. With no `--identity` and no `$CASALS_IDENTITY`, the script uses the `prod-session*` delegation that expires last and skips an expired one.
 
 ```bash
-python3 -m casals_cli.main -e ic --identity casals up <sheet> --yes
+scripts/deploy.sh                         # backend and frontend
+scripts/deploy.sh frontend                # Casals UI only
+scripts/deploy.sh backend                 # conductor wasm only
+scripts/deploy.sh --skip-build both       # wasm and dist/ already built
+scripts/deploy.sh --identity prod-session frontend
 ```
+
+The UI is uploaded to the wasm store and copied onto the Casals frontend in batches. The backend is one upgrade of the conductor wasm. While mainnet calls are in flight, one line shows how much of that work is done and an ETA from the pace so far:
+
+```text
+[ 42%] 27/65 sync casals-frontend (27/65) · ETA 4m 12s
+```
+
+A backend install is a single call, so its slice of the bar moves when the call returns. The footer’s first timestamp is the git commit time; `deployed …` is the wall clock of the frontend build that was shipped.
+
+Do not add a new name to `from util import` in `src/main.py`. Basilisk can keep the previous `util` module across an upgrade and then trap `post_upgrade` on the missing export. Put the helper in `main.py` instead (see `_normalize_notification_email`).
 
 ---
 
