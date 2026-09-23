@@ -31,6 +31,7 @@ PERMISSIONS = [
     ("stand.rename",       "Rename stand",               "Stand"),
     ("stand.delete",       "Delete stand",               "Stand"),
     ("commander.assign",   "Appoint sub-commanders",     "Governance"),
+    ("alias.manage",       "Manage principal aliases",   "Platform"),
     ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
     ("wasm.upload",        "Upload files (WASMs, bundles) to the store", "Platform"),
     ("wasm.authorize",     "Authorize / revoke catalog WASMs", "Platform"),

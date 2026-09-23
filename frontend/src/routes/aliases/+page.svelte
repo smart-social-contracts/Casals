@@ -10,9 +10,11 @@
     type Tree,
   } from '$lib/api';
   import { activeCommanders } from '$lib/commanderAccess';
-  import { isAuthenticated } from '$lib/auth';
+  import { canDo, isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
+
+  const canManageAliases = canDo('alias.manage');
 
   let aliases = $state<PrincipalAlias[]>([]);
   let tree = $state<Tree | null>(null);
@@ -141,7 +143,7 @@
       </p>
     </div>
     <div class="flex items-center gap-2 self-start">
-      {#if $isAuthenticated}
+      {#if $canManageAliases}
         <button class="btn-primary btn-sm" onclick={() => openCreate()}>
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -202,9 +204,11 @@
           <p class="text-primary-500 text-sm font-medium">
             {filterQuery ? `No aliases match "${filterQuery}"` : 'No aliases yet'}
           </p>
-          {#if $isAuthenticated && !filterQuery}
+          {#if $canManageAliases && !filterQuery}
             <p class="text-primary-400 text-xs mt-1">Add a friendly name for a controller or commander principal.</p>
             <button class="btn-primary btn-sm mt-4" onclick={() => openCreate()}>Add alias</button>
+          {:else if $isAuthenticated && $canManageAliases === false && !filterQuery}
+            <p class="text-primary-400 text-xs mt-1">Saving an alias needs the <span class="font-mono">alias.manage</span> permission. Full access includes it.</p>
           {/if}
         </div>
       {:else}
@@ -236,11 +240,13 @@
                   <td class="px-4 py-3 text-primary-500 hidden md:table-cell">{row.description || '—'}</td>
                   <td class="px-4 py-3 font-mono text-xs text-primary-400 hidden lg:table-cell truncate max-w-[12rem]" title={row.created_by}>{row.created_by || '—'}</td>
                   <td class="px-4 py-3 text-right whitespace-nowrap">
-                    {#if $isAuthenticated}
+                    {#if $canManageAliases}
                       <button class="btn-ghost btn-sm text-xs" onclick={() => openEdit(row)} disabled={busy}>Edit</button>
                       <button class="btn-ghost btn-sm text-xs text-red-600" onclick={() => removeAlias(row.principal)} disabled={busy}>Delete</button>
-                    {:else}
+                    {:else if !$isAuthenticated}
                       <span class="text-xs text-primary-400">Login to edit</span>
+                    {:else if $canManageAliases === false}
+                      <span class="text-xs text-primary-400" title="Needs alias.manage, or a Casals controller">No edit access</span>
                     {/if}
                   </td>
                 </tr>
@@ -267,11 +273,11 @@
               type="button"
               class="inline-flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-1.5 text-xs font-mono text-primary-600 hover:bg-primary-50"
               title={principal}
-              disabled={!$isAuthenticated}
+              disabled={!$canManageAliases}
               onclick={() => openCreate(principal)}
             >
               {principal.slice(0, 5)}…{principal.slice(-5)}
-              {#if $isAuthenticated}
+              {#if $canManageAliases}
                 <span class="text-primary-400 font-sans">+ alias</span>
               {/if}
             </button>
@@ -294,7 +300,7 @@
       </div>
       <div>
         <label class="label" for="alias-name">Alias</label>
-        <input id="alias-name" type="text" class="input text-sm" placeholder="deployer" bind:value={formName} />
+        <input id="alias-name" type="text" class="input text-sm" placeholder="Prod II 2" bind:value={formName} />
       </div>
       <div>
         <label class="label" for="alias-description">Description (optional)</label>

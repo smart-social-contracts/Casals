@@ -535,7 +535,7 @@ def test_all_expected_permission_keys_present():
         "canister.snapshot", "canister.revert", "canister.lifecycle",
         "canister.topup", "canister.shell", "canister.tag",
         "stand.create", "stand.rename", "stand.delete",
-        "commander.assign", "subnet.whitelist",
+        "commander.assign", "alias.manage", "subnet.whitelist",
         "wasm.upload", "wasm.authorize",
     ]:
         assert expected in keys, f"missing key: {expected}"
@@ -1409,6 +1409,8 @@ def test_validate_alias_name_accepts_simple_names():
     assert util.validate_alias_name("deployer") == "deployer"
     assert util.validate_alias_name("  cycleops  ") == "cycleops"
     assert util.validate_alias_name("infra-baton") == "infra-baton"
+    assert util.validate_alias_name("Prod II 2") == "Prod II 2"
+    assert util.validate_alias_name("  Prod   II\t2  ") == "Prod II 2"
 
 
 def test_validate_alias_name_rejects_invalid():
@@ -1416,6 +1418,16 @@ def test_validate_alias_name_rejects_invalid():
         util.validate_alias_name("")
     with pytest.raises(ValueError, match="letters"):
         util.validate_alias_name("bad name!")
+
+
+def test_canister_alias_name_matches_util():
+    """The canister keeps an inline copy (no ``re``). It must accept the same names."""
+    import main
+
+    for raw in ("deployer", "  cycleops  ", "infra-baton", "Prod II 2", "  Prod   II\t2  "):
+        assert main._validate_alias_name(raw) == util.validate_alias_name(raw)
+    with pytest.raises(ValueError, match="letters"):
+        main._validate_alias_name("bad name!")
 
 
 def test_validate_principal_text():
@@ -2342,6 +2354,44 @@ def test_full_access_orchestra_operator_can_edit_another_operator(monkeypatch):
     res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=["wasm.upload"])
     assert res["ok"] is True, res
     assert _grant(orch, OTHER) == "wasm.upload"
+
+
+def test_alias_manage_allows_controller_and_granted_commanders(monkeypatch):
+    """Aliases are display metadata: a controller, or a commander at any rung
+    holding alias.manage (full access includes it), may write them."""
+    import main
+
+    _orchestra(monkeypatch, controller=True, caller="ctrl-aa")
+    main._require_alias_manage()
+
+    orch, sec, stand = _orchestra(monkeypatch)
+    main.Section.instances = lambda: [orch, sec]
+    main.Stand.instances = lambda: [stand]
+    _cmd.add_commander(orch, OPERATOR, "*")
+    main._require_alias_manage()
+
+    orch, sec, stand = _orchestra(monkeypatch, caller=OTHER)
+    main.Section.instances = lambda: [orch, sec]
+    main.Stand.instances = lambda: [stand]
+    _cmd.add_commander(sec, OTHER, ["alias.manage"])
+    main._require_alias_manage()
+
+    orch, sec, stand = _orchestra(monkeypatch, caller=BOSS)
+    main.Section.instances = lambda: [orch, sec]
+    main.Stand.instances = lambda: [stand]
+    _cmd.add_commander(stand, BOSS, ["alias.manage"])
+    main._require_alias_manage()
+
+
+def test_alias_manage_rejects_commander_without_the_key(monkeypatch):
+    import main
+
+    orch, sec, stand = _orchestra(monkeypatch)
+    main.Section.instances = lambda: [orch, sec]
+    main.Stand.instances = lambda: [stand]
+    _cmd.add_commander(orch, OPERATOR, ["canister.deploy", "commander.assign"])
+    with pytest.raises(Exception, match="alias.manage"):
+        main._require_alias_manage()
 
 
 def test_set_permissions_rejects_commander_without_assign(monkeypatch):

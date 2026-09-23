@@ -113,7 +113,9 @@ def decide_topup(balance, freezing_threshold, min_cycles, topup_cycles,
 # ── Principal alias validation (display metadata) ───────────────────────────
 
 PRINCIPAL_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$", re.IGNORECASE)
-ALIAS_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]{1,64}$")
+# Single spaces are allowed between tokens ("Prod II 2"). Leading, trailing,
+# and repeated whitespace are collapsed before this match.
+ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)*$")
 
 
 def normalize_principal(principal: str) -> str:
@@ -130,16 +132,31 @@ def validate_principal_text(principal: str) -> str:
     return p
 
 
+def collapse_alias_whitespace(name: str) -> str:
+    """Trim and collapse any run of whitespace to a single space."""
+    out = []
+    gap = False
+    for ch in (name or "").strip():
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r":
+            gap = True
+            continue
+        if gap and out:
+            out.append(" ")
+        gap = False
+        out.append(ch)
+    return "".join(out)
+
+
 def validate_alias_name(name: str) -> str:
     """Return normalized alias name or raise ValueError."""
-    n = (name or "").strip()
+    n = collapse_alias_whitespace(name)
     if not n:
         raise ValueError("name is required")
     if len(n) > 64:
         raise ValueError("name must be at most 64 characters")
     if not ALIAS_NAME_RE.match(n):
         raise ValueError(
-            "name must contain only letters, digits, '.', '_', or '-'"
+            "name must contain only letters, digits, spaces, '.', '_', or '-'"
         )
     return n
 

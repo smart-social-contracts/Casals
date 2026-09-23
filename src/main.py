@@ -298,15 +298,30 @@ def _validate_principal_text(principal: str) -> str:
 
 
 def _validate_alias_name(name: str) -> str:
-    n = (name or "").strip()
+    # Collapse whitespace in place (no ``re`` — not available in the canister).
+    # Single spaces are kept so a label like "Prod II 2" is the display name.
+    out = []
+    gap = False
+    for ch in (name or "").strip():
+        if ch == " " or ch == "\t" or ch == "\n" or ch == "\r":
+            gap = True
+            continue
+        if gap and out:
+            out.append(" ")
+        gap = False
+        out.append(ch)
+    n = "".join(out)
     if not n:
         raise ValueError("name is required")
     if len(n) > 64:
         raise ValueError("name must be at most 64 characters")
-    if any(ch not in _ALIAS_NAME_CHARS for ch in n):
-        raise ValueError(
-            "name must contain only letters, digits, '.', '_', or '-'"
-        )
+    for ch in n:
+        if ch == " ":
+            continue
+        if ch not in _ALIAS_NAME_CHARS:
+            raise ValueError(
+                "name must contain only letters, digits, spaces, '.', '_', or '-'"
+            )
     return n
 
 
@@ -2022,15 +2037,27 @@ def list_principal_aliases() -> text:
     return json.dumps({"aliases": _list_principal_aliases_view()})
 
 
+def _require_alias_manage() -> None:
+    """Controllers, or a conductor / section / stand commander holding ``alias.manage``.
+
+    Full access (``*`` or an empty grant) includes the key. A narrower grant
+    must list it. Aliases are display metadata; authorization still uses raw
+    principals.
+    """
+    if _caller() == ANONYMOUS or not _caller_holds_platform_permission("alias.manage"):
+        raise Exception("unauthorized: caller lacks alias.manage permission")
+
+
 @update
 def set_principal_alias(args: text) -> text:
-    """Create or update a friendly alias for an IC principal. Controller-only.
+    """Create or update a friendly alias for an IC principal.
 
+    Authorized for Casals controllers or a commander holding ``alias.manage``.
     Args (JSON): {principal, name, description?}. Aliases are display metadata
     only; authorization still uses raw principals.
     """
     try:
-        _require_admin()
+        _require_alias_manage()
         params = json.loads(args)
         alias = _upsert_principal_alias(
             params.get("principal") or "",
@@ -2049,9 +2076,9 @@ def set_principal_alias(args: text) -> text:
 
 @update
 def delete_principal_alias(args: text) -> text:
-    """Remove a principal alias. Controller-only. Args (JSON): {principal}."""
+    """Remove a principal alias. Same auth as ``set_principal_alias``. Args (JSON): {principal}."""
     try:
-        _require_admin()
+        _require_alias_manage()
         params = json.loads(args)
         principal = _remove_principal_alias_record(params.get("principal") or "")
         _append_event("principal_alias_deleted", "", {"principal": principal})
