@@ -27,8 +27,10 @@ from sheetv2 import (
     SYNTHETIC_SECTION_GOVERNANCE,
     SYNTHETIC_STAND_GOVERNANCE,
     canonical_json,
+    declared_subnet,
     env_block,
     sheet_hash,
+    subnet_selection_active,
     wasm_ref,
     find_placeholder_tokens,
 )
@@ -40,6 +42,7 @@ PHASE = {
     "publish": 110,
     "register_section": 200,
     "register_stand": 210,
+    "set_subnet": 220,
     "create_canister": 300,
     "install_code": 310,
     "upgrade_code": 320,
@@ -245,10 +248,25 @@ class _PlanContext:
     def live(self, name: str) -> dict:
         return self.canisters_live.get(name) or {}
 
+    def _section_placement_in_reach(self, section: str | None, stand: str | None) -> bool:
+        """A one-stand plan still records that stand's section placement.
+        New canisters inherit it."""
+        if (stand or "").strip() or not self.only_stand:
+            return False
+        section = (section or "").strip()
+        for sec in self.sheet.get("sections") or []:
+            if not isinstance(sec, dict) or (sec.get("name") or "").strip() != section:
+                continue
+            for st in sec.get("stands") or []:
+                if isinstance(st, dict) and (st.get("name") or "").strip() == self.only_stand:
+                    return True
+        return False
+
     def add(self, kind, target, reason, **kw):
         t = target or {}
         if not self.in_reach(t.get("section"), t.get("stand")):
-            return
+            if kind != "set_subnet" or not self._section_placement_in_reach(t.get("section"), t.get("stand")):
+                return
         self.items.append({
             "kind": kind,
             "target": target,
@@ -359,6 +377,7 @@ class _PlanContext:
                 f"register section {sname}",
                 section_order=si,
             )
+        self._plan_subnet(sec_spec, self.sections_live.get(sname) or {}, sname, sname, None, si, 0)
         live_sec = _normalize_commanders((self.sections_live.get(sname) or {}).get("commanders") or [])
         desired_sec = _desired_commanders(sec_spec.get("commanders") or [], live_sec)
         if desired_sec and desired_sec != live_sec and not self.defer_if_unresolved(desired_sec, sname, "commanders"):
@@ -394,6 +413,7 @@ class _PlanContext:
                 f"register stand {dname}",
                 section_order=si, stand_order=sj,
             )
+        self._plan_subnet(stand_spec, self.stands_live.get(dname) or {}, dname, sname, dname, si, sj)
         live_st = _normalize_commanders((self.stands_live.get(dname) or {}).get("commanders") or [])
         desired_st = _desired_commanders(stand_spec.get("commanders") or [], live_st)
         if desired_st and desired_st != live_st and not self.defer_if_unresolved(desired_st, dname, "commanders"):
@@ -429,6 +449,32 @@ class _PlanContext:
                                         baton_ctx=baton_ctx if cname in managed else None)
         if baton and baton_member:
             self._plan_baton(baton, baton_member["name"], stand_spec, sname, dname, si, sj)
+
+    def _plan_subnet(self, spec: dict, live: dict, name: str, section: str, stand: str | None,
+                     si: int, sj: int):
+        """Record the section or stand placement the sheet declares.
+
+        Local replicas ignore it. On the IC a stand's own fields win, and an
+        empty stand inherits its section. Existing canisters stay where they are.
+        """
+        if not subnet_selection_active(self.sheet, self.env):
+            return
+        desired = declared_subnet(spec)
+        tokens = _placeholders_in(list(desired))
+        if tokens:
+            self.errors.append(f"{name}: subnet still contains {', '.join(sorted(tokens))}")
+            return
+        current = declared_subnet(live)
+        if desired == current:
+            return
+        self.add(
+            "set_subnet",
+            {"name": name, "canister_id": None, "section": section, "stand": stand},
+            f"subnet placement for {name} differs",
+            current={"subnet": current[0], "subnet_type": current[1]},
+            desired={"subnet": desired[0], "subnet_type": desired[1]},
+            section_order=si, stand_order=sj,
+        )
 
     def _plan_baton(self, baton_spec: dict, baton_name: str, stand_spec: dict, sname: str, dname: str, si: int, sj: int):
         """Baton policy: weighted commanders/threshold on the baton, and its managed set (hand_off).

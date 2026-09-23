@@ -410,6 +410,43 @@ def test_stand_members_includes_numbered_roles():
     assert [c["name"] for c in sv2.stand_members(spec, "backend")] == ["realm-a-backend"]
 
 
+def test_section_subnet_resolves_principal_alias():
+    sheet = _load_corpus("minimal")
+    sheet["environments"]["local"]["principals"]["app_subnet"] = FAKE_PRINCIPAL
+    sheet["sections"][0]["subnet"] = "$principal:app_subnet"
+    sheet["sections"][0]["stands"][0]["subnet_type"] = "fiduciary"
+    assert sv2.validate(sheet, "local") == []
+    resolved = sv2.resolve(sheet, "local", _ctx(sheet))
+    section = resolved["sections"][0]
+    assert section["subnet"] == FAKE_PRINCIPAL
+    # The stand names a type, so that wins over the section principal.
+    assert sv2.target_subnet(section, section["stands"][0]) == ("", "fiduciary")
+
+
+def test_raw_subnet_principal_is_rejected():
+    sheet = _load_corpus("minimal")
+    sheet["sections"][0]["subnet"] = FAKE_PRINCIPAL
+    assert any("raw principal" in e and ".subnet" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_subnet_fields_must_be_strings():
+    sheet = _load_corpus("minimal")
+    sheet["sections"][0]["stands"][0]["subnet_type"] = 1
+    assert any("subnet_type must be a string" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_template_stand_keeps_subnet():
+    tmpl = {
+        "subnet": "subnet-tpl",
+        "subnet_type": "application",
+        "canisters": [{"name": "{stand}-backend", "kind": "backend", "wasm": "x", "controllers": ["$self"]}],
+    }
+    spec = sv2.instantiate_template_stand(tmpl, "r1")
+    assert spec["subnet"] == "subnet-tpl"
+    assert spec["subnet_type"] == "application"
+    assert sv2.target_subnet({}, spec) == ("subnet-tpl", "")
+
+
 def test_numbered_member_must_be_optional():
     sheet = _load_corpus("dynamic-stands")
     tmpl = sheet["sections"][1]["stand_template"]

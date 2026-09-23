@@ -1121,19 +1121,8 @@ def _spec_target_subnet(sec_spec: dict, stand_spec: dict):
     """Resolve a (subnet, subnet_type) target from raw sheet specs, mirroring
     ``_target_subnet``'s precedence: stand.subnet > stand.subnet_type >
     section.subnet > section.subnet_type."""
-    dsub = (stand_spec.get("subnet") or "").strip()
-    dtype = (stand_spec.get("subnet_type") or "").strip()
-    if dsub:
-        return (dsub, "")
-    if dtype:
-        return ("", dtype)
-    ssub = (sec_spec.get("subnet") or "").strip()
-    stype = (sec_spec.get("subnet_type") or "").strip()
-    if ssub:
-        return (ssub, "")
-    if stype:
-        return ("", stype)
-    return ("", "")
+    from sheetv2 import target_subnet
+    return target_subnet(sec_spec, stand_spec)
 
 
 # ── Canister allocation ────────────────────────────────────────────────────────

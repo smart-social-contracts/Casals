@@ -62,6 +62,8 @@ def _section_views() -> dict[str, dict]:
             "exists": True,
             "commanders": list_commanders(sec),
             "stand_template_json": (sec.stand_template_json or "").strip(),
+            "subnet": (sec.subnet or "").strip(),
+            "subnet_type": (sec.subnet_type or "").strip(),
         }
     return out
 
@@ -80,6 +82,8 @@ def _stand_views() -> dict[str, dict]:
             "members": stand_members(stand),
             "commanders": list_commanders(stand),
             "built": int(getattr(stand, "built_at", 0) or 0) > 0,
+            "subnet": (stand.subnet or "").strip(),
+            "subnet_type": (stand.subnet_type or "").strip(),
         }
     return out
 

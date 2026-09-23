@@ -235,6 +235,57 @@ def env_block(sheet: dict, env: str) -> dict:
     return block if isinstance(block, dict) else {}
 
 
+def declared_subnet(spec: dict | None) -> tuple[str, str]:
+    """``(subnet, subnet_type)`` written on one section or stand. Missing is empty."""
+    if not isinstance(spec, dict):
+        return ("", "")
+    return ((spec.get("subnet") or "").strip(), (spec.get("subnet_type") or "").strip())
+
+
+def target_subnet(section: dict | None, stand: dict | None) -> tuple[str, str]:
+    """Where new canisters in ``stand`` are created.
+
+    Precedence: stand subnet principal, stand subnet type, section principal,
+    section type. An explicit principal on the same object drops that object's
+    type. ``("", "")`` means the conductor's own subnet.
+    """
+    dsub, dtype = declared_subnet(stand)
+    if dsub:
+        return (dsub, "")
+    if dtype:
+        return ("", dtype)
+    ssub, stype = declared_subnet(section)
+    if ssub:
+        return (ssub, "")
+    if stype:
+        return ("", stype)
+    return ("", "")
+
+
+def subnet_selection_active(sheet: dict, env: str) -> bool:
+    """Sheet placement applies on the IC. A local replica is one subnet."""
+    network = (env_block(sheet, env).get("network") or "").strip().lower()
+    return network != "local"
+
+
+def placement_for(sheet: dict, env: str, section_name: str, stand_name: str) -> tuple[str, str] | None:
+    """Resolved placement for a sheet stand, or ``None`` when this create should
+    use the conductor's subnet (local network, or a conductor/governance canister
+    that the sheet does not place)."""
+    if not subnet_selection_active(sheet, env):
+        return None
+    section_name = (section_name or "").strip()
+    stand_name = (stand_name or "").strip()
+    for section in sheet.get("sections") or []:
+        if not isinstance(section, dict) or (section.get("name") or "").strip() != section_name:
+            continue
+        for stand in section.get("stands") or []:
+            if isinstance(stand, dict) and (stand.get("name") or "").strip() == stand_name:
+                return target_subnet(section, stand)
+        return target_subnet(section, {})
+    return None
+
+
 def canister_names(sheet: dict) -> list[str]:
     """Return every canister name in sheet order."""
     return [name for _, _, name, _ in _iter_named_canisters(sheet)]
@@ -442,6 +493,9 @@ def resolve_partial(
         spath = f"sections[{i}]"
         if "commanders" in section:
             section["commanders"] = resolve_value(section["commanders"], f"{spath}.commanders", None)
+        for field in ("subnet", "subnet_type"):
+            if field in section:
+                section[field] = resolve_value(section[field], f"{spath}.{field}", None)
         if isinstance(section.get("stand_template"), dict):
             tmpl = section["stand_template"]
             for j, canister in enumerate(tmpl.get("canisters") or []):
@@ -462,12 +516,18 @@ def resolve_partial(
                 tmpl["created_by"] = resolve_value(
                     tmpl["created_by"], f"{spath}.stand_template.created_by", None
                 )
+            for field in ("subnet", "subnet_type"):
+                if field in tmpl:
+                    tmpl[field] = resolve_value(tmpl[field], f"{spath}.stand_template.{field}", TEMPLATE_STAND)
         for j, stand in enumerate(section.get("stands") or []):
             if not isinstance(stand, dict):
                 continue
             stpath = f"{spath}.stands[{j}]"
             if "commanders" in stand:
                 stand["commanders"] = resolve_value(stand["commanders"], f"{stpath}.commanders", stand)
+            for field in ("subnet", "subnet_type"):
+                if field in stand:
+                    stand[field] = resolve_value(stand[field], f"{stpath}.{field}", stand)
             if isinstance(stand.get("baton"), dict):
                 stand["baton"] = resolve_value(stand["baton"], f"{stpath}.baton", stand)
             for k, canister in enumerate(stand.get("canisters") or []):
@@ -569,6 +629,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             errors.append(f"{spath} must be an object")
             continue
         _check_raw_principals(section, spath, errors)
+        _validate_subnet_fields(section, spath, errors)
         if "commanders" in section:
             _validate_commanders(section["commanders"], f"{spath}.commanders", errors)
         if "stand_template" in section:
@@ -579,6 +640,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                 errors.append(f"{stpath} must be an object")
                 continue
             _check_raw_principals(stand, stpath, errors)
+            _validate_subnet_fields(stand, stpath, errors)
             if "commanders" in stand:
                 _validate_commanders(stand["commanders"], f"{stpath}.commanders", errors)
             if "baton" in stand and stand["baton"] is not None:
@@ -780,6 +842,13 @@ def _validate_health(value: Any, path: str, errors: list[str]) -> None:
                 errors.append(f"{ep}.status must be an integer")
 
 
+def _validate_subnet_fields(spec: dict, path: str, errors: list[str]) -> None:
+    """``subnet`` is a principal (or ``$principal:`` alias); ``subnet_type`` is a CMC type."""
+    for field in ("subnet", "subnet_type"):
+        if field in spec and spec[field] is not None and not isinstance(spec[field], str):
+            errors.append(f"{path}.{field} must be a string")
+
+
 def _validate_commanders(value: Any, path: str, errors: list[str]) -> None:
     if not isinstance(value, list):
         errors.append(f"{path} must be a list")
@@ -891,6 +960,7 @@ def _validate_stand_template(value: Any, spath: str, names: dict[str, str], erro
         errors.append(f"{path}.controllers must be a list")
     if "commanders" in value:
         _validate_commanders(value["commanders"], f"{path}.commanders", errors)
+    _validate_subnet_fields(value, path, errors)
     if isinstance(value.get("baton"), dict):
         _validate_baton(value["baton"], f"{path}.baton", errors, value)
 
@@ -1095,12 +1165,18 @@ def _validate_placeholders_for_env(
             continue
         if "commanders" in section:
             check(section["commanders"], f"sections[{si}].commanders", None)
+        for field in ("subnet", "subnet_type"):
+            if field in section:
+                check(section[field], f"sections[{si}].{field}", None)
         for sj, stand in enumerate(section.get("stands") or []):
             if not isinstance(stand, dict):
                 continue
             stpath = f"sections[{si}].stands[{sj}]"
             if "commanders" in stand:
                 check(stand["commanders"], f"{stpath}.commanders", stand)
+            for field in ("subnet", "subnet_type"):
+                if field in stand:
+                    check(stand[field], f"{stpath}.{field}", stand)
             if isinstance(stand.get("baton"), dict):
                 check(stand["baton"], f"{stpath}.baton", stand)
         if isinstance(section.get("stand_template"), dict):
@@ -1114,7 +1190,7 @@ def _validate_placeholders_for_env(
                     )
             if isinstance(tmpl.get("baton"), dict):
                 check(tmpl["baton"], f"sections[{si}].stand_template.baton", sample)
-            for field in ("created_by", "controllers"):
+            for field in ("created_by", "controllers", "subnet", "subnet_type"):
                 if field in tmpl:
                     check(tmpl[field], f"sections[{si}].stand_template.{field}", None)
             if "commanders" in tmpl:
@@ -1386,7 +1462,7 @@ def instantiate_template_stand(template: dict, stand_name: str, members: list[st
         for key, val in subs.items():
             text = text.replace("{" + key + "}", val)
         canisters.append(json.loads(text))
-    spec = {k: v for k, v in template.items() if k in ("commanders", "baton")}
+    spec = {k: v for k, v in template.items() if k in ("commanders", "baton", "subnet", "subnet_type")}
     spec = json.loads(json.dumps(spec).replace("{stand}", stand_name))
     spec["canisters"] = [json.loads(json.dumps(c).replace("{stand}", stand_name)) for c in canisters]
     spec["name"] = stand_name

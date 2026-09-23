@@ -643,3 +643,112 @@ def test_optional_member_only_when_chosen():
     rich = sv2.instantiate_template_stand(tmpl, "r2", ["{stand}-token"])
     assert [c["name"] for c in rich["canisters"]] == ["r2-backend", "r2-token"]
     assert "optional" not in rich["canisters"][1]
+
+
+def _subnet_sheet(section_subnet="", section_type="", stand_subnet="", stand_type=""):
+    sheet = _load("minimal")
+    sheet["environments"]["production"] = {
+        "network": "ic",
+        "dns": {"provider": "none"},
+        "principals": {"operator": DEPLOYER},
+    }
+    sec = sheet["sections"][0]
+    if section_subnet:
+        sec["subnet"] = section_subnet
+    if section_type:
+        sec["subnet_type"] = section_type
+    stand = sec["stands"][0]
+    if stand_subnet:
+        stand["subnet"] = stand_subnet
+    if stand_type:
+        stand["subnet_type"] = stand_type
+    return sheet
+
+
+def _bare_live():
+    return {
+        "canisters": {},
+        "sections": {},
+        "stands": {},
+        "conductor_commanders": [],
+        "authorized_wasms": {},
+        "multisig": {},
+        "batons": {},
+        "config_queries": {},
+        "assets": {},
+        "published": {},
+        "bindings": {},
+    }
+
+
+def _subnet_items(plan):
+    return [it for it in plan["items"] if it["kind"] == "set_subnet"]
+
+
+def test_ic_plan_records_section_subnet_before_create():
+    sheet = _subnet_sheet(section_subnet="subnet-app")
+    plan = build_plan(sheet, "production", _bare_live(), self_id=SELF)
+    items = _subnet_items(plan)
+    assert len(items) == 1
+    assert items[0]["target"]["name"] == "App"
+    assert items[0]["target"]["stand"] is None
+    assert items[0]["desired"] == {"subnet": "subnet-app", "subnet_type": ""}
+    kinds = [it["kind"] for it in plan["items"]]
+    assert kinds.index("set_subnet") < kinds.index("create_canister")
+    assert sv2.placement_for(sheet, "production", "App", "Hello") == ("subnet-app", "")
+
+
+def test_stand_subnet_overrides_section():
+    sheet = _subnet_sheet(section_subnet="subnet-app", stand_subnet="subnet-hello")
+    plan = build_plan(sheet, "production", _bare_live(), self_id=SELF)
+    by_name = {it["target"]["name"]: it["desired"] for it in _subnet_items(plan)}
+    assert by_name["App"] == {"subnet": "subnet-app", "subnet_type": ""}
+    assert by_name["Hello"] == {"subnet": "subnet-hello", "subnet_type": ""}
+    assert sv2.placement_for(sheet, "production", "App", "Hello") == ("subnet-hello", "")
+
+
+def test_stand_subnet_type_beats_section_principal():
+    sheet = _subnet_sheet(section_subnet="subnet-app", stand_type="fiduciary")
+    assert sv2.placement_for(sheet, "production", "App", "Hello") == ("", "fiduciary")
+
+
+def test_local_plan_ignores_subnet():
+    sheet = _subnet_sheet(section_subnet="subnet-app", stand_type="fiduciary")
+    plan = build_plan(sheet, "local", _bare_live(), self_id=SELF)
+    assert _subnet_items(plan) == []
+    assert sv2.placement_for(sheet, "local", "App", "Hello") is None
+
+
+def test_matching_subnet_is_converged():
+    sheet = _subnet_sheet(section_subnet="subnet-app")
+    live = _bare_live()
+    live["sections"]["App"] = {"exists": True, "subnet": "subnet-app", "subnet_type": ""}
+    live["stands"]["Hello"] = {"exists": True, "section": "App", "subnet": "", "subnet_type": ""}
+    plan = build_plan(sheet, "production", live, self_id=SELF)
+    assert _subnet_items(plan) == []
+
+
+def test_sheet_clears_a_stored_subnet_on_ic():
+    sheet = _subnet_sheet()
+    live = _bare_live()
+    live["sections"]["App"] = {"exists": True, "subnet": "old-subnet", "subnet_type": ""}
+    plan = build_plan(sheet, "production", live, self_id=SELF)
+    items = _subnet_items(plan)
+    assert len(items) == 1
+    assert items[0]["desired"] == {"subnet": "", "subnet_type": ""}
+    assert items[0]["current"] == {"subnet": "old-subnet", "subnet_type": ""}
+
+
+def test_only_stand_still_syncs_its_section_subnet():
+    sheet = _subnet_sheet(section_subnet="subnet-app")
+    sheet["sections"].append({"name": "Other", "subnet": "subnet-other", "stands": []})
+    plan = build_plan(sheet, "production", _bare_live(), self_id=SELF, only_stand="Hello")
+    names = [it["target"]["name"] for it in _subnet_items(plan)]
+    assert names == ["App"]
+
+
+def test_unresolved_subnet_placeholder_fails_the_plan():
+    sheet = _subnet_sheet(section_subnet="$principal:missing")
+    with pytest.raises(PlanningError) as exc:
+        build_plan(sheet, "production", _bare_live(), self_id=SELF)
+    assert any("subnet still contains $principal:missing" in e for e in exc.value.errors)
