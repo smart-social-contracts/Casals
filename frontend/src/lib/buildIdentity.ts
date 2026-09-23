@@ -32,15 +32,18 @@ export function footerCopy(opts: {
   version: string;
   commit: string;
   datetime: string;
+  deployed?: string;
   local?: boolean;
 }): string {
   const name = (opts.name ?? 'Casals').trim() || 'Casals';
   const version = (opts.version || '').trim();
   const sha = shortSha(opts.commit);
   const when = formatCommitDatetime(opts.datetime);
+  const deployed = formatCommitDatetime(opts.deployed ?? '');
   const parts = [version ? `${name} ${version}` : name];
   if (sha && sha !== 'local' && sha !== 'dev') parts.push(sha);
   if (when) parts.push(when);
+  if (deployed) parts.push(`deployed ${deployed}`);
   let line = parts.join(' · ');
   if (opts.local) line += ' · Local deployment';
   return line;

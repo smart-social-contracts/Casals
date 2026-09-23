@@ -4,9 +4,10 @@
   const version = typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : '';
   const commit = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : '';
   const datetime = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
+  const deployed = typeof __BUILD_DEPLOYED__ !== 'undefined' ? __BUILD_DEPLOYED__ : '';
   const local =
     typeof window !== 'undefined' && isLocalDeployment(window.location.hostname);
-  const copy = footerCopy({ version, commit, datetime, local });
+  const copy = footerCopy({ version, commit, datetime, deployed, local });
 </script>
 
 <footer class="border-t border-[var(--color-border-primary)]">

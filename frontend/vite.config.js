@@ -10,14 +10,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
 
+function utcStamp(date) {
+  return date.toISOString().replace('T', ' ').substring(0, 19);
+}
+
 // Same bake as Realms GOS (`src/realm_frontend/vite.config.js`) and the
 // Registry (`src/realm_registry_frontend/vite.config.js`): version.txt +
-// `git rev-parse --short HEAD`. Datetime is the committer clock (UTC), not
-// the build host clock, so a deploy footer shows the commit that was built.
+// `git rev-parse --short HEAD`. `__BUILD_TIME__` is the committer clock (UTC).
+// `__BUILD_DEPLOYED__` is the wall clock of this build — when the artifact
+// was produced to ship — so the footer can show both.
 function getBuildTimeValues() {
   let version = 'dev';
   let commitHash = 'local';
-  let buildTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const deployedAt = utcStamp(new Date());
+  let buildTime = deployedAt;
 
   try {
     version = readFileSync(resolve(repoRoot, 'version.txt'), 'utf-8').trim() || version;
@@ -48,14 +54,14 @@ function getBuildTimeValues() {
     if (iso) {
       const utc = new Date(iso);
       if (!Number.isNaN(utc.getTime())) {
-        buildTime = utc.toISOString().replace('T', ' ').substring(0, 19);
+        buildTime = utcStamp(utc);
       }
     }
   } catch {
     // keep wall-clock UTC fallback (Realms local-dev default)
   }
 
-  return { version, commitHash, buildTime };
+  return { version, commitHash, buildTime, deployedAt };
 }
 
 const buildValues = getBuildTimeValues();
@@ -66,5 +72,6 @@ export default defineConfig({
     __BUILD_VERSION__: JSON.stringify(buildValues.version),
     __BUILD_COMMIT__: JSON.stringify(buildValues.commitHash),
     __BUILD_TIME__: JSON.stringify(buildValues.buildTime),
+    __BUILD_DEPLOYED__: JSON.stringify(buildValues.deployedAt),
   },
 });

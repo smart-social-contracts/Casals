@@ -37,9 +37,10 @@ test('footerCopy is name + semver + short SHA + commit timestamp', () => {
       version: '0.2.0',
       commit: '59165ad',
       datetime: '2026-08-27 23:10:00',
+      deployed: '2026-08-28T01:05:00Z',
       local: true,
     }),
-    'Casals 0.2.0 · 59165ad · 2026-08-27 23:10:00 UTC · Local deployment',
+    'Casals 0.2.0 · 59165ad · 2026-08-27 23:10:00 UTC · deployed 2026-08-28 01:05:00 UTC · Local deployment',
   );
 });
 

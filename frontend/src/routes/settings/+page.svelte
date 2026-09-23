@@ -461,6 +461,10 @@
           <dt class="text-primary-500">Commit datetime</dt>
           <dd class="font-mono text-primary-900 text-xs">{formatCommitDatetime(__BUILD_TIME__)}</dd>
         </div>
+        <div class="flex justify-between gap-3">
+          <dt class="text-primary-500">Deployed</dt>
+          <dd class="font-mono text-primary-900 text-xs">{formatCommitDatetime(__BUILD_DEPLOYED__)}</dd>
+        </div>
         {#if $principal}
           <div class="flex justify-between gap-3 sm:col-span-2 pt-2 border-t border-[var(--color-border-primary)]">
             <dt class="text-primary-500 shrink-0">Your principal</dt>
