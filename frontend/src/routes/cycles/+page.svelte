@@ -58,6 +58,7 @@
     multisigListSigners,
     multisigPropose,
   } from '$lib/multisigClient';
+  import { proposalPagePath } from '$lib/multisigProposalView';
   import { resolveMultisigCanisterId } from '$lib/resolveMultisigId';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
@@ -1457,8 +1458,8 @@
         if (p?.status === 'executed') executed = 1;
         else if (p?.status === 'pending') pending = 1;
         else if (p?.status === 'failed' || p?.status === 'rejected' || p?.status === 'expired') {
-          let detail = '';
-          if (p.status === 'failed') {
+          let detail = p.result ?? '';
+          if (p.status === 'failed' && !detail) {
             let bestAt: bigint | null = null;
             for (const e of snapEvents) {
               if (e.kind !== 'execute_failed' || e.at < p.created_at) continue;
@@ -1490,7 +1491,7 @@
           ]);
         } else if (pending > 0) {
           toasts.success(
-            `Proposed destroy of ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'} — approve on the Multisig page`,
+            `Proposed destroy of ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'} — approve at ${proposalPagePath(pid, msId)}`,
           );
           closeDestroy();
         }

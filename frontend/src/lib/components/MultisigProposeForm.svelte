@@ -21,7 +21,7 @@
     tree?: Tree | null;
     defaultExpirySecs?: number;
     compact?: boolean;
-    onsuccess?: () => void;
+    onsuccess?: (proposalId: bigint) => void | Promise<void>;
   }
 
   let {
@@ -460,9 +460,9 @@
         canister_id: targetCanister,
         canister_ids: destroyIdsText || targetCanister,
       });
-      await multisigPropose(canisterId, action, id);
+      const proposalId = await multisigPropose(canisterId, action, id);
       open = false;
-      onsuccess?.();
+      await onsuccess?.(proposalId);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {

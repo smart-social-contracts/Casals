@@ -1,41 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { get } from 'svelte/store';
   import { candidUiUrl, getTree, refreshControllersCache, backendCanisterId, frontendCanisterId, type Tree } from '$lib/api';
   import { hydrateTreeControllers } from '$lib/controllerAccess';
   import {
     batonLoadSnapshot,
-    batonSubmitApproval,
-    batonRejectAction,
-    batonRunPipeline,
-    batonSkipBakeAndComplete,
     batonDisplayCommanders,
     type BatonActionRecord,
     type BatonConfig,
     type BatonCommander,
-    type BatonPipelineProgress,
   } from '$lib/batonClient';
   import BatonAdminPanel from '$lib/components/BatonAdminPanel.svelte';
   import BatonProposeUpgradeForm from '$lib/components/BatonProposeUpgradeForm.svelte';
-  import BatonPipelineLog from '$lib/components/BatonPipelineLog.svelte';
-  import {
-    actionStatusLabel,
-    clientLogLine,
-    executeResultLine,
-    formatActionTimestamp,
-    isBatonTerminal,
-    mergePipelineLines,
-    phaseLogToLines,
-    type PipelineLogLine,
-  } from '$lib/batonPipelineLog';
-  import {
-    approvalResultMessage,
-    batonCanApproveAction,
-    batonSupportsQuorumApproval,
-    formatApprovalSummary,
-  } from '$lib/batonApproval';
-  import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
+  import { formatActionTimestamp, isBatonTerminal } from '$lib/batonPipelineLog';
+  import { batonSupportsQuorumApproval } from '$lib/batonApproval';
+  import { batonActionSummary, batonProposalPath, batonStatusClass } from '$lib/batonProposalView';
+  import { isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import { canActOnStand, orchestraSection } from '$lib/commanderPermissions';
   import { findStandForCanister } from '$lib/orchestrationNav';
   import { toasts } from '$lib/stores/toast';
@@ -51,11 +32,6 @@
   let actions = $state<BatonActionRecord[]>([]);
   let policy = $state<unknown | null>(null);
   let tree = $state<Tree | null>(null);
-  let expandedAction = $state<string | null>(null);
-  let busyAction = $state<string | null>(null);
-  let pipelineLog = $state<Record<string, PipelineLogLine[]>>({});
-  let pipelineStatus = $state<Record<string, string>>({});
-
   const pendingCount = $derived(actions.filter((a) => !isTerminal(a.status)).length);
 
   const blockingAction = $derived(
@@ -76,36 +52,12 @@
     return canActOnStand(section, stand, $principal, 'canister.deploy', orchestraSection(tree));
   });
 
-  const isTopCommander = $derived(
-    $isAuthenticated &&
-      !!config?.top_commander &&
-      $principal.toLowerCase() === config.top_commander.toLowerCase(),
-  );
-
   function isTerminal(status?: string): boolean {
     return isBatonTerminal(status);
   }
 
-  function statusClass(status?: string): string {
-    if (!status) return 'badge-neutral';
-    if (status === 'COMPLETE') return 'badge-ok';
-    if (status.startsWith('FAILED') || status.startsWith('REJECTED')) return 'badge-err';
-    if (status.includes('AWAIT') || status === 'BAKING') return 'badge-warn';
-    return 'badge-neutral';
-  }
-
   function fmtTs(secs?: number): string {
     return formatActionTimestamp(secs);
-  }
-
-  function absorbPipelineProgress(actionId: string, progress: BatonPipelineProgress) {
-    const extra = executeResultLine(progress.execute);
-    pipelineLog[actionId] = mergePipelineLines(
-      pipelineLog[actionId] ?? [],
-      progress.action?.phase_log,
-      extra ? [extra] : [],
-    );
-    pipelineStatus[actionId] = actionStatusLabel(progress.action) || progress.execute.status || pipelineStatus[actionId] || '';
   }
 
   async function load() {
@@ -159,106 +111,6 @@
     } catch (e: unknown) {
       toasts.error(e instanceof Error ? e.message : String(e));
     }
-  }
-
-  async function approve(actionId: string) {
-    const id = get(identity);
-    if (!id) return;
-    const action = actions.find((a) => a.action_id === actionId);
-    if (action && config && !batonCanApproveAction(id.getPrincipal().toText(), action, config, commanders)) {
-      toasts.error('You cannot approve this action (not eligible or already approved)');
-      return;
-    }
-    busyAction = actionId;
-    expandedAction = actionId;
-    try {
-      const res = await batonSubmitApproval(canisterId, actionId, id);
-      if (!res.ok) throw new Error(res.error || 'Approval failed');
-      toasts.success(approvalResultMessage(res));
-      await load();
-      if (res.status === 'APPROVED') {
-        await runPipeline(actionId);
-      }
-    } catch (e: unknown) {
-      toasts.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      busyAction = null;
-    }
-  }
-
-  async function reject(actionId: string) {
-    const id = get(identity);
-    if (!id) return;
-    busyAction = actionId;
-    try {
-      const res = await batonRejectAction(canisterId, actionId, id);
-      if (!res.ok) throw new Error(res.error || 'Reject failed');
-      toasts.success('Action rejected');
-      await load();
-    } catch (e: unknown) {
-      toasts.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      busyAction = null;
-    }
-  }
-
-  async function skipBakeComplete(actionId: string) {
-    const id = get(identity);
-    if (!id) return;
-    busyAction = actionId;
-    expandedAction = actionId;
-    try {
-      const res = await batonSkipBakeAndComplete(canisterId, actionId, id);
-      if (!res.ok) throw new Error(res.error || 'Could not complete action');
-      toasts.success('Action marked COMPLETE');
-      await refreshControllersCache().catch(() => {});
-      await load();
-    } catch (e: unknown) {
-      toasts.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      busyAction = null;
-    }
-  }
-
-  async function runPipeline(actionId: string) {
-    const id = get(identity);
-    if (!id) return;
-    busyAction = actionId;
-    expandedAction = actionId;
-    pipelineLog[actionId] = [clientLogLine('Starting pipeline…')];
-    pipelineStatus[actionId] = '…';
-    try {
-      const final = await batonRunPipeline(canisterId, actionId, id, (progress) => {
-        absorbPipelineProgress(actionId, progress);
-        const st = progress.action?.status;
-        if (st === 'FINALIZING' || st === 'COMPLETE' || progress.execute.status === 'VERIFYING') {
-          void refreshControllersCache().catch(() => {});
-        }
-      });
-      if (!final.ok) throw new Error(final.error || `Stopped at ${final.status}`);
-      pipelineStatus[actionId] = final.status || pipelineStatus[actionId] || 'COMPLETE';
-      toasts.success(final.status === 'COMPLETE' ? 'Pipeline complete' : `Finished: ${final.status}`);
-      if (final.status === 'COMPLETE') {
-        await refreshControllersCache().catch(() => {});
-      }
-      await load();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      pipelineLog[actionId] = mergePipelineLines(pipelineLog[actionId] ?? [], undefined, [
-        clientLogLine(msg, 'ERROR'),
-      ]);
-      toasts.error(msg);
-    } finally {
-      busyAction = null;
-    }
-  }
-
-  function payloadSummary(action: BatonActionRecord): string {
-    const p = action.payload as Record<string, unknown> | undefined;
-    if (!p) return action.approval_path ?? 'action';
-    if (typeof p.canister_id === 'string') return `canister ${p.canister_id.slice(0, 8)}…`;
-    if (typeof p.wasm_key === 'string') return `upgrade · ${p.wasm_key}`;
-    return action.approval_path ?? 'managed upgrade';
   }
 
   onMount(() => {
@@ -459,7 +311,13 @@
           {tree}
           {blockingAction}
           {casalsDeploy}
-          onsuccess={() => load()}
+          onsuccess={async (actionId) => {
+            if (actionId) {
+              await goto(batonProposalPath(actionId, canisterId));
+              return;
+            }
+            await load();
+          }}
         />
       {/if}
 
@@ -468,135 +326,21 @@
       {:else}
         <div class="space-y-2">
           {#each actions as action (action.action_id)}
-            <article class="action-row">
-              <button
-                type="button"
-                class="w-full text-left p-3 flex flex-wrap items-center gap-2 justify-between"
-                onclick={() => expandedAction = expandedAction === action.action_id ? null : action.action_id}
-              >
-                <div class="min-w-0 space-y-0.5">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <span class="font-mono text-xs text-primary-800">{action.action_id.slice(0, 12)}…</span>
-                    <span class="badge {statusClass(action.status)}">{action.status ?? 'unknown'}</span>
-                    <span class="text-xs text-primary-500">{payloadSummary(action)}</span>
-                  </div>
-                  <p class="text-xs text-primary-400">
-                    {fmtTs(action.proposed_at)}
-                    {#if action.proposed_by}
-                      · by {action.proposed_by.slice(0, 8)}…
-                    {/if}
-                  </p>
+            <a href={batonProposalPath(action.action_id, canisterId)} class="action-row block p-3 hover:bg-primary-50">
+              <div class="min-w-0 space-y-0.5">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-mono text-xs text-primary-800">{action.action_id.slice(0, 12)}…</span>
+                  <span class="badge {batonStatusClass(action.status)}">{action.status ?? 'unknown'}</span>
+                  <span class="text-xs text-primary-700">{batonActionSummary(action)}</span>
                 </div>
-                <svg
-                  class="w-4 h-4 text-primary-400 shrink-0 transition-transform {expandedAction === action.action_id ? 'rotate-180' : ''}"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5"/>
-                </svg>
-              </button>
-
-              {#if expandedAction === action.action_id}
-                <div class="px-3 pb-3 space-y-3 border-t border-[var(--color-border-primary)] pt-3">
-                  {#if action.affected_canisters?.length}
-                    <p class="text-xs text-primary-500">
-                      Affected: {action.affected_canisters.join(', ')}
-                    </p>
+                <p class="text-xs text-primary-400">
+                  {fmtTs(action.proposed_at)}
+                  {#if action.proposed_by}
+                    · by {action.proposed_by.slice(0, 8)}…
                   {/if}
-                  {#if action.payload}
-                    <pre class="text-xs bg-primary-50 rounded-lg p-2 overflow-x-auto font-mono">{JSON.stringify(action.payload, null, 2)}</pre>
-                  {/if}
-
-                  {#if action.status === 'PENDING' && config}
-                    <div class="rounded-lg border border-primary-200 bg-primary-50/60 px-3 py-2 text-sm space-y-1">
-                      <p class="text-primary-800">{formatApprovalSummary(action, config)}</p>
-                      {#if action.approvals?.length}
-                        <p class="text-xs text-primary-600">
-                          Signed: {action.approvals.map((p) => p.slice(0, 8) + '…').join(', ')}
-                        </p>
-                      {/if}
-                    </div>
-                  {/if}
-
-                  {#if pipelineLog[action.action_id]?.length || busyAction === action.action_id}
-                    <BatonPipelineLog
-                      lines={pipelineLog[action.action_id] ?? []}
-                      status={pipelineStatus[action.action_id] ?? action.status}
-                      busy={busyAction === action.action_id}
-                      title="Pipeline log"
-                      maxHeight="12rem"
-                    />
-                  {:else if action.phase_log?.length}
-                    <BatonPipelineLog
-                      lines={phaseLogToLines(action.phase_log)}
-                      status={action.status}
-                      title="Pipeline log"
-                      maxHeight="12rem"
-                    />
-                  {/if}
-
-                  {#if $isAuthenticated && !isTerminal(action.status)}
-                    {#if action.status === 'FINALIZING'}
-                      <div class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 space-y-2">
-                        <p class="text-sm text-amber-900">
-                          Upgrade succeeded — {actionStatusLabel(action) || 'waiting bake period before COMPLETE'}.
-                        </p>
-                        <p class="text-xs text-amber-800">
-                          Approve/Reject no longer apply. The WASM is already live. Cancel is not available after VERIFY.
-                        </p>
-                        {#if isTopCommander}
-                          <button
-                            class="btn-primary btn-sm"
-                            type="button"
-                            disabled={busyAction === action.action_id}
-                            onclick={() => skipBakeComplete(action.action_id)}
-                          >
-                            {busyAction === action.action_id ? 'Completing…' : 'Skip bake & mark COMPLETE'}
-                          </button>
-                        {:else}
-                          <p class="text-xs text-amber-800">
-                            Only the top commander can skip the bake window and mark this COMPLETE.
-                          </p>
-                        {/if}
-                      </div>
-                    {:else}
-                      <div class="flex flex-wrap gap-2">
-                        {#if action.status === 'PENDING'}
-                          <button
-                            class="btn-secondary btn-sm"
-                            type="button"
-                            disabled={busyAction === action.action_id || !config || !$principal || !batonCanApproveAction($principal, action, config, commanders)}
-                            onclick={() => approve(action.action_id)}
-                          >
-                            Approve
-                          </button>
-                          <button
-                            class="btn-ghost btn-sm text-red-600"
-                            type="button"
-                            disabled={busyAction === action.action_id}
-                            onclick={() => reject(action.action_id)}
-                          >
-                            Reject
-                          </button>
-                        {/if}
-                        {#if action.status !== 'PENDING'}
-                          <button
-                            class="btn-primary btn-sm"
-                            type="button"
-                            disabled={busyAction === action.action_id}
-                            onclick={() => runPipeline(action.action_id)}
-                          >
-                            {busyAction === action.action_id ? 'Running…' : action.status === 'APPROVED' ? 'Run pipeline' : 'Continue pipeline'}
-                          </button>
-                        {/if}
-                      </div>
-                    {/if}
-                  {/if}
-                </div>
-              {/if}
-            </article>
+                </p>
+              </div>
+            </a>
           {/each}
         </div>
       {/if}

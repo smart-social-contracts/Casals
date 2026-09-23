@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   NAV_SECTIONS,
+  navLinkActive,
   visibleNavSections,
   ORCHESTRA_SECTION,
   assignableSections,
@@ -26,6 +27,14 @@ test('NAV_SECTIONS groups governance links separately from operate', () => {
   // the sheet is applied once by `casals up`; there is no page to edit or re-apply it
   assert.equal(operate?.links.some((l) => l.href === '/plan' || l.href === '/sheet'), false);
   assert.equal(operate?.links.some((l) => l.href === '/multisig'), false);
+});
+
+test('navLinkActive keeps Platform committee selected on a proposal page', () => {
+  assert.equal(navLinkActive('/multisig/proposal/4', '/multisig'), true);
+  assert.equal(navLinkActive('/multisig', '/multisig'), true);
+  assert.equal(navLinkActive('/cycles', '/multisig'), false);
+  assert.equal(navLinkActive('/files', '/'), false);
+  assert.equal(navLinkActive('/', '/'), true);
 });
 
 test('displayPermissionGroup renames Orchestration group', () => {

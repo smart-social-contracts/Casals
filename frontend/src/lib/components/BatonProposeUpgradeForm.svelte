@@ -48,7 +48,7 @@
     blockingAction?: BatonActionRecord | null;
     /** Logged-in Casals commander holds `canister.deploy` on this stand. */
     casalsDeploy?: boolean;
-    onsuccess?: () => void;
+    onsuccess?: (actionId?: string) => void | Promise<void>;
   }
 
   let {
@@ -388,7 +388,7 @@
           `Bundle proposal filed${actionId ? ` (${actionId})` : ''}. Casals has voted — the stand still needs to approve it.`,
         );
         open = false;
-        onsuccess?.();
+        await onsuccess?.(actionId || undefined);
         return;
       }
       if (viaCasals) {
@@ -406,7 +406,7 @@
           `Proposal filed${actionId ? ` (${actionId})` : ''}. Casals has voted — the stand still needs to approve it.`,
         );
         open = false;
-        onsuccess?.();
+        await onsuccess?.(actionId || undefined);
         return;
       }
       if (bundleOnly) {
@@ -433,7 +433,7 @@
         }
         toasts.success(`Bundle proposal filed${actionId ? ` (${actionId})` : ''}.`);
         open = false;
-        onsuccess?.();
+        await onsuccess?.(actionId || undefined);
         return;
       }
       appendClientLog(`Proposing upgrade: ${plan}`);
@@ -488,7 +488,7 @@
       }
 
       open = false;
-      onsuccess?.();
+      await onsuccess?.(result.action_id || undefined);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {

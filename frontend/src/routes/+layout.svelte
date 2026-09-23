@@ -9,7 +9,7 @@
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
   import BuildFooter from '$lib/components/BuildFooter.svelte';
-  import { NAV_SECTIONS, visibleNavSections } from '$lib/governanceUx';
+  import { NAV_SECTIONS, navLinkActive, visibleNavSections } from '$lib/governanceUx';
   import { findMultisigCanister } from '$lib/orchestraGovernance';
 
   let { children } = $props();
@@ -107,7 +107,7 @@
                 href={link.href}
                 onclick={closeSidebar}
                 title={link.description ?? ''}
-                class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {currentPath === link.href
+                class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors {navLinkActive(currentPath, link.href)
                   ? 'bg-primary-100 text-primary-900'
                   : 'text-primary-500 hover:text-primary-800 hover:bg-primary-50'}"
               >

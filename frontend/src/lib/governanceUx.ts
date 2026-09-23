@@ -43,6 +43,12 @@ export const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+/** Sidebar highlight: exact match, and nested routes such as `/multisig/proposal/4`. */
+export function navLinkActive(pathname: string, href: string): boolean {
+  if (href === '/') return pathname === '/';
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export interface OrchestraFacilities {
   /** True when some stand runs an `orchestration-multisig` canister. */
   multisig: boolean;

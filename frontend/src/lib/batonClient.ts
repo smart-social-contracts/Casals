@@ -69,6 +69,7 @@ export interface BatonPhaseLogEntry {
 
 export interface BatonActionRecord {
   action_id: string;
+  action_type?: string;
   status?: string;
   proposed_by?: string;
   proposed_at?: number;
@@ -77,6 +78,7 @@ export interface BatonActionRecord {
   approvals?: string[];
   payload?: unknown;
   phase_log?: BatonPhaseLogEntry[];
+  snapshot_refs?: Record<string, string>;
   upgrade_index?: number;
   bake_until?: number;
 }

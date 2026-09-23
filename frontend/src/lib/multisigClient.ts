@@ -2,7 +2,8 @@ import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
-import { DEPLOY_CONTENT_METHOD, deployBundleArgJson, describeDeployBundle, parseDeployBundleCall } from './contentDeploy';
+import { DEPLOY_CONTENT_METHOD, deployBundleArgJson } from './contentDeploy';
+import { actionSummary } from './multisigProposalView';
 import { icHost, isLocalHost } from './ic-host';
 import { CANDID_EMPTY_ARG } from './wasmStorePath';
 
@@ -120,6 +121,8 @@ export interface MultisigProposal {
   status: MultisigProposalStatus;
   created_at: bigint;
   expires_at: bigint;
+  /** Execution error, or the text an executed action returned. Empty when there is none. */
+  result: string;
 }
 
 export interface MultisigEvent {
@@ -138,59 +141,10 @@ function statusKey(s: unknown): MultisigProposalStatus {
   return 'pending';
 }
 
-function actionSummary(action: Record<string, unknown>): string {
-  const key = Object.keys(action)[0];
-  if (!key) return 'unknown';
-  const payload = action[key] as Record<string, unknown> | undefined;
-  switch (key) {
-    case 'AddCommander':
-      return `Add commander on ${fmtPrincipal(payload?.baton_id)}`;
-    case 'SetCanisterControllers':
-      return `Set controllers on ${fmtPrincipal(payload?.canister_id)}`;
-    case 'UpdateBatonSettings':
-      return `Update Baton settings (${fmtPrincipal(payload?.baton_id)})`;
-    case 'SetPolicy':
-      return `Set policy on ${fmtPrincipal(payload?.baton_id)}`;
-    case 'UpgradeBaton':
-      return `Upgrade Baton ${fmtPrincipal(payload?.baton_id)}`;
-    case 'ManageSigners':
-      return 'Manage signers';
-    case 'RemoveCommander':
-      return `Remove commander from ${fmtPrincipal(payload?.baton_id)}`;
-    case 'DestroyStand':
-      return `Destroy stand ${String(payload?.stand ?? '—')}`;
-    case 'DestroyCanister':
-      return `Destroy canister ${fmtPrincipal(payload?.canister_id)}`;
-    case 'DestroyCanisters': {
-      const ids = payload?.canister_ids;
-      const n = Array.isArray(ids) ? ids.length : 0;
-      return n === 1
-        ? `Destroy canister ${fmtPrincipal(ids?.[0])}`
-        : `Destroy ${n} canisters`;
-    }
-    case 'ApplySheet':
-      return `Apply sheet ${String(payload?.plan_hash ?? '').slice(0, 12) || '—'}`;
-    case 'CallCanister': {
-      const deploy = parseDeployBundleCall({ method: String(payload?.method ?? ''), arg_json: String(payload?.arg_json ?? '') });
-      if (deploy) return describeDeployBundle(deploy);
-      return `Call ${String(payload?.method ?? '—')} on ${fmtPrincipal(payload?.canister)}`;
-    }
-    case 'UpgradeCanister': {
-      const key = String(payload?.key ?? '');
-      const file = key.slice(key.lastIndexOf('/') + 1) || '—';
-      return `Upgrade ${fmtPrincipal(payload?.canister_id)} to ${file}`;
-    }
-    default:
-      return key;
-  }
-}
-
-function fmtPrincipal(p: unknown): string {
-  if (!p) return '—';
-  if (typeof p === 'object' && p !== null && 'toText' in p) {
-    return (p as { toText: () => string }).toText();
-  }
-  return String(p);
+function optText(value: unknown): string {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.length ? String(value[0] ?? '') : '';
+  return String(value);
 }
 
 function mapProposal(p: {
@@ -201,6 +155,7 @@ function mapProposal(p: {
   status: unknown;
   created_at: bigint;
   expires_at: bigint;
+  result?: unknown;
 }): MultisigProposal {
   return {
     id: p.id,
@@ -210,6 +165,7 @@ function mapProposal(p: {
     status: statusKey(p.status),
     created_at: p.created_at,
     expires_at: p.expires_at,
+    result: optText(p.result),
   };
 }
 
@@ -245,7 +201,18 @@ export async function multisigDefaultExpirySecs(canisterId: string): Promise<num
 export async function multisigListProposals(canisterId: string): Promise<MultisigProposal[]> {
   const a = await multisigActor(canisterId);
   const raw = await a.list_proposals();
-  return raw.map(mapProposal).sort((a, b) => Number(b.id - a.id));
+  return raw.map(mapProposal).sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+export async function multisigGetProposal(
+  canisterId: string,
+  proposalId: bigint,
+): Promise<MultisigProposal | null> {
+  const a = await multisigActor(canisterId);
+  const raw = await a.get_proposal(proposalId);
+  const row = Array.isArray(raw) ? raw[0] : raw;
+  if (!row) return null;
+  return mapProposal(row);
 }
 
 export async function multisigListEvents(canisterId: string): Promise<MultisigEvent[]> {

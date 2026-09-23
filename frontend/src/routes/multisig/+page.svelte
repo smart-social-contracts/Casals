@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
   import { candidUiUrl } from '$lib/api';
@@ -12,6 +13,7 @@
     type MultisigEvent,
     type MultisigProposal,
   } from '$lib/multisigClient';
+  import { proposalPagePath, proposalStatusClass } from '$lib/multisigProposalView';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import MultisigProposeForm from '$lib/components/MultisigProposeForm.svelte';
@@ -39,16 +41,11 @@
     return Number.isFinite(ms) ? new Date(ms).toLocaleString() : '—';
   }
 
-  function statusTone(status: string): string {
-    if (status === 'executed') return 'text-emerald-700 bg-emerald-50';
-    if (status === 'pending') return 'text-amber-800 bg-amber-50';
-    if (status === 'failed') return 'text-red-700 bg-red-50';
-    if (status === 'rejected') return 'text-slate-600 bg-slate-50';
-    return 'text-primary-500 bg-primary-50';
-  }
+  const committeeQuery = $derived($page.url.searchParams.get('id') ?? '');
 
   function failureDetail(p: MultisigProposal): string {
     if (p.status !== 'failed') return '';
+    if (p.result) return p.result;
     let best: MultisigEvent | null = null;
     let bestDelta: bigint | null = null;
     for (const e of events) {
@@ -231,9 +228,9 @@
           <MultisigProposeForm
             {canisterId}
             compact
-            onsuccess={async () => {
+            onsuccess={async (proposalId) => {
               toasts.success('Proposal submitted');
-              await load();
+              await goto(proposalPagePath(proposalId, committeeQuery));
             }}
           />
         {/if}
@@ -247,12 +244,12 @@
             {@const pid = p.id.toString()}
             <li class="rounded-lg border border-[var(--color-border-primary)] bg-white p-3 space-y-2">
               <div class="flex flex-wrap items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <p class="text-sm font-medium text-primary-800">{actionSummary(p.action)}</p>
+                <a href={proposalPagePath(p.id, committeeQuery)} class="min-w-0 group">
+                  <p class="text-sm font-medium text-primary-800 group-hover:underline">{actionSummary(p.action)}</p>
                   <p class="text-xs text-primary-400 mt-0.5">
-                    #{Number(p.id)} · {p.approvals.length}/{threshold} · expires {fmtNs(p.expires_at)}
+                    #{p.id.toString()} · {p.approvals.length}/{threshold} · expires {fmtNs(p.expires_at)}
                   </p>
-                </div>
+                </a>
                 {#if isSigner}
                   <div class="flex gap-2 shrink-0">
                     <button
@@ -284,11 +281,12 @@
       <section class="space-y-2">
         <h2 class="text-sm font-medium text-primary-900">History</h2>
         <ul class="divide-y divide-[var(--color-border-primary)] rounded-lg border border-[var(--color-border-primary)] bg-white">
-          {#each history.slice(0, 30) as p (p.id.toString())}
-            <li class="px-3 py-2">
+          {#each history as p (p.id.toString())}
+            <li>
+              <a href={proposalPagePath(p.id, committeeQuery)} class="block px-3 py-2 hover:bg-primary-50">
               <div class="flex flex-wrap items-center gap-2 text-sm">
-                <span class="text-xs font-mono text-primary-400">#{Number(p.id)}</span>
-                <span class="text-xs px-1.5 py-0.5 rounded {statusTone(p.status)}">{p.status}</span>
+                <span class="text-xs font-mono text-primary-400">#{p.id.toString()}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded {proposalStatusClass(p.status)}">{p.status}</span>
                 <span class="text-primary-700 truncate min-w-0 flex-1">{actionSummary(p.action)}</span>
                 <span class="text-xs text-primary-400 shrink-0">{fmtNs(p.created_at)}</span>
               </div>
@@ -298,6 +296,7 @@
                   <p class="text-xs text-red-600 mt-1">{detail}</p>
                 {/if}
               {/if}
+              </a>
             </li>
           {/each}
         </ul>
