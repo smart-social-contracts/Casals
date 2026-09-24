@@ -17,6 +17,7 @@ import os
 from sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, store_namespace_prefix
 import re
 import subprocess
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -80,8 +81,7 @@ def resolve_source(
         canister = src[6:].strip()
         data = _build_canister_artifact(canister, project_root)
     elif src.startswith("https://") or src.startswith("http://"):
-        with urllib.request.urlopen(src, timeout=120) as resp:
-            raw = resp.read()
+        raw = _http_get(src)
         data = gzip.decompress(raw) if src.endswith(".gz") else raw
     elif src.startswith("release:"):
         data = _download_github_release(src)
@@ -133,14 +133,30 @@ def _build_canister_artifact(canister: str, project_root: str) -> bytes:
     raise ValueError(f"unknown build canister: {canister}")
 
 
-def _download_github_release(source: str) -> bytes:
-    m = RELEASE_RE.match(source)
+def release_asset_url(source: str) -> str:
+    """``release:owner/repo@tag:asset`` → the GitHub release download URL."""
+    m = RELEASE_RE.match((source or "").strip())
     if not m:
         raise ValueError(f"invalid release source: {source}")
-    owner_repo, tag, asset = m.group(1), m.group(3), m.group(4)
-    url = f"https://github.com/{owner_repo}/releases/download/{tag}/{asset}"
-    with urllib.request.urlopen(url, timeout=120) as resp:
-        raw = resp.read()
+    owner, repo, tag, asset = m.group(1), m.group(2), m.group(3), m.group(4)
+    return f"https://github.com/{owner}/{repo}/releases/download/{tag}/{asset}"
+
+
+def _http_get(url: str) -> bytes:
+    """GET ``url``. A failure names the URL; urllib's own error does not."""
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"could not retrieve {url}: HTTP {exc.code} {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"could not retrieve {url}: {exc.reason}") from exc
+
+
+def _download_github_release(source: str) -> bytes:
+    url = release_asset_url(source)
+    asset = url.rsplit("/", 1)[-1]
+    raw = _http_get(url)
     return gzip.decompress(raw) if asset.endswith(".gz") else raw
 
 
@@ -158,18 +174,9 @@ def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[st
             raise FileNotFoundError(f"bundle source not found: {' or '.join(candidates)}")
         return _bundle.read_bundle(path)
     if src.startswith("https://") or src.startswith("http://"):
-        with urllib.request.urlopen(src, timeout=120) as resp:
-            raw = resp.read()
-        return _bundle.read_tgz(raw)[0]
+        return _bundle.read_tgz(_http_get(src))[0]
     if src.startswith("release:"):
-        m = RELEASE_RE.match(src)
-        if not m:
-            raise ValueError(f"invalid release source: {src}")
-        owner_repo, tag, asset = m.group(1), m.group(3), m.group(4)
-        url = f"https://github.com/{owner_repo}/releases/download/{tag}/{asset}"
-        with urllib.request.urlopen(url, timeout=120) as resp:
-            raw = resp.read()
-        return _bundle.read_tgz(raw)[0]
+        return _bundle.read_tgz(_http_get(release_asset_url(src)))[0]
     raise ValueError(f"registry.bundles: unsupported source {source!r} (local:<dir|.tgz>, https://…tgz, release:…)")
 
 

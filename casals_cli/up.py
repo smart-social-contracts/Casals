@@ -268,15 +268,15 @@ def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
 
 
 def registry_wasm_by_hash(sheet: dict, *, sheet_dir: str, project_root: str):
-    """``module_hash -> path`` over the sheet's ``registry.wasms`` ``local:``
-    sources, so the CLI can install a governed canister's declared build (the
-    multisig's own upgrade) without the conductor being a controller. Lazy:
-    each source is hashed once, on first miss."""
+    """``module_hash -> path`` over every ``registry.wasms`` source
+    (``local:``, ``release:``, ``https:``, ``build:``), so the CLI can install
+    a governed canister's declared module (issue #58). Lazy: each source is
+    resolved once, on first miss."""
     cache: dict[str, str] = {}
     pending = [
-        str(w.get("source") or "")
+        str(w.get("source") or "").strip()
         for w in (sheet.get("registry") or {}).get("wasms") or []
-        if str(w.get("source") or "").startswith("local:")
+        if str(w.get("source") or "").strip()
     ]
 
     def lookup(module_hash: str) -> str | None:
@@ -287,7 +287,7 @@ def registry_wasm_by_hash(sheet: dict, *, sheet_dir: str, project_root: str):
             src = pending.pop(0)
             try:
                 data, digest = resolve_source(src, sheet_dir=sheet_dir, project_root=project_root)
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
                 continue
             with tempfile.NamedTemporaryFile("wb", suffix=".wasm", delete=False) as f:
                 f.write(data)
@@ -327,7 +327,7 @@ def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash
             path = wasm_by_hash(want) if wasm_by_hash else None
             if not path:
                 _progress(
-                    f"  cannot upgrade {name}: no registry.wasms local: source with sha256 {want[:12]}…"
+                    f"  cannot upgrade {name}: no registry.wasms source with sha256 {want[:12]}…"
                     + ("" if wasm_by_hash else " (run `casals up <sheet>`, which knows the registry)")
                 )
                 continue

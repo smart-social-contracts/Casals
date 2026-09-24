@@ -26,7 +26,7 @@ from casals_cli.ic import IcClient, RecordingIc  # noqa: E402
 from casals_cli.main import apply_local_flag, _build_parser, looks_like_checkout, project_root  # noqa: E402
 from casals_cli.local import cycles_balance, identity_names  # noqa: E402
 from casals_cli.oracle import run_oracle  # noqa: E402
-from casals_cli.registry import resolve_source, sha256_hex  # noqa: E402
+from casals_cli.registry import release_asset_url, resolve_source, sha256_hex  # noqa: E402
 from casals_cli.show import build_live_view, mermaid_graph, render_show_text  # noqa: E402
 from casals_cli.up import run_up  # noqa: E402
 from casals_cli.util import candid_text_arg, candid_unescape, parse_icp_output  # noqa: E402
@@ -155,6 +155,23 @@ class TestRegistry:
         path.write_bytes(data)
         with pytest.raises(ValueError, match="sha256 mismatch"):
             resolve_source(f"local:{path}", sheet_dir=str(tmp_path), project_root=REPO_ROOT, expected_sha256="00" * 32)
+
+    def test_release_url_includes_owner_and_repo(self):
+        url = release_asset_url("release:smart-social-contracts/Casals@v0.3.2:casals_backend.wasm.gz")
+        assert url == (
+            "https://github.com/smart-social-contracts/Casals/releases/download/v0.3.2/casals_backend.wasm.gz"
+        )
+
+    def test_http_failure_names_the_url(self, monkeypatch):
+        import urllib.error
+        from casals_cli.registry import _http_get
+
+        def boom(url, timeout=120):
+            raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+
+        monkeypatch.setattr("casals_cli.registry.urllib.request.urlopen", boom)
+        with pytest.raises(RuntimeError, match="could not retrieve https://example.test/missing: HTTP 404"):
+            _http_get("https://example.test/missing")
 
 
 # ── bindings ─────────────────────────────────────────────────────────────────
@@ -790,6 +807,73 @@ class TestGovernedUpgrade:
         deployer_items(ic, self._plan("ff" * 32), "deployer", "ms-id", lookup)
         assert not [c for c in ic.calls if c[0] == "install_wasm"]
         assert not [c for c in ic.calls if c[0] == "icp"]  # no proposal either
+
+    def test_release_source_is_installed_by_hash(self, tmp_path, monkeypatch):
+        import hashlib
+        from casals_cli.up import deployer_items, registry_wasm_by_hash
+
+        data = b"\0asm from a release"
+        want = hashlib.sha256(data).hexdigest()
+
+        def fake_resolve(src, **_kw):
+            assert src == "release:smart-social-contracts/Casals@v0.3.2:casals_backend.wasm.gz"
+            return data, want
+
+        monkeypatch.setattr("casals_cli.up.resolve_source", fake_resolve)
+        sheet = {"registry": {"wasms": [{
+            "family": "casals-backend", "version": "main",
+            "source": "release:smart-social-contracts/Casals@v0.3.2:casals_backend.wasm.gz",
+        }]}}
+        ic = TestMultisigPaths._ic(self)
+        ic.controllers["ms-id"] = ["deployer"]
+        lookup = registry_wasm_by_hash(sheet, sheet_dir=str(tmp_path), project_root=str(tmp_path))
+        deployer_items(ic, self._plan(want), "deployer", "ms-id", lookup)
+        install = next(c for c in ic.calls if c[0] == "install_wasm")
+        assert hashlib.sha256(open(install[1][1], "rb").read()).hexdigest() == want
+
+    def test_backend_bootstrap_file_is_the_registry_module(self, tmp_path, monkeypatch):
+        from casals_cli.conductor import _store_wasm_path
+
+        pinned = b"\0asm pinned release module"
+        monkeypatch.setattr(
+            "casals_cli.conductor.resolve_source",
+            lambda source, **_kw: (pinned, __import__("hashlib").sha256(pinned).hexdigest()),
+        )
+        sheet = {
+            "conductor": {"backend": {"wasm": "casals-backend"}},
+            "registry": {"wasms": [{
+                "family": "casals-backend", "version": "main",
+                "source": "release:smart-social-contracts/Casals@v0.3.2:casals_backend.wasm.gz",
+            }]},
+        }
+        path, digest = _store_wasm_path("backend", sheet, sheet_dir=str(tmp_path), project_root=str(tmp_path))
+        try:
+            assert open(path, "rb").read() == pinned
+            assert digest == __import__("hashlib").sha256(pinned).hexdigest()
+        finally:
+            os.unlink(path)
+
+    def test_frontend_dist_is_the_named_bundle(self, tmp_path):
+        from casals_cli.conductor import frontend_dist
+
+        dist = tmp_path / "ui"
+        dist.mkdir()
+        (dist / "index.html").write_bytes(b"<p>release ui</p>")
+        sheet = {
+            "conductor": {"frontend": {"content": "frontend/casals-ui/main"}},
+            "registry": {"bundles": [{
+                "path": "frontend/casals-ui/main",
+                "source": f"local:{dist}",
+            }]},
+        }
+        path, drop = frontend_dist(sheet, sheet_dir=str(tmp_path), project_root=str(tmp_path))
+        try:
+            assert drop is True
+            assert (os.path.join(path, "index.html") and open(os.path.join(path, "index.html"), "rb").read()) == b"<p>release ui</p>"
+        finally:
+            if drop:
+                import shutil
+                shutil.rmtree(path, ignore_errors=True)
 
     def test_without_sheet_nothing_happens(self):
         from casals_cli.up import deployer_items

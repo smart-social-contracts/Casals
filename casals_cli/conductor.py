@@ -2,19 +2,21 @@
 
 Three shapes of conductor canister:
 
-- the Basilisk wasm built from this checkout (`backend`): installed from
-  ``.basilisk/...`` (``WASM_PATHS``);
-- the UI (`frontend`): an asset canister deployed and synced from a built
-  dist through a private icp project;
-- the `wasms` store: an asset canister installed from the certified-assets
-  wasm the sheet's ``registry.wasms`` names for it (e.g.
-  ``certified-assets@0.3.0`` → ``local:seed/templates/...``). It has no dist:
-  `casals up` fills it in the store-upload step.
+- the backend: installed from the bytes ``registry.wasms`` names for
+  ``conductor.backend.wasm`` (a ``release:`` row included). The checkout
+  build is only the fallback when that row is missing;
+- the UI (`frontend`): an asset canister deployed from the
+  ``registry.bundles`` row named by ``conductor.frontend.content``, or from
+  a local ``npm`` build when the sheet names no such bundle;
+- the store: an asset canister installed from the certified-assets wasm the
+  sheet's ``registry.wasms`` names. It has no dist: `casals up` fills it in
+  the store-upload step.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 
 from sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
@@ -27,7 +29,7 @@ from casals_cli.frontend_bootstrap import (
     icp_project_dir,
     write_icp_project,
 )
-from casals_cli.registry import WASM_PATHS, resolve_source
+from casals_cli.registry import WASM_PATHS, resolve_bundle, resolve_source
 
 ICP_CANISTER_MAP = {
     "backend": "casals_backend",
@@ -148,6 +150,32 @@ def _bootstrap_wasm_canister(
         bindings.conductor_module_hashes[name] = new_hash
 
 
+def frontend_dist(sheet: dict, *, sheet_dir: str, project_root: str, progress=None) -> tuple[str, bool]:
+    """Directory to deploy as ``casals-frontend``, and whether the caller must delete it.
+
+    The sheet's ``conductor.frontend.content`` names a ``registry.bundles`` row:
+    that bundle is what gets deployed (issue #58). A sheet with no such row
+    still builds ``frontend/`` in this checkout.
+    """
+    content = str(((sheet.get("conductor") or {}).get("frontend") or {}).get("content") or "").strip()
+    row = next(
+        (b for b in (sheet.get("registry") or {}).get("bundles") or []
+         if isinstance(b, dict) and str(b.get("path") or "").strip() == content),
+        None,
+    )
+    source = str((row or {}).get("source") or "").strip()
+    if content and source:
+        files = resolve_bundle(source, sheet_dir=sheet_dir, project_root=project_root)
+        tmp = tempfile.mkdtemp(prefix="casals-ui-")
+        for rel, data in files.items():
+            dest = os.path.join(tmp, str(rel).lstrip("/"))
+            os.makedirs(os.path.dirname(dest) or tmp, exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+        return tmp, True
+    return ensure_asset_build("frontend", project_root, progress=progress), False
+
+
 def bootstrap_conductor(
     ic,
     sheet: dict,
@@ -169,7 +197,30 @@ def bootstrap_conductor(
     bindings.icp_project_dir = project_dir
 
     declared = [key for key in CONDUCTOR_KEYS if isinstance(conductor.get(key), dict)]
-    casals_dist = ensure_asset_build("frontend", project_root, progress=progress)
+    casals_dist, drop_dist = frontend_dist(
+        sheet, sheet_dir=sheet_dir, project_root=project_root, progress=progress,
+    )
+    try:
+        _bootstrap_declared(
+            ic, sheet, bindings, declared=declared, casals_dist=casals_dist,
+            sheet_dir=sheet_dir, project_root=project_root, deployer=deployer,
+            multisig_id=multisig_id, progress=progress,
+        )
+    finally:
+        if drop_dist:
+            shutil.rmtree(casals_dist, ignore_errors=True)
+
+    bindings.backend_id = bindings.conductor.get(CONDUCTOR_NAMES["backend"], bindings.backend_id)
+    bindings.deployer = deployer
+    bindings.save()
+    return bindings
+
+
+def _bootstrap_declared(
+    ic, sheet, bindings, *, declared, casals_dist, sheet_dir, project_root,
+    deployer, multisig_id, progress,
+) -> None:
+    project_dir = bindings.icp_project_dir
     for key in declared:
         name = CONDUCTOR_NAMES[key]
         # Regenerate the private icp project each round so a UI deployed now sees
@@ -190,17 +241,12 @@ def bootstrap_conductor(
             continue
 
         wasm_path = None
-        if key in STORE_KEYS:
-            wasm_path, expected_hash = _store_wasm_path(key, sheet, sheet_dir=sheet_dir, project_root=project_root)
-        else:
-            wasm_ref = str((conductor.get(key) or {}).get("wasm") or "")
-            family = wasm_ref.split("@")[0] if wasm_ref else ""
-            version = wasm_ref.split("@")[1] if "@" in wasm_ref else "main"
-            registry_entry = _find_registry_entry(sheet, family, version)
+        try:
+            wasm_path, expected_hash = _store_wasm_path(
+                key, sheet, sheet_dir=sheet_dir, project_root=project_root,
+            )
+        except ValueError:
             expected_hash = None
-            if registry_entry:
-                _data, expected_hash = _resolved_digest(registry_entry, sheet_dir=sheet_dir, project_root=project_root)
-
         try:
             _bootstrap_wasm_canister(
                 ic,
@@ -216,16 +262,11 @@ def bootstrap_conductor(
                 wasm_path=wasm_path,
             )
         finally:
-            if key in STORE_KEYS and wasm_path:
+            if wasm_path:
                 try:
                     os.unlink(wasm_path)
                 except OSError:
                     pass
-
-    bindings.backend_id = bindings.conductor.get(CONDUCTOR_NAMES["backend"], bindings.backend_id)
-    bindings.deployer = deployer
-    bindings.save()
-    return bindings
 
 
 def bind_conductor(ic, backend_id: str, conductor_ids: dict[str, str]) -> None:
