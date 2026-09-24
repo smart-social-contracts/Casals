@@ -35,7 +35,7 @@ def infer_wasm_type(wasm_key: str) -> str:
         return RUST
     if "frontend" in k or k.startswith("hello-world-frontend"):
         return ASSETS
-    if k.startswith("certified-assets") or k == "casals-wasms":
+    if k.startswith("certified-assets") or k == "casals-store":
         return ASSETS  # the store and the conductor frontend run the asset canister
     return ""
 

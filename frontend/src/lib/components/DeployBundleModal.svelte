@@ -132,7 +132,7 @@
   >
     <h3 class="text-lg font-semibold text-primary-900 mb-1">Deploy frontend bundle</h3>
     <p class="text-sm text-primary-500 mb-4">
-      Make <span class="font-mono">{canister.name}</span> serve exactly what the <span class="font-mono">casals-wasms</span>
+      Make <span class="font-mono">{canister.name}</span> serve exactly what the <span class="font-mono">casals-store</span>
       store holds under a namespace. The conductor writes the difference in rounds and records the release; the bundle
       hash shown is pinned so a store change during the deploy aborts it.
     </p>

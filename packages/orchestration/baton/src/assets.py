@@ -1,4 +1,4 @@
-"""Managed asset provisioning — stream a frontend bundle from the casals-wasms
+"""Managed asset provisioning — stream a frontend bundle from the casals-store
 store into a certified-assets canister the Baton controls.
 
 Unlike managed_upgrade this pipeline never stops or snapshots the target:

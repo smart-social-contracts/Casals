@@ -2698,6 +2698,44 @@ def _drive(gen):
         return stop.value
 
 
+def test_install_code_resolves_wasm_type_before_the_later_import(monkeypatch):
+    """`upgrade_via_baton` used to import `wasm_type_of_wasm` inside `_execute_item`.
+    That made the name local to the whole function, so an earlier `install_code`
+    raised UnboundLocalError before the import ran."""
+    import applier
+
+    seen = []
+
+    def pull(*args):
+        seen.append(args)
+        return None
+        yield
+
+    class _Canisters:
+        @staticmethod
+        def instances():
+            return []
+
+        def __class_getitem__(self, _name):
+            return None
+
+    w = types.SimpleNamespace(
+        key="orchestration-multisig@1.6.0", wasm_type="", wasm_hash="ab" * 32,
+        registry_namespace="wasm", registry_path="orchestration-multisig/1.6.0.wasm",
+        memory_keep="",
+    )
+    monkeypatch.setattr(applier, "_find_canister_spec", lambda *_a, **_k: {"wasm": w.key, "kind": "backend"})
+    monkeypatch.setattr(applier, "_resolve_authorized_wasm", lambda *_a, **_k: w)
+    monkeypatch.setattr(applier, "_resolve_install_arg", lambda *_a, **_k: b"")
+    monkeypatch.setattr(applier, "_pull_and_install", pull)
+    monkeypatch.setattr(applier, "Canister", _Canisters)
+    _drive(applier._execute_item(
+        {"kind": "install_code", "target": {"name": "multisig", "canister_id": "aaaaa-aa"}},
+        {},
+    ))
+    assert seen and seen[0][-1] == "multisig"
+
+
 def test_apply_plan_failed_item_is_an_event(monkeypatch):
     """The timer-driven reconcile has nobody to return the error to: a wasm that
     traps at init must show up in get_events as plan_item_failed, not as an

@@ -23,7 +23,7 @@ const sheet = {
       stands: [{ name: 'Motoko', canisters: [{ name: 'motoko-backend', wasm_key: 'hello-world-motoko@1.0.0' }] }],
     },
   ],
-  registry: { publish: [{ path: 'frontend/website/main', source: 'local:../casals-website/dist' }, { path: 'frontend/casals-ui/main', source: 'local:dist' }] },
+  registry: { bundles: [{ path: 'frontend/website/main', source: 'local:../casals-website/dist' }, { path: 'frontend/casals-ui/main', source: 'local:dist' }] },
   conductor: { frontend: { wasm: 'casals-frontend', kind: 'frontend', content: 'frontend/casals-ui/main' } },
 } as unknown as Sheet;
 

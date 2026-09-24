@@ -36,7 +36,7 @@ function demoTree(): TreemapInput {
     children: [
       section('Casals', [stand('Casals', 'conductor', [
         { name: 'casals-backend', value: 299 },
-        { name: 'casals-wasms', value: 83 },
+        { name: 'casals-store', value: 83 },
         { name: 'casals-frontend', value: 12 },
       ])]),
       section('Demo', [stand('Demo', 'Motoko', [

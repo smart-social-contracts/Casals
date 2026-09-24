@@ -176,7 +176,7 @@ def test_cli_bundle_default_name_and_error(tmp_path, capsys, monkeypatch):
     assert "empty" in capsys.readouterr().err
 
 
-# ── registry.publish rows are bundles ────────────────────────────────────────
+# ── registry.bundles rows are bundles ────────────────────────────────────────
 
 
 class _Target:
@@ -240,9 +240,9 @@ def test_bundle_sha256_is_optional_in_production_but_must_be_hex64_when_given():
     from sheetv2 import _validate_registry, validate
 
     sheet = {"registry": {"wasms": [{"family": "f", "version": "1", "source": "local:x"}],
-                          "publish": [{"path": "frontend/web/main", "source": "local:dist"}]}, "sections": []}
+                          "bundles": [{"path": "frontend/web/main", "source": "local:dist"}]}, "sections": []}
     assert not [e for e in validate(sheet, "production") if "sha256" in e]
-    sheet["registry"]["publish"][0]["sha256"] = "nothex"
+    sheet["registry"]["bundles"][0]["sha256"] = "nothex"
     errors: list[str] = []
     _validate_registry(sheet, None, errors)
     assert any("64-hex bundle hash" in e for e in errors)

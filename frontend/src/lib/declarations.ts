@@ -46,7 +46,7 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_settings:          IDL.Func([IDL.Text], [IDL.Text], []),
     set_my_settings:       IDL.Func([IDL.Text], [IDL.Text], []),
     set_subnet_whitelist:    IDL.Func([IDL.Text], [IDL.Text], []),
-    // ── casals-wasms store: browser uploads + housekeeping ──
+    // ── casals-store store: browser uploads + housekeeping ──
     begin_upload:          IDL.Func([IDL.Text], [IDL.Text], []),
     end_upload:            IDL.Func([IDL.Text], [IDL.Text], []),
     store_bundle:          IDL.Func([IDL.Text], [IDL.Text], []),

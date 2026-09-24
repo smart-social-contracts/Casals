@@ -1,4 +1,4 @@
-"""wasm_store: (namespace, path) reads served by the casals-wasms asset store,
+"""wasm_store: (namespace, path) reads served by the casals-store asset store,
 and `_pull_and_install` batching them into 1 MiB chunk-store uploads.
 Offline: the asset canister is faked."""
 
@@ -101,7 +101,7 @@ def test_store_id_comes_from_settings_or_raises(monkeypatch):
     assert wasm_store.store_canister_id() == "s"
     assert wasm_store.store_backend() == wasm_store.STORE_ASSETS
     monkeypatch.setattr(wasm_store, "_settings", lambda: _Settings())
-    with pytest.raises(wasm_store.StoreNotConfigured, match="conductor.wasms"):
+    with pytest.raises(wasm_store.StoreNotConfigured, match="conductor.store"):
         wasm_store.store_backend()
 
 

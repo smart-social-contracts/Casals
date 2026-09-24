@@ -50,7 +50,7 @@ export interface BatonConfig {
   bake_window_seconds?: number;
   accelerant_days?: number;
   install_cycles_buffer?: number;
-  /** The casals-wasms store Baton pulls WASMs from. */
+  /** The casals-store store Baton pulls WASMs from. */
   wasm_store_canister_id?: string;
   upgrade_approval_policy?: BatonUpgradeApprovalPolicy;
 }

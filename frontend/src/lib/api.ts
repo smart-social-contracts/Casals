@@ -103,7 +103,7 @@ export interface Metadata {
   orchestra_name?: string;
   orchestra_description?: string;
   open_access: boolean;
-  /** The WASM store (`casals-wasms`, a certified-assets canister) every install reads from. */
+  /** The WASM store (`casals-store`, a certified-assets canister) every install reads from. */
   wasm_store_canister_id?: string;
   casals_frontend_canister_id?: string;
   /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
@@ -453,7 +453,7 @@ export interface SheetSection {
   stands?: SheetStand[];
 }
 
-export interface SheetPublishRow {
+export interface SheetBundleRow {
   path: string;
   source: string;
   /** the bundle hash (docs/BUNDLES.md) */
@@ -462,7 +462,7 @@ export interface SheetPublishRow {
 
 export interface SheetRegistry {
   wasms?: { family: string; version: string; source: string; sha256?: string }[];
-  publish?: SheetPublishRow[];
+  bundles?: SheetBundleRow[];
 }
 
 export interface Sheet {
@@ -1418,7 +1418,7 @@ export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
 }
 
 // ---------------------------------------------------------------------------
-// casals-wasms store: browser uploads + housekeeping
+// casals-store store: browser uploads + housekeeping
 // ---------------------------------------------------------------------------
 
 export interface UploadTicket {

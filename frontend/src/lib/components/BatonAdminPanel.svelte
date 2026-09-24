@@ -425,7 +425,7 @@
               placeholder="aaaaa-aa"
             />
             <p class="text-xs text-primary-400 mt-1">
-              Required for managed upgrades — Baton pulls the WASM from the casals-wasms store at execute time.
+              Required for managed upgrades — Baton pulls the WASM from the casals-store store at execute time.
             </p>
           </div>
           <div class="pt-2 border-t border-primary-200 space-y-3">

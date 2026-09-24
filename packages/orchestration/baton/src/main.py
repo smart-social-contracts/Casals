@@ -600,7 +600,7 @@ def set_config(args: text) -> text:
     """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?,
     wasm_store_canister_id?, upgrade_approval_policy?}.
 
-    ``wasm_store_canister_id`` is Casals' `casals-wasms` certified-assets store,
+    ``wasm_store_canister_id`` is Casals' `casals-store` certified-assets store,
     the source of every WASM / bundle Baton installs."""
     try:
         require_top_commander(_caller(), _config)

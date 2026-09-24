@@ -73,7 +73,7 @@
         "$deployer"
       ]
     },
-    "wasms": {
+    "store": {
       "$comment": "WASM store",
       "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
@@ -203,7 +203,7 @@
         "sha256": "f95e4cd6729ffcc6931b1ac302fe76dee366ffa10c72b50d9bd2688105859063"
       }
     ],
-    "publish": [
+    "bundles": [
       {
         "path": "frontend/website/main",
         "source": "local:../casals-website/dist"

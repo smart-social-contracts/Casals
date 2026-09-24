@@ -2469,7 +2469,7 @@ def _require_wasm_authorize_auth() -> None:
 
 @update
 def begin_upload(args: text) -> Async[text]:
-    """Start a browser upload into the casals-wasms store. Args (JSON, optional):
+    """Start a browser upload into the casals-store store. Args (JSON, optional):
     {namespace?, key_prefix?}. ``namespace`` scopes the grant to one store
     namespace (a bundle, docs/BUNDLES.md); end_upload deletes anything
     written outside it.
@@ -2548,7 +2548,7 @@ def list_upload_grants() -> text:
 
 @update
 def list_store_files(args: text) -> Async[text]:
-    """Every file in the casals-wasms store with an ``authorized`` flag (is
+    """Every file in the casals-store store with an ``authorized`` flag (is
     some catalog row pointing at it?). Args (JSON, optional): {namespace?}.
     Inter-canister, hence an update. Authorized like begin_upload."""
     try:
@@ -2585,7 +2585,7 @@ def store_retention(args: text) -> Async[text]:
 
 @update
 def store_size(args: text) -> Async[text]:
-    """Bytes held by the casals-wasms store against its upgrade budget:
+    """Bytes held by the casals-store store against its upgrade budget:
     {files, bytes, unauthorized_files, unauthorized_bytes, warn_bytes,
     limit_bytes, warn, over_limit}. Authorized like begin_upload."""
     try:
@@ -3123,7 +3123,7 @@ def sync_content(args: text) -> Async[text]:
     defaults to the canister's `content` in the sheet; `bundle_sha256` is an
     optional checksum: when given, the store bundle must hash to it, otherwise
     whatever the store holds is what gets served; `source` is the sheet file's
-    registry.publish source, recorded alongside the shipped hash. Requires
+    registry.bundles source, recorded alongside the shipped hash. Requires
     `canister.deploy` on the stand. Returns {written, deleted, remaining,
     bundle_sha256}."""
     try:

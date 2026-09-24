@@ -175,7 +175,7 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
     "weight"?} dicts; a weight is what the commander's approval counts for
     against the policy threshold. ``remove`` names commanders to drop.
 
-    Also propagates Casals' `casals-wasms` store id into the Baton config
+    Also propagates Casals' `casals-store` store id into the Baton config
     (``wasm_store_canister_id``, written once when the Baton does not have it
     yet) so the Baton can pull store-backed WASMs and asset bundles for
     managed actions.

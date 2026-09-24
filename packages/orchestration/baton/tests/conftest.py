@@ -165,12 +165,12 @@ def build_baton():
 
 
 def install_wasm_store() -> str:
-    """Deploy a casals-wasms store (stock certified-assets) on the local replica."""
+    """Deploy a casals-store store (stock certified-assets) on the local replica."""
     import gzip
 
     with open(WASM_STORE_TEMPLATE, "rb") as f:
         wasm = gzip.decompress(f.read())
-    tmp = tempfile.NamedTemporaryFile(prefix="casals-wasms-", suffix=".wasm", delete=False)
+    tmp = tempfile.NamedTemporaryFile(prefix="casals-store-", suffix=".wasm", delete=False)
     tmp.write(wasm)
     tmp.close()
     cid = create_detached()
@@ -320,7 +320,7 @@ def deploy_principal(replica):
 
 @pytest.fixture(scope="session")
 def registry_env(replica):
-    """casals-wasms store with test fixture WASMs uploaded."""
+    """casals-store store with test fixture WASMs uploaded."""
     registry_id = install_wasm_store()
     v1_hash = upload_store_file(registry_id, REGISTRY_NS, REGISTRY_V1_PATH, MANAGED_V1)
     v2_hash = upload_store_file(registry_id, REGISTRY_NS, REGISTRY_V2_PATH, MANAGED_V2)

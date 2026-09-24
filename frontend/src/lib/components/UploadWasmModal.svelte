@@ -181,9 +181,9 @@
     </h3>
     <p class="text-sm text-primary-500 mb-4">
       {#if existing}
-        Pin a file already in the <span class="font-mono">casals-wasms</span> store so canisters may run it.
+        Pin a file already in the <span class="font-mono">casals-store</span> store so canisters may run it.
       {:else}
-        The file is hashed here, streamed straight into the <span class="font-mono">casals-wasms</span> store, then pinned by the sha256 the store computed.
+        The file is hashed here, streamed straight into the <span class="font-mono">casals-store</span> store, then pinned by the sha256 the store computed.
       {/if}
     </p>
 

@@ -85,10 +85,10 @@ def _upload_rows(ic, sheet: dict, *, sheet_path: str, project_root: str, store_i
         **registry,
         "wasms": [e for e in registry.get("wasms") or []
                   if isinstance(e, dict) and (e.get("family") or "").strip() in wasm_families],
-        "publish": [e for e in registry.get("publish") or []
+        "bundles": [e for e in registry.get("bundles") or []
                     if isinstance(e, dict) and (e.get("path") or "").strip() in namespaces],
     }}
-    if not slice_["registry"]["wasms"] and not slice_["registry"]["publish"]:
+    if not slice_["registry"]["wasms"] and not slice_["registry"]["bundles"]:
         return slice_
     if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
         _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
@@ -111,9 +111,9 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     backend_id = conductor_override or (bindings.casals_backend_id if bindings else "")
     if not backend_id:
         raise RuntimeError(f"no conductor bindings for {sheet_name}/{env}; run casals up first or pass --conductor")
-    store_id = (bindings.conductor.get(CONDUCTOR_NAMES["wasms"], "") if bindings else "")
+    store_id = (bindings.conductor.get(CONDUCTOR_NAMES["store"], "") if bindings else "")
     if not store_id:
-        raise RuntimeError("no casals-wasms store id in the bindings")
+        raise RuntimeError("no casals-store store id in the bindings")
     deployer = ic.deployer_principal()
 
     # the registry rows behind each requested artifact
@@ -127,11 +127,11 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
         if family not in registry_rows or (version and version not in registry_rows[family]):
             raise RuntimeError(f"--wasm {ref}: no registry.wasms row for it in {sheet_path}")
         wanted.append((family, version))
-    publish = {(e.get("path") or "").strip(): e for e in (sheet.get("registry") or {}).get("publish") or []
+    bundles = {(e.get("path") or "").strip(): e for e in (sheet.get("registry") or {}).get("bundles") or []
                if isinstance(e, dict)}
     for ns in contents:
-        if ns not in publish:
-            raise RuntimeError(f"--content {ns}: no registry.publish row for it in {sheet_path}")
+        if ns not in bundles:
+            raise RuntimeError(f"--content {ns}: no registry.bundles row for it in {sheet_path}")
 
     # 1. the artifacts are in the store (each row's sha256 written back into `sheet`)
     _progress("upgrade: store upload")
@@ -222,7 +222,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             rows.append({"content": ns, "canister": "-", "result": "skipped", "detail": "no frontend declares this content"})
         # The upload step left the store holding exactly this bundle; the conductor
         # checks it still does before writing (a checksum, not a permission).
-        store_hash = (publish[ns].get("sha256") or "").strip().lower()
+        store_hash = (bundles[ns].get("sha256") or "").strip().lower()
         for name, _row in sorted(targets):
             written = deleted = 0
             result, detail = "synced", ""
@@ -232,7 +232,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
                 if meter is not None:
                     meter.set_label(f"sync {name} ({sync_used}/{sync_budget or '?'})")
                 res = ic.call_update(backend_id, "sync_content", json.dumps(
-                    {"canister": name, "namespace": ns, "source": (publish[ns].get("source") or "").strip(),
+                    {"canister": name, "namespace": ns, "source": (bundles[ns].get("source") or "").strip(),
                      **({"bundle_sha256": store_hash} if store_hash else {})}), timeout=900)
                 if not _ok(res):
                     result, detail = "failed", _err_text(res)

@@ -42,7 +42,7 @@ def minimal_env(registry, canister):
     self_id = _icp(["canister", "id", "casals_backend"], check=True).stdout.strip()
     _ok("bind_conductor", {
         "backend": self_id,
-        "wasms": registry.id,
+        "store": registry.id,
     })
     sheet = _load_minimal_sheet()
     for entry in sheet.get("registry", {}).get("wasms", []):

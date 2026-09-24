@@ -22,7 +22,7 @@ def test_infer_asset_canister_families():
     # The store and the conductor frontend run the certified-assets canister;
     # the committee's Upgrade-canister picker filters the catalog by type.
     assert infer_wasm_type("certified-assets@0.3.0") == "assets"
-    assert infer_wasm_type("casals-wasms") == "assets"
+    assert infer_wasm_type("casals-store") == "assets"
     assert infer_wasm_type("casals-frontend") == "assets"
 
 

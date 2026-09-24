@@ -119,7 +119,7 @@ def bind_conductor_impl(args: dict) -> dict:
                 "frontend", bindings_in.get("casals-frontend", s.casals_frontend_canister_id or "")
             ) or s.casals_frontend_canister_id
             s.wasm_store_canister_id = bindings_in.get(
-                "wasms", bindings_in.get("casals-wasms", s.wasm_store_canister_id or "")
+                "store", bindings_in.get("casals-store", s.wasm_store_canister_id or "")
             ) or s.wasm_store_canister_id
             # The file-registry pair is retired; forget any id an older build bound.
             s.file_registry_canister_id = ""
@@ -379,17 +379,17 @@ def record_content_release(namespace: str, bundle_sha256: str, *, canister: str 
                            section_name: str = "", source: str | None = None) -> str | None:
     """``canister`` now serves bundle ``bundle_sha256`` from store namespace
     ``namespace``: its sheet block's `content` names that namespace and the
-    registry.publish row's sha256 is that bundle — the row is added when the
+    registry.bundles row's sha256 is that bundle — the row is added when the
     sheet has none and the caller names its ``source``."""
     sheet, env, _sh = load_sheet_doc()
     if not sheet:
         return None
     changed = False
-    publish = (sheet.get("registry") or {}).get("publish") or []
-    row = next((r for r in publish if isinstance(r, dict) and (r.get("path") or "").strip() == namespace), None)
+    bundles = (sheet.get("registry") or {}).get("bundles") or []
+    row = next((r for r in bundles if isinstance(r, dict) and (r.get("path") or "").strip() == namespace), None)
     if row is None and (source or "").strip():
         row = {"path": namespace, "source": source.strip()}
-        sheet.setdefault("registry", {}).setdefault("publish", []).append(row)
+        sheet.setdefault("registry", {}).setdefault("bundles", []).append(row)
         changed = True
     if row is not None and (row.get("sha256") or "").strip().lower() != (bundle_sha256 or "").lower():
         row["sha256"] = (bundle_sha256 or "").lower()

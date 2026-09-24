@@ -2,7 +2,7 @@
 
 These thin wrappers tell Basilisk how to call two external canisters:
 
-  AssetCanisterService       — the certified-assets canister: the casals-wasms
+  AssetCanisterService       — the certified-assets canister: the casals-store
                                WASM store (reads, permissions, housekeeping)
                                and every frontend canister (asset uploads)
   BasiliskIntrospectionService — relays __browse__ / __shell__ calls to
@@ -70,7 +70,7 @@ class AssetEntry(Record):
     encodings: Vec[AssetEncoding]
 
 
-# Read side, used against the `casals-wasms` store (see wasm_store.py). `get`
+# Read side, used against the `casals-store` store (see wasm_store.py). `get`
 # returns the whole content when it fits in one chunk, else chunk 0 plus
 # `total_length`; every chunk but the last has the size of chunk 0.
 

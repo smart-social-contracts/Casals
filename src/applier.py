@@ -36,7 +36,7 @@ import wasm_store
 from pool import _pool_mark_in_use
 from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, WASM_NAMESPACE, placement_for, registry_path
 from subnets import assert_subnet_allowed
-from wasm_types import wasm_type_of_wasm
+from wasm_types import memory_keep_for_wasm, wasm_type_of_wasm
 
 
 def apply_plan_gen(plan: dict, *, max_items: int = 0, confirm_destructive: bool = False,
@@ -282,7 +282,6 @@ def _execute_item(item: dict, sheet: dict, env: str = ""):
         w = _resolve_authorized_wasm((found.get("wasm") or "").strip(), None)
         if (desired.get("module_hash") or "").lower() != (w.wasm_hash or "").lower():
             raise Exception(f"{name}: sheet wants {desired.get('module_hash')} but the registry holds {w.wasm_hash}")
-        from wasm_types import memory_keep_for_wasm, wasm_type_of_wasm
         yield from _baton_propose_upgrade_gen(
             (desired.get("baton_id") or "").strip(), cid,
             registry_namespace=w.registry_namespace, registry_path=w.registry_path,

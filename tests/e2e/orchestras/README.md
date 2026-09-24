@@ -30,7 +30,7 @@ CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
 ```
 
 Every orchestra runs every applicable scenario: `fresh`, `idempotent` (a
-second `up` changes nothing), `content_change` (publish rows: a second build
+second `up` changes nothing), `content_change` (bundle rows: a second build
 packed with `casals bundle`, shipped with `casals upgrade --content`,
 served, its stale file deleted on the way back), `runtime_stand` (template
 sections: `create_stand` and the stand builds itself — polled until `built`,

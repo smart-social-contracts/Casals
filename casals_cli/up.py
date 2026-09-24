@@ -36,11 +36,11 @@ STEPS: list[tuple[str, str]] = [
      "read the deployer's cycles balance and require environments.<env>.cycles.budget_tc"),
     ("conductor bootstrap",
      "create or upgrade the conductor canisters the sheet declares (casals-backend, casals-frontend and the "
-     "casals-wasms store) and top the conductor up; slow on a fresh replica: a 7 MB Python wasm to install "
+     "casals-store store) and top the conductor up; slow on a fresh replica: a 7 MB Python wasm to install "
      "for casals-backend"),
     ("store upload",
      "upload every wasm in registry.wasms (chunked batch uploads) and every published dist into the "
-     "casals-wasms store; entries whose sha256 already matches are skipped"),
+     "casals-store store; entries whose sha256 already matches are skipped"),
     ("set_sheet",
      "bind the conductor canister ids and hand the sheet to casals-backend, which owns it from here on"),
     ("plan/apply",
@@ -111,7 +111,7 @@ def funding_needed(ic, sheet: dict, env: str, bindings=None) -> dict[str, Any]:
     backend_id = (getattr(bindings, "backend_id", "") or bound.get(CONDUCTOR_NAMES["backend"], "") or "").strip()
     if backend_id:
         bound[CONDUCTOR_NAMES["backend"]] = backend_id
-    declared = [k for k in ("backend", "frontend", "wasms") if k in (sheet.get("conductor") or {})]
+    declared = [k for k in ("backend", "frontend", "store") if k in (sheet.get("conductor") or {})]
     creates = [CONDUCTOR_NAMES[k] for k in declared if not bound.get(CONDUCTOR_NAMES[k])]
 
     if backend_id and ic.read_module_hash(backend_id):
@@ -253,7 +253,7 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str, *, strict: bool =
 
 
 def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
-    """The store (`conductor.wasms`) takes every wasm and published dist before
+    """The store (`conductor.store`) takes every wasm and published dist before
     the conductor can plan a top-up for it: keep it at its declared
     `cycles.min_balance_tc` floor (falling back to the sheet-wide one) from the
     deployer."""
@@ -351,7 +351,7 @@ def _adopt_live_conductor(ic, bindings, backend_id: str) -> None:
         if meta.get("casals_frontend_canister_id"):
             live[CONDUCTOR_NAMES["frontend"]] = str(meta["casals_frontend_canister_id"])
         if meta.get("wasm_store_canister_id"):
-            live[CONDUCTOR_NAMES["wasms"]] = str(meta["wasm_store_canister_id"])
+            live[CONDUCTOR_NAMES["store"]] = str(meta["wasm_store_canister_id"])
     res = ic.query(backend_id, "get_bindings")
     for name in (MULTISIG_NAME,):
         cid = (((res or {}).get("bindings") or {}).get(name, "") if isinstance(res, dict) else "")
@@ -559,14 +559,14 @@ def run_up(
     if not dry_run:
         fund_conductor(ic, sheet, env, backend_id, strict=funding.get("strict", True))
 
-    store_id = bindings.conductor.get(CONDUCTOR_NAMES["wasms"], "")
+    store_id = bindings.conductor.get(CONDUCTOR_NAMES["store"], "")
     if not store_id:
-        raise RuntimeError("no casals-wasms store id after bootstrap (the sheet must declare conductor.wasms)")
+        raise RuntimeError("no casals-store store id after bootstrap (the sheet must declare conductor.store)")
 
     # 4. store upload (CLI uploads bytes into the store; authorize via apply)
     _step(4)
     if not dry_run:
-        fund_store(ic, sheet, "wasms", store_id)
+        fund_store(ic, sheet, "store", store_id)
         # Writing to the asset store takes the store's own Commit permission;
         # being a controller is not enough (the batch API checks the explicit
         # lists only), but a controller may grant it. So: be a controller —

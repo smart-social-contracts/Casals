@@ -538,7 +538,7 @@ class TestMultisigV150Source:
 
 class TestMultisigV160UpgradeCanister:
     """1.6.0: the committee upgrades canisters it controls straight from the
-    casals-wasms store (chunked, sha256-pinned) — no inline blob, so it is not
+    casals-store store (chunked, sha256-pinned) — no inline blob, so it is not
     bound by the 2 MiB ingress limit the way UpgradeBaton is."""
 
     def test_source_shape(self):

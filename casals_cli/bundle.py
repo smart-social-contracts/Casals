@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(man, f, indent=2, sort_keys=True)
             f.write("\n")
     print(f"{args.output}: {len(man['files'])} file(s), {len(data)} bytes gzipped")
-    print(f"  bundle sha256 {man['bundle_sha256']}   (registry.publish sha256, optional)")
+    print(f"  bundle sha256 {man['bundle_sha256']}   (registry.bundles sha256, optional)")
     return 0
 
 

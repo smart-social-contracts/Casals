@@ -42,7 +42,7 @@ export function inferWasmType(key: string): string {
   if (k.includes('basilisk') || k.startsWith('casals-backend')) return 'basilisk';
   if (k.includes('motoko')) return 'motoko';
   if (k.includes('rust')) return 'rust';
-  if (k.includes('frontend') || k.startsWith('certified-assets') || k === 'casals-wasms') return 'assets';
+  if (k.includes('frontend') || k.startsWith('certified-assets') || k === 'casals-store') return 'assets';
   return '';
 }
 

@@ -26,7 +26,7 @@ type BatonAction = variant {
     max_items : nat;
   };
   CallCanister : record { canister : principal; method : text; arg_json : text };
-  // Upgrade a controlled canister with a module streamed from the casals-wasms
+  // Upgrade a controlled canister with a module streamed from the casals-store
   // store; sha256 pins the approved module (install_chunked_code verifies it).
   UpgradeCanister : record {
     canister_id : principal;

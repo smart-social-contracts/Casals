@@ -233,7 +233,7 @@ class TestUpSequencing:
         monkeypatch.setenv("CASALS_HOME", str(tmp_path))
         def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
             bindings.conductor.setdefault("casals-backend", "backend-id")
-            bindings.conductor.setdefault("casals-wasms", "store-id")
+            bindings.conductor.setdefault("casals-store", "store-id")
             bindings.backend_id = bindings.conductor["casals-backend"]
             # bootstrap leaves the deployer controlling the fresh store
             ic.controllers["store-id"] = [DEPLOYER]
@@ -267,7 +267,7 @@ class TestUpSequencing:
             conductor={
                 "casals-backend": "cond-backend",
                 "casals-frontend": "cond-fe",
-                "casals-wasms": "cond-store",
+                "casals-store": "cond-store",
             },
         )
         b.save()
@@ -399,7 +399,7 @@ class TestFundCheck:
         ic = RecordingIc()
         ic.cycles["__deployer__"] = 1_000_000_000_000
         sheet = {
-            "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+            "conductor": {"backend": {}, "frontend": {}, "store": {}},
             "cycles": {"conductor_min_balance_tc": 5.0},
             "environments": {"local": {"cycles": {"budget_tc": 100}}},
         }
@@ -407,7 +407,7 @@ class TestFundCheck:
             check_funds(ic, sheet, "local", DEPLOYER)
 
     _SHEET = {
-        "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+        "conductor": {"backend": {}, "frontend": {}, "store": {}},
         "cycles": {"conductor_min_balance_tc": 5.0},
         "environments": {"production": {"cycles": {"budget_tc": 7}}},
     }
@@ -421,7 +421,7 @@ class TestFundCheck:
         ic = RecordingIc(env="production")
         ic.cycles["__deployer__"] = 7_440_000_000_000
         need = funding_needed(ic, self._SHEET, "production", None)
-        assert need["creates"] == ["casals-backend", "casals-frontend", "casals-wasms"]
+        assert need["creates"] == ["casals-backend", "casals-frontend", "casals-store"]
         assert need["creates_tc"] == 6.0
         assert need["topup_tc"] == pytest.approx(7 - 1.5)  # deposit minus creation fee
         with pytest.raises(RuntimeError, match=r"needs ≈11\.6\d TC.*3 conductor create"):
@@ -440,7 +440,7 @@ class TestFundCheck:
         ic.module_hashes["be"] = "hash"
         ic.queries[("be", "get_status")] = {"cycles": 20_000_000_000_000}
         b = Bindings(sheet_name="realms", env="production", network_url="https://icp0.io", deployer="dep",
-                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-wasms": "ws"}, backend_id="be")
+                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-store": "ws"}, backend_id="be")
         sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 20}}})
         need = funding_needed(ic, sheet, "production", b)
         assert need["creates"] == [] and need["topup_tc"] == 0
@@ -479,7 +479,7 @@ class TestFundCheck:
         ic.module_hashes["be"] = "hash"
         ic.queries[("be", "get_status")] = {"cycles": 3_260_000_000_000}
         b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep",
-                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-wasms": "ws"}, backend_id="be")
+                     conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-store": "ws"}, backend_id="be")
         sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 14}}})
         need = check_funds(ic, sheet, "production", "dep", b)   # warns, does not raise
         assert need["strict"] is False and need["creates"] == []
@@ -552,7 +552,7 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
             ic.controllers[cid] = [bindings["casals-backend"], bindings["multisig"]]
         elif cname in ("file-registry", "file-registry-frontend"):
             ic.controllers[cid] = [bindings["casals-backend"]]
-        elif cname == "casals-wasms":
+        elif cname == "casals-store":
             ic.controllers[cid] = [bindings["casals-backend"], ic.deployer]
         elif cname in ("casals-backend", "casals-frontend"):
             ic.controllers[cid] = [bindings["multisig"]]
@@ -565,7 +565,7 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     ic.updates[(bindings["file-registry"], "list_files")] = [
         {"path": "hello-world-motoko@1.0.0.wasm.gz", "sha256": "a" * 64},
     ]
-    if "casals-wasms" in bindings:
+    if "casals-store" in bindings:
         # The oracle reads expected hashes from the store when one is bound; the
         # fake holds the same listing (a fixed sha256 needs no matching bytes).
         from casals_cli.wasm_store import FakeAssetStore
@@ -586,7 +586,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
-            "casals-wasms": "store-id",
+            "casals-store": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -606,7 +606,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
-            "casals-wasms": "store-id",
+            "casals-store": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -640,7 +640,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
-            "casals-wasms": "store-id",
+            "casals-store": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -662,7 +662,7 @@ class TestOracle:
             sheet = json.load(f)
         bindings = {
             "casals-backend": "backend-id",
-            "casals-wasms": "store-id",
+            "casals-store": "store-id",
             "file-registry": "fr-id",
             "file-registry-frontend": "fr-fe-id",
             "casals-frontend": "fe-id",
@@ -807,7 +807,7 @@ class TestAdoptLiveConductor:
         ic.module_hashes["backend-live"] = "aa" * 32
         ic.queries[("backend-live", "casals_metadata")] = {
             "casals_frontend_canister_id": "frontend-live",
-            "wasm_store_canister_id": "",  # pre-store conductor: no casals-wasms yet
+            "wasm_store_canister_id": "",  # pre-store conductor: no casals-store yet
         }
         ic.queries[("backend-live", "get_bindings")] = {"ok": True, "bindings": {"multisig": "ms-live"}}
         return ic
@@ -823,7 +823,7 @@ class TestAdoptLiveConductor:
             "casals-frontend": "frontend-live",
             "multisig": "ms-live",
         }
-        assert "casals-wasms" not in b.conductor  # left for the bootstrap to create
+        assert "casals-store" not in b.conductor  # left for the bootstrap to create
 
     def test_existing_bindings_win(self):
         from casals_cli.bindings import Bindings
@@ -1166,7 +1166,7 @@ class TestProductionGuards:
         sheet.setdefault("environments", {})["production"] = json.loads(json.dumps(sheet["environments"]["local"]))
         for e in sheet["registry"]["wasms"]:
             e["sha256"] = "0" * 64
-        for e in sheet["registry"].get("publish") or []:
+        for e in sheet["registry"].get("bundles") or []:
             e["sha256"] = "0" * 64
         sheet_path = tmp_path / "casals.json"
         sheet_path.write_text(json.dumps(sheet))

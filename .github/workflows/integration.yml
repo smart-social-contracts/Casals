@@ -46,7 +46,7 @@ jobs:
           python3 -m basilisk --version || true
 
       # conftest.py starts the local replica, builds + deploys casals_backend,
-      # and for the e2e suite deploys the casals-wasms store (the committed
+      # and for the e2e suite deploys the casals-store store (the committed
       # certified-assets template) on the same replica, then drives the full
       # create/upgrade/snapshot/rollback lifecycle. The replica is stopped on
       # teardown.

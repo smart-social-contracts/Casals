@@ -2,7 +2,7 @@
 
 The sheet's ``registry`` block names the artifacts (family, version, source);
 `casals up` resolves each one (local file, `build:` target, URL, GitHub
-release), gunzips it, and seeds the raw module into the `casals-wasms`
+release), gunzips it, and seeds the raw module into the `casals-store`
 certified-assets canister (``casals_cli.wasm_store``) at
 ``/<namespace>/<family>@<version>.wasm.gz`` — the same (namespace, path) the
 conductor's install path (``src/wasm_store.py``) reads."""
@@ -145,7 +145,7 @@ def _download_github_release(source: str) -> bytes:
 
 
 def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[str, bytes]:
-    """A `registry.publish` source as bundle files (docs/BUNDLES.md): `local:` a
+    """A `registry.bundles` source as bundle files (docs/BUNDLES.md): `local:` a
     dist directory or a `.tgz`; `https://` / `release:` a `.tgz`. Validated —
     unsafe paths, a missing index.html or a manifest that disagrees with the
     files are errors here, before anything reaches the store."""
@@ -155,7 +155,7 @@ def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[st
         candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
         path = next((c for c in candidates if os.path.exists(c)), None)
         if path is None:
-            raise FileNotFoundError(f"publish source not found: {' or '.join(candidates)}")
+            raise FileNotFoundError(f"bundle source not found: {' or '.join(candidates)}")
         return _bundle.read_bundle(path)
     if src.startswith("https://") or src.startswith("http://"):
         with urllib.request.urlopen(src, timeout=120) as resp:
@@ -170,7 +170,7 @@ def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[st
         with urllib.request.urlopen(url, timeout=120) as resp:
             raw = resp.read()
         return _bundle.read_tgz(raw)[0]
-    raise ValueError(f"registry.publish: unsupported source {source!r} (local:<dir|.tgz>, https://…tgz, release:…)")
+    raise ValueError(f"registry.bundles: unsupported source {source!r} (local:<dir|.tgz>, https://…tgz, release:…)")
 
 
 def iter_registry_entries(sheet: dict) -> list[ResolvedArtifact]:
@@ -210,9 +210,9 @@ def iter_registry_entries(sheet: dict) -> list[ResolvedArtifact]:
 
 
 def bound_store_hashes(ic, bindings: dict, namespace: str) -> dict[str, str]:
-    """path → sha256 for ``namespace`` from the bound casals-wasms store; {}
+    """path → sha256 for ``namespace`` from the bound casals-store store; {}
     when the bindings carry no store id."""
-    store_id = (bindings.get(CONDUCTOR_NAMES["wasms"]) or "").strip()
+    store_id = (bindings.get(CONDUCTOR_NAMES["store"]) or "").strip()
     return _store.store_file_hashes(ic, store_id, namespace) if store_id else {}
 
 
@@ -220,7 +220,7 @@ def bound_store_hashes(ic, bindings: dict, namespace: str) -> dict[str, str]:
 
 
 class StoreTarget:
-    """The `casals-wasms` certified-assets store (binary Candid batch API)."""
+    """The `casals-store` certified-assets store (binary Candid batch API)."""
 
     label = "wasm store"
 
@@ -278,7 +278,7 @@ def ensure_registry_uploads(
     resolves to anything else is an error (``resolve_source`` raises); when
     absent, whatever the source resolves to is what gets uploaded."""
     if not (store_id or "").strip():
-        raise RuntimeError("no WASM store bound: the casals-wasms canister has no id (declare conductor.wasms)")
+        raise RuntimeError("no WASM store bound: the casals-store canister has no id (declare conductor.store)")
     targets = [StoreTarget(ic, store_id)]
     sheet_dir = os.path.dirname(os.path.abspath(sheet_path))
     rows: list[dict] = []
@@ -314,7 +314,7 @@ def ensure_registry_uploads(
                          f"to the {target.label} (sha256 {digest[:12]}…)")
             target.upload(namespace, path, data, digest)
             rows.append({**row, "action": "uploaded"})
-        for entry in registry.get("publish") or []:
+        for entry in registry.get("bundles") or []:
             if not isinstance(entry, dict):
                 continue
             published = publish_bundle(target, entry, sheet_dir=sheet_dir, project_root=project_root,
@@ -330,7 +330,7 @@ def ensure_registry_uploads(
 
 
 def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, progress=None, meter=None) -> list[dict]:
-    """`registry.publish` entry: the bundle at `source` becomes namespace `path`
+    """`registry.bundles` entry: the bundle at `source` becomes namespace `path`
     in ``target`` — exactly. Files with the same sha256 are skipped, changed
     or new ones uploaded, files the store has that left the bundle deleted,
     so the namespace's bundle hash equals the bundle's. The entry's `sha256`

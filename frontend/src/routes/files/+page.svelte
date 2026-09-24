@@ -39,7 +39,7 @@
   let showAdd = $state(false);
   let modalBusy = $state(false);
 
-  // casals-wasms store: files nobody has authorized yet, size vs. upgrade budget.
+  // casals-store store: files nobody has authorized yet, size vs. upgrade budget.
   let showUpload = $state(false);
   let authorizeExisting = $state<StoreFile | null>(null);
   let storeFiles = $state.raw<StoreFile[]>([]);
@@ -73,7 +73,7 @@
   // first segments for anything else.
   const knownNamespaces = $derived.by(() => {
     const out = new Set<string>();
-    for (const row of sheet?.registry?.publish ?? []) if (row?.path) out.add(row.path);
+    for (const row of sheet?.registry?.bundles ?? []) if (row?.path) out.add(row.path);
     for (const sec of sheet?.sections ?? []) for (const st of sec.stands ?? []) for (const c of st.canisters ?? []) if (c.content) out.add(c.content);
     return out;
   });
@@ -98,7 +98,7 @@
       byNs.set(ns, arr);
     }
     const sources = new Map<string, string>();
-    for (const row of sheet?.registry?.publish ?? []) if (row?.path) sources.set(row.path, row.source ?? '');
+    for (const row of sheet?.registry?.bundles ?? []) if (row?.path) sources.set(row.path, row.source ?? '');
     const consumers = new Map<string, string[]>();
     for (const sec of sheet?.sections ?? []) for (const st of sec.stands ?? []) for (const c of st.canisters ?? []) {
       if (c.content) consumers.set(c.content, [...(consumers.get(c.content) ?? []), c.name]);
@@ -328,7 +328,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Files</h1>
-      <p class="text-sm text-primary-500 mt-1">What the <span class="font-mono">casals-wasms</span> store holds: WASM modules canisters may run, and asset bundles frontends serve.</p>
+      <p class="text-sm text-primary-500 mt-1">What the <span class="font-mono">casals-store</span> store holds: WASM modules canisters may run, and asset bundles frontends serve.</p>
     </div>
     <div class="flex items-center gap-2 self-start">
       {#if $isAuthenticated}
@@ -385,7 +385,7 @@
             {/if}
           </h2>
           <p class="text-xs text-primary-500 mt-0.5">
-            Files in <span class="font-mono">casals-wasms</span> that no catalog row points at. Authorize them, or let the retention sweep delete the ones older than a week.
+            Files in <span class="font-mono">casals-store</span> that no catalog row points at. Authorize them, or let the retention sweep delete the ones older than a week.
           </p>
         </div>
         {#if $isController}
@@ -398,7 +398,7 @@
 
       {#if sizeReport?.over_limit}
         <div class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          The store holds {formatBytes(sizeReport.bytes)} — past the {formatBytes(sizeReport.limit_bytes)} upgrade budget. Sweep or remove files before upgrading <span class="font-mono">casals-wasms</span>; its pre_upgrade serialises every byte.
+          The store holds {formatBytes(sizeReport.bytes)} — past the {formatBytes(sizeReport.limit_bytes)} upgrade budget. Sweep or remove files before upgrading <span class="font-mono">casals-store</span>; its pre_upgrade serialises every byte.
         </div>
       {:else if sizeReport?.warn}
         <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -450,7 +450,7 @@
     <div>
       <h2 class="text-lg font-semibold text-primary-900">Authorized bundles</h2>
       <p class="text-sm text-primary-500">
-        Asset bundles frontends serve — one store namespace each (<span class="font-mono">registry.publish</span> → a canister's
+        Asset bundles frontends serve — one store namespace each (<span class="font-mono">registry.bundles</span> → a canister's
         <span class="font-mono">content</span>). Upload a build here; <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span>
         ships what the store holds to every frontend whose <span class="font-mono">content</span> is that namespace.
       </p>
@@ -460,7 +460,7 @@
     {:else if storeLoading && bundles.length === 0}
       <div class="card p-4"><div class="skeleton h-4 w-2/3"></div></div>
     {:else if bundles.length === 0}
-      <div class="card p-4 text-sm text-primary-400">No bundles yet — upload a frontend's <span class="font-mono">dist/</span> or declare <span class="font-mono">registry.publish</span> in the sheet.</div>
+      <div class="card p-4 text-sm text-primary-400">No bundles yet — upload a frontend's <span class="font-mono">dist/</span> or declare <span class="font-mono">registry.bundles</span> in the sheet.</div>
     {:else}
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
@@ -482,7 +482,7 @@
                     {b.namespace}
                     {#if !b.inSheet}<span class="badge badge-neutral ml-1 font-sans" title="the sheet references no such namespace">not in sheet</span>{/if}
                     {#if !b.files}<span class="badge bg-amber-50 text-amber-800 border border-amber-200 ml-1 font-sans" title="the store holds no files for this namespace">empty</span>{/if}
-                    {#if b.source && b.source !== 'store:'}<div class="text-[11px] text-primary-400 font-sans mt-0.5" title="registry.publish source">{b.source}</div>{/if}
+                    {#if b.source && b.source !== 'store:'}<div class="text-[11px] text-primary-400 font-sans mt-0.5" title="registry.bundles source">{b.source}</div>{/if}
                   </td>
                   <td class="px-4 py-3 font-mono text-xs text-primary-500" title={b.storeHash}>{b.storeHash ? shortHash(b.storeHash) : b.files ? '…' : '—'}</td>
                   <td class="px-4 py-3 text-xs text-primary-600 whitespace-nowrap">{b.files} · {formatBytes(b.bytes)}</td>

@@ -163,7 +163,7 @@ export function countGovernanceCanisters(tree: Tree | null | undefined): {
 // ── Casals core section ──────────────────────────────────────────────────────
 //
 // The backend homes its own canisters on one synthetic section, `Casals`, with
-// two stands: `conductor` (casals-backend, casals-frontend, casals-wasms)
+// two stands: `conductor` (casals-backend, casals-frontend, casals-store)
 // and `governance` (multisig). `augmentTreeWithCasals`
 // only hoists that section to the top and merges live controllers into it.
 // The synthesis below is a fallback for cached trees from older backends that
@@ -175,7 +175,7 @@ export const CASALS_GOVERNANCE_STAND = 'governance';
 const CASALS_CANISTER_NAMES = new Set([
   'casals-backend',
   'casals-frontend',
-  'casals-wasms',
+  'casals-store',
 ]);
 
 export function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {

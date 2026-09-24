@@ -32,11 +32,11 @@ from casals_cli.registry import WASM_PATHS, resolve_source
 ICP_CANISTER_MAP = {
     "backend": "casals_backend",
     "frontend": "casals_frontend",
-    "wasms": "casals_wasms",
+    "store": "casals_store",
 }
 
 WASM_KEYS = frozenset({"backend"})    # Basilisk wasm built here
-STORE_KEYS = frozenset({"wasms"})     # asset canister from a registry.wasms artifact
+STORE_KEYS = frozenset({"store"})     # asset canister from a registry.wasms artifact
 ASSET_KEYS = frozenset({"frontend"})  # asset canister synced from a built dist
 
 

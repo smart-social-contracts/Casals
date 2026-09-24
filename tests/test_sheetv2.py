@@ -33,7 +33,7 @@ def _ctx(sheet: dict, **overrides) -> sv2.ResolveContext:
     ids = {
         "casals-backend": "backend-id",
         "casals-frontend": "frontend-id",
-        "casals-wasms": "store-id",
+        "casals-store": "store-id",
         "multisig": "multisig-id",
         "hello-backend": "hello-id",
         "motoko-backend": "motoko-be",
@@ -53,6 +53,18 @@ def _ctx(sheet: dict, **overrides) -> sv2.ResolveContext:
 def test_corpus_validates_for_local(name):
     sheet = _load_corpus(name)
     assert sv2.validate(sheet, "local") == []
+
+
+def test_conductor_wasms_was_renamed_to_store():
+    sheet = _load_corpus("minimal")
+    sheet["conductor"]["wasms"] = sheet["conductor"].pop("store")
+    assert any("renamed to conductor.store" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_publish_key_was_renamed_to_bundles():
+    sheet = _load_corpus("baton-stand")
+    sheet["registry"]["publish"] = sheet["registry"].pop("bundles")
+    assert any("renamed to registry.bundles" in e for e in sv2.validate(sheet, "local"))
 
 
 def test_version_must_be_two():

@@ -188,7 +188,7 @@ class _PlanContext:
             return True
         # With `content` the served set is a bundle (docs/BUNDLES.md): the
         # canister serves the store namespace's bundle plus its rendered
-        # `files`. A registry.publish `sha256` is a checksum on that bundle —
+        # `files`. A registry.bundles `sha256` is a checksum on that bundle —
         # in a stored sheet, the one last uploaded or shipped. The store
         # holding another bundle is not drift while the frontend serves the
         # declared one (an upload is not a release: `casals upgrade --content`

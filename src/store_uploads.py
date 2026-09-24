@@ -1,4 +1,4 @@
-"""Browser uploads into the `casals-wasms` store, and the store's housekeeping.
+"""Browser uploads into the `casals-store` store, and the store's housekeeping.
 
 Uploads never pass through casals-backend: the browser hashes the file,
 Casals grants the caller a just-in-time ``Commit`` permission on the store
@@ -61,7 +61,7 @@ def _store_id() -> str:
     sid = (getattr(_settings(), "wasm_store_canister_id", "") or "").strip()
     if not sid:
         raise StoreUploadError(
-            "the casals-wasms store is not bound (conductor.wasms missing from the sheet?)"
+            "the casals-store store is not bound (conductor.store missing from the sheet?)"
         )
     return sid
 

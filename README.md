@@ -67,7 +67,7 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 
 - **`icp-cli`** for build & deploy (`icp.yaml`); dfx is not used.
 - **Basilisk** + `ic-basilisk-toolkit` for the backend.
-- **`casals-wasms`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it — and every frontend asset bundle (`docs/BUNDLES.md`). Upload from the CLI (`casals up`) or from the browser on `/files`.
+- **`casals-store`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it — and every frontend asset bundle (`docs/BUNDLES.md`). Upload from the CLI (`casals up`) or from the browser on `/files`.
 
 ---
 
@@ -85,7 +85,7 @@ icp network start -e local          # terminal 1 — keep replica running
 python3 -m casals_cli.main -e local --identity local-dev up tests/e2e/orchestras/minimal/casals.json --yes
 ```
 
-`casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-wasms` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
+`casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-store` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
 
 ### Why the sheet stops being the truth after day one
 

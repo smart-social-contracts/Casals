@@ -77,7 +77,7 @@ function isBatonCanister(c: Pick<Canister, 'wasm_key'>): boolean {
 const CASALS_CANISTER_NAMES = new Set([
   'casals-backend',
   'casals-frontend',
-  'casals-wasms',
+  'casals-store',
 ]);
 
 function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {

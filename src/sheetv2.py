@@ -17,25 +17,25 @@ SCHEMA_VERSION = 2
 MODES = frozenset({"managed", "adopted"})
 KINDS = frozenset({"backend", "frontend"})
 UPGRADES = frozenset({"upgrade", "reinstall"})
-# `conductor.wasms` is the WASM store: a certified-assets canister holding every
-# artifact Casals installs (issue #48). It replaced the Basilisk file-registry
-# pair (`file_registry` / `file_registry_frontend`), which a sheet may no longer
-# declare — validation names the replacement.
-CONDUCTOR_KEYS = ("backend", "frontend", "wasms")
-REQUIRED_CONDUCTOR_KEYS = ("backend", "frontend", "wasms")
-STORE_CONDUCTOR_KEY = "wasms"
+# `conductor.store` is the artifact store: a certified-assets canister holding
+# every wasm and frontend bundle Casals installs (issue #48). It replaced the
+# Basilisk file-registry pair (`file_registry` / `file_registry_frontend`),
+# which a sheet may no longer declare — validation names the replacement.
+CONDUCTOR_KEYS = ("backend", "frontend", "store")
+REQUIRED_CONDUCTOR_KEYS = ("backend", "frontend", "store")
+STORE_CONDUCTOR_KEY = "store"
 LEGACY_CONDUCTOR_KEYS = ("file_registry", "file_registry_frontend")
 CONDUCTOR_NAMES = {
     "backend": "casals-backend",
     "frontend": "casals-frontend",
-    "wasms": "casals-wasms",
+    "store": "casals-store",
 }
 # Canister names of the retired file-registry pair; `ensure_core_layout` pools
 # any rows still carrying them so the canisters are recycled, not leaked.
 LEGACY_CONDUCTOR_NAMES = ("file-registry", "file-registry-frontend")
 # Every canister lives on a stand. The sheet's top-level `conductor` and
 # `governance` blocks are homed on one synthetic infra section (`Casals`) with
-# two stands: `conductor` (casals-backend/-frontend, casals-wasms) and
+# two stands: `conductor` (casals-backend/-frontend, casals-store) and
 # `governance` (multisig).
 # `conductor.commanders` are kept on the section.
 SYNTHETIC_SECTION_CONDUCTOR = "Casals"
@@ -158,7 +158,7 @@ def registry_path(family: str, version: str | None) -> str:
 
 
 def store_key(namespace: str, path: str) -> str:
-    """Asset key of a (namespace, path) pair in the `casals-wasms` store. The
+    """Asset key of a (namespace, path) pair in the `casals-store` store. The
     registry's two-level address maps onto one key, so catalog rows keep their
     `registry_namespace` / `registry_path` whichever store serves them."""
     ns = (namespace or "").strip().strip("/")
@@ -184,10 +184,10 @@ def bundle_hash(hashes: dict) -> str:
 
 
 def publish_hashes(sheet: dict) -> dict:
-    """``{namespace: bundle sha256}`` for every `registry.publish` row that
+    """``{namespace: bundle sha256}`` for every `registry.bundles` row that
     declares one (in a stored sheet: the bundle last uploaded / shipped)."""
     out = {}
-    for entry in (sheet.get("registry") or {}).get("publish") or []:
+    for entry in (sheet.get("registry") or {}).get("bundles") or []:
         if isinstance(entry, dict) and entry.get("path") and entry.get("sha256"):
             out[str(entry["path"])] = str(entry["sha256"]).strip().lower()
     return out
@@ -586,20 +586,22 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             if not isinstance(block, dict):
                 errors.append(
                     f"{path} must be an object"
-                    + (" (the casals-wasms WASM store; see issue #48)" if key == STORE_CONDUCTOR_KEY else "")
+                    + (" (the casals-store canister; see issue #48)" if key == STORE_CONDUCTOR_KEY else "")
                 )
                 continue
             cname = CONDUCTOR_NAMES[key]
             _register_name(names, cname, path, errors)
             _validate_canister(block, path, errors, in_sections=False)
             _check_raw_principals(block, path, errors)
-        if isinstance(conductor.get("wasms"), dict) and (conductor["wasms"].get("kind") or "frontend") != "frontend":
-            errors.append("conductor.wasms.kind must be frontend (a certified-assets canister)")
+        if "wasms" in conductor:
+            errors.append("conductor.store was renamed to conductor.store")
+        if isinstance(conductor.get("store"), dict) and (conductor["store"].get("kind") or "frontend") != "frontend":
+            errors.append("conductor.store.kind must be frontend (a certified-assets canister)")
         for key in LEGACY_CONDUCTOR_KEYS:
             if key in conductor:
                 errors.append(
                     f"conductor.{key} is no longer supported: the file-registry was replaced by the "
-                    "casals-wasms store (conductor.wasms); remove the block and its registry.wasms row"
+                    "casals-store canister (conductor.store); remove the block and its registry.wasms row"
                 )
 
     governance = sheet.get("governance")
@@ -771,7 +773,7 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
     if in_sections and not canister.get("name"):
         errors.append(f"{path}.name is required")
     if "content" in canister and not (isinstance(canister["content"], str) and canister["content"].strip()):
-        errors.append(f"{path}.content must be a registry.publish path")
+        errors.append(f"{path}.content must be a registry.bundles path")
     files = canister.get("files")
     if files is not None and not (
         isinstance(files, dict)
@@ -1010,13 +1012,15 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
         for field in ("family", "version", "source"):
             if not isinstance(entry.get(field), str):
                 errors.append(f"{path}.{field} is required")
-    publish = registry.get("publish", [])
-    if not isinstance(publish, list):
-        errors.append("registry.publish must be a list")
+    if "publish" in registry:
+        errors.append("registry.publish was renamed to registry.bundles")
+    bundles = registry.get("bundles", [])
+    if not isinstance(bundles, list):
+        errors.append("registry.bundles must be a list")
         return
     published = set()
-    for i, entry in enumerate(publish):
-        path = f"registry.publish[{i}]"
+    for i, entry in enumerate(bundles):
+        path = f"registry.bundles[{i}]"
         if not isinstance(entry, dict):
             errors.append(f"{path} must be an object")
             continue
@@ -1032,7 +1036,7 @@ def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:
     for _section, _stand, name, canister in iter_canisters(sheet):
         content = canister.get("content")
         if content and content not in published:
-            errors.append(f"canister {name}: content '{content}' has no registry.publish entry")
+            errors.append(f"canister {name}: content '{content}' has no registry.bundles entry")
 
 
 def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:

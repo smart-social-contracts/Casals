@@ -76,7 +76,7 @@ def _absolutize_local_sources(sheet: dict, sheet_dir: str) -> None:
     `local:../realms/...` would stop resolving there: pin those to the original
     sheet's directory up front (Casals-relative paths are left as they are)."""
     registry = sheet.get("registry") or {}
-    for entry in [*(registry.get("wasms") or []), *(registry.get("publish") or [])]:
+    for entry in [*(registry.get("wasms") or []), *(registry.get("bundles") or [])]:
         src = entry.get("source") if isinstance(entry, dict) else None
         if not isinstance(src, str) or not src.startswith("local:"):
             continue
@@ -474,7 +474,7 @@ def _v2_sheet(o: Orchestra, tag: str) -> tuple[dict, str, list[str]]:
     """A second frontend build as docs/BUNDLES.md wants it shipped: `casals bundle`
     packs dist/ (+ one new file) into a hashed .tgz, and the sheet declares that
     hash under a new namespace version. Returns (sheet, marker, frontends)."""
-    entry = ((o.sheet.get("registry") or {}).get("publish") or [])[0]
+    entry = ((o.sheet.get("registry") or {}).get("bundles") or [])[0]
     src = os.path.join(os.path.dirname(o.sheet_path), entry["source"][len("local:"):])
     new_dir = os.path.join(o.home, f"dist-{tag}")
     shutil.copytree(src, new_dir, dirs_exist_ok=True)
@@ -487,9 +487,9 @@ def _v2_sheet(o: Orchestra, tag: str) -> tuple[dict, str, list[str]]:
     packed = o.casals("bundle", new_dir, "-o", tgz)
     new_ns = entry["path"] + "-" + tag
     changed = json.loads(json.dumps(o.sheet))
-    changed["registry"]["publish"] = [
+    changed["registry"]["bundles"] = [
         {"path": new_ns, "source": "local:" + tgz, "sha256": packed["bundle_sha256"]},
-        *changed["registry"]["publish"][1:],
+        *changed["registry"]["bundles"][1:],
     ]
     frontends = _frontends_of(changed, entry["path"])
     for _s, _st, name, c in _iter(changed):
@@ -515,13 +515,13 @@ def content_change(o: Orchestra) -> None:
     under a new namespace version and shipped with `casals upgrade --content` —
     the canister serves exactly that bundle: the new file appears, and
     disappears again when the declared build is shipped back."""
-    if not ((o.sheet.get("registry") or {}).get("publish") or []):
+    if not ((o.sheet.get("registry") or {}).get("bundles") or []):
         return
     changed, marker, frontends = _v2_sheet(o, "v2")
     changed_path = os.path.join(o.home, "content.json")
     json.dump(changed, open(changed_path, "w"))
-    old_ns = o.sheet["registry"]["publish"][0]["path"]
-    new_ns = changed["registry"]["publish"][0]["path"]
+    old_ns = o.sheet["registry"]["bundles"][0]["path"]
+    new_ns = changed["registry"]["bundles"][0]["path"]
     res = o.casals("upgrade", changed_path, "--content", new_ns)
     got = {r["canister"]: r["result"] for r in res["rows"]}
     if any(got.get(n) != "synced" for n in frontends):

@@ -196,7 +196,7 @@
     <p class="text-sm text-primary-500 mb-4">
       A frontend's built <span class="font-mono">dist/</span> — a folder or a <span class="font-mono">.tgz</span> from
       <span class="font-mono">casals bundle</span>. Every file is hashed here; only changed files are written, files that
-      left the bundle are removed, all in one commit to the <span class="font-mono">casals-wasms</span> store. Uploading is
+      left the bundle are removed, all in one commit to the <span class="font-mono">casals-store</span> store. Uploading is
       not shipping: <span class="font-mono">casals upgrade &lt;sheet&gt; --content &lt;namespace&gt;</span> makes the frontends serve it.
     </p>
 

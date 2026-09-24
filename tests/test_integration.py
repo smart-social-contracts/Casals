@@ -2,7 +2,7 @@
 
 These cover the governance / registration / query layer end-to-end. The
 management-canister lifecycle paths (create_canister / upgrade_to) require the
-casals-wasms store and inter-canister cycles; their *validation/authorization*
+casals-store store and inter-canister cycles; their *validation/authorization*
 branches are checked here, while a full create/upgrade is left to a deployed
 environment.
 """

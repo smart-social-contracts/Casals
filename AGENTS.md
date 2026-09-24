@@ -14,7 +14,7 @@ deploy their own conductor instances and supply sheets from their own repos.
 One `casals.json` sheet describes an environment on day one;
 `python -m casals_cli.main -e <env> up <sheet> --yes` builds it (`--local` starts
 a laptop replica, creates `local-dev`, and mints cycles). `up` bootstraps
-the conductor (backend, frontend, `casals-wasms` store) if it is not bound yet,
+the conductor (backend, frontend, `casals-store` store) if it is not bound yet,
 publishes the wasms the `registry` block names, stores the sheet (`set_sheet`),
 then runs the conductor's `plan` → `apply` until the plan is empty (bootstrap
 + resume: idempotent, safe to interrupt). Re-running `up` on a built orchestra
@@ -64,7 +64,7 @@ frontend/            — SvelteKit UI (see Frontend pages below)
 templates/           — hello-world template sources (basilisk / rust / motoko)
 seed/templates/      — committed, gzipped template WASMs; sheets reference them as
                        local:seed/templates/<file>; rebuild with `make build-templates`.
-                       Also holds certified-assets@0.3.0.wasm.gz — the `casals-wasms`
+                       Also holds certified-assets@0.3.0.wasm.gz — the `casals-store`
                        store itself (built from smart-social-contracts/certified-assets)
 seed/sheets/         — sheets (day-one orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
@@ -83,7 +83,7 @@ rendered by `frontend/src/routes/+layout.svelte`:
 | Route | Purpose |
 |-------|---------|
 | `/` (Orchestra) | Three views, remembered per browser (`lib/orchestraList.ts`). **List** (default): one row per canister matching the filter — checkbox, name/alias, section, stand, principal, controllers (the alias when one, a count badge when more), tags; an unfold arrow opens the detail panel (runtime, balance, events, logs, Basilisk inspect/console). A toolbar under the filter acts on the *selection*: Deploy / Rename / Tags take exactly one canister; Snapshot, Revert, Stop, Start, Delete run over the batch; each button is enabled only when the session holds the matching `canister.*` key on every selected row (controllers bypass) and the state allows it (Revert needs snapshots, Stop/Start follow cached run status, core canisters are never renamed/deleted). **Topology** carries the section/stand context and their management (add stand / canister, register, deploy stand, add commander, rename, delete). **Control** is the controller/commander graph |
-| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.publish` namespace — store bundle hash, contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
+| `/files` | Files: *Authorized WASMs* (catalog, Upload WASM) and *Authorized bundles* (frontend asset bundles per `registry.bundles` namespace — store bundle hash, contents, consumers; Upload bundle from a folder or `.tgz`; shipping it is `casals upgrade --content`). `/wasms` redirects here |
 | `/cycles` | Treasury, per-canister balances, charts, pool **Assign**, cycles autopilot |
 | `/activity` | Hash-chained audit log |
 | `/aliases` | Principal aliases |
@@ -114,7 +114,7 @@ python3 -m casals_cli.main -e local up seed/sheets/demo.json --yes
 ```
 
 `casals up <sheet>` is the only deploy path (builds the conductor WASMs, creates
-the `casals-wasms` store, uploads every `registry.wasms` entry into it, then
+the `casals-store` store, uploads every `registry.wasms` entry into it, then
 `set_sheet` → `plan` → `apply`). Re-run it after code changes.
 
 ### Known quirks
@@ -174,7 +174,7 @@ python tests/e2e/run_e2e.py                    # the corpus: every orchestra, ev
 
 Follow `docs/OPERATIONS.md`: the same `casals up <sheet>` with `-e ic` and the
 environment's deployer identity. The conductor itself (backend, frontend,
-`casals-wasms` store) is created by `up`'s bootstrap when the sheet is not
+`casals-store` store) is created by `up`'s bootstrap when the sheet is not
 bound yet.
 
 ## Open access
@@ -324,12 +324,12 @@ The pool (`PooledCanister` entity, stable memory) is the list of every canister
 Casals has ever created. Because creation is expensive, canisters are recycled,
 not discarded.
 
-### WASM store (`casals-wasms`)
+### WASM store (`casals-store`)
 
-Every WASM a sheet can install lives in the **`casals-wasms`** canister — a
+Every WASM a sheet can install lives in the **`casals-store`** canister — a
 [certified-assets](https://github.com/smart-social-contracts/certified-assets)
 fork (asset canister with pinned directories, chunked upload, on-chain sha256).
-It is a conductor canister declared in the sheet's `conductor.wasms` block
+It is a conductor canister declared in the sheet's `conductor.store` block
 (`kind: frontend`, wasm `certified-assets@0.3.0`, controllers `["$self", "$deployer"]`)
 and is homed on the `Casals/conductor` stand like the rest of the conductor.
 
@@ -337,7 +337,7 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   `/<namespace>/<path>` (`sheetv2.store_key` / `store_namespace_prefix`); the
   row fields are still called `registry_namespace` / `registry_path`.
   `registry.wasms` key `<name>@<version>` → `/wasm/<name>@<version>.wasm.gz`
-  (`WASM_NAMESPACE = "wasm"`, `registry_path`); a `registry.publish` bundle
+  (`WASM_NAMESPACE = "wasm"`, `registry_path`); a `registry.bundles` bundle
   `<ns>` → `/<ns>/<relative file path>`.
 - **Seeding (CLI, `casals up` step 4).** `casals_cli/registry.py::ensure_registry_uploads`
   computes the sha256 of each local artifact, lists the store (`list` query),
@@ -390,7 +390,7 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   canister: realm branding, extension packages live in it), and any other
   legacy row is pooled so a stand can reuse the canister.
 - **`sha256` is a checksum, nothing more.** A `registry.wasms` /
-  `registry.publish` row may declare one; when it does, a source that resolves
+  `registry.bundles` row may declare one; when it does, a source that resolves
   to anything else is an error (`resolve_source` / `publish_bundle`), in every
   environment. When it does not, whatever the source resolves to is what gets
   uploaded. No environment requires it, no command manages it: put one on a
@@ -399,12 +399,12 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   uploaded digest into the sheet it hands the conductor, so the stored sheet
   records what the store holds.
 - Bindings: `casals_metadata().wasm_store_canister_id`; CLI bindings file key
-  `conductor["casals-wasms"]`. Baton reads the same id via its
+  `conductor["casals-store"]`. Baton reads the same id via its
   `wasm_store_canister_id` config (`orchestration_bridge` propagates it).
 
-### Asset bundles (`registry.publish`, issue #50)
+### Asset bundles (`registry.bundles`, issue #50)
 
-A frontend's content is a **bundle**: the file set a `registry.publish` row
+A frontend's content is a **bundle**: the file set a `registry.bundles` row
 names, identified by its *bundle hash* — sha256 of the sorted `sha256sum`
 listing of its files (`docs/BUNDLES.md`; one implementation in
 `sheetv2.bundle_hash`, re-used by `casals_cli/bundle.py` and mirrored in
@@ -413,14 +413,14 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
 
 - **Shipping.** `casals bundle dist/ -o app-1.2.0.tgz` writes a canonical
   gzip tarball (sorted entries, zeroed mtimes, `manifest.json` inside) and
-  prints the bundle hash. A `registry.publish` row's `source` may be a
+  prints the bundle hash. A `registry.bundles` row's `source` may be a
   directory, a `.tgz` (`local:`), an `https://` URL or `release:`; an optional
   `sha256` is the bundle hash, a checksum on the source (`casals bundle
   --verify` prints it; `up` / `upgrade` refuse a source that hashes differently).
 - **Day one.** The planner (`_plan_assets`) compares what the canister serves
   with the store namespace: a `sync_assets` item writes changed files and
   **deletes** the keys that left the bundle (`delete_keys`,
-  `lifecycle._sync_assets_gen`). The stored sheet's `registry.publish[].sha256`
+  `lifecycle._sync_assets_gen`). The stored sheet's `registry.bundles[].sha256`
   is the bundle last uploaded / shipped: a store namespace holding a different
   one while the frontend still serves the recorded one is an unshipped upload
   (`info`, only the rendered `files` converge), not drift; a frontend serving
@@ -520,7 +520,7 @@ Who can change code on which canister, by controller:
 - **Conductor canisters and Batons** (`controllers: ["$multisig"]`): the
   committee. `orchestration-multisig@1.6.0` adds **`UpgradeCanister`**
   `{canister_id, store, key, sha256, arg, wasm_memory_keep}`: the multisig
-  streams `key` out of `casals-wasms` (`get`/`get_chunk`), fills the target's IC
+  streams `key` out of `casals-store` (`get`/`get_chunk`), fills the target's IC
   chunk store and calls `install_chunked_code` (upgrade mode) with
   `wasm_module_hash = sha256`, so only the module the signers approved can land.
   No inline blob, so it works for the 7 MB backend from a browser. The

@@ -33,7 +33,7 @@ def test_store_canister_id_missing():
         store_canister_id(FakeMap({"wasm_store_canister_id": "  "}))
 
 
-# ── casals-wasms asset store ─────────────────────────────────────────────────
+# ── casals-store asset store ─────────────────────────────────────────────────
 
 import hashlib  # noqa: E402
 

@@ -4,7 +4,7 @@
  * tests without a bundler).
  *
  * A frontend serves a *bundle*: the files of one store namespace. The sheet
- * names that namespace on the canister (`content`), and `registry.publish`
+ * names that namespace on the canister (`content`), and `registry.bundles`
  * lists the namespaces it fills. Shipping is the conductor's `deploy_content`
  * (all rounds, one call); the multisig reaches it through `CallCanister`.
  */
@@ -36,10 +36,10 @@ export function contentByCanister(sheet: Sheet | null | undefined): Map<string, 
   return out;
 }
 
-/** Namespaces worth offering: `registry.publish` paths plus every canister `content`. */
+/** Namespaces worth offering: `registry.bundles` paths plus every canister `content`. */
 export function knownContentNamespaces(sheet: Sheet | null | undefined): string[] {
   const out = new Set<string>();
-  for (const row of sheet?.registry?.publish ?? []) if (row?.path) out.add(row.path);
+  for (const row of sheet?.registry?.bundles ?? []) if (row?.path) out.add(row.path);
   for (const ns of contentByCanister(sheet).values()) out.add(ns);
   return [...out].sort();
 }

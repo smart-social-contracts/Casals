@@ -1,4 +1,4 @@
-"""CLI side of the casals-wasms store: binary-Candid batch uploads, listings,
+"""CLI side of the casals-store store: binary-Candid batch uploads, listings,
 and `casals up`'s store-upload step seeding the bound store."""
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def test_list_and_read_round_trip(ic):
     assert hashes == {"big.wasm.gz": hashlib.sha256(big).hexdigest()}
     assert wasm_store.store_file_hashes(ic, STORE, "frontend/app/main") == {"index.html": hashlib.sha256(b"<html>").hexdigest()}
     assert wasm_store.read_file(ic, STORE, "wasm", "big.wasm.gz") == big
-    assert bound_store_hashes(ic, {"casals-wasms": STORE}, "wasm") == hashes
+    assert bound_store_hashes(ic, {"casals-store": STORE}, "wasm") == hashes
     assert bound_store_hashes(ic, {}, "wasm") == {}
 
 
@@ -128,11 +128,11 @@ def test_store_target_tracks_keys_across_uploads(ic):
 
 def test_store_wasm_path_resolves_the_certified_assets_template(tmp_path):
     sheet = {
-        "conductor": {"wasms": {"wasm": "certified-assets@0.3.0", "kind": "frontend"}},
+        "conductor": {"store": {"wasm": "certified-assets@0.3.0", "kind": "frontend"}},
         "registry": {"wasms": [{"family": "certified-assets", "version": "0.3.0",
                                 "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz"}]},
     }
-    path, digest = _store_wasm_path("wasms", sheet, sheet_dir=str(tmp_path), project_root=os.path.abspath(ROOT))
+    path, digest = _store_wasm_path("store", sheet, sheet_dir=str(tmp_path), project_root=os.path.abspath(ROOT))
     try:
         data = open(path, "rb").read()
         assert data[:4] == b"\0asm" and hashlib.sha256(data).hexdigest() == digest
@@ -140,7 +140,7 @@ def test_store_wasm_path_resolves_the_certified_assets_template(tmp_path):
     finally:
         os.unlink(path)
     with pytest.raises(ValueError, match="no registry.wasms entry"):
-        _store_wasm_path("wasms", {"conductor": {"wasms": {"wasm": "nope@1"}}}, sheet_dir=str(tmp_path), project_root=ROOT)
+        _store_wasm_path("store", {"conductor": {"store": {"wasm": "nope@1"}}}, sheet_dir=str(tmp_path), project_root=ROOT)
 
 
 def test_ensure_commit_grants_only_when_missing(ic):

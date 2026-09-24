@@ -1,5 +1,5 @@
 """store_uploads: just-in-time Commit grants for browser uploads into the
-casals-wasms store, the catalog cross-reference, retention and the upgrade
+casals-store store, the catalog cross-reference, retention and the upgrade
 budget. Runs the real entity layer on an in-memory store; the asset canister
 is faked."""
 

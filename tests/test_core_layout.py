@@ -123,7 +123,7 @@ def test_legacy_registry_row_is_kept_when_the_sheet_declares_it_as_a_product(db,
 
     sheet = {
         "version": 2,
-        "conductor": {"backend": {}, "frontend": {}, "wasms": {}},
+        "conductor": {"backend": {}, "frontend": {}, "store": {}},
         "sections": [{"name": "Infra", "stands": [{"name": "file-registry", "canisters": [
             {"name": "file-registry"}, {"name": "file-registry-frontend"},
         ]}]}],
@@ -172,7 +172,7 @@ def test_legacy_registry_rows_wait_for_the_migrated_sheet(db, monkeypatch):
     assert Canister["file-registry"] is not None
 
     # The migrated sheet arrives without a product file registry: now it is pooled.
-    new_sheet = {"version": 2, "conductor": {"backend": {}, "frontend": {}, "wasms": {}}, "sections": []}
+    new_sheet = {"version": 2, "conductor": {"backend": {}, "frontend": {}, "store": {}}, "sections": []}
     monkeypatch.setattr(bootstrap, "load_sheet_doc", lambda: (new_sheet, "production", "h2"))
     bootstrap.ensure_core_layout()
     assert pooled == ["ccccc-cc"]
@@ -243,24 +243,24 @@ def test_bind_conductor_homes_every_canister(db, monkeypatch):
     res = sheet_api.bind_conductor_impl({
         "backend": SELF,
         "frontend": "bbbbb-bb",
-        "wasms": "eeeee-ee",
+        "store": "eeeee-ee",
         # An older CLI still sending the retired pair: ignored, no rows created.
         "file_registry": "ccccc-cc",
         "file_registry_frontend": "ddddd-dd",
     })
-    assert set(res["bindings"]) == {"casals-backend", "casals-frontend", "casals-wasms"}
+    assert set(res["bindings"]) == {"casals-backend", "casals-frontend", "casals-store"}
     assert res["ignored"] == ["file_registry", "file_registry_frontend"]
     tree = _tree()
     assert _layout(tree) == {
         "Casals": {
-            "conductor": ["casals-backend", "casals-frontend", "casals-wasms"],
+            "conductor": ["casals-backend", "casals-frontend", "casals-store"],
         }
     }
     assert tree["orphans"] == []
     # The store id lands in settings; the retired registry columns are blanked.
     assert _S.wasm_store_canister_id == "eeeee-ee"
     assert _S.file_registry_canister_id == ""
-    store = next(c for c in tree["sections"][0]["stands"][0]["canisters"] if c["name"] == "casals-wasms")
+    store = next(c for c in tree["sections"][0]["stands"][0]["canisters"] if c["name"] == "casals-store")
     assert store["kind"] == "frontend" and store["wasm_type"] == "assets"
 
 

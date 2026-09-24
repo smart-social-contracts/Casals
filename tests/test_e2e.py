@@ -1,7 +1,7 @@
 """End-to-end tests for Casals' full canister lifecycle.
 
 Unlike test_integration.py (which checks the API / validation layer), these
-tests deploy a *real* casals-wasms store on the same replica, upload real WASM
+tests deploy a *real* casals-store store on the same replica, upload real WASM
 modules into it, and drive Casals through the complete lifecycle:
 
     create_canister  → a brand-new canister is created, the authorized WASM is

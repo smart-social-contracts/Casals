@@ -1,4 +1,4 @@
-// Direct client for the `casals-wasms` certified-assets store.
+// Direct client for the `casals-store` certified-assets store.
 //
 // A browser upload never passes through casals-backend: the backend hands out
 // a just-in-time Commit grant (begin_upload), the browser hashes the file and

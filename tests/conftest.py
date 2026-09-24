@@ -29,7 +29,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 CANISTER_NAME = "casals_backend"
 
-# The WASM store (`casals-wasms`) is a stock certified-assets canister; the
+# The WASM store (`casals-store`) is a stock certified-assets canister; the
 # end-to-end tests deploy the committed template and seed it the way `casals
 # up` does (casals_cli.wasm_store).
 WASM_STORE_TEMPLATE = os.path.join("seed", "templates", "certified-assets@0.3.0.wasm.gz")
@@ -201,7 +201,7 @@ def canister(replica):
     yield CANISTER_NAME
 
 
-# ── End-to-end environment: a real casals-wasms store wired into Casals ──────
+# ── End-to-end environment: a real casals-store store wired into Casals ──────
 
 
 def _create_detached() -> str:
@@ -287,7 +287,7 @@ EMPTY_WASM_V2 = EMPTY_WASM + bytes([0x00, 0x02, 0x01, 0x78])  # trailing custom 
 
 
 class RegistryEnv:
-    """The casals-wasms store of the test session. ``store`` / ``store_chunked``
+    """The casals-store store of the test session. ``store`` / ``store_chunked``
     keep the names the module tests use; both stream through the batch API."""
 
     def __init__(self, store_id):
@@ -302,14 +302,14 @@ class RegistryEnv:
 
 @pytest.fixture(scope="session")
 def registry(canister):
-    """Deploy a real casals-wasms store (certified-assets) on the same replica
+    """Deploy a real casals-store store (certified-assets) on the same replica
     and wire Casals to it. Also tops up casals_backend so it can fund the
     canisters it creates."""
     import gzip
 
     gz = os.path.join(REPO_ROOT, WASM_STORE_TEMPLATE)
     assert os.path.exists(gz), f"certified-assets template not found at {gz}"
-    tmp = tempfile.NamedTemporaryFile(prefix="casals-wasms-", suffix=".wasm", delete=False)
+    tmp = tempfile.NamedTemporaryFile(prefix="casals-store-", suffix=".wasm", delete=False)
     with open(gz, "rb") as f:
         tmp.write(gzip.decompress(f.read()))
     tmp.close()

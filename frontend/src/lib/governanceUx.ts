@@ -244,7 +244,7 @@ export const MULTISIG_PROPOSAL_REFERENCE: ReferenceEntry[] = [
     id: 'UpgradeCanister',
     label: 'Upgrade canister',
     description:
-      'Stream an authorized WASM from the casals-wasms store into a canister the committee controls and install it (sha256-pinned, chunked). Stands handed to a Baton are upgraded through that Baton instead.',
+      'Stream an authorized WASM from the casals-store store into a canister the committee controls and install it (sha256-pinned, chunked). Stands handed to a Baton are upgraded through that Baton instead.',
   },
   {
     id: 'UpgradeBaton',

@@ -1,7 +1,7 @@
 """The WASM store Casals installs from — read side.
 
-``casals-wasms`` is a certified-assets canister (``Settings.wasm_store_canister_id``,
-bound from the sheet's ``conductor.wasms`` block). A catalog row's
+``casals-store`` is a certified-assets canister (``Settings.wasm_store_canister_id``,
+bound from the sheet's ``conductor.store`` block). A catalog row's
 ``(registry_namespace, registry_path)`` addresses asset key ``/<namespace>/<path>``
 (``sheetv2.store_key``) in the ``identity`` encoding. The canister hashes every
 asset on commit, so the ``sha256`` it reports is authoritative. Reads are raw
@@ -40,7 +40,7 @@ def store_canister_id() -> str:
     sid = (getattr(_settings(), "wasm_store_canister_id", "") or "").strip()
     if not sid:
         raise StoreNotConfigured(
-            "the casals-wasms store is not bound (wasm_store_canister_id): declare conductor.wasms "
+            "the casals-store store is not bound (wasm_store_canister_id): declare conductor.store "
             "in the sheet and run `casals up`"
         )
     return sid

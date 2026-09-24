@@ -44,7 +44,7 @@ def cmd_plan(ic, args, project_root: str) -> None:
 def cmd_bundle(args) -> None:
     """`casals bundle <dist>`: pack a built frontend into a canonical, hashed
     `.tgz` (docs/BUNDLES.md) — or, with `--verify`, check an existing bundle
-    or directory and print its bundle hash (what a `registry.publish` row may
+    or directory and print its bundle hash (what a `registry.bundles` row may
     declare as `sha256`, an optional checksum)."""
     from casals_cli import bundle as B
 
@@ -84,7 +84,7 @@ def cmd_bundle(args) -> None:
         emit_json(info)
     else:
         print(f"{out}: {info['files']} file(s), {info['bytes']} bytes gzipped")
-        print(f"  bundle sha256 {info['bundle_sha256']}   (registry.publish sha256, optional)")
+        print(f"  bundle sha256 {info['bundle_sha256']}   (registry.bundles sha256, optional)")
         print(f"  tgz    sha256 {tgz_digest}   ({out}.sha256)")
 
 
@@ -108,7 +108,7 @@ def cmd_export(ic, args) -> None:
 # casals_metadata field → conductor canister name, for the canisters the
 # deployer (not the conductor) controls. A legacy file-registry pair is
 # controlled by the backend and is handled like any managed canister.
-_CONDUCTOR_META = {"casals_frontend_canister_id": "casals-frontend", "wasm_store_canister_id": "casals-wasms"}
+_CONDUCTOR_META = {"casals_frontend_canister_id": "casals-frontend", "wasm_store_canister_id": "casals-store"}
 
 
 def _already_gone(err: str) -> bool:

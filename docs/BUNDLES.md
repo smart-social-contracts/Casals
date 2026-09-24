@@ -80,7 +80,7 @@ Python API: `casals_cli.bundle` — `read_dir`, `read_tgz`, `write_tgz`,
 
 ## Where bundles appear in Casals
 
-- **Sheet.** A `registry.publish` row names a namespace and a source
+- **Sheet.** A `registry.bundles` row names a namespace and a source
   (`local:<dir>`, `local:<file>.tgz`, or an `https://` release URL) and may
   declare `sha256` — the *bundle* hash, an optional checksum: a source that
   hashes to anything else is refused. A canister row consumes it via

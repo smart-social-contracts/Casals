@@ -226,7 +226,7 @@ class AuthorizedWasm(Entity, TimestampedMixin):
 
     The list is governed: adding/removing an entry represents an approved
     decision (e.g. a project community voting in a new release). The bytes
-    live in the casals-wasms store, addressed by (namespace, path) and identified
+    live in the casals-store store, addressed by (namespace, path) and identified
     by sha256 — which is also the module hash verified after install.
     """
 
@@ -280,7 +280,7 @@ class Settings(Entity):
     # 0 = only Casals controllers may add sections/stands; 1 = anyone with II
     # may (deployer can flip this for experimentation / dev / demo).
     open_access = Integer(default=0)
-    # The WASM store: a certified-assets canister (`casals-wasms`) holding every
+    # The WASM store: a certified-assets canister (`casals-store`) holding every
     # artifact Casals installs, addressed by key `/<namespace>/<path>`
     # (see wasm_store.py). Bound by `bind_conductor` from the sheet.
     wasm_store_canister_id = String(max_length=64, default="")
@@ -402,7 +402,7 @@ class PrincipalAlias(Entity, TimestampedMixin):
 
 
 class StoreUploadGrant(Entity, TimestampedMixin):
-    """A just-in-time ``Commit`` grant on the `casals-wasms` store.
+    """A just-in-time ``Commit`` grant on the `casals-store` store.
 
     ``begin_upload`` grants the caller ``Commit`` so the browser can stream a
     WASM straight into the store; ``end_upload`` revokes it. Rows outlive

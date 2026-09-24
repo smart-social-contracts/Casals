@@ -1,6 +1,6 @@
 """Async lifecycle helpers — generators that drive canister provisioning,
 WASM installation, asset upload, and retirement via the IC management
-canister and the WASM store (``wasm_store``: the casals-wasms canister).
+canister and the WASM store (``wasm_store``: the casals-store canister).
 
 All public symbols are generator functions (``yield from`` compatible);
 none carries a Basilisk decorator.  The decorated endpoints that call these
@@ -221,7 +221,7 @@ def _install_chunked_code_raw(target_id: str, chunk_hashes: list, wasm_hash_hex:
 
 def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_hex: str,
                       install_mode, init_arg: bytes = b"", wasm_type: str = ""):
-    """Generator: pull a WASM from the casals-wasms store into the target's
+    """Generator: pull a WASM from the casals-store store into the target's
     chunk store and install it via install_chunked_code.
 
     ``init_arg`` is the (already candid-encoded) install argument; defaults

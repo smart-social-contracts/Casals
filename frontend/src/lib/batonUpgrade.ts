@@ -43,7 +43,7 @@ async function ensureBatonWasmStore(
   const meta = await casalsMetadata();
   const storeId = (meta.wasm_store_canister_id || '').trim();
   if (!storeId) {
-    throw new Error('WASM store not bound on Casals — run `casals up` (conductor.wasms) first');
+    throw new Error('WASM store not bound on Casals — run `casals up` (conductor.store) first');
   }
   const cfg = await batonGetConfig(batonId);
   if ((cfg.wasm_store_canister_id || '').trim() === storeId) return;

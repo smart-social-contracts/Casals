@@ -1,4 +1,4 @@
-"""CLI client for the `casals-wasms` store (a certified-assets canister).
+"""CLI client for the `casals-store` store (a certified-assets canister).
 
 Files are addressed by (namespace, path) and land
 at asset key ``/<namespace>/<path>`` (``sheetv2.store_key``) in the

@@ -1,6 +1,6 @@
 """Pull authorized WASM from Casals' WASM store and install via chunked code.
 
-The store is the `casals-wasms` certified-assets canister (``wasm_store_canister_id``
+The store is the `casals-store` certified-assets canister (``wasm_store_canister_id``
 in Baton's config). A Casals catalog row's (namespace, path) pair maps to the
 asset key ``/<namespace>/<path>``; the canister streams raw blobs through
 ``get`` / ``get_chunk`` and reports the sha256 it computed on commit, which is
@@ -79,7 +79,7 @@ def store_key(namespace: str, path: str) -> str:
 
 
 def store_canister_id(config_store) -> str:
-    """The casals-wasms store principal from Baton's config (set via set_config)."""
+    """The casals-store store principal from Baton's config (set via set_config)."""
     raw = config_store.get("wasm_store_canister_id")
     if not raw or not str(raw).strip():
         raise ValueError("wasm_store_canister_id is not configured (use set_config)")

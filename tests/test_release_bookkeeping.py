@@ -25,7 +25,7 @@ SHEET = {
         "backend": {"kind": "backend", "mode": "managed", "wasm": "casals-backend", "controllers": ["$deployer"]},
         "frontend": {"kind": "frontend", "mode": "managed", "wasm": "certified-assets@0.3.0",
                      "controllers": ["$deployer"]},
-        "wasms": {"kind": "frontend", "mode": "managed", "wasm": "certified-assets@0.3.0",
+        "store": {"kind": "frontend", "mode": "managed", "wasm": "certified-assets@0.3.0",
                   "controllers": ["$deployer"]},
         "commanders": [{"principal": "$deployer", "permissions": "*"}],
     },
@@ -36,7 +36,7 @@ SHEET = {
             {"family": "hello", "version": "1.0.0", "source": "local:hello-1.wasm.gz", "sha256": "1" * 64},
             {"family": "hello", "version": "2.0.0", "source": "local:hello-2.wasm.gz", "sha256": "2" * 64},
         ],
-        "publish": [{"path": "frontend/app/main", "source": "local:dist", "sha256": "c" * 64}],
+        "bundles": [{"path": "frontend/app/main", "source": "local:dist", "sha256": "c" * 64}],
     },
     "sections": [
         {"name": "Apps", "stands": [{"name": "app", "canisters": [
@@ -170,7 +170,7 @@ class TestContentRelease:
         from sheet_api import record_content_release
         sh = record_content_release("frontend/app/main", "0" * 64)
         assert sh == stored["hash"]
-        assert stored["sheet"]["registry"]["publish"][0]["sha256"] == "0" * 64
+        assert stored["sheet"]["registry"]["bundles"][0]["sha256"] == "0" * 64
 
     def test_same_bundle_is_a_no_op(self, stored):
         from sheet_api import record_content_release
@@ -180,13 +180,13 @@ class TestContentRelease:
     def test_namespace_without_a_row_is_left_to_the_sheet_file(self, stored):
         from sheet_api import record_content_release
         assert record_content_release("frontend/other/main", "0" * 64) is None
-        assert len(stored["sheet"]["registry"]["publish"]) == 1
+        assert len(stored["sheet"]["registry"]["bundles"]) == 1
 
     def test_new_namespace_with_source_moves_the_frontend_to_it(self, stored):
         from sheet_api import record_content_release
         record_content_release("frontend/app/v2", "0" * 64, canister="app-frontend", stand_name="app",
                                section_name="Apps", source="local:app-v2.tgz")
-        rows = stored["sheet"]["registry"]["publish"]
+        rows = stored["sheet"]["registry"]["bundles"]
         assert rows[1] == {"path": "frontend/app/v2", "source": "local:app-v2.tgz", "sha256": "0" * 64}
         assert _spec(stored["sheet"], "app-frontend")["content"] == "frontend/app/v2"
         assert rows[0]["sha256"] == "c" * 64  # the old namespace's pin is not touched

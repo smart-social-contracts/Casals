@@ -1,6 +1,6 @@
 """Core layout: every canister Casals knows lives on a stand.
 
-The conductor canisters (casals-backend, casals-frontend and the casals-wasms
+The conductor canisters (casals-backend, casals-frontend and the casals-store
 store) and the governance multisig are homed on one synthetic infra section,
 ``Casals``, with two stands:
 
@@ -59,7 +59,7 @@ LEGACY_REGISTRY_NAMES = frozenset(LEGACY_CONDUCTOR_NAMES) | {"file_registry", "f
 _CONDUCTOR_KIND = {
     CONDUCTOR_NAMES["backend"]: CanisterKind.BACKEND,
     CONDUCTOR_NAMES["frontend"]: CanisterKind.FRONTEND,
-    CONDUCTOR_NAMES["wasms"]: CanisterKind.FRONTEND,  # a certified-assets canister
+    CONDUCTOR_NAMES["store"]: CanisterKind.FRONTEND,  # a certified-assets canister
 }
 
 
@@ -84,7 +84,7 @@ def _conductor_ids() -> dict[str, str]:
     out = {ic.id().to_str(): CONDUCTOR_NAMES["backend"]}
     for attr, key in (
         ("casals_frontend_canister_id", "frontend"),
-        ("wasm_store_canister_id", "wasms"),
+        ("wasm_store_canister_id", "store"),
     ):
         cid = (getattr(s, attr, None) or "").strip()
         if cid:
@@ -202,7 +202,7 @@ def _declared_homes() -> dict[str, tuple[str, str]]:
 
 def _stored_sheet_declares_legacy_registry() -> bool:
     """True while the stored sheet still carries `conductor.file_registry*`
-    (a sheet from before the casals-wasms store)."""
+    (a sheet from before the casals-store store)."""
     sheet, _env, _sh = load_sheet_doc()
     conductor = (sheet or {}).get("conductor")
     return isinstance(conductor, dict) and any(k in conductor for k in LEGACY_CONDUCTOR_KEYS)
@@ -246,7 +246,7 @@ def ensure_core_layout() -> dict:
     moved = []
     conductor_ids = _conductor_ids()
 
-    # 0. the retired file-registry pair. The casals-wasms store holds Casals'
+    # 0. the retired file-registry pair. The casals-store store holds Casals'
     #    artifacts now, but a product may keep a file registry of its own with
     #    live data in it (GaaS: realm branding, extension packages): when the
     #    sheet declares a section canister under the same name, the row is

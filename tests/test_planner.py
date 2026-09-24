@@ -33,7 +33,7 @@ def _ctx(sheet: dict, **ids) -> sv2.ResolveContext:
     bindings = {
         "casals-backend": SELF,
         "casals-frontend": "fe-id",
-        "casals-wasms": "store-id",
+        "casals-store": "store-id",
         "multisig": MS,
         "hello-backend": "hello-id",
         "motoko-backend": "motoko-id",
@@ -351,7 +351,7 @@ def test_bundle_drift_names_both_hashes_and_removes_stale_keys():
 
 
 def test_an_unshipped_upload_is_not_drift_and_a_lost_bundle_is_unverifiable():
-    """The stored sheet's registry.publish sha256 is the bundle last shipped.
+    """The stored sheet's registry.bundles sha256 is the bundle last shipped.
     The store holding another one while the frontend still serves the shipped
     one is an upload waiting for `casals upgrade --content` — noted, nothing
     synced from it, rendered `files` still converge. A frontend serving
@@ -360,7 +360,7 @@ def test_an_unshipped_upload_is_not_drift_and_a_lost_bundle_is_unverifiable():
     live = _converged_live(resolved, bindings)
     spec = sv2.find_canister(resolved, "rust-frontend")[2]
     ns = spec["content"]
-    row = next(e for e in resolved["registry"]["publish"] if e["path"] == ns)
+    row = next(e for e in resolved["registry"]["bundles"] if e["path"] == ns)
     shipped = sv2.bundle_hash({p: m["sha256"] for p, m in live["published"][ns].items()})
     row["sha256"] = shipped  # what was shipped; the frontend serves exactly it
     live["published"][ns] = {"index.html": {"sha256": "22" * 32, "content_type": "text/html"}}  # a newer upload
@@ -582,7 +582,7 @@ def test_sole_handoff_allows_frontend_assets():
     fe = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-frontend")
     fe["content"] = "frontend/realm/main"
     fe["files"] = {"/canister_ids.js": "ids"}
-    sheet["registry"].setdefault("publish", []).append(
+    sheet["registry"].setdefault("bundles", []).append(
         {"path": "frontend/realm/main", "source": "local:seed/assets/hello-world"})
     assert sv2.validate(sheet, "local") == []
     fe["controllers"] = ["$self", "$stand.baton"]

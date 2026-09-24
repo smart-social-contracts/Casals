@@ -31,7 +31,7 @@
       "mode": "managed",
       "controllers": ["$multisig"]
     },
-    "wasms": {
+    "store": {
       "$comment": "WASM store: a certified-assets canister holding every artifact Casals installs (issue #48). $deployer stays a controller so `casals up` can upload into it.",
       "wasm": "certified-assets@0.3.0",
       "kind": "frontend",
