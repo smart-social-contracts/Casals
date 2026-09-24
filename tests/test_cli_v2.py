@@ -853,6 +853,42 @@ class TestGovernedUpgrade:
         finally:
             os.unlink(path)
 
+    def test_store_controller_cleanup_does_not_call_apply(self):
+        from casals_cli.up import deployer_can_finish_self_items, deployer_items
+
+        ic = TestMultisigPaths._ic(self)
+        ic.controllers["store-id"] = ["deployer", "backend-id", "ms-id"]
+        items = [{
+            "kind": "set_controllers", "requires": "self", "destructive": True,
+            "target": {"name": "casals-store", "canister_id": "store-id"},
+            "desired": {"controllers": ["backend-id", "ms-id"]},
+        }]
+        assert deployer_can_finish_self_items(ic, items, "deployer") == items
+        deployer_items(ic, {"items": items}, "deployer", "ms-id")
+        assert ("settings_update", ("store-id",), {"set_controllers": ["backend-id", "ms-id"]}) in [
+            (c[0], c[1], c[2]) for c in ic.calls if c[0] == "settings_update"
+        ]
+        assert not [c for c in ic.calls if c[0] == "call_update" and c[1][1] == "apply"]
+
+    def test_mixed_self_items_still_need_apply(self):
+        from casals_cli.up import deployer_can_finish_self_items
+
+        ic = TestMultisigPaths._ic(self)
+        ic.controllers["store-id"] = ["deployer"]
+        items = [
+            {"kind": "sync_assets", "requires": "self", "target": {"canister_id": "fe-id"}},
+            {"kind": "set_controllers", "requires": "self",
+             "target": {"canister_id": "store-id"}, "desired": {"controllers": ["backend-id"]}},
+        ]
+        assert deployer_can_finish_self_items(ic, items, "deployer") == []
+
+    def test_asset_bootstrap_keeps_the_conductor_as_controller(self):
+        from casals_cli.frontend_bootstrap import asset_bootstrap_controllers
+
+        assert asset_bootstrap_controllers("deployer", "backend-id") == ["deployer", "backend-id"]
+        assert asset_bootstrap_controllers("deployer", "") == ["deployer"]
+        assert asset_bootstrap_controllers("deployer", "deployer") == ["deployer"]
+
     def test_frontend_dist_is_the_named_bundle(self, tmp_path):
         from casals_cli.conductor import frontend_dist
 

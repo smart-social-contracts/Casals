@@ -297,6 +297,29 @@ def registry_wasm_by_hash(sheet: dict, *, sheet_dir: str, project_root: str):
     return lookup
 
 
+def deployer_can_finish_self_items(ic, items: list, deployer: str) -> list:
+    """``requires: self`` items the deployer can do without calling ``apply``.
+
+    After hand-off the conductor rejects ``apply`` from the deployer. A second
+    ``up`` has just added the deployer to the store so it can upload; the plan
+    then removes that temporary controller. The deployer is a controller of
+    that canister, so ``settings_update`` works and ``apply`` is not required.
+    Returns those items only when every ``requires: self`` item is one of them.
+    """
+    self_items = [i for i in items if (i.get("requires") or "self") == "self"]
+    if not self_items:
+        return []
+    direct = []
+    for item in self_items:
+        if item.get("kind") != "set_controllers":
+            return []
+        cid = (item.get("target") or {}).get("canister_id")
+        if not cid or deployer not in (ic.read_controllers(cid) or []):
+            return []
+        direct.append(item)
+    return direct
+
+
 def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash=None) -> None:
     """Items the conductor cannot apply itself because it is not a controller
     (its own controllers, everything about the multisig): the CLI does them as
@@ -306,10 +329,14 @@ def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash
     the multisig, installs, and the next plan round removes it again."""
     for item in plan.get("items") or []:
         kind = item.get("kind")
-        if (item.get("requires") or "self") == "self":
-            continue
         cid = (item.get("target") or {}).get("canister_id")
         name = (item.get("target") or {}).get("name")
+        # requires=self is the conductor's job, except a set_controllers the
+        # deployer can perform directly (temporary store control after hand-off).
+        if (item.get("requires") or "self") == "self" and not (
+            kind == "set_controllers" and cid and deployer in (ic.read_controllers(cid) or [])
+        ):
+            continue
         if kind == "set_controllers":
             desired = (item.get("desired") or {}).get("controllers")
             if not cid or not isinstance(desired, list):
@@ -414,6 +441,11 @@ def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool,
         if any(i.get("destructive") for i in items) and not yes:
             raise RuntimeError("plan has destructive items; pass --yes to continue")
         if any((i.get("requires") or "self") == "self" for i in items):
+            direct = deployer_can_finish_self_items(ic, items, deployer)
+            if direct:
+                _progress("  applying set_controllers as deployer (the conductor would refuse apply after hand-off)")
+                deployer_items(ic, {**plan, "items": direct}, deployer, multisig_id, wasm_by_hash)
+                continue
             mine = sum(1 for i in items if (i.get("requires") or "self") == "self")
             _progress(f"  applying {min(mine, max_items)} of {mine} conductor item(s) (max {max_items} per call)")
             apply_res = ic.call_update(

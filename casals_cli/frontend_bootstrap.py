@@ -128,6 +128,20 @@ canisters:{canisters}"""
         f.write(content)
 
 
+def asset_bootstrap_controllers(deployer: str, backend_id: str = "") -> list[str]:
+    """Controllers for a conductor asset canister right after bootstrap.
+
+    The deployer must be able to finish the install. The conductor must also
+    be a controller, or ``sync_assets`` is planned as a multisig item the CLI
+    never applies, and the controller hand-off waits behind it forever.
+    """
+    out = [deployer]
+    backend_id = (backend_id or "").strip()
+    if backend_id and backend_id not in out:
+        out.append(backend_id)
+    return out
+
+
 def bootstrap_asset_canister(
     ic,
     bindings,
@@ -209,6 +223,14 @@ def bootstrap_asset_canister(
         project_dir,
         ["deploy", icp_name, "--no-create", "--mode", "install", "-y"],
         timeout=900,
+    )
+    # `icp deploy` leaves the deployer as the only controller. Put the conductor
+    # back on before planning, so it can sync this dist itself.
+    ic.settings_update(
+        cid,
+        set_controllers=asset_bootstrap_controllers(
+            deployer, bindings.conductor.get(CONDUCTOR_NAMES["backend"], ""),
+        ),
     )
     live_hash = ic.read_module_hash(cid)
     bindings.conductor[conductor_name] = cid
