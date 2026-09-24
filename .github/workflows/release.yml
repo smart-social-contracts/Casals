@@ -56,12 +56,13 @@ jobs:
 
       - name: Stage orchestration template WASMs
         run: |
-          # gaas new / realms seed fetch these from the GitHub release instead of
-          # a local Casals checkout. Committed artifacts under seed/templates/.
-          cp seed/templates/orchestration-baton@1.5.0.wasm.gz ./orchestration-baton@1.5.0.wasm.gz
-          cp seed/templates/orchestration-multisig@1.5.0.wasm.gz ./orchestration-multisig@1.5.0.wasm.gz
-          # The WASM store every orchestra runs (conductor.wasms).
+          # Versions the GaaS sheet installs. Committed artifacts under seed/templates/.
+          cp seed/templates/orchestration-baton@1.5.1.wasm.gz ./orchestration-baton@1.5.1.wasm.gz
+          cp seed/templates/orchestration-multisig@1.6.0.wasm.gz ./orchestration-multisig@1.6.0.wasm.gz
+          # The store canister, and the asset-canister module realm frontends install
+          # as certified-assets@1.0.0 (same bytes as hello-world-frontend.wasm.gz).
           cp seed/templates/certified-assets@0.3.0.wasm.gz ./certified-assets@0.3.0.wasm.gz
+          cp seed/templates/hello-world-frontend.wasm.gz ./certified-assets@1.0.0.wasm.gz
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -72,8 +73,8 @@ jobs:
         run: |
           npm --prefix frontend ci
           npm --prefix frontend run build
-          tar czf casals_frontend.tar.gz -C dist .
-          echo "Frontend tarball: $(stat -c%s casals_frontend.tar.gz) bytes"
+          PYTHONPATH=src python3 -m casals_cli.bundle dist -o casals_frontend.tar.gz --manifest casals_frontend.manifest.json
+          echo "Frontend bundle: $(stat -c%s casals_frontend.tar.gz) bytes"
 
       - name: Compute release asset checksums
         run: |
@@ -81,9 +82,26 @@ jobs:
           for f in casals_backend.wasm.gz casals_backend.did \
                    casals_conductor.wasm.gz casals_conductor.did \
                    casals_frontend.tar.gz certified-assets@0.3.0.wasm.gz \
-                   orchestration-baton@1.5.0.wasm.gz orchestration-multisig@1.5.0.wasm.gz; do
+                   certified-assets@1.0.0.wasm.gz \
+                   orchestration-baton@1.5.1.wasm.gz orchestration-multisig@1.6.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
+          python3 - << 'PY' >> checksums.txt
+          import gzip, hashlib, json, pathlib
+          print("# module sha256 (decompressed wasm; pin this on registry.wasms)")
+          for name in (
+              "casals_backend.wasm.gz",
+              "certified-assets@0.3.0.wasm.gz",
+              "certified-assets@1.0.0.wasm.gz",
+              "orchestration-baton@1.5.1.wasm.gz",
+              "orchestration-multisig@1.6.0.wasm.gz",
+          ):
+              data = gzip.decompress(pathlib.Path(name).read_bytes())
+              print(f"{hashlib.sha256(data).hexdigest()}  {name} (module)")
+          man = json.load(open("casals_frontend.manifest.json"))
+          print("# bundle hash (pin this on registry.bundles)")
+          print(f"{man['bundle_sha256']}  casals_frontend.tar.gz (bundle)")
+          PY
           cat checksums.txt
 
       - name: Create GitHub Release
@@ -98,7 +116,9 @@ jobs:
             casals_conductor.wasm.gz
             casals_conductor.did
             casals_frontend.tar.gz
+            casals_frontend.manifest.json
             certified-assets@0.3.0.wasm.gz
-            orchestration-baton@1.5.0.wasm.gz
-            orchestration-multisig@1.5.0.wasm.gz
+            certified-assets@1.0.0.wasm.gz
+            orchestration-baton@1.5.1.wasm.gz
+            orchestration-multisig@1.6.0.wasm.gz
             checksums.txt
