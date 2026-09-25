@@ -162,7 +162,7 @@
                   <span class="w-2 h-2 rounded-full mt-1.5 shrink-0" style="background: {accent}"></span>
                   <div class="min-w-0">
                     <div class="flex items-center gap-1.5 min-w-0">
-                      {#if core}<span class="badge shrink-0 bg-primary-800 text-white border border-primary-800">orchestra</span>{/if}
+                      {#if core}<span class="badge shrink-0 bg-primary-800 text-white border border-primary-800">casals-core</span>{/if}
                       <span class="text-sm font-semibold text-primary-900 truncate">{core ? (orchestraName || section.name) : section.name}</span>
                     </div>
                     {#if core}

@@ -1325,7 +1325,7 @@
                     <div class="md:hidden text-xs text-primary-400 mt-0.5">{row.section.name} / {row.stand.name}</div>
                   </td>
                   <td class="px-2 py-2.5 text-primary-700 hidden md:table-cell whitespace-nowrap">
-                    {#if row.core}<span class="badge bg-primary-800 text-white border border-primary-800 mr-1">orchestra</span>{/if}{row.core ? (orchestraName || row.section.name) : row.section.name}
+                    {#if row.core}<span class="badge bg-primary-800 text-white border border-primary-800 mr-1">casals-core</span>{/if}{row.core ? (orchestraName || row.section.name) : row.section.name}
                   </td>
                   <td class="px-2 py-2.5 text-primary-700 hidden md:table-cell whitespace-nowrap">{row.stand.name}</td>
                   <td class="px-2 py-2.5 hidden lg:table-cell">
