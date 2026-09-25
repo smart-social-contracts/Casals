@@ -148,10 +148,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _ic_from_args(args, root: str) -> IcClient:
+    network_url = None
+    path = getattr(args, "sheet", None)
+    if path and getattr(args, "env", None) not in (None, "local"):
+        sheet = load_json_file(path)
+        net = str(((sheet.get("environments") or {}).get(args.env) or {}).get("network") or "")
+        if net == "ic":
+            from casals_cli.ic import NETWORK_URLS
+            network_url = NETWORK_URLS["ic"]
     return IcClient(
         env=args.env,
         identity=getattr(args, "identity", None),
         project_root=root,
+        network_url=network_url,
     )
 
 
