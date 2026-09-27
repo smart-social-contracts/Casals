@@ -171,11 +171,11 @@ def test_baton_never_controlled_by_casals():
     ]
     # A stand-template baton is checked the same way.
     sheet = _load_corpus("dynamic-stands")
-    tpl = sheet["sections"][1]["stand_template"]["canisters"]
+    tpl = sheet["sections"][1]["arrangements"]["stand_template"]["canisters"]
     idx = next(i for i, c in enumerate(tpl) if c["name"].endswith("-baton"))
     tpl[idx]["controllers"] = ["$self", "$deployer"]
     assert any(
-        e.startswith(f"sections[1].stand_template.canisters[{idx}].controllers must not include $self")
+        e.startswith(f"sections[1].arrangements.stand_template.canisters[{idx}].controllers must not include $self")
         for e in sv2.validate(sheet, "local")
     )
 
@@ -459,9 +459,53 @@ def test_template_stand_keeps_subnet():
     assert sv2.target_subnet({}, spec) == ("subnet-tpl", "")
 
 
+def test_frontend_grant_is_commit_for_the_stand_backend():
+    """The installer checks list_permitted, so the arrangement names the grant."""
+    sheet = _load_corpus("dynamic-stands")
+    tmpl = sheet["sections"][1]["arrangements"]["stand_template"]
+    frontend = next(c for c in tmpl["canisters"] if c["name"].endswith("-frontend"))
+    frontend["grants"] = [{"principal": "$stand.backend", "permission": "Commit"}]
+    assert sv2.validate(sheet, "local") == []
+    frontend["grants"] = [{"principal": "$stand.backend", "permission": "Admin"}]
+    assert any("permission must be one of" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_arrangement_is_a_sections_optional_new_stand_configuration():
+    """``arrangements.stand_template`` is how a section mints its next stand."""
+    sheet = _load_corpus("dynamic-stands")
+    section = sheet["sections"][1]
+    assert sv2.validate(sheet, "local") == []
+    assert sv2.section_arrangement(section)["name_pattern"]
+    minted = sv2.materialize(sheet, {"realm-x": {"section": section["name"], "members": []}})
+    names = [st["name"] for st in minted["sections"][1]["stands"]]
+    assert "realm-x" in names
+
+
+def test_replace_section_arrangement_keeps_the_rest_of_the_sheet():
+    sheet = _load_corpus("dynamic-stands")
+    original = sheet["sections"][1]["arrangements"]
+    updated = sv2.replace_section_arrangement(sheet, "Realms", {
+        "stand_template": {**original["stand_template"], "name_pattern": "realm-*"},
+    })
+    assert updated["sections"][0] == sheet["sections"][0]
+    assert updated["sections"][1]["arrangements"]["stand_template"]["name_pattern"] == "realm-*"
+    assert sv2.validate(updated, "local") == []
+    removed = sv2.replace_section_arrangement(updated, "Realms", None)
+    assert "arrangements" not in removed["sections"][1]
+    with pytest.raises(ValueError, match="stand_template"):
+        sv2.replace_section_arrangement(sheet, "Realms", {"name": "nope"})
+
+
+def test_a_top_level_stand_template_is_rejected():
+    sheet = _load_corpus("dynamic-stands")
+    section = sheet["sections"][1]
+    section["stand_template"] = section["arrangements"]["stand_template"]
+    assert any("arrangements.stand_template" in e for e in sv2.validate(sheet, "local"))
+
+
 def test_numbered_member_must_be_optional():
     sheet = _load_corpus("dynamic-stands")
-    tmpl = sheet["sections"][1]["stand_template"]
+    tmpl = sheet["sections"][1]["arrangements"]["stand_template"]
     tmpl["canisters"].append({"name": "{stand}-shard-{n}", "kind": "backend", "mode": "managed",
                               "wasm": "hello-world-rust@1.0.0", "controllers": ["$self"]})
     assert any("numbered members ({n}) must be optional" in e for e in sv2.validate(sheet, "local"))

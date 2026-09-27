@@ -7,7 +7,7 @@ import json
 
 from access_code import is_code_checksum, normalize_code_checksum
 from auth import _normalize_permissions
-from commanders import reconcile_claimed
+from commanders import reconcile_claimed, union_calls
 from control_rules import lockout_error as _lockout_controllers
 from sheetv2 import (
     CONDUCTOR_KEYS,
@@ -33,6 +33,7 @@ from sheetv2 import (
     subnet_selection_active,
     wasm_ref,
     find_placeholder_tokens,
+    section_arrangement,
 )
 
 TC = 1_000_000_000_000
@@ -305,25 +306,52 @@ class _PlanContext:
             if isinstance(sec, dict):
                 self._plan_section(sec, si)
 
+    def _stand_wasm_keys(self) -> set[str]:
+        """Wasm keys the stand being built actually installs.
+
+        A runtime stand build must not re-authorize the rest of the registry.
+        ``casals-backend`` is the conductor itself; its day-one checksum is not
+        a precondition for minting a realm.
+        """
+        keys = set()
+        for _section, stand, _name, spec in iter_canisters(self.sheet):
+            if (stand.get("name") or "").strip() != self.only_stand:
+                continue
+            family, version = wasm_ref(spec.get("wasm") or "")
+            if family:
+                keys.add(f"{family}@{version}" if version else family)
+        return keys
+
     def _plan_registry(self):
         registry = self.sheet.get("registry") or {}
+        needed = self._stand_wasm_keys() if self.only_stand else None
         for entry in registry.get("wasms") or []:
             if not isinstance(entry, dict):
                 continue
             family = (entry.get("family") or "").strip()
             version = (entry.get("version") or "").strip()
             key = f"{family}@{version}" if version else family
+            if needed is not None and key not in needed:
+                continue
             expected_hash = (entry.get("sha256") or "").strip().lower()
             live_entry = self.auth_wasms.get(key) or self.auth_wasms.get(family)
             live_hash = (live_entry or {}).get("wasm_hash") or ""
-            if not live_hash or (expected_hash and live_hash != expected_hash):
-                self.add(
-                    "authorize_wasm",
-                    {"name": key, "canister_id": None, "section": None, "stand": None},
-                    f"authorize wasm {key}",
-                    desired={"registry_entry": entry},
-                    call={"canister": self.self_id, "method": "authorize_wasm", "args": {"entry": entry}},
-                )
+            # The sheet sha256 is the checksum `up` checked at first install.
+            # A stand build authorizes a wasm only when the conductor has no
+            # record yet; a later store or module change must not fail the mint.
+            drifted = bool(expected_hash and live_hash != expected_hash)
+            if self.only_stand:
+                if live_hash:
+                    continue
+            elif live_hash and not drifted:
+                continue
+            self.add(
+                "authorize_wasm",
+                {"name": key, "canister_id": None, "section": None, "stand": None},
+                f"authorize wasm {key}",
+                desired={"registry_entry": entry},
+                call={"canister": self.self_id, "method": "authorize_wasm", "args": {"entry": entry}},
+            )
 
     def _plan_conductor_commanders(self):
         conductor = self.sheet.get("conductor") or {}
@@ -395,7 +423,7 @@ class _PlanContext:
         # called `create_stand`. Under sole hand-off they all leave; the sheet
         # says so, and the multisig keeps its power through the baton it controls.
         provisioners = {p for p in (self.self_id, self.binding(MULTISIG_NAME)) if p}
-        created_by = ((sec_spec.get("stand_template") or {}).get("created_by") or "").strip()
+        created_by = ((section_arrangement(sec_spec) or {}).get("created_by") or "").strip()
         if created_by and not find_placeholder_tokens(created_by):
             provisioners.add(created_by)
         for sj, stand_spec in enumerate(sec_spec.get("stands") or []):
@@ -844,6 +872,7 @@ def _normalize_commanders(entries: list) -> list[dict]:
     are canonicalised; a claimed commander keeps its ``code_checksum``."""
     grants: dict[str, str] = {}
     checksums: dict[str, str] = {}
+    calls: dict[str, list] = {}
     for e in entries or []:
         p = str(e.get("principal") if isinstance(e, dict) else e or "").strip()
         if not p:
@@ -857,6 +886,8 @@ def _normalize_commanders(entries: list) -> list[dict]:
         cc = str(e.get("code_checksum") or "").strip() if isinstance(e, dict) else ""
         if cc and not checksums.get(p):
             checksums[p] = cc
+        if isinstance(e, dict) and e.get("calls"):
+            calls[p] = union_calls(calls.get(p), e.get("calls"))
         prev = grants.get(p)
         if prev is None:
             grants[p] = perms
@@ -869,6 +900,8 @@ def _normalize_commanders(entries: list) -> list[dict]:
         entry = {"principal": p, "permissions": grants[p]}
         if checksums.get(p):
             entry["code_checksum"] = checksums[p]
+        if calls.get(p):
+            entry["calls"] = calls[p]
         out.append(entry)
     return out
 

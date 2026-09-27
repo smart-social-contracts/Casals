@@ -26,6 +26,8 @@
     onAddSectionCommander?: (section: Section) => void;
     onRenameSection?: (section: Section) => void;
     onDeleteSection?: (section: Section) => void;
+    /** When true, the section header links to its arrangement editor. */
+    canEditArrangement?: (section: Section) => boolean;
     onCreateCanister?: (stand: Stand) => void;
     onRegisterCanister?: (stand: Stand) => void;
     onUpgradeStand?: (stand: Stand) => void;
@@ -42,6 +44,7 @@
     onAddSectionCommander,
     onRenameSection,
     onDeleteSection,
+    canEditArrangement,
     onCreateCanister,
     onRegisterCanister,
     onUpgradeStand,
@@ -169,6 +172,12 @@
                       <div class="text-[11px] text-primary-500 mt-0.5">Casals system canisters. Commanders here act on every section and stand.</div>
                     {:else if section.description}
                       <div class="text-[11px] text-primary-500 mt-0.5 line-clamp-2">{section.description}</div>
+                    {/if}
+                    {#if canEditArrangement?.(section)}
+                      <a
+                        class="inline-block mt-1 text-[11px] font-medium text-primary-700 underline decoration-dotted hover:text-primary-900"
+                        href={`/section/${encodeURIComponent(section.name)}/arrangements`}
+                      >Edit</a>
                     {/if}
                     {#each entityCommanders(section) as cmd (cmd.principal)}
                       <div class="text-[10px] text-primary-400 mt-0.5 font-mono truncate" title={cmd.principal}>

@@ -17,6 +17,8 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     get_events:            IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_canister_deployment: IDL.Func([IDL.Text], [IDL.Text], ['query']),
     get_sheet:             IDL.Func([], [IDL.Text], ['query']),
+    get_section_arrangement: IDL.Func([IDL.Text], [IDL.Text], ['query']),
+    set_section_arrangement: IDL.Func([IDL.Text], [IDL.Text], []),
     list_pool:             IDL.Func([], [IDL.Text], ['query']),
     pool_remove:           IDL.Func([IDL.Text], [IDL.Text], []),
 
@@ -61,6 +63,9 @@ export const idlFactory = ({ IDL }: { IDL: any }) => {
     set_commander:         IDL.Func([IDL.Text], [IDL.Text], []),
     remove_commander:      IDL.Func([IDL.Text], [IDL.Text], []),
     set_permissions:       IDL.Func([IDL.Text], [IDL.Text], []),
+    set_canister_calls:    IDL.Func([IDL.Text], [IDL.Text], []),
+    my_canister_calls:     IDL.Func([], [IDL.Text], ['query']),
+    call_canister:         IDL.Func([IDL.Text], [IDL.Text], []),
     claim_commander:       IDL.Func([IDL.Text], [IDL.Text], []),
     list_permissions:      IDL.Func([], [IDL.Text], ['query']),
     list_principal_aliases: IDL.Func([], [IDL.Text], ['query']),

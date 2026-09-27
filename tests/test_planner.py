@@ -393,8 +393,8 @@ def test_an_unshipped_upload_is_not_drift_and_a_lost_bundle_is_unverifiable():
 
 def test_only_stand_restricts_the_plan_to_that_stand():
     """`create_stand` builds a minted stand on its own: the plan restricted to
-    it carries that stand's items (and the global registry ones), nothing for
-    the rest of the orchestra, and its hash names the stand."""
+    it carries that stand's items, nothing for the rest of the orchestra, and
+    its hash names the stand."""
     resolved, live, b = _realm_world()
     # drift in the runtime stand and in a declared one
     live["canisters"]["realm-e2e-quarter-1"]["controllers"] = sorted([MS, SELF, b["installer"]])
@@ -415,6 +415,22 @@ def test_only_stand_restricts_the_plan_to_that_stand():
     assert all(d["target"].startswith("realm-e2e") for d in only["deferred"])
     # an unknown stand plans nothing (and is not an error)
     assert build_plan(resolved, "local", live, self_id=SELF, only_stand="nobody")["items"] == []
+
+
+def test_stand_build_does_not_reauthorize_the_conductor_wasm():
+    """The sheet sha256 is the day-one checksum. A realm mint must not fail
+    because ``casals-backend`` in the store no longer matches it."""
+    resolved, live, _b = _realm_world()
+    for entry in resolved["registry"]["wasms"]:
+        if entry.get("family") == "casals-backend":
+            entry["sha256"] = "1d" * 32
+    live["authorized_wasms"]["casals-backend@main"] = {
+        "key": "casals-backend@main", "wasm_hash": "6f" * 32,
+    }
+    only = build_plan(resolved, "local", live, self_id=SELF, only_stand="realm-e2e")
+    assert [it["target"]["name"] for it in only["items"] if it["kind"] == "authorize_wasm"] == []
+    whole = build_plan(resolved, "local", live, self_id=SELF)
+    assert "casals-backend@main" in {it["target"]["name"] for it in whole["items"] if it["kind"] == "authorize_wasm"}
 
 
 def _realm_world(live_members=("{stand}-quarter-1",), built=False):
@@ -556,7 +572,7 @@ def test_this_placeholder_resolves_per_canister():
 
 def test_sole_handoff_validation():
     sheet = _load("dynamic-stands")
-    tmpl = sheet["sections"][1]["stand_template"]
+    tmpl = sheet["sections"][1]["arrangements"]["stand_template"]
     backend = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-backend")
     backend["controllers"] = ["$self", "$stand.baton", "$this"]
     errs = sv2.validate(sheet, "local")
@@ -578,7 +594,7 @@ def test_sole_handoff_allows_frontend_assets():
     """A sole-managed frontend may declare content/files with the baton as its
     only controller. Casals writes the assets before the hand-over."""
     sheet = _load("dynamic-stands")
-    tmpl = sheet["sections"][1]["stand_template"]
+    tmpl = sheet["sections"][1]["arrangements"]["stand_template"]
     fe = next(c for c in tmpl["canisters"] if c["name"] == "{stand}-frontend")
     fe["content"] = "frontend/realm/main"
     fe["files"] = {"/canister_ids.js": "ids"}

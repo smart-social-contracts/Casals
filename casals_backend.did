@@ -122,6 +122,8 @@ service : {
   "get_events" : (text) -> (text) query;
   "get_canister_deployment" : (text) -> (text) query;
   "get_sheet" : () -> (text) query;
+  "get_section_arrangement" : (text) -> (text) query;
+  "set_section_arrangement" : (text) -> (text);
   "list_pool" : () -> (text) query;
   "pool_remove" : (text) -> (text);
   "assign_pool_canister" : (text) -> (text);
@@ -153,6 +155,9 @@ service : {
   "set_commander" : (text) -> (text);
   "remove_commander" : (text) -> (text);
   "set_permissions" : (text) -> (text);
+  "set_canister_calls" : (text) -> (text);
+  "my_canister_calls" : () -> (text) query;
+  "call_canister" : (text) -> (text);
   "claim_commander" : (text) -> (text);
   "list_permissions" : () -> (text) query;
   "list_principal_aliases" : () -> (text) query;

@@ -18,8 +18,59 @@ import json
 from access_code import checksums_equal, is_code_checksum, normalize_code_checksum
 from auth import PERMISSION_KEYS, _has_permission, _normalize_permissions, _parse_permissions
 
+# The canister runtime's `re` module is only partial (see helpers.py), so the
+# method-name check stays on characters.
+_MAX_CALLS = 16
 
-def _entry(principal: str, permissions, code_checksum: str = "") -> dict:
+
+def _valid_method_name(name: str) -> bool:
+    if not name or len(name) > 64:
+        return False
+    first = name[0]
+    if not (("A" <= first <= "Z") or ("a" <= first <= "z") or first == "_"):
+        return False
+    for ch in name[1:]:
+        if not (("A" <= ch <= "Z") or ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch == "_"):
+            return False
+    return True
+
+
+def normalize_calls(raw) -> list:
+    """``[{canister, method}]``, sorted and de-duplicated.
+
+    Empty or missing is no grants. A bad entry raises ValueError. ``*`` does
+    not invent calls; this list is the only whitelist."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("calls must be a list")
+    out = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each call must be an object with canister and method")
+        canister = str(item.get("canister") or "").strip()
+        method = str(item.get("method") or "").strip()
+        if not canister or len(canister) > 128 or any(ch.isspace() for ch in canister):
+            raise ValueError("call canister must be a canister id or $canister: name")
+        if not _valid_method_name(method):
+            raise ValueError(f"call method must be a Candid name: {method!r}")
+        key = (canister, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"canister": canister, "method": method})
+        if len(out) > _MAX_CALLS:
+            raise ValueError(f"at most {_MAX_CALLS} calls per commander")
+    out.sort(key=lambda c: (c["canister"], c["method"]))
+    return out
+
+
+def union_calls(a, b) -> list:
+    return normalize_calls([*(a or []), *(b or [])])
+
+
+def _entry(principal: str, permissions, code_checksum: str = "", calls=None) -> dict:
     p = (principal or "").strip()
     if is_code_checksum(p):
         p = normalize_code_checksum(p)
@@ -28,6 +79,9 @@ def _entry(principal: str, permissions, code_checksum: str = "") -> dict:
     cc = (code_checksum or "").strip()
     if cc:
         out["code_checksum"] = normalize_code_checksum(cc)
+    normalized = normalize_calls(calls)
+    if normalized:
+        out["calls"] = normalized
     return out
 
 
@@ -37,7 +91,7 @@ def _entry_from_item(item) -> dict | None:
         if not p:
             return None
         try:
-            return _entry(p, item.get("permissions", ""), item.get("code_checksum", ""))
+            return _entry(p, item.get("permissions", ""), item.get("code_checksum", ""), item.get("calls"))
         except ValueError:
             return None
     if isinstance(item, str) and item.strip():
@@ -124,6 +178,78 @@ def _union_permissions(a: str, b: str) -> str:
     return _normalize_permissions(f"{a},{b}")
 
 
+def set_calls(entity, principal: str, calls) -> bool:
+    """Replace the call whitelist for one commander. Returns False if absent."""
+    p = (principal or "").strip()
+    if not p:
+        return False
+    normalized = normalize_calls(calls)
+    entries = list_commanders(entity)
+    for e in entries:
+        if e["principal"] == p:
+            if normalized:
+                e["calls"] = normalized
+            else:
+                e.pop("calls", None)
+            persist_commanders(entity, entries)
+            return True
+    return False
+
+
+def runnable_calls(caller: str, scopes: list, canisters: list, *, orchestra_section: str) -> list:
+    """Grants ``caller`` may run.
+
+    ``scopes`` is ``[{section, stand, commanders}]`` (``stand`` empty on a
+    section or orchestra rung). ``canisters`` is ``[{name, canister_id,
+    section, stand}]``. An orchestra scope covers every canister. A section
+    scope covers that section. A stand scope covers that stand. ``canister.call``
+    is required; the ``calls`` list is the whitelist. ``*`` does not add calls.
+    """
+    caller = (caller or "").strip()
+    by_id = {}
+    by_name = {}
+    for c in canisters or []:
+        cid = (c.get("canister_id") or "").strip()
+        name = (c.get("name") or "").strip()
+        if cid:
+            by_id[cid] = c
+        if name:
+            by_name[name] = c
+    out = []
+    seen = set()
+    for scope in scopes or []:
+        section = (scope.get("section") or "").strip()
+        stand = (scope.get("stand") or "").strip()
+        orchestra = section == orchestra_section and not stand
+        for entry in scope.get("commanders") or []:
+            if (entry.get("principal") or "").strip() != caller or is_unclaimed(entry):
+                continue
+            if not _has_permission(entry.get("permissions") or "", "canister.call"):
+                continue
+            for call in entry.get("calls") or []:
+                target = by_id.get(call.get("canister")) or by_name.get(call.get("canister"))
+                if target is None:
+                    continue
+                if stand:
+                    if (target.get("stand") or "") != stand:
+                        continue
+                elif not orchestra and (target.get("section") or "") != section:
+                    continue
+                method = call.get("method") or ""
+                key = ((target.get("canister_id") or "").strip(), method)
+                if not key[0] or key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "canister_id": key[0],
+                    "canister_name": (target.get("name") or "").strip(),
+                    "method": method,
+                    "section": section,
+                    "stand": stand,
+                })
+    return out
+
+
 def persist_commanders(entity, entries: list) -> None:
     """Write commander list and sync legacy single-commander fields.
 
@@ -139,7 +265,7 @@ def persist_commanders(entity, entries: list) -> None:
         if p in seen:
             continue
         seen.add(p)
-        entry = _entry(p, e.get("permissions", ""), e.get("code_checksum", ""))
+        entry = _entry(p, e.get("permissions", ""), e.get("code_checksum", ""), e.get("calls"))
         clean.append(entry)
     entity.commanders_json = json.dumps(clean) if clean else ""
     active = [e for e in clean if not is_unclaimed(e)]
@@ -210,12 +336,14 @@ def claim_code_slot(entity, checksum: str, principal: str):
     perms = matched[0]["permissions"]
     kept = [e for e in entries if e not in matched]
     existing = next((e for e in kept if e["principal"] == p), None)
+    slot_calls = matched[0].get("calls")
     if existing is not None:
         existing["permissions"] = _union_permissions(existing["permissions"], perms)
         existing["code_checksum"] = checksum
+        existing["calls"] = union_calls(existing.get("calls"), slot_calls)
         result = existing["permissions"]
     else:
-        kept.append(_entry(p, perms, checksum))
+        kept.append(_entry(p, perms, checksum, slot_calls))
         result = perms
     persist_commanders(entity, kept)
     return result
@@ -241,15 +369,20 @@ def reconcile_claimed(desired: list, live: list) -> list:
         if is_unclaimed(e) and p in claimed:
             cc, p = p, claimed[p]
         perms = e.get("permissions", "")
+        calls = e.get("calls")
         prev = merged.get(p)
         if prev is None:
             merged[p] = {"principal": p, "permissions": perms}
             if cc:
                 merged[p]["code_checksum"] = cc
+            if calls:
+                merged[p]["calls"] = calls
         else:
             prev["permissions"] = _union_permissions(prev["permissions"], perms)
             if cc and not prev.get("code_checksum"):
                 prev["code_checksum"] = cc
+            if calls or prev.get("calls"):
+                prev["calls"] = union_calls(prev.get("calls"), calls)
     return [merged[p] for p in sorted(merged)]
 
 
@@ -264,6 +397,9 @@ def commander_view(entry: dict) -> dict:
     cc = entry.get("code_checksum") or ""
     if cc:
         out["code_checksum"] = cc
+    calls = entry.get("calls") or []
+    if calls:
+        out["calls"] = calls
     return out
 
 

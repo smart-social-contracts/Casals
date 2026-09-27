@@ -560,8 +560,74 @@ def _text_content_type(key: str) -> str:
     return _TEXT_TYPES.get(ext) or _TEXT_TYPES.get(base) or "text/plain"
 
 
+def _grant_principal(token: str, stand) -> str:
+    """A sheet grant principal: ``$stand.backend`` or an already-resolved id."""
+    token = (token or "").strip()
+    if not token.startswith("$stand.") or stand is None:
+        return token
+    role = token.split(".", 1)[1].strip().lower()
+    for peer in stand.canisters or []:
+        name = peer.name or ""
+        if name.endswith("-" + role) or (
+            role in ("backend", "frontend") and peer.kind == role and not name.endswith("-baton")
+        ):
+            return (peer.canister_id or "").strip()
+    return ""
+
+
+def _grant_frontend_grants(canister_id: str, grants):
+    """Grant sheet ``grants`` before a frontend is reported installed.
+
+    The installer treats ``status: installed`` as "ready to bootstrap" and
+    immediately checks ``list_permitted`` for ``Commit``. Asset sync can be
+    skipped or can run a round later, so the grant has to happen in the
+    install itself.
+    """
+    if not grants:
+        return
+    asset = AssetCanisterService(Principal.from_str(canister_id))
+    self_res = yield asset.grant_permission({
+        "to_principal": ic.id(),
+        "permission": {"Commit": None},
+    })
+    unwrap_call_result(self_res)
+    yield from _grant_asset_permissions(asset, canister_id, grants)
+
+
+def _grant_asset_permissions(asset, canister_id: str, grants):
+    """Grant sheet ``grants`` on an asset canister Casals still controls.
+
+    ``$stand.backend`` is the realm backend, not the baton. The installer
+    checks ``list_permitted`` for ``Commit`` and does not treat an IC
+    controller as holding that permission.
+    """
+    if not grants:
+        return
+    list(Canister.instances())
+    frontend = next((c for c in Canister.instances() if (c.canister_id or "") == canister_id), None)
+    stand = frontend.stand if frontend is not None else None
+    self_id = ic.id().to_str()
+    for grant in grants:
+        if not isinstance(grant, dict):
+            continue
+        principal = _grant_principal(grant.get("principal") or "", stand)
+        permission = (grant.get("permission") or "").strip()
+        if not principal or principal.startswith("$") or principal == self_id:
+            continue
+        if permission not in ("Commit", "Prepare", "ManagePermissions"):
+            continue
+        res = yield asset.grant_permission({
+            "to_principal": Principal.from_str(principal),
+            "permission": {permission: None},
+        })
+        unwrap_call_result(res)
+        _append_event("asset_permission_granted", canister_id, {
+            "principal": principal, "permission": permission,
+        })
+
+
 def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, all_keys: list | None = None,
-                     delete_keys: list | None = None):
+                     delete_keys: list | None = None, grants=None):
     """Generator: store a bounded slice of ``keys`` into an asset canister —
     rendered sheet ``files`` as-is, everything else pulled from the registry
     ``namespace`` — then apply the dist's `.ic-assets.json5` (headers, cache,
@@ -587,6 +653,8 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
         # sync cannot grant itself Commit. The provisioning sync already did;
         # store and delete still succeed on that grant.
         _log.info(f"grant Commit on {canister_id} skipped: {e}")
+    else:
+        yield from _grant_asset_permissions(asset, canister_id, grants)
     from live_state import _asset_encodings_gen  # local: live_state imports this module
     live_encodings = yield from _asset_encodings_gen(canister_id)
     listing: dict = {}

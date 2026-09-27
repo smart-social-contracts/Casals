@@ -496,29 +496,30 @@ def resolve_partial(
         for field in ("subnet", "subnet_type"):
             if field in section:
                 section[field] = resolve_value(section[field], f"{spath}.{field}", None)
-        if isinstance(section.get("stand_template"), dict):
-            tmpl = section["stand_template"]
+        tmpl = section_arrangement(section)
+        if isinstance(tmpl, dict):
+            akey = arrangement_field(section)
             for j, canister in enumerate(tmpl.get("canisters") or []):
                 if isinstance(canister, dict):
                     # `$this` stays a token too: the member is rendered per stand later
                     _resolve_canister_tree(
-                        canister, f"{spath}.stand_template.canisters[{j}]", TEMPLATE_STAND, resolve_value, None
+                        canister, f"{spath}.{akey}.canisters[{j}]", TEMPLATE_STAND, resolve_value, None
                     )
             if "controllers" in tmpl:
                 tmpl["controllers"] = resolve_value(
-                    tmpl["controllers"], f"{spath}.stand_template.controllers", TEMPLATE_STAND
+                    tmpl["controllers"], f"{spath}.{akey}.controllers", TEMPLATE_STAND
                 )
             if "commanders" in tmpl:
                 tmpl["commanders"] = resolve_value(
-                    tmpl["commanders"], f"{spath}.stand_template.commanders", TEMPLATE_STAND
+                    tmpl["commanders"], f"{spath}.{akey}.commanders", TEMPLATE_STAND
                 )
             if "created_by" in tmpl:
                 tmpl["created_by"] = resolve_value(
-                    tmpl["created_by"], f"{spath}.stand_template.created_by", None
+                    tmpl["created_by"], f"{spath}.{akey}.created_by", None
                 )
             for field in ("subnet", "subnet_type"):
                 if field in tmpl:
-                    tmpl[field] = resolve_value(tmpl[field], f"{spath}.stand_template.{field}", TEMPLATE_STAND)
+                    tmpl[field] = resolve_value(tmpl[field], f"{spath}.{akey}.{field}", TEMPLATE_STAND)
         for j, stand in enumerate(section.get("stands") or []):
             if not isinstance(stand, dict):
                 continue
@@ -634,8 +635,18 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
         _validate_subnet_fields(section, spath, errors)
         if "commanders" in section:
             _validate_commanders(section["commanders"], f"{spath}.commanders", errors)
-        if "stand_template" in section:
-            _validate_stand_template(section["stand_template"], spath, names, errors)
+        if "stand_template" in section or "arrangement" in section:
+            errors.append(
+                f"{spath}: a section's new-stand configuration is arrangements.stand_template"
+            )
+        if "arrangements" in section:
+            block = section["arrangements"]
+            if not isinstance(block, dict):
+                errors.append(f"{spath}.arrangements must be an object")
+            else:
+                _validate_stand_template(
+                    block.get("stand_template"), spath, names, errors, key="arrangements.stand_template"
+                )
         for sj, stand in enumerate(section.get("stands") or []):
             stpath = f"{spath}.stands[{sj}]"
             if not isinstance(stand, dict):
@@ -760,6 +771,8 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
             )
     if "commanders" in canister:
         _validate_commanders(canister["commanders"], f"{path}.commanders", errors)
+    if "grants" in canister:
+        _validate_asset_grants(canister["grants"], f"{path}.grants", errors)
     if "config" in canister:
         if not isinstance(canister["config"], list):
             errors.append(f"{path}.config must be a list")
@@ -789,6 +802,30 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
         errors.append(f"{path}.optional must be a boolean")
     if "{n}" in (canister.get("name") or "") and not canister.get("optional"):
         errors.append(f"{path}.name: numbered members ({{n}}) must be optional")
+
+
+_ASSET_PERMISSIONS = {"Commit", "Prepare", "ManagePermissions"}
+
+
+def _validate_asset_grants(value: Any, path: str, errors: list[str]) -> None:
+    """Permissions Casals grants on this canister while it still controls it.
+
+    Used so a realm backend holds certified-assets ``Commit`` before sole
+    hand-off. The installer only checks that list; being an IC controller
+    does not satisfy it.
+    """
+    if not isinstance(value, list):
+        errors.append(f"{path} must be a list")
+        return
+    for i, grant in enumerate(value):
+        gp = f"{path}[{i}]"
+        if not isinstance(grant, dict):
+            errors.append(f"{gp} must be an object")
+            continue
+        if not isinstance(grant.get("principal"), str) or not grant["principal"].strip():
+            errors.append(f"{gp}.principal must be a string")
+        if grant.get("permission") not in _ASSET_PERMISSIONS:
+            errors.append(f"{gp}.permission must be one of {sorted(_ASSET_PERMISSIONS)}")
 
 
 def _validate_config_entry(entry: Any, path: str, errors: list[str]) -> None:
@@ -864,6 +901,12 @@ def _validate_commanders(value: Any, path: str, errors: list[str]) -> None:
             errors.append(f"{ep}.principal must be a string")
         if not isinstance(entry.get("permissions"), str):
             errors.append(f"{ep}.permissions must be a string")
+        if "calls" in entry and entry["calls"] is not None:
+            from commanders import normalize_calls
+            try:
+                normalize_calls(entry["calls"])
+            except ValueError as exc:
+                errors.append(f"{ep}.calls: {exc}")
 
 
 def _validate_baton(value: Any, path: str, errors: list[str], stand: dict | None = None) -> None:
@@ -933,8 +976,55 @@ def _validate_baton(value: Any, path: str, errors: list[str], stand: dict | None
                     )
 
 
-def _validate_stand_template(value: Any, spath: str, names: dict[str, str], errors: list[str]) -> None:
-    path = f"{spath}.stand_template"
+def arrangement_field(section: dict) -> str:
+    """``arrangements.stand_template`` when this section has one, else ``""``."""
+    if isinstance(section, dict) and "arrangements" in section:
+        return "arrangements.stand_template"
+    return ""
+
+
+def replace_section_arrangement(sheet: dict, section_name: str, arrangements) -> dict:
+    """Copy ``sheet`` with one section's ``arrangements`` replaced.
+
+    ``arrangements`` is ``{"stand_template": {...}}``, or ``None`` to remove it.
+    A top-level ``stand_template`` on that section is dropped.
+    """
+    name = (section_name or "").strip()
+    if not name:
+        raise ValueError("section is required")
+    out = json.loads(json.dumps(sheet or {}))
+    found = None
+    for section in out.get("sections") or []:
+        if isinstance(section, dict) and (section.get("name") or "") == name:
+            found = section
+            break
+    if found is None:
+        raise ValueError(f"unknown section '{name}'")
+    found.pop("stand_template", None)
+    found.pop("arrangement", None)
+    if arrangements is None:
+        found.pop("arrangements", None)
+        return out
+    if not isinstance(arrangements, dict) or not isinstance(arrangements.get("stand_template"), dict):
+        raise ValueError("arrangements must be an object with stand_template")
+    found["arrangements"] = arrangements
+    return out
+
+
+def section_arrangement(section: dict) -> dict | None:
+    """The section's new-stand configuration, or ``None`` when it has none.
+
+    The only sheet syntax is ``arrangements.stand_template``.
+    """
+    if not isinstance(section, dict):
+        return None
+    block = section.get("arrangements")
+    tmpl = block.get("stand_template") if isinstance(block, dict) else None
+    return tmpl if isinstance(tmpl, dict) else None
+
+
+def _validate_stand_template(value: Any, spath: str, names: dict[str, str], errors: list[str], *, key: str = "stand_template") -> None:
+    path = f"{spath}.{key}"
     if not isinstance(value, dict):
         errors.append(f"{path} must be an object")
         return
@@ -1183,22 +1273,23 @@ def _validate_placeholders_for_env(
                     check(stand[field], f"{stpath}.{field}", stand)
             if isinstance(stand.get("baton"), dict):
                 check(stand["baton"], f"{stpath}.baton", stand)
-        if isinstance(section.get("stand_template"), dict):
-            tmpl = section["stand_template"]
-            # `$stand.<role>` inside the template refers to the rendered stand, with every member present.
+        tmpl = section_arrangement(section)
+        if isinstance(tmpl, dict):
+            akey = arrangement_field(section)
+            # `$stand.<role>` inside the arrangement refers to the rendered stand, with every member present.
             sample = instantiate_template_stand(tmpl, "stand", [c.get("name", "").replace("{n}", "1") for c in tmpl.get("canisters") or [] if isinstance(c, dict)])
             for i, canister in enumerate(tmpl.get("canisters") or []):
                 if isinstance(canister, dict):
                     _walk_for_placeholders(
-                        canister, f"sections[{si}].stand_template.canisters[{i}]", sample, check
+                        canister, f"sections[{si}].{akey}.canisters[{i}]", sample, check
                     )
             if isinstance(tmpl.get("baton"), dict):
-                check(tmpl["baton"], f"sections[{si}].stand_template.baton", sample)
+                check(tmpl["baton"], f"sections[{si}].{akey}.baton", sample)
             for field in ("created_by", "controllers", "subnet", "subnet_type"):
                 if field in tmpl:
-                    check(tmpl[field], f"sections[{si}].stand_template.{field}", None)
+                    check(tmpl[field], f"sections[{si}].{akey}.{field}", None)
             if "commanders" in tmpl:
-                check(tmpl["commanders"], f"sections[{si}].stand_template.commanders", sample)
+                check(tmpl["commanders"], f"sections[{si}].{akey}.commanders", sample)
 
 
 def _is_comment_key(key: Any) -> bool:
@@ -1456,7 +1547,7 @@ def unknown_members(template: dict, stand_name: str, members: list[str]) -> list
 
 
 def instantiate_template_stand(template: dict, stand_name: str, members: list[str] | None = None) -> dict:
-    """A `stand_template` rendered for one stand: `{stand}` (and `{n}` for
+    """An arrangement rendered for one stand: `{stand}` (and `{n}` for
     numbered members) substituted in every string of each canister — names,
     install args, files. `optional: true` canisters are kept only when named
     in `members`."""
@@ -1475,12 +1566,12 @@ def instantiate_template_stand(template: dict, stand_name: str, members: list[st
 
 def materialize(sheet: dict, live_stands: dict[str, dict]) -> dict:
     """Copy of the sheet where every live stand (name → {section, members})
-    matching a section's `stand_template` is a declared stand, and the
+    matching a section's arrangement is a declared stand, and the
     template's `created_by` holds `stand.create` on the section. Planner,
     oracle and `show` all reason about this one declared world."""
     out = json.loads(json.dumps(sheet))
     for section in out.get("sections") or []:
-        tmpl = section.get("stand_template")
+        tmpl = section_arrangement(section)
         if not isinstance(tmpl, dict):
             continue
         if tmpl.get("created_by"):

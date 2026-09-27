@@ -16,6 +16,7 @@ from lifecycle import (
     _allocate_canister,
     _canister_info_gen,
     _fetch_canister_controllers,
+    _grant_frontend_grants,
     _pull_and_install,
     _resolve_authorized_wasm,
     _resolve_install_arg,
@@ -232,6 +233,9 @@ def _execute_item(item: dict, sheet: dict, env: str = ""):
         yield from _pull_and_install(
             cid, w.registry_namespace, w.registry_path, w.wasm_hash, mode, init_arg, wasm_type_of_wasm(w),
         )
+        grants = (found or {}).get("grants") or []
+        if grants and (found or {}).get("kind") == "frontend":
+            yield from _grant_frontend_grants(cid, grants)
         list(Canister.instances())
         st = Canister[name]
         if st:
@@ -310,9 +314,11 @@ def _execute_item(item: dict, sheet: dict, env: str = ""):
         return
     if kind == "sync_assets":
         desired = item.get("desired") or {}
-        files = _find_canister_spec(sheet, name).get("files") or {}
+        spec = _find_canister_spec(sheet, name)
+        files = spec.get("files") or {}
         yield from _sync_assets_gen(cid, desired.get("content") or "", desired.get("keys") or [], files,
-                                    desired.get("all_keys") or [], desired.get("delete_keys") or [])
+                                    desired.get("all_keys") or [], desired.get("delete_keys") or [],
+                                    spec.get("grants") or [])
         return
     if kind == "top_up":
         min_tc = float((item.get("desired") or {}).get("min_balance_tc") or 0)

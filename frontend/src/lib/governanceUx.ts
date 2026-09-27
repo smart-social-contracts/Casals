@@ -111,6 +111,29 @@ export interface StandGrantLadder {
   stand?: ScopedGrant[] | null;
 }
 
+export const ARRANGEMENT_EDIT = 'arrangement.edit';
+
+/** True when ``caller`` may open and save this section's arrangement.
+ * Orchestra commanders holding the permission act on every product section.
+ * Controllers may always edit. The synthetic Casals section has no arrangement page. */
+export function canEditSectionArrangement(
+  caller: string,
+  sectionName: string,
+  sections: { name: string; commanders?: ScopedGrant[] | null }[],
+  isController: boolean,
+): boolean {
+  if (isOrchestraSectionName(sectionName)) return false;
+  if (isController) return true;
+  const who = (caller || '').trim();
+  if (!who) return false;
+  const orchestra = sections.find((s) => isOrchestraSectionName(s.name));
+  const section = sections.find((s) => s.name === sectionName);
+  for (const grant of [...(orchestra?.commanders ?? []), ...(section?.commanders ?? [])]) {
+    if (grant.principal === who && grantAllows(grant, ARRANGEMENT_EDIT)) return true;
+  }
+  return false;
+}
+
 function grantAllows(grant: ScopedGrant, key: string): boolean {
   if (grant.all_permissions) return true;
   if (!grant.permissions?.length) return true; // legacy empty grant == full access

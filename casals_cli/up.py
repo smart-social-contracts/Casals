@@ -61,12 +61,12 @@ def _elapsed() -> str:
 
 
 def _print_step_list(sheet: dict, sheet_name: str, env: str, network_url: str, deployer: str, dry_run: bool) -> None:
-    from sheetv2 import canister_names
+    from sheetv2 import canister_names, section_arrangement
 
     _T0["start"] = time.monotonic()
     sections = sheet.get("sections") or []
     stands = sum(len(sec.get("stands") or []) for sec in sections)
-    templates = sum(1 for sec in sections if sec.get("stand_template"))
+    templates = sum(1 for sec in sections if section_arrangement(sec))
     wasms = len(((sheet.get("registry") or {}).get("wasms")) or [])
     _progress(f"casals {'plan' if dry_run else 'up'}: {sheet_name} → {env} ({network_url}) as {deployer}")
     _progress(

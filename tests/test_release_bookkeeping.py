@@ -47,12 +47,12 @@ SHEET = {
             {"name": "legacy", "kind": "backend", "mode": "adopted", "wasm": "hello@1.0.0",
              "controllers": ["$self"]},
         ]}]},
-        {"name": "Realms", "stand_template": {"name_pattern": "realm-*", "created_by": "$deployer", "canisters": [
+        {"name": "Realms", "arrangements": {"stand_template": {"name_pattern": "realm-*", "created_by": "$deployer", "canisters": [
             {"name": "{stand}-backend", "kind": "backend", "mode": "managed", "wasm": "hello@1.0.0",
              "controllers": ["$self"]},
             {"name": "{stand}-quarter-{n}", "kind": "backend", "mode": "managed", "wasm": "hello@1.0.0",
              "optional": True, "controllers": ["$self"]},
-        ]}},
+        ]}}},
     ],
     "cycles": {"min_balance_tc": 0.5},
     "environments": {"local": {"network": "local", "cycles": {"budget_tc": 1}}},
@@ -127,11 +127,11 @@ class TestWasmRelease:
     def test_runtime_stand_member_moves_its_template(self, stored):
         from sheet_api import record_wasm_release
         record_wasm_release("realm-x-backend", "realm-x", "Realms", "hello@2.0.0", "9" * 64)
-        tmpl = stored["sheet"]["sections"][1]["stand_template"]["canisters"]
+        tmpl = stored["sheet"]["sections"][1]["arrangements"]["stand_template"]["canisters"]
         assert tmpl[0]["wasm"] == "hello@2.0.0"
         assert tmpl[1]["wasm"] == "hello@1.0.0"  # the numbered member is a different template row
         record_wasm_release("realm-x-quarter-3", "realm-x", "Realms", "hello@2.0.0", "9" * 64)
-        assert stored["sheet"]["sections"][1]["stand_template"]["canisters"][1]["wasm"] == "hello@2.0.0"
+        assert stored["sheet"]["sections"][1]["arrangements"]["stand_template"]["canisters"][1]["wasm"] == "hello@2.0.0"
 
     def test_nothing_to_record_stores_nothing(self, stored):
         from sheet_api import record_wasm_release

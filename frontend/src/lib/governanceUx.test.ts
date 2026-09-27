@@ -10,6 +10,7 @@ import {
   describeMultisigSignerStatus,
   displayPermissionGroup,
   groupPermissions,
+  canEditSectionArrangement,
   isOrchestraSectionName,
   ladderAllows,
   scopeLabel,
@@ -150,4 +151,17 @@ test('visibleNavSections drops Platform committee when the orchestra has no mult
   assert.ok(withIt.find((s) => s.id === 'governance')!.links.some((l) => l.href === '/multisig'));
   // Operate / Platform links never depend on a facility.
   assert.equal(without.find((s) => s.id === 'operate')!.links.length, NAV_SECTIONS.find((s) => s.id === 'operate')!.links.length);
+});
+
+test('arrangement.edit is section-scoped and orchestra-wide for a full grant', () => {
+  const sections = [
+    { name: 'Casals', commanders: [{ principal: 'op', all_permissions: true }] },
+    { name: 'Deployments', commanders: [{ principal: 'dep', permissions: ['arrangement.edit'] }] },
+    { name: 'Other', commanders: [{ principal: 'dep', permissions: ['stand.create'] }] },
+  ];
+  assert.equal(canEditSectionArrangement('op', 'Deployments', sections, false), true);
+  assert.equal(canEditSectionArrangement('op', 'Casals', sections, false), false);
+  assert.equal(canEditSectionArrangement('dep', 'Deployments', sections, false), true);
+  assert.equal(canEditSectionArrangement('dep', 'Other', sections, false), false);
+  assert.equal(canEditSectionArrangement('stranger', 'Deployments', sections, true), true);
 });

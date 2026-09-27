@@ -37,6 +37,21 @@ export interface CommanderGrant {
   unclaimed?: boolean;
   /** Checksum of the access code this commander redeemed (claimed slots only). */
   code_checksum?: string;
+  /** Methods this commander may ask Casals to call. Empty or absent means none. */
+  calls?: CanisterCallGrant[];
+}
+
+export interface CanisterCallGrant {
+  canister: string;
+  method: string;
+}
+
+export interface RunnableCanisterCall {
+  canister_id: string;
+  canister_name: string;
+  method: string;
+  section: string;
+  stand: string;
 }
 
 export interface Stand {
@@ -856,6 +871,30 @@ export interface SheetDocument {
   sheet_hash: string;
 }
 
+export interface SectionArrangement {
+  section: string;
+  arrangements: Record<string, unknown> | null;
+  can_edit?: boolean;
+  sheet_hash?: string;
+}
+
+/** One section's ``arrangements`` object. Requires ``arrangement.edit``. */
+export async function getSectionArrangement(section: string): Promise<SectionArrangement> {
+  return _parseUpdate<SectionArrangement>(
+    await (await _actor(true)).get_section_arrangement(JSON.stringify({ section })),
+  );
+}
+
+/** Replace one section's ``arrangements``. ``null`` removes it. Requires ``arrangement.edit``. */
+export async function setSectionArrangement(args: {
+  section: string;
+  arrangements: Record<string, unknown> | null;
+}): Promise<SectionArrangement> {
+  return _parseUpdate<SectionArrangement>(
+    await (await _actor(true)).set_section_arrangement(JSON.stringify(args)),
+  );
+}
+
 /** The conductor's sheet as it stores it: `{sheet, env, sheet_hash}`. */
 export async function getSheetDocument(): Promise<SheetDocument> {
   const doc = _parseQuery<Partial<SheetDocument>>(await (await _actor()).get_sheet());
@@ -1334,6 +1373,31 @@ export async function setPermissions(args: {
   permissions: string[] | '*';
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
+}
+
+export async function setCanisterCalls(args: {
+  section?: string;
+  stand?: string;
+  commander_principal: string;
+  calls: CanisterCallGrant[];
+}): Promise<UpdateResult & { calls?: CanisterCallGrant[] }> {
+  return _parseUpdate(await (await _actor(true)).set_canister_calls(JSON.stringify(args)));
+}
+
+export async function myCanisterCalls(): Promise<RunnableCanisterCall[]> {
+  const raw = _parseQuery<RunnableCanisterCall[] | { error?: string }>(
+    await (await _actor(true)).my_canister_calls(),
+  );
+  if (!Array.isArray(raw)) throw new Error(raw?.error || 'Failed to load canister calls');
+  return raw;
+}
+
+export async function callCanister(args: {
+  canister: string;
+  method: string;
+  arg: string;
+}): Promise<UpdateResult & { reply?: string; truncated?: boolean }> {
+  return _parseUpdate(await (await _actor(true)).call_canister(JSON.stringify(args)));
 }
 
 export interface ClaimedSlot {

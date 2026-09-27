@@ -227,7 +227,7 @@ def runtime_stand(o: Orchestra) -> None:
     product would. Then the stand grows: `create_stand` on the existing stand
     adds a numbered optional member (`{stand}-quarter-2`) — the auto-scaling
     path — and the conductor builds that too."""
-    sections = [s for s in o.sheet["sections"] if isinstance(s.get("stand_template"), dict)]
+    sections = [s for s in o.sheet["sections"] if isinstance(_section_arrangement(s), dict)]
     if not sections:
         return
     backend = o.bindings()["conductor"]["casals-backend"]
@@ -256,7 +256,7 @@ def runtime_stand(o: Orchestra) -> None:
         raise Fail(f"template stand {name}: the conductor did not build it within 30 min")
 
     for sec in sections:
-        tmpl = sec["stand_template"]
+        tmpl = _section_arrangement(sec)
         name = tmpl["name_pattern"].replace("*", "e2e")
         optional = [c["name"] for c in tmpl["canisters"] if c.get("optional")]
         first = [m.replace("{n}", "1") for m in optional]
@@ -290,14 +290,21 @@ def _sole_backends(o: Orchestra) -> list[tuple[str, str, dict, str]]:
             if (st.get("baton") or {}).get("hand_off") == "sole":
                 be = _member(st, "backend")
                 out.append((be["name"], _member(st, "baton")["name"], be, f"sections[{si}].stands[{sj}]"))
-        tmpl = sec.get("stand_template")
+        tmpl = _section_arrangement(sec)
         if isinstance(tmpl, dict) and (tmpl.get("baton") or {}).get("hand_off") == "sole":
             stand = tmpl["name_pattern"].replace("*", "e2e")
             be = next(c for c in tmpl["canisters"] if c["name"].endswith("-backend"))
             baton = next(c for c in tmpl["canisters"] if c["name"].endswith("-baton"))
             out.append((be["name"].replace("{stand}", stand), baton["name"].replace("{stand}", stand), be,
-                        f"sections[{si}].stand_template"))
+                        f"sections[{si}].arrangements.stand_template"))
     return out
+
+
+def _section_arrangement(sec: dict):
+    """A section's new-stand configuration: ``arrangements.stand_template``."""
+    block = sec.get("arrangements") if isinstance(sec, dict) else None
+    tmpl = block.get("stand_template") if isinstance(block, dict) else None
+    return tmpl if isinstance(tmpl, dict) else None
 
 
 def _member(stand: dict, role: str) -> dict:
@@ -346,7 +353,7 @@ def baton_upgrade(o: Orchestra) -> None:
                                          "source": "local:seed/templates/hello-world-rust@1.0.1.wasm.gz"})
     for _n, _b, spec in upgradable:
         for sec in changed["sections"]:
-            for st in [*(sec.get("stands") or []), *([sec["stand_template"]] if sec.get("stand_template") else [])]:
+            for st in [*(sec.get("stands") or []), *([_section_arrangement(sec)] if _section_arrangement(sec) else [])]:
                 for c in st.get("canisters") or []:
                     if c["name"] == spec["name"]:
                         c["wasm"] = "hello-world-rust@1.0.1"

@@ -62,9 +62,12 @@ from commanders import (
     legacy_commander_principal,
     lifecycle_access,
     list_commanders,
+    normalize_calls,
     permissions_for,
     remove_commander as _remove_commander_entity,
+    runnable_calls,
     section_commander_can,
+    set_calls,
 )
 from cycle_sweep import return_cycles_gen
 from bootstrap import (  # noqa: F401 — `_is_retire_protected` re-exported for callers
@@ -79,6 +82,7 @@ from orchestration_bridge import (
 )
 from control_rules import controller_change_error
 from audit import _append_event, _last_event, find_canister_deployment
+from config_call import call_text_method_gen
 import cycles as _cycles_mod
 import store_uploads as _store_uploads
 from cycles import (
@@ -222,7 +226,13 @@ from util import (
     decide_topup,
     to_hex as _to_hex,
 )
-from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, bundle_hash, find_canister, unknown_members
+from sheetv2 import (
+    SYNTHETIC_SECTION_CONDUCTOR,
+    bundle_hash,
+    find_canister,
+    section_arrangement,
+    unknown_members,
+)
 from views import _canister_view, _section_view, _stand_view
 from version_http import version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
@@ -244,7 +254,7 @@ from sheet_api import (
     record_wasm_release,
     set_sheet_impl,
 )
-from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc
+from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc, store_sheet_doc
 from live_state import _asset_encodings_gen
 from planner import desired_assets
 
@@ -483,7 +493,7 @@ def _bootstrap() -> None:
 
 _STAND_BUILD_DELAY_S = 1        # between rounds
 _STAND_BUILD_BUSY_RETRY_S = 5   # when an operator's apply holds the lock
-_STAND_BUILD_MAX_ROUNDS = 12    # create → install → config → baton → hand-off, with margin
+_STAND_BUILD_MAX_ROUNDS = 20    # create/install/hand-off, plus one round per 10 synced asset files
 _stand_build_queue: list = []   # stand names waiting for their next round, in order
 _stand_build_rounds: dict = {}  # stand name → rounds run so far
 _stand_build_timer = {"id": None}
@@ -562,7 +572,7 @@ def _resume_stand_builds() -> None:
         for sec in sheet.get("sections") or []:
             if not isinstance(sec, dict):
                 continue
-            if isinstance(sec.get("stand_template"), dict):
+            if section_arrangement(sec) is not None:
                 template_sections.add((sec.get("name") or "").strip())
             for st in sec.get("stands") or []:
                 if isinstance(st, dict):
@@ -1116,6 +1126,76 @@ def get_sheet() -> text:
         return _err(str(e))
 
 
+def _can_edit_arrangement(sec) -> bool:
+    """Controllers, orchestra commanders, and that section's commanders, when
+    they hold ``arrangement.edit``."""
+    if _is_controller():
+        return True
+    if sec is None:
+        return False
+    return _section_commander_can(sec, "arrangement.edit") or _conductor_commander_can("arrangement.edit")
+
+
+@query
+def get_section_arrangement(args: text) -> text:
+    """The section's ``arrangements`` object. Requires ``arrangement.edit``."""
+    try:
+        params = json.loads(args) if args else {}
+        name = (params.get("section") or "").strip()
+        if not name:
+            return _err("section is required")
+        list(Section.instances())
+        sec = Section[name]
+        if not _can_edit_arrangement(sec):
+            return _err("unauthorized: arrangement.edit required")
+        sheet, _env, _sh = load_sheet_doc()
+        block = None
+        for section in (sheet or {}).get("sections") or []:
+            if isinstance(section, dict) and (section.get("name") or "") == name:
+                raw = section.get("arrangements")
+                block = raw if isinstance(raw, dict) else None
+                break
+        else:
+            return _err(f"unknown section '{name}'")
+        return _ok(section=name, arrangements=block, can_edit=True)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def set_section_arrangement(args: text) -> text:
+    """Replace one section's ``arrangements``. Requires ``arrangement.edit``.
+
+    Args (JSON): ``{"section": "<name>", "arrangements": {"stand_template": {...}}}``.
+    ``arrangements: null`` removes it. Existing stands are left as they are;
+    the next ``create_stand`` in this section reads the stored arrangement.
+    """
+    try:
+        from sheetv2 import replace_section_arrangement
+
+        params = json.loads(args) if args else {}
+        name = (params.get("section") or "").strip()
+        if not name:
+            return _err("section is required")
+        if "arrangements" not in params:
+            return _err("arrangements is required")
+        list(Section.instances())
+        sec = Section[name]
+        if not _can_edit_arrangement(sec):
+            return _err("unauthorized: arrangement.edit required")
+        sheet, env, _sh = load_sheet_doc()
+        if not sheet:
+            return _err("no sheet stored")
+        updated = replace_section_arrangement(sheet, name, params.get("arrangements"))
+        sh = store_sheet_doc(updated, env, _caller())
+        _append_event("arrangement_set", "", {"section": name, "sheet_hash": sh})
+        saved = next(s for s in updated["sections"] if s.get("name") == name)
+        block = saved.get("arrangements")
+        return _ok(section=name, sheet_hash=sh, arrangements=block if isinstance(block, dict) else None)
+    except Exception as e:
+        return _err(str(e))
+
+
 @query
 def list_pool() -> text:
     """Return every canister Casals has ever created and its pool status."""
@@ -1508,7 +1588,7 @@ def create_stand(args: text) -> text:
             return _err("members must be a list of canister names")
         tmpl = _stored_stand_template(section_name)
         if members and tmpl is None:
-            return _err(f"section '{section_name}' has no stand_template")
+            return _err(f"section '{section_name}' has no arrangement")
         if members:
             unknown = unknown_members(tmpl, name, members)
             if unknown:
@@ -1531,7 +1611,12 @@ def create_stand(args: text) -> text:
             # never built.
             list(Canister.instances())
             wanted = {m.replace("{stand}", name) for m in members}
-            if any(Canister[n] is None for n in wanted):
+            # A failed build stays failed until the next create_stand. The
+            # installer re-kicks with no new members while it waits, so that
+            # call has to clear the error and try again.
+            unbuilt = not int(getattr(dk, "built_at", 0) or 0)
+            missing = any(Canister[n] is None for n in wanted)
+            if unbuilt and (missing or (dk.build_error or "").strip()):
                 dk.built_at = 0
                 dk.build_error = ""
                 _schedule_stand_build(name)
@@ -1556,10 +1641,11 @@ def create_stand(args: text) -> text:
 
 
 def _stored_stand_template(section_name: str) -> dict | None:
+    """The section's arrangement: how a new stand in it is built."""
     sheet, _env, _sh = load_sheet_doc()
     for sec in (sheet or {}).get("sections") or []:
-        if sec.get("name") == section_name and isinstance(sec.get("stand_template"), dict):
-            return sec["stand_template"]
+        if sec.get("name") == section_name:
+            return section_arrangement(sec)
     return None
 
 
@@ -2060,6 +2146,201 @@ def set_permissions(args: text) -> text:
             return _err("expected 'section' or 'stand'")
         return _ok()
     except Exception as e:
+        return _err(str(e))
+
+
+def _orchestra_canisters() -> list:
+    """Every registered canister as ``{name, canister_id, section, stand}``."""
+    list(Canister.instances())
+    out = []
+    for canister in Canister.instances():
+        stand = canister.stand
+        section = stand.section if stand is not None else None
+        out.append({
+            "name": canister.name or "",
+            "canister_id": (canister.canister_id or "").strip(),
+            "section": section.name if section is not None else "",
+            "stand": stand.name if stand is not None else "",
+        })
+    return out
+
+
+def _call_scopes() -> list:
+    """Commander rungs that can hold a ``calls`` whitelist."""
+    list(Section.instances())
+    list(Stand.instances())
+    scopes = []
+    for sec in Section.instances():
+        scopes.append({"section": sec.name, "stand": "", "commanders": list_commanders(sec)})
+        for stand in sec.stands or []:
+            scopes.append({
+                "section": sec.name,
+                "stand": stand.name,
+                "commanders": list_commanders(stand),
+            })
+    return scopes
+
+
+def _calls_for_scope(section_name: str, stand_name: str) -> list:
+    """Canisters a grant at this rung is allowed to name."""
+    canisters = _orchestra_canisters()
+    if stand_name:
+        return [c for c in canisters if c["stand"] == stand_name]
+    if section_name == SYNTHETIC_SECTION_CONDUCTOR:
+        return canisters
+    return [c for c in canisters if c["section"] == section_name]
+
+
+def _canonicalize_calls(raw, allowed: list) -> list:
+    """Store canister ids. A name or id must be one of ``allowed``."""
+    by_id = {c["canister_id"]: c for c in allowed if c.get("canister_id")}
+    by_name = {c["name"]: c for c in allowed if c.get("name")}
+    normalized = normalize_calls(raw)
+    out = []
+    for call in normalized:
+        target = by_id.get(call["canister"]) or by_name.get(call["canister"])
+        if target is None or not target.get("canister_id"):
+            raise Exception(f"canister '{call['canister']}' is outside this scope")
+        out.append({"canister": target["canister_id"], "method": call["method"]})
+    return normalize_calls(out)
+
+
+def _require_can_edit_calls(entity, section, target: str) -> None:
+    """Same reach as ``set_permissions``. A commander with ``commander.assign``
+    may edit their own call list; other entries stay under bounded delegation
+    without changing the permission grant."""
+    if _is_controller():
+        return
+    if (target or "").strip() == _caller():
+        return
+    current = permissions_for(entity, target) if has_entry(entity, target) else None
+    _require_bounded_delegation(entity, section, target, current)
+
+
+@update
+def set_canister_calls(args: text) -> text:
+    """Replace one commander's canister-call whitelist.
+
+    Authorization matches ``set_permissions``. A commander holding
+    ``commander.assign`` may edit their own list. Args (JSON):
+    {"section"|"stand": str, "commander_principal": str,
+     "calls": [{"canister": str, "method": str}]}.
+    ``canister`` is a name or id in that scope. The stored value is the id.
+    """
+    try:
+        params = json.loads(args) if args else {}
+        commander = (params.get("commander_principal") or "").strip()
+        if not commander:
+            return _err("commander_principal is required")
+        caller = _caller()
+        if params.get("stand"):
+            list(Stand.instances())
+            list(Section.instances())
+            dk = Stand[params["stand"].strip()]
+            if dk is None:
+                return _err(f"unknown stand '{params['stand']}'")
+            if not _can_assign_commanders():
+                sec = dk.section
+                if not sec or not entity_has_permission(sec, caller, "commander.assign"):
+                    raise Exception(
+                        "unauthorized: must be a Casals controller, a conductor commander or "
+                        "a section commander with 'commander.assign' to set canister calls"
+                    )
+            if not has_entry(dk, commander):
+                return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
+            _require_can_edit_calls(dk, dk.section, commander)
+            calls = _canonicalize_calls(params.get("calls") or [], _calls_for_scope(dk.section.name if dk.section else "", dk.name))
+            if not set_calls(dk, commander, calls):
+                return _err(f"commander '{commander}' is not assigned to stand '{dk.name}'")
+            where = {"stand": dk.name}
+        elif params.get("section"):
+            _require_assign_commanders()
+            list(Section.instances())
+            sec = Section[params["section"].strip()]
+            if sec is None:
+                return _err(f"unknown section '{params['section']}'")
+            if not has_entry(sec, commander):
+                return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
+            _require_can_edit_calls(sec, None, commander)
+            calls = _canonicalize_calls(params.get("calls") or [], _calls_for_scope(sec.name, ""))
+            if not set_calls(sec, commander, calls):
+                return _err(f"commander '{commander}' is not assigned to section '{sec.name}'")
+            where = {"section": sec.name}
+        else:
+            return _err("expected 'section' or 'stand'")
+        _append_event("canister_calls_set", "", {
+            **where,
+            "commander": commander,
+            "calls": calls,
+        })
+        return _ok(calls=calls)
+    except Exception as e:
+        return _err(str(e))
+
+
+@query
+def my_canister_calls() -> text:
+    """Calls the current caller may run. No codes, no other commanders."""
+    try:
+        caller = _caller()
+        if caller == ANONYMOUS:
+            return json.dumps([])
+        return json.dumps(runnable_calls(
+            caller, _call_scopes(), _orchestra_canisters(),
+            orchestra_section=SYNTHETIC_SECTION_CONDUCTOR,
+        ))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+_CALL_ARG_MAX = 8192
+_CALL_REPLY_MAX = 4096
+
+
+@update
+def call_canister(args: text) -> Async[text]:
+    """Run one granted text-in / text-out method as the conductor.
+
+    The caller must hold ``canister.call`` and a matching ``calls`` entry whose
+    scope covers the canister. Args (JSON): {"canister": id or name,
+    "method": str, "arg": str}. The reply is truncated at 4 KiB.
+    """
+    try:
+        caller = _caller()
+        if caller == ANONYMOUS:
+            return _err("anonymous callers cannot call canisters")
+        params = json.loads(args) if args else {}
+        canister = (params.get("canister") or "").strip()
+        method = (params.get("method") or "").strip()
+        arg = params.get("arg", "")
+        if not isinstance(arg, str):
+            return _err("arg must be a string")
+        if len(arg) > _CALL_ARG_MAX:
+            return _err(f"arg exceeds {_CALL_ARG_MAX} characters")
+        grants = runnable_calls(
+            caller, _call_scopes(), _orchestra_canisters(),
+            orchestra_section=SYNTHETIC_SECTION_CONDUCTOR,
+        )
+        match = next(
+            (g for g in grants if g["method"] == method and canister in (g["canister_id"], g["canister_name"])),
+            None,
+        )
+        if match is None:
+            return _err("unauthorized: no canister.call grant for that canister and method")
+        reply = yield from call_text_method_gen(match["canister_id"], method, arg)
+        shown = reply if len(reply) <= _CALL_REPLY_MAX else reply[:_CALL_REPLY_MAX]
+        _append_event("canister_call", match["canister_id"], {
+            "commander": caller,
+            "method": method,
+            "arg": arg[:1500],
+            "ok": True,
+        })
+        return _ok(reply=shown, truncated=len(reply) > _CALL_REPLY_MAX)
+    except Exception as e:
+        try:
+            _append_event("canister_call", "", {"commander": _caller(), "ok": False, "error": str(e)[:500]})
+        except Exception:
+            pass
         return _err(str(e))
 
 
@@ -3084,8 +3365,11 @@ def _sync_content_round_gen(name: str, params: dict) -> dict:
     if not keys and not delete_keys:
         record_content_release(ns, store_hash, **record)
         return {"ok": True, "written": 0, "deleted": 0, "remaining": 0, "bundle_sha256": store_hash, "namespace": ns}
-    done = yield from _sync_assets_gen(st.canister_id.strip(), ns, keys, spec.get("files") or {},
-                                       sorted(desired), delete_keys if len(keys) <= SYNC_MAX_FILES else [])
+    done = yield from _sync_assets_gen(
+        st.canister_id.strip(), ns, keys, spec.get("files") or {},
+        sorted(desired), delete_keys if len(keys) <= SYNC_MAX_FILES else [],
+        spec.get("grants") or [],
+    )
     written = len(done.get("stored") or [])
     deleted = len(done.get("deleted") or [])
     # Left for the next round: files still to write, and — once every write has

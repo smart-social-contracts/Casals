@@ -91,7 +91,7 @@
     type ListRow,
     type OrchestraView,
   } from '$lib/orchestraList';
-  import { isOrchestraSectionName } from '$lib/governanceUx';
+  import { canEditSectionArrangement, isOrchestraSectionName } from '$lib/governanceUx';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type Values = Record<string, string | boolean>;
@@ -1239,6 +1239,7 @@
           onAddStandCommander={(stand) => openAddCommander({ stand: stand.name })}
           onRenameStand={openRenameStand}
           onDeleteStand={openDeleteStand}
+          canEditArrangement={(section) => canEditSectionArrangement($principal, section.name, tree?.sections ?? [], $isController === true)}
         />
       </div>
     {:else if orchestraView === 'control'}
@@ -1326,6 +1327,9 @@
                   </td>
                   <td class="px-2 py-2.5 text-primary-700 hidden md:table-cell whitespace-nowrap">
                     {#if row.core}<span class="badge bg-primary-800 text-white border border-primary-800 mr-1">casals-core</span>{/if}{row.core ? (orchestraName || row.section.name) : row.section.name}
+                    {#if canEditSectionArrangement($principal, row.section.name, tree?.sections ?? [], $isController === true)}
+                      <a class="ml-2 text-xs text-primary-600 underline decoration-dotted hover:text-primary-900" href={`/section/${encodeURIComponent(row.section.name)}/arrangements`}>Edit</a>
+                    {/if}
                   </td>
                   <td class="px-2 py-2.5 text-primary-700 hidden md:table-cell whitespace-nowrap">{row.stand.name}</td>
                   <td class="px-2 py-2.5 hidden lg:table-cell">

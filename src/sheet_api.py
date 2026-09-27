@@ -33,6 +33,7 @@ from sheetv2 import (
     resolve_partial,
     sheet_hash,
     template_members,
+    section_arrangement,
     validate,
     wasm_ref,
 )
@@ -305,7 +306,7 @@ def build_stand_round_gen(stand_name: str) -> dict:
 
 def _sheet_spec_for(sheet: dict, name: str, stand_name: str, section_name: str) -> dict | None:
     """The stored sheet's canister block for ``name``: a declared canister, or the
-    `stand_template` member a runtime-minted stand rendered it from (so a
+    arrangement member a runtime-minted stand rendered it from (so a
     fleet release moves the template too, and new mints get the same build)."""
     found = find_canister(sheet, name)
     if found:
@@ -313,7 +314,7 @@ def _sheet_spec_for(sheet: dict, name: str, stand_name: str, section_name: str) 
     for section in sheet.get("sections") or []:
         if not isinstance(section, dict) or section.get("name") != section_name:
             continue
-        tmpl = section.get("stand_template")
+        tmpl = section_arrangement(section)
         if not isinstance(tmpl, dict):
             continue
         for c, subs in template_members(tmpl, stand_name, [name]):

@@ -93,7 +93,8 @@
       "commanders": [
         { "principal": "$principal:realms_operator", "permissions": "stand.create,stand.rename,stand.delete,canister.lifecycle,canister.topup" }
       ],
-      "stand_template": {
+      "arrangements": {
+        "stand_template": {
         "$comment": "Who holds the IC keys of a realm stand once built: the baton is controlled by the multisig only; every member by its baton; a realm (backend and each quarter) also by itself ($this), so it can rewrite its controllers and leave. Casals creates and installs, then hands over and leaves (hand_off sole). Code changes on members are baton proposals: the multisig alone (weight 2) or Casals + the realm capital (1 + 1) reach the threshold.",
         "name_pattern": "realm-*",
         "created_by": "$canister:installer",
@@ -139,6 +140,7 @@
           "threshold": 2,
           "manages": "*",
           "hand_off": "sole"
+        }
         }
       }
     }

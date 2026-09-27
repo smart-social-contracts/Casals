@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    getTree, setCommander, removeCommander, setPermissions, listPermissions, listBackendControllers,
+    getTree, setCommander, removeCommander, setPermissions, setCanisterCalls, myCanisterCalls, callCanister,
+    listPermissions, listBackendControllers,
     casalsMetadata,
-    type Tree, type Permission,
+    type Tree, type Permission, type CanisterCallGrant, type RunnableCanisterCall,
   } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { entityCommanders, isUnclaimedSlot } from '$lib/commanderAccess';
@@ -35,6 +36,7 @@
     allPermissions: boolean;  // true => full access ("*")
     unclaimed: boolean;       // access-code slot nobody has redeemed yet
     codeChecksum?: string;    // checksum of the code a claimed commander redeemed
+    calls: CanisterCallGrant[];
   }
 
   let tree = $state<Tree | null>(null);
@@ -67,7 +69,7 @@
     }
   }
 
-  onMount(load);
+  onMount(() => { refresh(); });
 
   // Catalog grouped by group, in declaration order.
   const groupedCatalog = $derived.by(() => groupPermissions(catalog));
@@ -92,6 +94,7 @@
         permissions: [],
         allPermissions: true,
         unclaimed: false,
+        calls: [],
       });
     }
     if (!tree) return out;
@@ -109,6 +112,7 @@
           label: scopeLabel({ scope, section: sec.name }, orchestraName),
           permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
           unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
+          calls: cmd.calls ?? [],
         });
       }
       for (const dk of sec.stands) {
@@ -118,6 +122,7 @@
             label: scopeLabel({ scope: 'stand', section: sec.name, stand: dk.name }, orchestraName),
             permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
             unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
+            calls: cmd.calls ?? [],
           });
         }
       }
@@ -301,6 +306,128 @@
     }
   }
 
+  // ── Canister calls ──────────────────────────────────────────────────────────
+  let myCalls = $state<RunnableCanisterCall[]>([]);
+  let runArg = $state<Record<string, string>>({});
+  let runReply = $state<Record<string, string>>({});
+
+  async function loadCalls() {
+    if (!$isAuthenticated) {
+      myCalls = [];
+      return;
+    }
+    try {
+      myCalls = await myCanisterCalls();
+    } catch {
+      myCalls = [];
+    }
+  }
+
+  const refresh = async () => {
+    await load();
+    await loadCalls();
+  };
+
+  function callKey(call: RunnableCanisterCall) {
+    return `${call.canister_id}:${call.method}`;
+  }
+
+  /** Example only. Grants carry no argument schema, so unknown methods stay blank. */
+  function callArgPlaceholder(method: string): string {
+    if (method === 'issue_voucher') return '{"checksum":"sha256:…","credits":50}';
+    if (method === 'set_invitation_mode') return 'true';
+    return '';
+  }
+
+  async function submitCall(call: RunnableCanisterCall) {
+    const key = callKey(call);
+    busy = true;
+    runReply[key] = '';
+    try {
+      const res = await callCanister({
+        canister: call.canister_id,
+        method: call.method,
+        arg: runArg[key] ?? '',
+      });
+      runReply[key] = res.reply ?? '';
+      toasts.success(res.truncated ? 'Call returned (reply truncated)' : 'Call returned');
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Call failed');
+    } finally {
+      busy = false;
+    }
+  }
+
+  let callsOpen = $state(false);
+  let callsRow = $state<CommanderRow | null>(null);
+  let callsDraft = $state<CanisterCallGrant[]>([]);
+  let callsCanister = $state('');
+  let callsMethod = $state('');
+
+  function canistersFor(row: CommanderRow) {
+    const sections = tree?.sections ?? [];
+    const rows: { id: string; label: string }[] = [];
+    for (const sec of sections) {
+      const orchestra = isOrchestraSectionName(sec.name);
+      for (const stand of sec.stands) {
+        if (row.scope === 'stand' && stand.name !== row.stand) continue;
+        if (row.scope === 'section' && sec.name !== row.section) continue;
+        if (row.scope === 'orchestra' || orchestra || row.scope !== 'orchestra') {
+          for (const c of stand.canisters) {
+            if (!c.canister_id) continue;
+            if (row.scope === 'section' && sec.name !== row.section) continue;
+            rows.push({ id: c.canister_id, label: `${c.name} (${c.canister_id})` });
+          }
+        }
+      }
+    }
+    return rows;
+  }
+
+  function openCalls(row: CommanderRow) {
+    callsRow = row;
+    callsDraft = row.calls.map((c) => ({ canister: c.canister, method: c.method }));
+    const options = canistersFor(row);
+    callsCanister = options[0]?.id ?? '';
+    callsMethod = '';
+    callsOpen = true;
+  }
+
+  function addCallDraft() {
+    const canister = callsCanister.trim();
+    const method = callsMethod.trim();
+    if (!canister || !method) return;
+    if (callsDraft.some((c) => c.canister === canister && c.method === method)) return;
+    callsDraft = [...callsDraft, { canister, method }];
+    callsMethod = '';
+  }
+
+  function removeCallDraft(index: number) {
+    callsDraft = callsDraft.filter((_, i) => i !== index);
+  }
+
+  async function submitCalls() {
+    if (!callsRow) return;
+    busy = true;
+    try {
+      const target = callsRow.stand
+        ? { stand: callsRow.stand }
+        : { section: callsRow.section };
+      await setCanisterCalls({
+        ...target,
+        commander_principal: callsRow.principal,
+        calls: callsDraft,
+      });
+      toasts.success('Canister calls saved');
+      callsOpen = false;
+      await refresh();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed');
+    } finally {
+      busy = false;
+    }
+  }
+
 </script>
 
 <svelte:head><title>Casals · Operator access</title></svelte:head>
@@ -331,7 +458,7 @@
           Assign
         </button>
       {/if}
-      <button class="btn-secondary btn-sm" onclick={load}>
+      <button class="btn-secondary btn-sm" onclick={refresh}>
         <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
         </svg>
@@ -339,6 +466,33 @@
       </button>
     </div>
   </div>
+
+  {#if $isAuthenticated && myCalls.length}
+    <div class="card p-4 space-y-3">
+      <h2 class="text-sm font-semibold text-primary-900">Your canister calls</h2>
+      <p class="text-xs text-primary-500">Casals calls the method as itself. The argument is one text value.</p>
+      {#each myCalls as call (callKey(call))}
+        <form class="space-y-2 border border-primary-100 rounded-lg p-3" onsubmit={(e) => { e.preventDefault(); submitCall(call); }}>
+          <div class="text-sm text-primary-800">
+            <span class="font-medium">{call.canister_name || call.canister_id}</span>
+            <span class="text-primary-400"> · </span>
+            <span class="font-mono">{call.method}</span>
+          </div>
+          <textarea
+            class="input w-full font-mono text-xs min-h-[4.5rem]"
+            placeholder={callArgPlaceholder(call.method)}
+            bind:value={runArg[callKey(call)]}
+          ></textarea>
+          <div class="flex items-center justify-between gap-3">
+            <button class="btn-primary btn-sm" type="submit" disabled={busy}>{busy ? 'Calling…' : 'Call'}</button>
+            {#if runReply[callKey(call)]}
+              <pre class="text-xs text-primary-700 whitespace-pre-wrap break-all">{runReply[callKey(call)]}</pre>
+            {/if}
+          </div>
+        </form>
+      {/each}
+    </div>
+  {/if}
 
   <div class="flex flex-wrap gap-2 border-b border-primary-100 pb-1">
     {#each OPERATOR_ACCESS_TABS as tab (tab.id)}
@@ -483,6 +637,7 @@
                     {/if}
                   </span>
                   {#if $isAuthenticated && row.scope !== 'controller'}
+                    <button class="btn-ghost btn-sm text-xs shrink-0" onclick={() => openCalls(row)}>Calls</button>
                     <button class="btn-ghost btn-sm text-xs shrink-0" onclick={() => openPerms(row)}>Permissions</button>
                     <button class="btn-ghost btn-sm text-xs shrink-0 text-red-600 hover:text-red-700" onclick={() => submitRemove(row)} disabled={busy}>Remove</button>
                   {/if}
@@ -499,6 +654,9 @@
                       <span class="inline-flex items-center rounded bg-primary-50 border border-primary-100 px-2 py-0.5 text-[11px] text-primary-600">{labelFor(key)}</span>
                     {/each}
                   {/if}
+                  {#each row.calls as call (`${call.canister}:${call.method}`)}
+                    <span class="inline-flex items-center rounded bg-primary-50 border border-primary-100 px-2 py-0.5 text-[11px] font-mono text-primary-600">{call.method}</span>
+                  {/each}
                 </div>
               </div>
             {/each}
@@ -682,6 +840,46 @@
           <button class="btn-secondary btn-sm" onclick={() => (permsOpen = false)} disabled={busy}>Cancel</button>
           <button class="btn-primary btn-sm" disabled={busy} onclick={submitPerms}>{busy ? 'Saving…' : 'Save permissions'}</button>
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if callsOpen && callsRow}
+  <div class="fixed inset-0 z-40 flex items-center justify-center">
+    <button type="button" class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm" aria-label="Close" onclick={() => (callsOpen = false)}></button>
+    <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div>
+        <h3 class="text-lg font-semibold text-primary-900">Canister calls</h3>
+        <p class="text-sm text-primary-500 mt-0.5">
+          {callsRow.label} · <span class="font-mono">{callsRow.principal.slice(0, 12)}…</span>
+        </p>
+        <p class="text-xs text-primary-400 mt-1">Each grant is one method on one canister. The caller sends a single text argument when they run it.</p>
+      </div>
+      {#if callsDraft.length === 0}
+        <p class="text-sm text-primary-400">No calls granted.</p>
+      {:else}
+        <ul class="space-y-2">
+          {#each callsDraft as call, i (`${call.canister}:${call.method}:${i}`)}
+            <li class="flex items-center gap-2 text-sm">
+              <span class="font-mono text-xs text-primary-700 flex-1 break-all">{call.method} · {call.canister}</span>
+              <button type="button" class="btn-ghost btn-sm text-xs text-red-600" onclick={() => removeCallDraft(i)}>Remove</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="grid gap-2">
+        <select class="input" bind:value={callsCanister}>
+          {#each canistersFor(callsRow) as c (c.id)}
+            <option value={c.id}>{c.label}</option>
+          {/each}
+        </select>
+        <input class="input font-mono" placeholder="method name" bind:value={callsMethod} />
+        <button type="button" class="btn-secondary btn-sm justify-self-start" onclick={addCallDraft} disabled={!callsCanister || !callsMethod.trim()}>Add call</button>
+      </div>
+      <div class="flex justify-end gap-3 pt-2 border-t border-primary-100">
+        <button class="btn-secondary btn-sm" onclick={() => (callsOpen = false)} disabled={busy}>Cancel</button>
+        <button class="btn-primary btn-sm" onclick={submitCalls} disabled={busy}>{busy ? 'Saving…' : 'Save calls'}</button>
       </div>
     </div>
   </div>
