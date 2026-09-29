@@ -232,6 +232,20 @@ class _PlanContext:
                 section_order=si, stand_order=sj,
             )
             return True
+        # File lists can match when the content namespace has no bundle yet
+        # (both sides empty, or only the rendered /canister_ids.js). That is
+        # not a finished copy: keep the stand deferred until the namespace
+        # holds files and the canister serves that same bundle.
+        if ns:
+            stored = self.published.get(ns)
+            has_bundle = isinstance(stored, dict) and any(path for path in stored if path != "error")
+            if not has_bundle or live_bundle != store_bundle:
+                self.deferred.append({
+                    "target": name,
+                    "field": "content",
+                    "waiting_for": ["sync_assets"],
+                })
+                return True
         return False
 
     def _stand_of(self, name: str) -> str:
@@ -829,10 +843,18 @@ class _PlanContext:
             # A placeholder waiting on a create outside this stand is not this
             # build's business.
             self.deferred = [d for d in self.deferred if self._stand_of(d["target"]) == self.only_stand]
-        if self.deferred and not self.items:
+        # A content namespace with no bundle yet defers sync_assets without an
+        # item: there is nothing to copy until the files are stored. Every
+        # other wait still needs a task in this plan.
+        bundle_wait = [
+            d for d in self.deferred
+            if d.get("field") == "content" and d.get("waiting_for") == ["sync_assets"]
+        ]
+        dangling = [d for d in self.deferred if d not in bundle_wait]
+        if dangling and not self.items:
             raise PlanningError([
                 f"{d['target']}.{d['field']} waits for {', '.join(d['waiting_for'])}, which nothing creates"
-                for d in self.deferred
+                for d in dangling
             ])
         plan_items_for_hash = [{k: v for k, v in it.items() if k != "seq"} for it in self.items]
         ph = hashlib.sha256(

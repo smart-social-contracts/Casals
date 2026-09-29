@@ -10,6 +10,8 @@ import {
   isWasmModule,
   hexToBytes,
   uploadEpochMs,
+  bundleNamespace,
+  parseBundleFilename,
   parseWasmFilename,
   pathUnderNamespace,
   readWasmBytes,
@@ -46,6 +48,23 @@ test('parseWasmFilename understands the catalog naming and common variants', () 
   assert.deepEqual(parseWasmFilename('thing.wasm'), { family: 'thing', version: '', gz: false });
   assert.deepEqual(parseWasmFilename('release-1.0.0-rc.1.wasm.gz'), {
     family: 'release', version: '1.0.0-rc.1', gz: true,
+  });
+  assert.deepEqual(parseWasmFilename('realm_backend-v0.6.0.wasm.gz'), {
+    family: 'realm-backend', version: '0.6.0', gz: true,
+  });
+  assert.deepEqual(parseWasmFilename('realm-backend-v0.6.0.wasm.gz'), {
+    family: 'realm-backend', version: '0.6.0', gz: true,
+  });
+});
+
+test('a bundle filename is a frontend namespace', () => {
+  assert.deepEqual(parseBundleFilename('realm-frontend-v0.6.0.tar.gz'), {
+    family: 'realm-frontend', version: '0.6.0',
+  });
+  assert.equal(bundleNamespace('realm-frontend', '0.6.0'), 'frontend/realm-frontend/0.6.0');
+  assert.equal(bundleNamespace('realm_frontend', ''), 'frontend/realm-frontend/main');
+  assert.deepEqual(parseBundleFilename('realm_frontend.tar.gz'), {
+    family: 'realm-frontend', version: '',
   });
 });
 

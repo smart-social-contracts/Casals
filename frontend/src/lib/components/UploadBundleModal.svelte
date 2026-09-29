@@ -4,7 +4,7 @@
   import { identity } from '$lib/auth';
   import { beginUpload, endUpload, listStoreFiles } from '$lib/api';
   import { formatBytes, uploadBundleToStore } from '$lib/wasmStoreClient';
-  import { pathUnderNamespace } from '$lib/wasmStorePath';
+  import { bundleNamespace, parseBundleFilename, pathUnderNamespace } from '$lib/wasmStorePath';
   import type { BundleUploadProgress } from '$lib/wasmStoreClient';
   import {
     bundleDiff,
@@ -87,6 +87,8 @@
       error = `${f.name}: pick a .tgz / .tar.gz bundle (casals bundle <dist>) or a folder`;
       return;
     }
+    const parsed = parseBundleFilename(f.name);
+    if (parsed.family) namespace = bundleNamespace(parsed.family, parsed.version);
     await ingest(async () => {
       const { files: fs, manifest } = await filesFromTarball(new Uint8Array(await f.arrayBuffer()));
       if (manifest) say(`${f.name}: manifest ok, bundle ${manifest.bundle_sha256.slice(0, 12)}…`);
@@ -214,8 +216,13 @@
           bind:value={namespace}
           onchange={recompare}
           disabled={busy || phase === 'uploaded' || phase === 'done'}
-          placeholder="frontend/<app>-assets/main"
+          placeholder="frontend/realm-frontend/0.6.0"
         />
+        <p class="text-xs text-primary-500 mt-1">
+          A file named <span class="font-mono">family-v1.2.3.tar.gz</span> fills this as
+          <span class="font-mono">frontend/family/1.2.3</span>. The next stand serves it when the section arrangement's
+          <span class="font-mono">content</span> is that namespace.
+        </p>
         <datalist id="bundle-namespaces">
           {#each knownNamespaces as ns (ns)}<option value={ns}></option>{/each}
         </datalist>

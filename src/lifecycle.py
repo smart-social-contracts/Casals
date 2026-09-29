@@ -125,6 +125,29 @@ def _resolve_authorized_wasm(wasm_key: str, section):
 
 # ── Install argument encoding ─────────────────────────────────────────────────
 
+def choose_reinstall_arg_spec(override, sheet_spec):
+    """Which init spec a reinstall should encode.
+
+    An explicit override (Candid text, or a ``top_commander`` object) wins.
+    A blank override falls through to the sheet's ``install_arg``.
+    ``None`` means there is nothing to encode: the caller uses the wasm
+    default (``()``, or ``(null)`` for an asset canister).
+    """
+    if isinstance(override, str):
+        override = override.strip()
+        if not override:
+            override = None
+    if override is not None:
+        return override
+    if isinstance(sheet_spec, str):
+        sheet_spec = sheet_spec.strip()
+        if not sheet_spec:
+            return None
+    if sheet_spec:
+        return sheet_spec
+    return None
+
+
 def _install_arg_for(w) -> bytes:
     """The install/init argument for a WASM. The certified-assets canister
     needs ``(null)`` (its init is ``opt AssetCanisterArgs``); everything else

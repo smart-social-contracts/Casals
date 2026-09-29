@@ -448,6 +448,8 @@ export interface SheetCanister {
   /** v2 frontends: the store namespace (a bundle) this canister serves */
   content?: string;
   files?: Record<string, string>;
+  /** Candid text, or ``{top_commander}``. Reinstall runs init with this. */
+  install_arg?: string | Record<string, unknown>;
 }
 
 export interface SheetStand {
@@ -1659,6 +1661,8 @@ export async function upgradeTo(args: {
   canister?: string;
   wasm_key: string;
   reinstall?: boolean;
+  /** Reinstall only. Candid text, or ``{top_commander}``. Omitted uses the sheet. */
+  install_arg?: string | Record<string, unknown>;
 }): Promise<UpdateResult> {
   return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
 }

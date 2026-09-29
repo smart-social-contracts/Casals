@@ -350,6 +350,33 @@ def test_bundle_drift_names_both_hashes_and_removes_stale_keys():
     live["published"][ns] = old_store
 
 
+def test_empty_content_namespace_is_not_a_finished_bundle():
+    """A frontend whose content namespace has no files is not done.
+
+    Matching the canister against an empty store used to produce no sync and
+    let the stand be marked built. The bundle copy stays deferred until the
+    namespace holds files and the canister serves them.
+    """
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    spec = sv2.find_canister(resolved, "rust-frontend")[2]
+    ns = spec["content"]
+    live["published"][ns] = {}
+    live["assets"]["rust-frontend"] = {
+        "/canister_ids.js": desired_assets({"files": spec.get("files")}, {})["/canister_ids.js"]
+    }
+    plan = build_plan(resolved, env, live, self_id=SELF)
+    assert not [
+        i for i in plan["items"]
+        if i["kind"] == "sync_assets" and i["target"]["name"] == "rust-frontend"
+    ]
+    assert {
+        "target": "rust-frontend",
+        "field": "content",
+        "waiting_for": ["sync_assets"],
+    } in plan["deferred"]
+
+
 def test_an_unshipped_upload_is_not_drift_and_a_lost_bundle_is_unverifiable():
     """The stored sheet's registry.bundles sha256 is the bundle last shipped.
     The store holding another one while the frontend still serves the shipped

@@ -1044,6 +1044,75 @@ def _provision_stand():
     return types.SimpleNamespace(name="demo-stand")
 
 
+def test_choose_reinstall_arg_spec_override_then_sheet():
+    assert lifecycle.choose_reinstall_arg_spec("()", '(record { symbol = "RLM" })') == "()"
+    assert lifecycle.choose_reinstall_arg_spec(
+        None, '(record { symbol = "RLM" })'
+    ) == '(record { symbol = "RLM" })'
+    assert lifecycle.choose_reinstall_arg_spec("  ", '(record { symbol = "RLM" })') == '(record { symbol = "RLM" })'
+    assert lifecycle.choose_reinstall_arg_spec(None, None) is None
+    assert lifecycle.choose_reinstall_arg_spec(None, "  ") is None
+    assert lifecycle.choose_reinstall_arg_spec({"top_commander": "$self"}, "ignored") == {
+        "top_commander": "$self"
+    }
+
+
+def test_init_arg_for_reinstall_uses_sheet_then_override(monkeypatch):
+    import main
+    import sheet_api
+
+    sheet = {
+        "sections": [{
+            "name": "Product",
+            "stands": [{
+                "name": "token",
+                "canisters": [{
+                    "name": "token-backend",
+                    "install_arg": '(record { symbol = "RLM" })',
+                }],
+            }],
+        }]
+    }
+    monkeypatch.setattr(sheet_api, "get_sheet_impl", lambda: {"sheet": sheet})
+    seen = {}
+
+    def resolve(spec, _w):
+        seen["spec"] = spec
+        return b"encoded"
+
+    monkeypatch.setattr(main, "_resolve_install_arg", resolve)
+    monkeypatch.setattr(main, "_install_arg_for", lambda _w: b"empty")
+
+    arg, source = main._init_arg_for_deploy(
+        True, "token-backend", object(), {"canister": "token-backend", "reinstall": True},
+    )
+    assert source == "sheet"
+    assert arg == b"encoded"
+    assert seen["spec"] == '(record { symbol = "RLM" })'
+    assert main._sheet_install_arg("token-backend") == '(record { symbol = "RLM" })'
+
+    arg, source = main._init_arg_for_deploy(
+        True, "token-backend", object(),
+        {"canister": "token-backend", "install_arg": '(record { symbol = "X" })'},
+    )
+    assert source == "override"
+    assert seen["spec"] == '(record { symbol = "X" })'
+
+    arg, source = main._init_arg_for_deploy(
+        False, "token-backend", object(), {"canister": "token-backend"},
+    )
+    assert source == "upgrade"
+    assert arg == b"empty"
+
+    # A stand-wide call must not apply one canister's override to every member.
+    arg, source = main._init_arg_for_deploy(
+        True, "token-backend", object(),
+        {"stand": "token", "install_arg": '(record { symbol = "X" })'},
+    )
+    assert source == "sheet"
+    assert seen["spec"] == '(record { symbol = "RLM" })'
+
+
 def test_sheet_files_content_type():
     """Sheet `files` are typed by extension, extensionless well-known files by name."""
     ct = lifecycle._text_content_type

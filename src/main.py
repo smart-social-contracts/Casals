@@ -152,6 +152,7 @@ from lifecycle import (
     _fetch_canister_controllers,
     _install_arg_for,
     _resolve_install_arg,
+    choose_reinstall_arg_spec,
     _maybe_provision_assets,
     _provision_canister,
     _pull_and_install,
@@ -533,6 +534,11 @@ def _stand_build_cb():
     try:
         summary = yield from _build_stand_round_gen(name)
         if summary.get("skipped") == "busy":
+            _stand_build_queue.append(name)
+            delay = _STAND_BUILD_BUSY_RETRY_S
+        elif summary.get("waiting"):
+            # Content namespace still has no bundle. Keep the build armed
+            # without consuming a round or recording a failure.
             _stand_build_queue.append(name)
             delay = _STAND_BUILD_BUSY_RETRY_S
         elif summary.get("converged"):
@@ -3059,6 +3065,40 @@ def grant_stand_backend_commit(args: text) -> Async[text]:
         return _err(str(e))
 
 
+def _sheet_install_arg(name: str):
+    """The stored sheet's ``install_arg`` for ``name``, or ``None``."""
+    from sheet_api import get_sheet_impl
+    from applier import _find_canister_spec
+    name = (name or "").strip()
+    if not name:
+        return None
+    try:
+        loaded = get_sheet_impl() or {}
+    except Exception as e:
+        _log.error(f"reinstall install_arg: could not read sheet: {e}")
+        return None
+    spec = _find_canister_spec(loaded.get("sheet") or {}, name) or {}
+    return spec.get("install_arg") or None
+
+
+def _init_arg_for_deploy(do_reinstall: bool, canister_name: str, w, params: dict):
+    """Bytes passed to ``install_chunked_code``, and where they came from.
+
+    Upgrade keeps the wasm default. ``post_upgrade`` is not init, and the
+    sheet's init record would trap it. Reinstall runs init again: an
+    ``install_arg`` on a single-canister call wins, otherwise the sheet's
+    ``install_arg`` for that canister, otherwise the wasm default.
+    """
+    if not do_reinstall:
+        return _install_arg_for(w), "upgrade"
+    override = params.get("install_arg") if (params.get("canister") or "").strip() else None
+    chosen = choose_reinstall_arg_spec(override, _sheet_install_arg(canister_name))
+    if chosen is None:
+        return _install_arg_for(w), "default"
+    source = "override" if choose_reinstall_arg_spec(override, None) is not None else "sheet"
+    return _resolve_install_arg(chosen, w), source
+
+
 def _upgrade_to_impl_gen(params: dict) -> Async[str]:
     wasm_key = params["wasm_key"].strip()
     do_reinstall = bool(params.get("reinstall", False))
@@ -3097,10 +3137,13 @@ def _upgrade_to_impl_gen(params: dict) -> Async[str]:
         _append_event("snapshot", st.canister_id, {"snapshot_id": snap_id_hex})
 
     failure = None
+    arg_sources = {}
     for st in targets:
         try:
+            init_arg, arg_source = _init_arg_for_deploy(do_reinstall, st.name, w, params)
+            arg_sources[st.name] = arg_source
             yield from _pull_and_install(st.canister_id, w.registry_namespace, w.registry_path,
-                                         w.wasm_hash, install_mode, _install_arg_for(w),
+                                         w.wasm_hash, install_mode, init_arg,
                                          wasm_type_of_wasm(w))
             ok, actual = yield from _verify_module_hash(st.canister_id, w.wasm_hash)
             if not ok:
@@ -3126,7 +3169,9 @@ def _upgrade_to_impl_gen(params: dict) -> Async[str]:
                 st.status = CanisterStatus.FAILED
                 _append_event("revert_failed", st.canister_id, {"error": str(rb)})
         fail_ev = "reinstall_failed" if do_reinstall else "upgrade_failed"
-        _append_event(fail_ev, dk.name if dk else "", {"reason": failure, "wasm_key": wasm_key})
+        _append_event(fail_ev, dk.name if dk else "", {
+            "reason": failure, "wasm_key": wasm_key, "install_arg": arg_sources,
+        })
         return _err(f"{'reinstall' if do_reinstall else 'upgrade'} rolled back: {failure}")
 
     for st, snap_id in snapped:
@@ -3140,8 +3185,10 @@ def _upgrade_to_impl_gen(params: dict) -> Async[str]:
         st.status = CanisterStatus.INSTALLED
         st.snapshot_id = ""
         ev = "reinstalled" if do_reinstall else "upgraded"
-        _append_event(ev, st.canister_id,
-                      {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name})
+        payload = {"wasm_key": wasm_key, "stand": dk.name if dk else "", "name": st.name}
+        if do_reinstall:
+            payload["install_arg"] = arg_sources.get(st.name) or "default"
+        _append_event(ev, st.canister_id, payload)
     finish_ev = "reinstall_finished" if do_reinstall else "upgrade_finished"
     _append_event(finish_ev, dk.name if dk else "", {"wasm_key": wasm_key, "canisters": [s.canister_id for s in targets]})
     # The stored sheet keeps saying what runs (a later `up`/`plan` is a no-op).
@@ -3164,8 +3211,13 @@ def upgrade_to(args: text) -> Async[text]:
 
     Args (JSON): {"stand": str} or {"canister": str}, plus {"wasm_key": str}.
     Optional: {"reinstall": true} — uses `reinstall` mode instead of `upgrade`,
-    which WIPES all canister state.  Snapshot/rollback still protects against
-    failed installs.
+    which WIPES all canister state and runs init again. Snapshot/rollback
+    still protects against failed installs.
+
+    On reinstall, init receives that canister's ``install_arg`` from the
+    stored sheet (the same record a first install uses). A single-canister
+    call may pass ``install_arg`` (Candid text, or ``{"top_commander": ...}``)
+    to override the sheet. Upgrade does not pass the init record.
     """
     try:
         params = json.loads(args)

@@ -44,6 +44,7 @@
     listBackendControllers,
     getSheetDocument,
   } from '$lib/api';
+  import { installArgPayload, sheetInstallArgFor } from '$lib/installArg';
   import { hydrateTreeControllers } from '$lib/controllerAccess';
   import { batonConsoleUrl, batonIdInStand } from '$lib/orchestrationNav';
   import {
@@ -921,7 +922,7 @@
           type: 'checkbox',
           label: 'Reinstall (wipes all canister state — data will be lost)',
           value: false,
-          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
+          help: 'Reinstall erases canister state and runs init again. Each canister receives its install_arg from the sheet.',
         },
       ],
       submitLabel: 'Deploy',
@@ -961,15 +962,37 @@
           type: 'checkbox',
           label: 'Reinstall (wipes canister state — data will be lost)',
           value: false,
-          help: '⚠️ Reinstall erases the canister state. Use only if you intentionally want a clean slate.',
+          help: 'Reinstall erases canister state and runs init again with the argument below.',
+        },
+        {
+          name: 'install_arg',
+          type: 'textarea',
+          label: 'Init argument',
+          value: sheetInstallArgFor(storedSheet, canister.name),
+          rows: 4,
+          showWhen: 'reinstall',
+          help: 'From the sheet. Edit it to pass a different Candid argument, or a JSON object such as {"top_commander":"$self"}. Blank uses the sheet.',
         },
       ],
       submitLabel: 'Deploy',
-      onsubmit: (v) => upgradeTo({
-        canister: canister.name,
-        wasm_key: String(v.wasm_key).trim(),
-        reinstall: Boolean(v.reinstall),
-      }),
+      onsubmit: (v) => {
+        const reinstall = Boolean(v.reinstall);
+        const payload: {
+          canister: string;
+          wasm_key: string;
+          reinstall: boolean;
+          install_arg?: string | Record<string, unknown>;
+        } = {
+          canister: canister.name,
+          wasm_key: String(v.wasm_key).trim(),
+          reinstall,
+        };
+        if (reinstall) {
+          const arg = installArgPayload(String(v.install_arg ?? ''));
+          if (arg !== undefined) payload.install_arg = arg;
+        }
+        return upgradeTo(payload);
+      },
     });
   }
 </script>

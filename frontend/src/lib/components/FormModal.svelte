@@ -13,6 +13,9 @@
     options?: FieldOption[];
     value?: string | boolean;
     help?: string;
+    /** Show this field only while the named checkbox is checked. */
+    showWhen?: string;
+    rows?: number;
   }
 </script>
 
@@ -102,6 +105,7 @@
 
     <form class="space-y-4" onsubmit={submit}>
       {#each fields as field (field.name)}
+        {#if !field.showWhen || values[field.showWhen]}
         <div>
           {#if field.type === 'checkbox'}
             <label class="flex items-start gap-2.5 cursor-pointer">
@@ -125,7 +129,7 @@
               <textarea
                 id={`field-${field.name}`}
                 class="input"
-                rows="3"
+                rows={field.rows ?? 3}
                 placeholder={field.placeholder ?? ''}
                 bind:value={values[field.name] as string}
               ></textarea>
@@ -145,10 +149,11 @@
               />
             {/if}
           {/if}
-          {#if field.help}
+          {#if field.help && field.type !== 'checkbox'}
             <p class="text-xs text-primary-400 mt-1">{field.help}</p>
           {/if}
         </div>
+        {/if}
       {/each}
 
       {#if busy}

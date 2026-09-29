@@ -101,17 +101,38 @@ export function catalogForTarget<T extends { key: string; wasm_type?: string }>(
   return family ? [] : catalog;
 }
 
+function familyName(raw: string): string {
+  return raw.trim().replace(/_/g, '-');
+}
+
 /** `hello-world-rust@1.0.0.wasm.gz` → { family: 'hello-world-rust', version: '1.0.0', gz: true } */
 export function parseWasmFilename(name: string): { family: string; version: string; gz: boolean } {
   const base = name.trim().split('/').pop() ?? '';
   const gz = /\.gz$/i.test(base);
   const stem = base.replace(/\.wasm(\.gz)?$/i, '').replace(/\.gz$/i, '');
   const at = stem.lastIndexOf('@');
-  if (at > 0) return { family: stem.slice(0, at), version: stem.slice(at + 1), gz };
-  // `name-1.2.3` / `name_v1.2.3` are common too.
+  if (at > 0) return { family: familyName(stem.slice(0, at)), version: stem.slice(at + 1), gz };
+  // `name-1.2.3` / `name-v1.2.3` / `name_v1.2.3` are common too.
   const m = stem.match(/^(.*?)[-_]v?(\d+(?:\.\d+)*(?:[-+.][0-9A-Za-z.-]+)?)$/);
-  if (m) return { family: m[1], version: m[2], gz };
-  return { family: stem, version: '', gz };
+  if (m) return { family: familyName(m[1]), version: m[2], gz };
+  return { family: familyName(stem), version: '', gz };
+}
+
+/**
+ * `realm-frontend-v0.6.0.tar.gz` → the store namespace a frontend serves.
+ * Same stem rules as a wasm. The version segment is `main` when the name has none.
+ */
+export function parseBundleFilename(name: string): { family: string; version: string } {
+  const base = name.trim().split('/').pop() ?? '';
+  const stem = base.replace(/\.tar\.gz$/i, '').replace(/\.tgz$/i, '');
+  const parsed = parseWasmFilename(`${stem}.wasm`);
+  return { family: parsed.family, version: parsed.version };
+}
+
+export function bundleNamespace(family: string, version: string): string {
+  const fam = familyName(family);
+  const ver = version.trim() || 'main';
+  return `frontend/${fam}/${ver}`;
 }
 
 /**

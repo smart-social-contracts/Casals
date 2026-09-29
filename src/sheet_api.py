@@ -283,6 +283,10 @@ def build_stand_round_gen(stand_name: str) -> dict:
         items = plan.get("items") or []
         mine = [it for it in items if (it.get("requires") or "self") == "self" and not it.get("destructive")]
         if not items and not plan.get("pending"):
+            # The bundle is not in the content namespace yet. Stay unbuilt and
+            # let the timer try again; do not treat "nothing to copy" as done.
+            if plan.get("deferred"):
+                return {"applied": 0, "converged": False, "waiting": True}
             return {"applied": 0, "converged": True}
         if not mine:
             return {"applied": 0, "converged": False,
