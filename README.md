@@ -49,7 +49,7 @@ For production deployments, cycle observation and auto top-ups can run in **[cas
 
 **Use the hosted monitor** (no account; your conductor's settings are the credential):
 
-1. In **Settings → Cycle operations**, choose **Off-chain monitor**, paste the service base URL (`https://casals.realmsgos.dev` or `https://service.ic-casals.tech`) under **Hosted monitor service** and click **Use this service**. Casals reads the service's principal from `GET /v1/service` and fills in **Monitor service URL** (`<base>/v1/<this conductor's canister id>`) and **Monitor principal**.
+1. In **Settings → Cycle operations**, choose **Off-chain monitor**, paste `https://service.ic-casals.tech` under **Hosted monitor service** and click **Use this service**. Casals reads the service's principal from `GET /v1/service` and fills in **Monitor service URL** (`<base>/v1/<this conductor's canister id>`) and **Monitor principal**.
 2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync monitor access**: `status_visibility = allowed_viewers [monitor]`), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
 3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h; the next **Sync monitor access** drops the viewer grant. Nothing else is needed.
 

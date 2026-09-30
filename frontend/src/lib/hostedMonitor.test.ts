@@ -16,25 +16,25 @@ const CID = 'jj2e5-iyaaa-aaaac-bffeq-cai';
 
 describe('hosted monitor URL helpers', () => {
   it('normalises pasted bases', () => {
-    assert.equal(normalizeMonitorBase(' https://casals.realmsgos.dev/ '), 'https://casals.realmsgos.dev');
-    assert.equal(normalizeMonitorBase('https://casals.realmsgos.dev/v1/'), 'https://casals.realmsgos.dev');
-    assert.equal(normalizeMonitorBase(`https://casals.realmsgos.dev/v1/${CID}`), 'https://casals.realmsgos.dev');
+    assert.equal(normalizeMonitorBase(' https://service.ic-casals.tech/ '), 'https://service.ic-casals.tech');
+    assert.equal(normalizeMonitorBase('https://service.ic-casals.tech/v1/'), 'https://service.ic-casals.tech');
+    assert.equal(normalizeMonitorBase(`https://service.ic-casals.tech/v1/${CID}`), 'https://service.ic-casals.tech');
     assert.equal(normalizeMonitorBase(''), '');
   });
 
   it('splits instance urls', () => {
-    const url = `https://casals.realmsgos.dev/v1/${CID}/`;
-    assert.equal(monitorBaseFromInstanceUrl(url), 'https://casals.realmsgos.dev');
+    const url = `https://service.ic-casals.tech/v1/${CID}/`;
+    assert.equal(monitorBaseFromInstanceUrl(url), 'https://service.ic-casals.tech');
     assert.equal(instanceIdFromInstanceUrl(url), CID);
     assert.equal(monitorBaseFromInstanceUrl('https://example.org/other'), '');
-    assert.equal(instanceIdFromInstanceUrl('https://casals.realmsgos.dev/v1/realms-staging'), 'realms-staging');
+    assert.equal(instanceIdFromInstanceUrl('https://service.ic-casals.tech/v1/realms-staging'), 'realms-staging');
   });
 
   it('builds and recognises the hosted url for this conductor', () => {
-    assert.equal(instanceUrlFor('https://casals.realmsgos.dev/', CID), `https://casals.realmsgos.dev/v1/${CID}`);
+    assert.equal(instanceUrlFor('https://service.ic-casals.tech/', CID), `https://service.ic-casals.tech/v1/${CID}`);
     assert.equal(instanceUrlFor('', CID), '');
-    assert.equal(isHostedUrlFor(`https://casals.realmsgos.dev/v1/${CID}/`, 'https://casals.realmsgos.dev', CID), true);
-    assert.equal(isHostedUrlFor('https://casals.realmsgos.dev/v1/realms-staging', 'https://casals.realmsgos.dev', CID), false);
+    assert.equal(isHostedUrlFor(`https://service.ic-casals.tech/v1/${CID}/`, 'https://service.ic-casals.tech', CID), true);
+    assert.equal(isHostedUrlFor('https://service.ic-casals.tech/v1/realms-staging', 'https://service.ic-casals.tech', CID), false);
   });
 });
 

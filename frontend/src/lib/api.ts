@@ -1257,11 +1257,17 @@ export async function refreshControllersCache(): Promise<{
   };
 }
 
-export async function getMySettings(): Promise<{ notification_email?: string }> {
+export async function getMySettings(): Promise<{
+  notification_email?: string;
+  notification_email_verified?: boolean;
+}> {
   return _parseQuery(await (await _actor(true)).get_my_settings());
 }
 
-export async function setMySettings(notificationEmail: string): Promise<UpdateResult> {
+export async function setMySettings(notificationEmail: string): Promise<UpdateResult & {
+  notification_email?: string;
+  notification_email_verified?: boolean;
+}> {
   return _parseUpdate(
     await (await _actor(true)).set_my_settings(
       JSON.stringify({ notification_email: notificationEmail }),

@@ -380,17 +380,49 @@ def _normalize_notification_email(raw) -> str:
     return addr
 
 
+def _notification_email_verified(row) -> bool:
+    return bool(getattr(row, "notification_email_verified", False))
+
+
 def _user_notification_emails() -> list:
-    """Addresses users asked the monitor to use. One per principal, deduped."""
+    """Confirmed addresses the monitor may send operational notices to."""
     list(UserSettings.instances())
     out = []
     seen = set()
     for row in UserSettings.instances():
         addr = (getattr(row, "notification_email", "") or "").strip()
-        if not addr or addr in seen:
+        if not addr or addr in seen or not _notification_email_verified(row):
             continue
         seen.add(addr)
         out.append(addr)
+    return out
+
+
+def _notification_email_entries() -> list:
+    """Every saved address, with the principal who saved it and whether they confirmed."""
+    list(UserSettings.instances())
+    out = []
+    for row in UserSettings.instances():
+        addr = (getattr(row, "notification_email", "") or "").strip()
+        if not addr:
+            continue
+        out.append({
+            "principal": row.principal,
+            "email": addr,
+            "verified": _notification_email_verified(row),
+        })
+    return out
+
+
+def _notification_email_pending() -> list:
+    """Saved addresses that are still waiting for the confirmation link."""
+    list(UserSettings.instances())
+    out = []
+    for row in UserSettings.instances():
+        addr = (getattr(row, "notification_email", "") or "").strip()
+        if not addr or _notification_email_verified(row):
+            continue
+        out.append({"principal": row.principal, "email": addr})
     return out
 
 
@@ -922,6 +954,8 @@ def casals_metadata() -> text:
         "notification_email": (s.alert_emails or ""),
         "alert_emails": (s.alert_emails or ""),
         "notification_emails": _user_notification_emails(),
+        "notification_email_pending": _notification_email_pending(),
+        "notification_email_entries": _notification_email_entries(),
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
         "treasury_reserve": int(s.treasury_reserve or 0),
@@ -1389,7 +1423,8 @@ def get_my_settings() -> text:
         return _err("authentication required")
     row = UserSettings[caller]
     email = (row.notification_email or "") if row is not None else ""
-    return _ok(notification_email=email)
+    verified = _notification_email_verified(row) if row is not None else False
+    return _ok(notification_email=email, notification_email_verified=verified)
 
 
 @update
@@ -1411,11 +1446,46 @@ def set_my_settings(args: text) -> text:
         if not email:
             if row is not None:
                 row.delete()
-            return _ok(notification_email="")
+            return _ok(notification_email="", notification_email_verified=False)
         if row is None:
             row = UserSettings(principal=caller)
-        row.notification_email = email
-        return _ok(notification_email=email)
+            row.notification_email = email
+            row.notification_email_verified = False
+        else:
+            prev = (row.notification_email or "").strip()
+            row.notification_email = email
+            if prev != email:
+                row.notification_email_verified = False
+        verified = _notification_email_verified(row)
+        return _ok(notification_email=email, notification_email_verified=verified)
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def confirm_notification_email(args: text) -> text:
+    """Monitor principal only. Marks one saved address confirmed.
+
+    The owner cannot call this. The monitor does, after they open the
+    confirmation link. Args (JSON): {principal: str, email: str}.
+    """
+    try:
+        if not _is_monitor_caller():
+            return _err("monitor principal required")
+        params = json.loads(args) if args else {}
+        principal = (params.get("principal") or "").strip()
+        email = _normalize_notification_email(params.get("email"))
+        if not principal or not email:
+            return _err("expected principal and email")
+        row = UserSettings[principal]
+        if row is None or (row.notification_email or "").strip() != email:
+            return _err("that address is not pending for this principal")
+        row.notification_email_verified = True
+        return _ok(
+            principal=principal,
+            notification_email=email,
+            notification_email_verified=True,
+        )
     except Exception as e:
         return _err(str(e))
 

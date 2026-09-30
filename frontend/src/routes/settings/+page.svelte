@@ -4,10 +4,13 @@
   import {
     describeMonitorState,
     fetchMonitorInstanceStatus,
+    HOSTED_MONITOR_BASE,
     fetchMonitorService,
     instanceUrlFor,
     monitorBaseFromInstanceUrl,
+    notificationEmailConfirmed,
     registerWithMonitor,
+    requestNotificationConfirmation,
     type MonitorInstanceStatus,
     type MonitorServiceInfo,
   } from '$lib/hostedMonitor';
@@ -59,6 +62,9 @@
   let monitorStatusLoading = $state(false);
   let registerNote = $state('');
   let notificationEmail = $state('');
+  let emailVerified = $state(false);
+  let emailConfirmNote = $state('');
+  let sendingConfirm = $state(false);
   // Native cycles management
   let cyclesAutopilot = $state(false);
   let cyclesIcpAutoconvert = $state(true);
@@ -141,11 +147,21 @@
   async function loadUserSettings() {
     if (!get(isAuthenticated)) {
       notificationEmail = '';
+      emailVerified = false;
       return;
     }
     try {
       const mine = await getMySettings();
       notificationEmail = mine.notification_email ?? '';
+      emailVerified = Boolean(mine.notification_email_verified);
+      if (notificationEmail && !emailVerified) {
+        const cid = backendCanisterId();
+        if (cid) {
+          emailVerified = await notificationEmailConfirmed(
+            confirmationMonitorBase(), cid, notificationEmail, get(principal) || '',
+          );
+        }
+      }
     } catch (e: any) {
       toasts.error(e?.message ?? 'Could not load your settings');
     }
@@ -159,8 +175,41 @@
     } else {
       canEditSubnetWhitelist = false;
       notificationEmail = '';
+      emailVerified = false;
     }
   });
+
+  function confirmationMonitorBase(): string {
+    return monitorBaseFromInstanceUrl(meta?.monitor_service_url || monitorServiceUrl) || HOSTED_MONITOR_BASE;
+  }
+
+  async function sendConfirmation(email: string) {
+    const cid = backendCanisterId();
+    const who = get(principal) || '';
+    if (!cid || !who) {
+      emailConfirmNote = 'Sign in again, then resend the confirmation.';
+      return;
+    }
+    sendingConfirm = true;
+    emailConfirmNote = '';
+    try {
+      const res = await requestNotificationConfirmation(confirmationMonitorBase(), cid, email, who);
+      if (!res.ok) {
+        emailConfirmNote = res.detail || 'Could not send the confirmation email';
+        return;
+      }
+      if (res.status === 'already_confirmed') {
+        emailVerified = true;
+        emailConfirmNote = '';
+        return;
+      }
+      emailConfirmNote = res.status === 'cooldown'
+        ? 'A confirmation was just sent. Wait a minute before asking for another.'
+        : `Confirmation sent to ${email}. Open the link in that message.`;
+    } finally {
+      sendingConfirm = false;
+    }
+  }
 
   async function useHostedService() {
     hostedError = '';
@@ -327,9 +376,11 @@
     }
     savingUser = true;
     try {
-      await setMySettings(email);
+      const saved = await setMySettings(email);
       notificationEmail = email;
+      emailVerified = Boolean(saved.notification_email_verified);
       toasts.success(email ? 'Notification email saved' : 'Notification email cleared');
+      if (email && !emailVerified) await sendConfirmation(email);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to save your settings');
     } finally {
@@ -516,6 +567,26 @@
             <p class="text-xs text-primary-400 mt-1">
               Saved for this principal. Leave it empty and the monitor skips you.
             </p>
+            {#if notificationEmail.trim()}
+              {#if emailVerified}
+                <p class="text-xs text-emerald-700 mt-2">Confirmed. Operational notices can be sent here.</p>
+              {:else}
+                <p class="text-xs text-primary-600 mt-2">
+                  Not confirmed yet. Open the link sent to this address. Notices are not sent until then.
+                </p>
+                <button
+                  type="button"
+                  class="btn-secondary btn-sm mt-2"
+                  disabled={sendingConfirm}
+                  onclick={() => sendConfirmation(notificationEmail.trim())}
+                >
+                  {sendingConfirm ? 'Sending…' : 'Resend confirmation'}
+                </button>
+              {/if}
+              {#if emailConfirmNote}
+                <p class="text-xs text-primary-600 mt-2">{emailConfirmNote}</p>
+              {/if}
+            {/if}
           </div>
           <div class="flex justify-end">
             <button type="submit" class="btn-primary btn-sm" disabled={savingUser}>
@@ -597,7 +668,7 @@
                       id="hostedBase"
                       type="url"
                       class="input font-mono text-sm flex-1"
-                      placeholder="https://casals.realmsgos.dev"
+                      placeholder="https://service.ic-casals.tech"
                       bind:value={hostedBase}
                     />
                     <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={hostedLoading || !hostedBase.trim()}>

@@ -166,11 +166,16 @@ class TestSettingsAndCommander:
         _ok("set_my_settings", {"notification_email": "me@example.com"})
         mine = call_canister("get_my_settings")
         assert mine["notification_email"] == "me@example.com"
+        assert mine["notification_email_verified"] is False
         md = call_canister("casals_metadata")
-        assert "me@example.com" in md["notification_emails"]
+        # Unconfirmed addresses are not operational recipients.
+        assert "me@example.com" not in md["notification_emails"]
+        pending = md.get("notification_email_pending") or []
+        assert any(p.get("email") == "me@example.com" for p in pending)
         _ok("set_my_settings", {"notification_email": ""})
         mine = call_canister("get_my_settings")
         assert mine["notification_email"] == ""
+        assert mine["notification_email_verified"] is False
         md = call_canister("casals_metadata")
         assert "me@example.com" not in (md.get("notification_emails") or [])
 

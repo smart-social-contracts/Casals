@@ -380,12 +380,16 @@ class UserSettings(Entity):
     """Preferences for one principal. The caller may write only their own row.
 
     ``notification_email`` is where the off-chain monitor sends that person's
-    operational notices. Empty means this principal gets no email.
+    operational notices, after they open the confirmation link
+    (``notification_email_verified``). Empty means this principal gets no email.
     """
 
     __alias__ = "principal"
     principal = String(min_length=1, max_length=64)
     notification_email = String(max_length=254, default="")
+    # True only after the owner opens the monitor's confirmation link.
+    # Operational notices are not sent to an unconfirmed address.
+    notification_email_verified = Boolean(default=False)
 
 
 class PrincipalAlias(Entity, TimestampedMixin):

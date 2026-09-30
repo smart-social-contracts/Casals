@@ -115,7 +115,7 @@ function _signal(ms: number): AbortSignal | undefined {
 /** `GET <base>/v1/service`. Throws with a readable message on failure. */
 export async function fetchMonitorService(base: string, fetchFn: FetchLike = fetch): Promise<MonitorServiceInfo> {
   const b = normalizeMonitorBase(base);
-  if (!b) throw new Error('Enter the monitor service URL (e.g. https://casals.realmsgos.dev)');
+  if (!b) throw new Error('Enter the monitor service URL (e.g. https://service.ic-casals.tech)');
   const res = await fetchFn(`${b}/v1/service`, {
     headers: { accept: 'application/json' },
     signal: _signal(15_000),
@@ -160,6 +160,71 @@ export async function registerWithMonitor(
     return { ok: false, status: res.status, detail: typeof detail === 'string' ? detail : `HTTP ${res.status}` };
   } catch (e: any) {
     return { ok: false, status: 0, detail: e?.message ?? 'network error' };
+  }
+}
+
+/** Public hosted monitor. Used when this conductor has not saved a monitor URL yet. */
+export const HOSTED_MONITOR_BASE = 'https://service.ic-casals.tech';
+
+export interface NotificationConfirmResult {
+  ok: boolean;
+  status: string;
+  detail?: string;
+}
+
+/** Ask the monitor to email a confirmation link for an address saved on `canisterId`. */
+export async function requestNotificationConfirmation(
+  base: string,
+  canisterId: string,
+  email: string,
+  principal: string,
+  fetchFn: FetchLike = fetch,
+): Promise<NotificationConfirmResult> {
+  const b = normalizeMonitorBase(base);
+  if (!b) return { ok: false, status: 'error', detail: 'no monitor' };
+  try {
+    const res = await fetchFn(`${b}/v1/notification-email/request`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ canister_id: canisterId, email, principal }),
+      signal: _signal(30_000),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = payload?.detail;
+      return {
+        ok: false,
+        status: 'error',
+        detail: typeof detail === 'string' ? detail : `HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, status: String(payload?.status ?? 'sent'), detail: payload?.detail };
+  } catch (e: any) {
+    return { ok: false, status: 'error', detail: e?.message ?? 'network error' };
+  }
+}
+
+/** Whether the monitor has already accepted `email` for this conductor. */
+export async function notificationEmailConfirmed(
+  base: string,
+  canisterId: string,
+  email: string,
+  principal: string,
+  fetchFn: FetchLike = fetch,
+): Promise<boolean> {
+  const b = normalizeMonitorBase(base);
+  if (!b || !email || !principal) return false;
+  try {
+    const q = new URLSearchParams({ canister_id: canisterId, email, principal });
+    const res = await fetchFn(`${b}/v1/notification-email/status?${q}`, {
+      headers: { accept: 'application/json' },
+      signal: _signal(15_000),
+    });
+    if (!res.ok) return false;
+    const payload = await res.json();
+    return Boolean(payload?.confirmed);
+  } catch {
+    return false;
   }
 }
 
