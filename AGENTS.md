@@ -6,7 +6,7 @@ rollback / stop / start) in a structured hierarchy: **Section → Stand →
 Canister** (a Canister is one deployed canister). Approval is delegated — each
 Section or Stand registers a *commander* principal (the project's own governance
 canister) whose decisions Casals executes. Casals never embeds voting logic.
-Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/realms))
+Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/realms-gos))
 deploy their own conductor instances and supply sheets from their own repos.
 
 ## Declarative model

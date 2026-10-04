@@ -314,7 +314,7 @@ adopted canisters may appear there; `set_sheet` binds them).
       "source": "https://github.com/smart-social-contracts/Casals/releases/download/…/orchestration-multisig@1.4.0.wasm.gz",
       "sha256": "…", "wasm_type": "multisig" },
     { "family": "realm-backend", "version": "main",
-      "source": "release:smart-social-contracts/realms@main:realm_backend.wasm.gz", "sha256": "…" }
+      "source": "release:smart-social-contracts/realms-gos@main:realm_backend.wasm.gz", "sha256": "…" }
   ],
   "publish": [                              // asset bundles: frontend builds, catalogs, branding (docs/BUNDLES.md)
     { "path": "frontend/marketplace-assets/1.0.0", "source": "local:marketplace-1.0.0.tgz", "sha256": "<bundle hash>" }
