@@ -81,7 +81,8 @@ jobs:
           echo "# SHA-256 checksums for release assets" > checksums.txt
           for f in casals_backend.wasm.gz casals_backend.did \
                    casals_conductor.wasm.gz casals_conductor.did \
-                   casals_frontend.tar.gz certified-assets@0.3.0.wasm.gz \
+                   casals_frontend.tar.gz casals_frontend.manifest.json \
+                   certified-assets@0.3.0.wasm.gz \
                    certified-assets@1.0.0.wasm.gz \
                    orchestration-baton@1.5.1.wasm.gz orchestration-multisig@1.6.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
@@ -110,6 +111,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
+          # Stays a draft until the checksum file is signed with the release key
+          # (smart-social-contracts/.github scripts/sign-release.sh).
+          draft: true
           files: |
             casals_backend.wasm.gz
             casals_backend.did

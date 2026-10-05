@@ -2,10 +2,10 @@
 # Uses secrets.PYPI_API_TOKEN (same as basilisk / realms).
 name: Publish to PyPI
 
+# Called by release-verify.yml once a published release's signature checks out.
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  workflow_call:
 
 jobs:
   publish:
