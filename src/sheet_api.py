@@ -87,17 +87,24 @@ def apply_sheet_monitor(monitor: dict | None) -> bool:
     longer does after a baton hand-off.
 
     Same switch as Settings → off-chain monitor: the monitor tops up, so the
-    on-chain autopilot and sampler stop. No ``monitor`` block leaves the
-    settings alone. Returns whether anything changed."""
+    on-chain autopilot and sampler stop. The sheet's service URL and principal
+    are only the first default: once the conductor has a service URL (from an
+    earlier deploy or from Settings), deploys keep it and its principal. No
+    ``monitor`` block leaves the settings alone. Returns whether anything
+    changed."""
     if not monitor:
         return False
     from lifecycle import _parse_extra_controller_principals
-    principal = monitor["principal"]
+    s = _settings()
+    if (s.monitor_service_url or "").strip() and (s.monitor_principal or "").strip():
+        principal = s.monitor_principal.strip()
+        url = s.monitor_service_url.strip()
+    else:
+        principal = monitor["principal"]
+        url = f"{monitor['url']}/v1/{ic.id().to_str()}"
     if principal in _parse_extra_controller_principals():
         raise ValueError("monitor.principal is an extra controller: the monitor reads "
                          "via status_visibility, never as a controller")
-    url = f"{monitor['url']}/v1/{ic.id().to_str()}"
-    s = _settings()
     if (s.monitor_enabled and (s.monitor_principal or "") == principal
             and (s.monitor_service_url or "") == url
             and not s.cycles_autopilot and not s.cycles_sampling):

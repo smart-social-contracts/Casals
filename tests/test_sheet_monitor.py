@@ -105,6 +105,24 @@ def test_set_sheet_applies_the_monitor_once(db):
     assert sheet_api.apply_sheet_monitor(None) is False
 
 
+def test_deploy_keeps_a_service_url_changed_in_settings(db):
+    import sheet_api
+    from helpers import _settings
+
+    other = "aaaaa-aa"
+    s = _settings()
+    s.monitor_service_url = f"https://other-monitor.example/v1/{SELF}"
+    s.monitor_principal = other
+    s.monitor_enabled = 0
+    monitor = {"principal": MONITOR, "url": "https://service.staging.example"}
+
+    assert sheet_api.apply_sheet_monitor(monitor) is True, "still switches the monitor on"
+    s = _settings()
+    assert s.monitor_enabled == 1
+    assert s.monitor_service_url == f"https://other-monitor.example/v1/{SELF}"
+    assert s.monitor_principal == other
+
+
 def test_settings_update_uses_icp_controller_flags():
     ic = RecordingIc()
     ic.icp = lambda argv, **kw: ic.record("icp", tuple(argv))

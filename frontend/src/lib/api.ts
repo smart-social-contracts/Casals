@@ -649,10 +649,13 @@ export async function casalsMetadata(): Promise<Metadata> {
 /** Per-instance base URL of the off-chain monitor (casals-monitor), e.g.
  *  ``https://<host>/v1/<instance>``. Empty string when monitoring is on-chain. */
 async function _monitorBase(): Promise<string> {
-  if (_metadataCache) return (_metadataCache.monitor_service_url || '').trim();
-  if (!_metadataInflight) _metadataInflight = casalsMetadata().catch(() => null);
-  const md = await _metadataInflight;
-  return ((md?.monitor_service_url) || '').trim();
+  let md = _metadataCache;
+  if (!md) {
+    if (!_metadataInflight) _metadataInflight = casalsMetadata().catch(() => null);
+    md = await _metadataInflight;
+  }
+  // The URL stays saved in on-chain mode; only an enabled monitor serves data.
+  return md?.monitor_enabled ? (md.monitor_service_url || '').trim() : '';
 }
 
 /** Cached GETs hit local SQLite and finish in a few seconds. */

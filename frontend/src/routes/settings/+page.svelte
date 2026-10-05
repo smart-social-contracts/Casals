@@ -4,13 +4,14 @@
   import {
     describeMonitorState,
     fetchMonitorInstanceStatus,
-    HOSTED_MONITOR_BASE,
     fetchMonitorService,
     instanceUrlFor,
     monitorBaseFromInstanceUrl,
+    normalizeMonitorBase,
     notificationEmailConfirmed,
     registerWithMonitor,
     requestNotificationConfirmation,
+    serviceLookupNeeded,
     type MonitorInstanceStatus,
     type MonitorServiceInfo,
   } from '$lib/hostedMonitor';
@@ -268,7 +269,7 @@
   });
 
   function confirmationMonitorBase(): string {
-    return monitorBaseFromInstanceUrl(meta?.monitor_service_url || monitorServiceUrl) || HOSTED_MONITOR_BASE;
+    return monitorBaseFromInstanceUrl(meta?.monitor_service_url || monitorServiceUrl);
   }
 
   async function sendConfirmation(email: string) {
@@ -278,10 +279,15 @@
       emailConfirmNote = 'Sign in again, then resend the confirmation.';
       return;
     }
+    const base = confirmationMonitorBase();
+    if (!base) {
+      emailConfirmNote = 'No off-chain service URL is set, so Casals cannot send email.';
+      return;
+    }
     sendingConfirm = true;
     emailConfirmNote = '';
     try {
-      const res = await requestNotificationConfirmation(confirmationMonitorBase(), cid, email, who);
+      const res = await requestNotificationConfirmation(base, cid, email, who);
       if (!res.ok) {
         emailConfirmNote = res.detail || 'Could not send the confirmation email';
         return;
@@ -299,7 +305,9 @@
     }
   }
 
-  async function useHostedService() {
+  /** Read the principal from `<hostedBase>/v1/service` and point the instance URL
+   *  at that service. True when both were updated. */
+  async function useHostedService(): Promise<boolean> {
     hostedError = '';
     hostedLoading = true;
     try {
@@ -311,9 +319,11 @@
       if (info.registration_enabled === false) {
         hostedError = 'This service is not accepting registrations right now.';
       }
+      return Boolean(cid);
     } catch (e: any) {
       hostedInfo = null;
       hostedError = e?.message ?? 'Could not reach the monitor service';
+      return false;
     } finally {
       hostedLoading = false;
     }
@@ -367,12 +377,24 @@
 
   async function save(event: Event) {
     event.preventDefault();
-    if (canMonitor && cycleMode === 'offchain' && !monitorServiceUrl.trim()) {
-      toasts.error('Off-chain mode requires a monitor service URL');
-      return;
-    }
     saving = true;
     try {
+      if (canMonitor && serviceLookupNeeded(hostedBase, monitorServiceUrl)) {
+        const ok = await useHostedService();
+        if (!ok || serviceLookupNeeded(hostedBase, monitorServiceUrl)) {
+          toasts.error('Could not reach that service to read its principal');
+          return;
+        }
+      }
+      // An empty field clears the service. URLs that are not `/v1/<id>` never
+      // fill the field, so they are kept.
+      const cleared = canMonitor && !normalizeMonitorBase(hostedBase) && Boolean(monitorBaseFromInstanceUrl(monitorServiceUrl));
+      const serviceUrl = cleared ? '' : monitorServiceUrl.trim();
+      const servicePrincipal = cleared ? '' : monitorPrincipal.trim();
+      if (canMonitor && cycleMode === 'offchain' && !serviceUrl) {
+        toasts.error('Off-chain mode requires a monitor service URL');
+        return;
+      }
       const draft: SettingsPatch = {
         orchestra_name: orchestraName.trim(),
         orchestra_description: orchestraDescription.trim(),
@@ -382,8 +404,8 @@
         cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
         display_currency: displayCurrency,
         monitor_enabled: cycleMode === 'offchain',
-        monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
-        monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta?.monitor_principal ?? ''),
+        monitor_service_url: serviceUrl,
+        monitor_principal: servicePrincipal,
         cycles_sampling: cycleMode === 'onchain',
       };
       const minC = parseTcAmount(defaultMinCycles);
@@ -576,11 +598,14 @@
             </span>
           </dd>
         </div>
-        {#if meta.monitor_enabled && meta.monitor_service_url}
+        {#if meta.monitor_service_url}
           <div class="flex justify-between gap-3 sm:col-span-2">
             <dt class="text-primary-500 shrink-0">Monitor service</dt>
             <dd class="font-mono text-primary-900 truncate min-w-0 text-xs" title={meta.monitor_service_url}>
-              {meta.monitor_service_url}
+              {monitorBaseFromInstanceUrl(meta.monitor_service_url) || meta.monitor_service_url}
+              {#if !meta.monitor_enabled}
+                <span class="font-sans text-primary-400">(not in use)</span>
+              {/if}
             </dd>
           </div>
         {/if}
@@ -821,74 +846,55 @@
               </p>
             {/if}
 
+            <div>
+              <label class="label" for="hostedBase">Off-chain service URL</label>
+              <div class="flex gap-2">
+                <input
+                  id="hostedBase"
+                  type="url"
+                  class="input font-mono text-sm flex-1"
+                  placeholder="https://service.ic-casals.tech"
+                  bind:value={hostedBase}
+                  disabled={!canMonitor}
+                />
+                <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={!canMonitor || hostedLoading || !hostedBase.trim()}>
+                  {hostedLoading ? 'Checking…' : 'Use this service'}
+                </button>
+              </div>
+              <p class="text-xs text-primary-400 mt-1">
+                Set when Casals is deployed (the production or staging service). Controllers, and commanders with
+                <span class="font-mono">settings.monitor</span>, can change it. The monitor principal is read from the service.
+              </p>
+              {#if hostedError}
+                <p class="text-xs text-red-600 mt-1">{hostedError}</p>
+              {/if}
+              <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt class="text-primary-500">Instance URL</dt>
+                <dd class="font-mono text-primary-900 break-all">{monitorServiceUrl || '—'}</dd>
+                <dt class="text-primary-500">Monitor principal</dt>
+                <dd class="font-mono text-primary-900 break-all">{monitorPrincipal || '—'}</dd>
+                {#if hostedInfo?.poll_interval_secs}
+                  <dt class="text-primary-500">Polling</dt>
+                  <dd class="text-primary-900">every {Math.round(hostedInfo.poll_interval_secs.default / 60)} min by default (min {Math.round(hostedInfo.poll_interval_secs.min / 60)} min)</dd>
+                {/if}
+                {#if hostedInfo?.terms_url}
+                  <dt class="text-primary-500">Terms</dt>
+                  <dd><a class="text-emerald-700 underline" href={hostedInfo.terms_url} target="_blank" rel="noreferrer">{hostedInfo.terms_url}</a></dd>
+                {/if}
+              </dl>
+              {#if canMonitor && serviceLookupNeeded(hostedBase, monitorServiceUrl)}
+                <p class="text-xs text-amber-700 mt-1">Saving reads the principal from the new service.</p>
+              {:else if canMonitor && !normalizeMonitorBase(hostedBase) && monitorBaseFromInstanceUrl(monitorServiceUrl)}
+                <p class="text-xs text-amber-700 mt-1">Saving clears the service URL and principal.</p>
+              {/if}
+              <p class="text-xs text-primary-400 mt-1">
+                Casals grants the monitor principal <code class="text-[11px]">status_visibility</code> on managed canisters (so it can read <code class="text-[11px]">canister_status</code>) and accepts its top-up / convert requests — amounts are recomputed on-chain from your cycle policy and conversions are throttled. It is <strong>not</strong> made a controller. Saving in off-chain mode runs <em>Sync monitor access</em>.
+              </p>
+            </div>
+
             {#if cycleMode === 'offchain'}
-              <div class="space-y-4 border-l-2 border-emerald-200 ml-1 pl-4">
-                <div>
-                  <label class="label" for="hostedBase">Hosted monitor service</label>
-                  <div class="flex gap-2">
-                    <input
-                      id="hostedBase"
-                      type="url"
-                      class="input font-mono text-sm flex-1"
-                      placeholder="https://service.ic-casals.tech"
-                      bind:value={hostedBase}
-                      disabled={!canMonitor}
-                    />
-                    <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={!canMonitor || hostedLoading || !hostedBase.trim()}>
-                      {hostedLoading ? 'Checking…' : 'Use this service'}
-                    </button>
-                  </div>
-                  <p class="text-xs text-primary-400 mt-1">
-                    Paste the service's base URL. Casals reads its principal from <code class="text-[11px]">/v1/service</code> and fills in the two fields below; on save it registers this conductor with the service. Your settings are the only credential — the service never holds a token for you.
-                  </p>
-                  {#if hostedError}
-                    <p class="text-xs text-red-600 mt-1">{hostedError}</p>
-                  {/if}
-                  {#if hostedInfo}
-                    <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                      <dt class="text-primary-500">Principal</dt>
-                      <dd class="font-mono text-primary-900 break-all">{hostedInfo.principal}</dd>
-                      {#if hostedInfo.poll_interval_secs}
-                        <dt class="text-primary-500">Polling</dt>
-                        <dd class="text-primary-900">every {Math.round(hostedInfo.poll_interval_secs.default / 60)} min by default (min {Math.round(hostedInfo.poll_interval_secs.min / 60)} min)</dd>
-                      {/if}
-                      {#if hostedInfo.terms_url}
-                        <dt class="text-primary-500">Terms</dt>
-                        <dd><a class="text-emerald-700 underline" href={hostedInfo.terms_url} target="_blank" rel="noreferrer">{hostedInfo.terms_url}</a></dd>
-                      {/if}
-                    </dl>
-                  {/if}
-                </div>
-                <div>
-                  <label class="label" for="monitorServiceUrl">Monitor service URL</label>
-                  <input
-                    id="monitorServiceUrl"
-                    type="url"
-                    class="input font-mono text-sm"
-                    placeholder="https://monitor.example.org/v1/my-instance"
-                    bind:value={monitorServiceUrl}
-                    required
-                    disabled={!canMonitor}
-                  />
-                  <p class="text-xs text-primary-400 mt-1">
-                    Base URL for this instance on the monitor API (must expose <code class="text-[11px]">/cycles</code>, <code class="text-[11px]">/history</code>, and <code class="text-[11px]">/poll/*</code>).
-                  </p>
-                </div>
-                <div>
-                  <label class="label" for="monitorPrincipal">Monitor principal (allowed viewer)</label>
-                  <input
-                    id="monitorPrincipal"
-                    type="text"
-                    class="input font-mono text-sm"
-                    placeholder="aaaaa-aa"
-                    bind:value={monitorPrincipal}
-                    disabled={!canMonitor}
-                  />
-                  <p class="text-xs text-primary-400 mt-1">
-                    Casals grants this principal <code class="text-[11px]">status_visibility</code> on managed canisters (so it can read <code class="text-[11px]">canister_status</code>) and accepts its top-up / convert requests — amounts are recomputed on-chain from your cycle policy and conversions are throttled. It is <strong>not</strong> made a controller. Saving runs <em>Sync monitor access</em>.
-                  </p>
-                </div>
-                {#if meta?.monitor_enabled && monitorBaseFromInstanceUrl(meta.monitor_service_url ?? '')}
+              {#if meta?.monitor_enabled && monitorBaseFromInstanceUrl(meta.monitor_service_url ?? '')}
+                <div class="border-l-2 border-emerald-200 ml-1 pl-4">
                   <div class="rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5 text-xs space-y-1.5">
                     <div class="flex items-center justify-between gap-2">
                       <span class="font-medium text-primary-800">Hosted monitor status</span>
@@ -918,8 +924,8 @@
                       <p class="text-primary-500">{registerNote}</p>
                     {/if}
                   </div>
-                {/if}
-              </div>
+                </div>
+              {/if}
             {/if}
           </div>
 

@@ -340,7 +340,7 @@
   }
 
   function applyOffChainMonitorState(cached: CyclesReport, md: Metadata | null) {
-    if (!md?.monitor_service_url && cached.source !== 'off-chain-monitor') return;
+    if (!(md?.monitor_enabled && md?.monitor_service_url) && cached.source !== 'off-chain-monitor') return;
     liveSynced = true;
     snapshotPartial = false;
   }
@@ -501,7 +501,7 @@
     void reloadTreasuryFlow(flowPeriod, true);
     try {
       let live: CyclesReport | null = null;
-      if (meta?.monitor_service_url) {
+      if (usesOffChainMonitor) {
         live = await monitorPollTreasury();
         if (!live) throw new Error('Off-chain monitor treasury refresh failed');
       } else {
@@ -589,7 +589,7 @@
   /** Load cached snapshot, then refresh live balances in the background. */
   async function load() {
     await loadCached();
-    if (!meta?.monitor_service_url) await refreshLiveOnChain();
+    if (!usesOffChainMonitor) await refreshLiveOnChain();
   }
 
   async function loadMultisigSigners() {
@@ -1234,7 +1234,7 @@
     (report?.canisters ?? []).filter((c) => c.cycles !== undefined).length,
   );
   const totalCanisterCount = $derived(report?.canisters?.length ?? 0);
-  const usesOffChainMonitor = $derived(Boolean(meta?.monitor_service_url));
+  const usesOffChainMonitor = $derived(Boolean(meta?.monitor_enabled && meta?.monitor_service_url));
   const balancesStale = $derived(
     !usesOffChainMonitor
       && (snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing)),
@@ -1710,7 +1710,7 @@
 
   async function refreshSelectedCanisters(names: string[], canisterIds: string[] = []) {
     if (!names.length && !canisterIds.length) return;
-    if (meta?.monitor_service_url) {
+    if (usesOffChainMonitor) {
       const live = await monitorPollCanisters(names, canisterIds);
       if (!live) throw new Error('Off-chain monitor canister refresh failed');
       mergeCanisterRows(live);

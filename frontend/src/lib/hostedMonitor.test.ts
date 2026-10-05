@@ -9,6 +9,7 @@ import {
   monitorBaseFromInstanceUrl,
   normalizeMonitorBase,
   registerWithMonitor,
+  serviceLookupNeeded,
   type MonitorInstanceStatus,
 } from './hostedMonitor.ts';
 
@@ -35,6 +36,19 @@ describe('hosted monitor URL helpers', () => {
     assert.equal(instanceUrlFor('', CID), '');
     assert.equal(isHostedUrlFor(`https://service.ic-casals.tech/v1/${CID}/`, 'https://service.ic-casals.tech', CID), true);
     assert.equal(isHostedUrlFor('https://service.ic-casals.tech/v1/realms-staging', 'https://service.ic-casals.tech', CID), false);
+  });
+
+  it('asks for a /v1/service lookup only when the base changes', () => {
+    const prod = `https://service.ic-casals.tech/v1/${CID}`;
+    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', prod), false);
+    assert.equal(serviceLookupNeeded(' https://service.ic-casals.tech/ ', prod), false);
+    assert.equal(serviceLookupNeeded(`https://service.ic-casals.tech/v1/${CID}`, prod), false);
+    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', 'https://service.ic-casals.tech/v1/realms-staging'), false);
+    assert.equal(serviceLookupNeeded('https://service.staging.ic-casals.tech', prod), true);
+    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', ''), true);
+    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', 'https://example.org/other'), true);
+    assert.equal(serviceLookupNeeded('', prod), false);
+    assert.equal(serviceLookupNeeded('  ', ''), false);
   });
 });
 

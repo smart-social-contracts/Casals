@@ -580,10 +580,13 @@ also a canister controller and bypasses commander checks for admin operations.
 Platform settings: an orchestra-wide (conductor) commander can change a settings
 group with its key: `settings.general` (name, description, currency),
 `settings.cycles` (cycle defaults, reserve, sampler, autopilot),
-`settings.monitor` (off-chain monitor, `sync_controllers`), and
+`settings.monitor` (off-chain monitor, `sync_controllers`; the service URL, whose
+principal the UI reads from `<url>/v1/service`), and
 `notification.manage` (see and remove everyone's notification addresses).
 Section and stand commanders never qualify. Open access, extra controllers,
 delegated destroy, and the wasm store / frontend ids stay controller-only.
+The sheet's `monitor` block sets the service URL and principal on the first
+deploy only; later deploys keep whatever Settings holds.
 
 Who may appoint, remove or re-grant other commanders is one rule shared by
 `set_commander`, `remove_commander`, `set_permissions` and the commanders a

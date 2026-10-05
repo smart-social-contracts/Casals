@@ -85,6 +85,13 @@ export function instanceUrlFor(base: string, canisterId: string): string {
   return `${b}/v1/${canisterId}`;
 }
 
+/** Must Settings re-read `<base>/v1/service` before saving? True when the base URL
+ *  field names a service other than the one the instance URL points at. */
+export function serviceLookupNeeded(base: string, instanceUrl: string): boolean {
+  const b = normalizeMonitorBase(base);
+  return Boolean(b) && b !== monitorBaseFromInstanceUrl(instanceUrl);
+}
+
 /** Does a saved `monitor_service_url` already point this conductor at `base`? */
 export function isHostedUrlFor(url: string, base: string, canisterId: string): boolean {
   return Boolean(url) && url.trim().replace(/\/$/, '') === instanceUrlFor(base, canisterId);
