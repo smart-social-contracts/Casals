@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { casalsMetadata, setSettings, setMySettings, getMySettings, syncControllers, formatCycles, parseCycles, formatFiat, getTree, backendCanisterId } from '$lib/api';
+  import { casalsMetadata, setSettings, setMySettings, getMySettings, listNotificationRecipients, removeNotificationEmail, syncControllers, formatCycles, parseCycles, formatFiat, getTree, backendCanisterId } from '$lib/api';
   import {
     describeMonitorState,
     fetchMonitorInstanceStatus,
@@ -14,8 +14,20 @@
     type MonitorInstanceStatus,
     type MonitorServiceInfo,
   } from '$lib/hostedMonitor';
-  import type { Metadata, SettingsPatch } from '$lib/api';
+  import type { Metadata, NotificationEmailStatus, NotificationRecipient, SettingsPatch } from '$lib/api';
   import { isAuthenticated, principal, isController } from '$lib/auth';
+  import {
+    ALL_EDITABLE_SETTINGS,
+    NO_EDITABLE_SETTINGS,
+    allowedPatch,
+    canEditGroup,
+    canSyncMonitorAccess,
+    hasAnyEditable,
+    normalizeEditableSettings,
+    platformSettingsNotice,
+    type EditableSettings,
+  } from '$lib/settingsAccess';
+  import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { get } from 'svelte/store';
   import { ensureFx } from '$lib/fx.svelte';
   import { canManageSubnetWhitelist } from '$lib/subnetAccess';
@@ -62,9 +74,23 @@
   let monitorStatusLoading = $state(false);
   let registerNote = $state('');
   let notificationEmail = $state('');
-  let emailVerified = $state(false);
+  /** The address saved on-chain; `notificationEmail` is the input. */
+  let savedEmail = $state('');
+  let emailStatus = $state<NotificationEmailStatus>('');
+  let emailUnsubscribedAt = $state(0);
   let emailConfirmNote = $state('');
   let sendingConfirm = $state(false);
+  let removingUser = $state(false);
+  // `editable_settings` from get_my_settings; null until loaded (or on an
+  // older backend without it, where the controller probe decides).
+  let backendEditable = $state<EditableSettings | null>(null);
+  let userSettingsLoaded = $state(false);
+  let recipients = $state<NotificationRecipient[]>([]);
+  let legacyEmail = $state('');
+  let recipientsLoading = $state(false);
+  let recipientsError = $state('');
+  let removingRecipient = $state<string | null>(null);
+  let principalLabels = $state<Map<string, string>>(new Map());
   // Native cycles management
   let cyclesAutopilot = $state(false);
   let cyclesIcpAutoconvert = $state(true);
@@ -79,6 +105,31 @@
   let canEditSubnetWhitelist = $state(false);
 
   const currencies = $derived(meta?.fx_currencies?.length ? meta.fx_currencies : FALLBACK_CURRENCIES);
+
+  const editable = $derived<EditableSettings>(
+    backendEditable ?? ($isController === true ? ALL_EDITABLE_SETTINGS : NO_EDITABLE_SETTINGS),
+  );
+  const canGeneral = $derived(canEditGroup(editable, 'general'));
+  const canCycles = $derived(canEditGroup(editable, 'cycles'));
+  const canMonitor = $derived(canEditGroup(editable, 'monitor'));
+  const canControllerFields = $derived(canEditGroup(editable, 'controller'));
+  // The mode switch writes monitor_enabled and the on-chain sampler/autopilot.
+  const canSwitchMode = $derived(canMonitor && canCycles);
+  const canSavePlatform = $derived(canGeneral || canCycles || canMonitor || canControllerFields);
+  const platformNotice = $derived(platformSettingsNotice(editable));
+  const emailMatchesSaved = $derived(Boolean(savedEmail) && notificationEmail.trim() === savedEmail);
+
+  function formatDay(tsSecs: number): string {
+    if (!tsSecs) return 'an unknown date';
+    return new Date(tsSecs * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function recipientStatusClass(status: string): string {
+    if (status === 'confirmed') return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+    if (status === 'pending') return 'bg-amber-50 text-amber-800 border border-amber-200';
+    if (status === 'declined') return 'bg-red-50 text-red-700 border border-red-200';
+    return 'badge-neutral';
+  }
 
   function cyclesToTcInput(cycles: number): string {
     return formatCycles(cycles).replace(/ TC$/, '');
@@ -144,26 +195,64 @@
 
   onMount(load);
 
+  function resetUserSettings() {
+    notificationEmail = '';
+    savedEmail = '';
+    emailStatus = '';
+    emailUnsubscribedAt = 0;
+    emailConfirmNote = '';
+    backendEditable = null;
+    userSettingsLoaded = false;
+    recipients = [];
+    legacyEmail = '';
+    recipientsError = '';
+  }
+
   async function loadUserSettings() {
     if (!get(isAuthenticated)) {
-      notificationEmail = '';
-      emailVerified = false;
+      resetUserSettings();
       return;
     }
     try {
       const mine = await getMySettings();
       notificationEmail = mine.notification_email ?? '';
-      emailVerified = Boolean(mine.notification_email_verified);
-      if (notificationEmail && !emailVerified) {
+      savedEmail = notificationEmail;
+      emailStatus = mine.notification_email_status
+        ?? (notificationEmail ? (mine.notification_email_verified ? 'confirmed' : 'pending') : '');
+      emailUnsubscribedAt = mine.notification_email_unsubscribed_at ?? 0;
+      backendEditable = mine.editable_settings ? normalizeEditableSettings(mine.editable_settings) : null;
+      userSettingsLoaded = true;
+      if (backendEditable?.notifications) void loadRecipients();
+      if (notificationEmail && emailStatus === 'pending') {
         const cid = backendCanisterId();
         if (cid) {
-          emailVerified = await notificationEmailConfirmed(
+          const confirmed = await notificationEmailConfirmed(
             confirmationMonitorBase(), cid, notificationEmail, get(principal) || '',
           );
+          if (confirmed) emailStatus = 'confirmed';
         }
       }
     } catch (e: any) {
+      userSettingsLoaded = true;
       toasts.error(e?.message ?? 'Could not load your settings');
+    }
+  }
+
+  async function loadRecipients() {
+    recipientsLoading = true;
+    recipientsError = '';
+    try {
+      const [res, tree] = await Promise.all([
+        listNotificationRecipients(),
+        getTree().catch(() => null),
+      ]);
+      recipients = res.recipients;
+      legacyEmail = res.legacy_email;
+      principalLabels = buildPrincipalLabels(tree, backendCanisterId() || undefined);
+    } catch (e: any) {
+      recipientsError = e?.message ?? 'Could not load notification recipients';
+    } finally {
+      recipientsLoading = false;
     }
   }
 
@@ -174,8 +263,7 @@
       void loadUserSettings();
     } else {
       canEditSubnetWhitelist = false;
-      notificationEmail = '';
-      emailVerified = false;
+      resetUserSettings();
     }
   });
 
@@ -199,7 +287,7 @@
         return;
       }
       if (res.status === 'already_confirmed') {
-        emailVerified = true;
+        emailStatus = 'confirmed';
         emailConfirmNote = '';
         return;
       }
@@ -279,13 +367,13 @@
 
   async function save(event: Event) {
     event.preventDefault();
-    if (cycleMode === 'offchain' && !monitorServiceUrl.trim()) {
+    if (canMonitor && cycleMode === 'offchain' && !monitorServiceUrl.trim()) {
       toasts.error('Off-chain mode requires a monitor service URL');
       return;
     }
     saving = true;
     try {
-      const patch: SettingsPatch = {
+      const draft: SettingsPatch = {
         orchestra_name: orchestraName.trim(),
         orchestra_description: orchestraDescription.trim(),
         open_access: openAccess,
@@ -301,12 +389,18 @@
       const minC = parseTcAmount(defaultMinCycles);
       const topupC = parseTcAmount(defaultTopupCycles);
       const reserveC = parseTcAmount(treasuryReserve);
-      if (!Number.isNaN(minC)) patch.default_min_cycles = minC;
-      if (!Number.isNaN(topupC)) patch.default_topup_cycles = topupC;
-      if (!Number.isNaN(reserveC)) patch.treasury_reserve = reserveC;
-      const currencyChanged = displayCurrency !== (meta?.display_currency || 'USD');
+      if (!Number.isNaN(minC)) draft.default_min_cycles = minC;
+      if (!Number.isNaN(topupC)) draft.default_topup_cycles = topupC;
+      if (!Number.isNaN(reserveC)) draft.treasury_reserve = reserveC;
+      const { patch } = allowedPatch(draft, editable);
+      if (Object.keys(patch).length === 0) {
+        toasts.error('Nothing here you can change');
+        return;
+      }
+      const currencyChanged = patch.display_currency !== undefined
+        && patch.display_currency !== (meta?.display_currency || 'USD');
       await setSettings(patch);
-      if (cycleMode === 'offchain' && monitorPrincipal.trim()) {
+      if (canSyncMonitorAccess(editable) && cycleMode === 'offchain' && monitorPrincipal.trim()) {
         try {
           // "Sync monitor access": grants status_visibility (allowed viewer) to
           // the monitor on every managed canister — never a controller.
@@ -333,29 +427,13 @@
         }
       } else {
         toasts.success('Settings saved');
-        monitorStatus = null;
+        if (cycleMode !== 'offchain') monitorStatus = null;
       }
-      if (cycleMode === 'offchain') {
+      if (cycleMode === 'offchain' && canCycles) {
         cyclesAutopilot = false;
       }
       if (meta) {
-        meta = {
-          ...meta,
-          orchestra_name: orchestraName.trim(),
-          orchestra_description: orchestraDescription.trim(),
-          open_access: openAccess,
-          monitor_enabled: cycleMode === 'offchain',
-          monitor_service_url: cycleMode === 'offchain' ? monitorServiceUrl.trim() : '',
-          monitor_principal: cycleMode === 'offchain' ? monitorPrincipal.trim() : (meta.monitor_principal ?? ''),
-          cycles_sampling: cycleMode === 'onchain',
-          cycles_autopilot: cycleMode === 'offchain' ? false : cyclesAutopilot,
-          cycles_icp_autoconvert: cyclesIcpAutoconvert,
-          cycles_check_interval_secs: Math.max(1, Math.round(cyclesIntervalHours)) * 3600,
-          display_currency: displayCurrency,
-          ...( !Number.isNaN(minC) ? { default_min_cycles: minC } : {} ),
-          ...( !Number.isNaN(topupC) ? { default_topup_cycles: topupC } : {} ),
-          ...( !Number.isNaN(reserveC) ? { treasury_reserve: reserveC } : {} ),
-        };
+        meta = { ...meta, ...patch } as Metadata;
       }
       // Re-fetch the rate when the currency changed so the new units take effect.
       if (currencyChanged) await ensureFx();
@@ -378,14 +456,63 @@
     try {
       const saved = await setMySettings(email);
       notificationEmail = email;
-      emailVerified = Boolean(saved.notification_email_verified);
-      toasts.success(email ? 'Notification email saved' : 'Notification email cleared');
-      if (email && !emailVerified) await sendConfirmation(email);
+      savedEmail = email;
+      emailStatus = saved.notification_email_status
+        ?? (email ? (saved.notification_email_verified ? 'confirmed' : 'pending') : '');
+      emailUnsubscribedAt = 0;
+      emailConfirmNote = '';
+      toasts.success(email ? 'Notification email saved' : 'Notification email removed');
+      if (email && emailStatus === 'pending') await sendConfirmation(email);
+      if (editable.notifications) void loadRecipients();
     } catch (e: any) {
       toasts.error(e?.message ?? 'Failed to save your settings');
     } finally {
       savingUser = false;
     }
+  }
+
+  async function removeUserEmail() {
+    if (!savedEmail) return;
+    if (!confirm(`Remove ${savedEmail}? Casals stops sending you notices.`)) return;
+    removingUser = true;
+    try {
+      await setMySettings('');
+      notificationEmail = '';
+      savedEmail = '';
+      emailStatus = '';
+      emailUnsubscribedAt = 0;
+      emailConfirmNote = '';
+      toasts.success('Notification email removed');
+      if (editable.notifications) void loadRecipients();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed to remove your notification email');
+    } finally {
+      removingUser = false;
+    }
+  }
+
+  async function removeRecipient(target: { principal: string } | { legacy: true }, label: string) {
+    const key = 'legacy' in target ? 'legacy' : target.principal;
+    if (!confirm(`Remove the notification address of ${label}? It stops receiving notices.`)) return;
+    removingRecipient = key;
+    try {
+      await removeNotificationEmail(target);
+      toasts.success('Notification address removed');
+      if (key === get(principal)) {
+        await loadUserSettings();
+      } else {
+        await loadRecipients();
+      }
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Failed to remove the notification address');
+    } finally {
+      removingRecipient = null;
+    }
+  }
+
+  function refreshAll() {
+    void load();
+    if (get(isAuthenticated)) void loadUserSettings();
   }
 </script>
 
@@ -397,7 +524,7 @@
       <h1 class="text-2xl font-bold text-primary-900">Settings</h1>
       <p class="text-sm text-primary-500 mt-1">Your notification email, and platform configuration</p>
     </div>
-    <button class="btn-secondary btn-sm self-start" onclick={load}>
+    <button class="btn-secondary btn-sm self-start" onclick={refreshAll}>
       <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
       </svg>
@@ -565,11 +692,21 @@
               bind:value={notificationEmail}
             />
             <p class="text-xs text-primary-400 mt-1">
-              Saved for this principal. Leave it empty and the monitor skips you.
+              Saved for this principal. Remove it to stop all notices.
             </p>
-            {#if notificationEmail.trim()}
-              {#if emailVerified}
-                <p class="text-xs text-emerald-700 mt-2">Confirmed. Operational notices can be sent here.</p>
+            {#if emailMatchesSaved}
+              {#if emailStatus === 'confirmed'}
+                <p class="text-xs text-emerald-700 mt-2">Confirmed. Notices go to this address.</p>
+              {:else if emailStatus === 'unsubscribed'}
+                <p class="text-xs text-amber-700 mt-2">
+                  You stopped these emails from a link in a Casals email on {formatDay(emailUnsubscribedAt)}.
+                  Save the address again to receive them; you will confirm it again.
+                </p>
+              {:else if emailStatus === 'declined'}
+                <p class="text-xs text-red-700 mt-2">
+                  The owner of this address said they did not ask for these emails ({formatDay(emailUnsubscribedAt)}).
+                  Save it again to re-enable; it must be confirmed again.
+                </p>
               {:else}
                 <p class="text-xs text-primary-600 mt-2">
                   Not confirmed yet. Open the link sent to this address. Notices are not sent until then.
@@ -578,18 +715,23 @@
                   type="button"
                   class="btn-secondary btn-sm mt-2"
                   disabled={sendingConfirm}
-                  onclick={() => sendConfirmation(notificationEmail.trim())}
+                  onclick={() => sendConfirmation(savedEmail)}
                 >
                   {sendingConfirm ? 'Sending…' : 'Resend confirmation'}
                 </button>
               {/if}
-              {#if emailConfirmNote}
-                <p class="text-xs text-primary-600 mt-2">{emailConfirmNote}</p>
-              {/if}
+            {/if}
+            {#if emailConfirmNote}
+              <p class="text-xs text-primary-600 mt-2">{emailConfirmNote}</p>
             {/if}
           </div>
-          <div class="flex justify-end">
-            <button type="submit" class="btn-primary btn-sm" disabled={savingUser}>
+          <div class="flex justify-end gap-2">
+            {#if savedEmail}
+              <button type="button" class="btn-danger btn-sm" disabled={removingUser || savingUser} onclick={removeUserEmail}>
+                {removingUser ? 'Removing…' : 'Remove'}
+              </button>
+            {/if}
+            <button type="submit" class="btn-primary btn-sm" disabled={savingUser || removingUser}>
               {savingUser ? 'Saving…' : 'Save'}
             </button>
           </div>
@@ -599,9 +741,19 @@
 
     <div class="card p-5">
       <h2 class="text-sm font-semibold text-primary-800 mb-1">Platform settings</h2>
-      <p class="text-xs text-primary-400 mb-4">Orchestra configuration. Requires a Casals controller principal.</p>
+      <p class="text-xs text-primary-400 mb-4">Orchestra configuration.</p>
 
-      {#if $isController === true}
+      {#if $isAuthenticated && !userSettingsLoaded && $isController !== true}
+        <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
+          Checking what this principal may change…
+        </div>
+      {:else}
+        {#if platformNotice}
+          <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3 {hasAnyEditable(editable) ? 'mb-5' : ''}">
+            {platformNotice}
+          </div>
+        {/if}
+        {#if hasAnyEditable(editable)}
         <form class="space-y-5" onsubmit={save}>
           <div class="space-y-4">
             <div>
@@ -612,6 +764,7 @@
                 class="input"
                 placeholder="e.g. realmsgos-shared-infra"
                 bind:value={orchestraName}
+                disabled={!canGeneral}
               />
               <p class="text-xs text-primary-400 mt-1">Shown in the header and Orchestra page. Leave blank to use just "Casals".</p>
             </div>
@@ -622,14 +775,17 @@
                 class="input min-h-[72px] resize-y"
                 placeholder="Optional short description of this orchestra"
                 bind:value={orchestraDescription}
+                disabled={!canGeneral}
               ></textarea>
             </div>
           </div>
 
-          <label class="flex items-center gap-2.5 cursor-pointer">
-            <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={openAccess} />
+          <label class="flex items-center gap-2.5 {canControllerFields ? 'cursor-pointer' : 'opacity-50'}">
+            <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={openAccess} disabled={!canControllerFields} />
             <span class="text-sm font-medium text-primary-700">Open access</span>
-            <span class="text-xs text-primary-400">— let any logged-in principal add sections/stands</span>
+            <span class="text-xs text-primary-400">
+              — let any logged-in principal add sections/stands{canControllerFields ? '' : ' (Casals controller only)'}
+            </span>
           </label>
 
           <div class="border-t border-[var(--color-border-primary)] pt-5 space-y-4">
@@ -641,16 +797,16 @@
               </p>
             </div>
 
-            <fieldset class="space-y-2 border-0 p-0 m-0">
+            <fieldset class="space-y-2 border-0 p-0 m-0" disabled={!canSwitchMode}>
               <legend class="sr-only">Cycle operations mode</legend>
-              <label class="flex items-start gap-2.5 cursor-pointer rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'onchain' ? 'bg-primary-50 border-primary-200' : 'bg-white'}">
+              <label class="flex items-start gap-2.5 {canSwitchMode ? 'cursor-pointer' : 'opacity-60'} rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'onchain' ? 'bg-primary-50 border-primary-200' : 'bg-white'}">
                 <input type="radio" class="mt-0.5" name="cycleMode" value="onchain" bind:group={cycleMode} />
                 <span>
                   <span class="text-sm font-medium text-primary-800 block">On-chain</span>
                   <span class="text-xs text-primary-500">Conductor timers sample balances and the Cycles page refreshes via canister calls.</span>
                 </span>
               </label>
-              <label class="flex items-start gap-2.5 cursor-pointer rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'offchain' ? 'bg-emerald-50 border-emerald-200' : 'bg-white'}">
+              <label class="flex items-start gap-2.5 {canSwitchMode ? 'cursor-pointer' : 'opacity-60'} rounded-lg border border-[var(--color-border-primary)] px-3 py-2.5 {cycleMode === 'offchain' ? 'bg-emerald-50 border-emerald-200' : 'bg-white'}">
                 <input type="radio" class="mt-0.5" name="cycleMode" value="offchain" bind:group={cycleMode} />
                 <span>
                   <span class="text-sm font-medium text-primary-800 block">Off-chain monitor</span>
@@ -658,6 +814,12 @@
                 </span>
               </label>
             </fieldset>
+            {#if !canSwitchMode && (canMonitor || canCycles)}
+              <p class="text-xs text-primary-400">
+                Switching mode also turns the on-chain sampler and autopilot on or off, so it needs both
+                <span class="font-mono">settings.monitor</span> and <span class="font-mono">settings.cycles</span>.
+              </p>
+            {/if}
 
             {#if cycleMode === 'offchain'}
               <div class="space-y-4 border-l-2 border-emerald-200 ml-1 pl-4">
@@ -670,8 +832,9 @@
                       class="input font-mono text-sm flex-1"
                       placeholder="https://service.ic-casals.tech"
                       bind:value={hostedBase}
+                      disabled={!canMonitor}
                     />
-                    <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={hostedLoading || !hostedBase.trim()}>
+                    <button type="button" class="btn-secondary whitespace-nowrap" onclick={useHostedService} disabled={!canMonitor || hostedLoading || !hostedBase.trim()}>
                       {hostedLoading ? 'Checking…' : 'Use this service'}
                     </button>
                   </div>
@@ -705,6 +868,7 @@
                     placeholder="https://monitor.example.org/v1/my-instance"
                     bind:value={monitorServiceUrl}
                     required
+                    disabled={!canMonitor}
                   />
                   <p class="text-xs text-primary-400 mt-1">
                     Base URL for this instance on the monitor API (must expose <code class="text-[11px]">/cycles</code>, <code class="text-[11px]">/history</code>, and <code class="text-[11px]">/poll/*</code>).
@@ -718,6 +882,7 @@
                     class="input font-mono text-sm"
                     placeholder="aaaaa-aa"
                     bind:value={monitorPrincipal}
+                    disabled={!canMonitor}
                   />
                   <p class="text-xs text-primary-400 mt-1">
                     Casals grants this principal <code class="text-[11px]">status_visibility</code> on managed canisters (so it can read <code class="text-[11px]">canister_status</code>) and accepts its top-up / convert requests — amounts are recomputed on-chain from your cycle policy and conversions are throttled. It is <strong>not</strong> made a controller. Saving runs <em>Sync monitor access</em>.
@@ -727,9 +892,11 @@
                   <div class="rounded-lg border border-[var(--color-border-primary)] bg-primary-50/60 px-3 py-2.5 text-xs space-y-1.5">
                     <div class="flex items-center justify-between gap-2">
                       <span class="font-medium text-primary-800">Hosted monitor status</span>
-                      <button type="button" class="text-emerald-700 underline" onclick={registerHosted} disabled={monitorStatusLoading}>
-                        {monitorStatusLoading ? 'Checking…' : 'Register / check status'}
-                      </button>
+                      {#if canMonitor}
+                        <button type="button" class="text-emerald-700 underline" onclick={registerHosted} disabled={monitorStatusLoading}>
+                          {monitorStatusLoading ? 'Checking…' : 'Register / check status'}
+                        </button>
+                      {/if}
                     </div>
                     {#if monitorStatus}
                       <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
@@ -799,12 +966,12 @@
               </div>
             </div>
 
-            <label class="flex items-center gap-2.5 cursor-pointer {cycleMode === 'offchain' ? 'opacity-50' : ''}">
+            <label class="flex items-center gap-2.5 cursor-pointer {cycleMode === 'offchain' || !canCycles ? 'opacity-50' : ''}">
               <input
                 type="checkbox"
                 class="w-4 h-4 rounded border-primary-300"
                 bind:checked={cyclesAutopilot}
-                disabled={cycleMode === 'offchain'}
+                disabled={cycleMode === 'offchain' || !canCycles}
               />
               <span class="text-sm font-medium text-primary-700">Autopilot</span>
               <span class="text-xs text-primary-400">
@@ -835,8 +1002,8 @@
               </div>
             </label>
 
-            <label class="flex items-center gap-2.5 cursor-pointer">
-              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesIcpAutoconvert} />
+            <label class="flex items-center gap-2.5 cursor-pointer {canCycles ? '' : 'opacity-50'}">
+              <input type="checkbox" class="w-4 h-4 rounded border-primary-300" bind:checked={cyclesIcpAutoconvert} disabled={!canCycles} />
               <span class="text-sm font-medium text-primary-700">ICP auto-convert</span>
               <span class="text-xs text-primary-400">— mint cycles from ledger ICP during checks and refresh</span>
               <div class="relative shrink-0 ml-auto">
@@ -876,7 +1043,7 @@
                     {/if}
                   </div>
                 </div>
-                <input id="cyclesInterval" type="number" min="1" class="input" bind:value={cyclesIntervalHours} />
+                <input id="cyclesInterval" type="number" min="1" class="input" bind:value={cyclesIntervalHours} disabled={!canCycles} />
               </div>
               <div>
                 <div class="flex items-center gap-1.5 mb-1">
@@ -894,7 +1061,7 @@
                   </div>
                 </div>
                 <div class="relative">
-                  <input id="treasuryReserve" type="text" class="input font-mono pr-12" placeholder="0.05" bind:value={treasuryReserve} />
+                  <input id="treasuryReserve" type="text" class="input font-mono pr-12" placeholder="0.05" bind:value={treasuryReserve} disabled={!canCycles} />
                   <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
                 </div>
               </div>
@@ -914,7 +1081,7 @@
                   </div>
                 </div>
                 <div class="relative">
-                  <input id="defaultMin" type="text" class="input font-mono pr-12" placeholder="0.5" bind:value={defaultMinCycles} />
+                  <input id="defaultMin" type="text" class="input font-mono pr-12" placeholder="0.5" bind:value={defaultMinCycles} disabled={!canCycles} />
                   <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
                 </div>
               </div>
@@ -934,7 +1101,7 @@
                   </div>
                 </div>
                 <div class="relative">
-                  <input id="defaultTopup" type="text" class="input font-mono pr-12" placeholder="1" bind:value={defaultTopupCycles} />
+                  <input id="defaultTopup" type="text" class="input font-mono pr-12" placeholder="1" bind:value={defaultTopupCycles} disabled={!canCycles} />
                   <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
                 </div>
               </div>
@@ -953,7 +1120,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
               <div>
                 <label class="label" for="displayCurrency">Display currency</label>
-                <select id="displayCurrency" class="input" bind:value={displayCurrency}>
+                <select id="displayCurrency" class="input" bind:value={displayCurrency} disabled={!canGeneral}>
                   {#each currencies as c (c)}
                     <option value={c}>{c}</option>
                   {/each}
@@ -972,6 +1139,7 @@
             </div>
           </div>
 
+          {#if canSavePlatform}
           <div class="flex justify-end pt-1">
             <button type="submit" class="btn-primary btn-sm" disabled={saving}>
               {#if saving}
@@ -984,17 +1152,100 @@
               {/if}
             </button>
           </div>
+          {/if}
         </form>
-      {:else if $isAuthenticated && $isController === null}
-        <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
-          Checking whether this principal is a Casals controller…
-        </div>
-      {:else}
-        <div class="text-sm text-primary-500 bg-primary-50 rounded-lg px-4 py-3">
-          Platform settings can be changed by a Casals controller.
-        </div>
+        {/if}
       {/if}
     </div>
+
+    {#if editable.notifications}
+      <div class="card overflow-hidden">
+        <div class="flex items-start justify-between gap-3 p-5 pb-3">
+          <div>
+            <h2 class="text-sm font-semibold text-primary-800 mb-1">Notification recipients</h2>
+            <p class="text-xs text-primary-400">
+              Every address saved for operational notices. Addresses are masked; removing one is logged in Activity.
+            </p>
+          </div>
+          <button class="btn-secondary btn-sm shrink-0" onclick={loadRecipients} disabled={recipientsLoading}>
+            {recipientsLoading ? 'Loading…' : 'Reload'}
+          </button>
+        </div>
+        {#if recipientsError}
+          <p class="text-sm text-red-600 px-5 pb-5">{recipientsError}</p>
+        {:else if recipientsLoading && recipients.length === 0 && !legacyEmail}
+          <div class="px-5 pb-5 space-y-2">
+            {#each [1, 2] as n (n)}
+              <div class="skeleton h-5 w-full"></div>
+            {/each}
+          </div>
+        {:else if recipients.length === 0 && !legacyEmail}
+          <p class="text-sm text-primary-500 px-5 pb-5">Nobody has saved a notification address.</p>
+        {:else}
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-primary-500 border-y border-primary-100 bg-primary-50/60">
+                  <th class="px-4 py-2.5 font-medium">Principal</th>
+                  <th class="px-4 py-2.5 font-medium">Email</th>
+                  <th class="px-4 py-2.5 font-medium">Status</th>
+                  <th class="px-4 py-2.5 font-medium w-24"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-primary-50">
+                {#if legacyEmail}
+                  <tr class="hover:bg-primary-50/40">
+                    <td class="px-4 py-3 font-medium text-primary-900">Orchestra-wide (legacy)</td>
+                    <td class="px-4 py-3 font-mono text-xs text-primary-700">{legacyEmail}</td>
+                    <td class="px-4 py-3"><span class="badge badge-neutral">legacy</span></td>
+                    <td class="px-4 py-3 text-right whitespace-nowrap">
+                      <button
+                        class="btn-ghost btn-sm text-xs text-red-600 hover:text-red-700"
+                        disabled={removingRecipient !== null}
+                        onclick={() => removeRecipient({ legacy: true }, 'the orchestra (legacy address)')}
+                      >
+                        {removingRecipient === 'legacy' ? 'Removing…' : 'Remove'}
+                      </button>
+                    </td>
+                  </tr>
+                {/if}
+                {#each recipients as row (row.principal)}
+                  {@const pl = controllerLabel(row.principal, principalLabels)}
+                  <tr class="hover:bg-primary-50/40">
+                    <td class="px-4 py-3">
+                      <div class="min-w-0">
+                        <div class="font-medium text-primary-900 truncate max-w-[14rem] sm:max-w-[20rem]" title={pl.title}>
+                          {pl.display}{row.principal === $principal ? ' (you)' : ''}
+                        </div>
+                        {#if principalLabels.has(row.principal)}
+                          <div class="font-mono text-xs text-primary-400 truncate max-w-[14rem] sm:max-w-[20rem]" title={pl.title}>{pl.title}</div>
+                        {/if}
+                      </div>
+                    </td>
+                    <td class="px-4 py-3 font-mono text-xs text-primary-700">{row.email}</td>
+                    <td class="px-4 py-3">
+                      <span
+                        class="badge {recipientStatusClass(row.status)}"
+                        title={row.unsubscribed_at ? `since ${formatDay(row.unsubscribed_at)}` : undefined}
+                      >{row.status}</span>
+                    </td>
+                    <td class="px-4 py-3 text-right whitespace-nowrap">
+                      <button
+                        class="btn-ghost btn-sm text-xs text-red-600 hover:text-red-700"
+                        disabled={removingRecipient !== null}
+                        onclick={() => removeRecipient({ principal: row.principal }, pl.display)}
+                      >
+                        {removingRecipient === row.principal ? 'Removing…' : 'Remove'}
+                      </button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="card p-5 pb-0 w-full">
       <SubnetWhitelistPanel

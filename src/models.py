@@ -390,6 +390,11 @@ class UserSettings(Entity):
     # True only after the owner opens the monitor's confirmation link.
     # Operational notices are not sent to an unconfirmed address.
     notification_email_verified = Boolean(default=False)
+    # Set by the monitor when the address owner follows a "stop these emails"
+    # (``unsubscribed``) or "I did not ask for this" (``not_me``) link. Saving
+    # the address again clears it.
+    notification_email_unsubscribed_at = Integer(default=0)
+    notification_email_unsubscribed_reason = String(max_length=16, default="")
 
 
 class PrincipalAlias(Entity, TimestampedMixin):

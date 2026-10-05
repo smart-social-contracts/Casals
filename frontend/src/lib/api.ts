@@ -5,6 +5,7 @@ import { get } from 'svelte/store';
 import { identity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
+import type { EditableSettings } from './settingsAccess';
 
 // ---------------------------------------------------------------------------
 // Types (mirror the backend JSON payloads)
@@ -1226,7 +1227,11 @@ export interface SettingsPatch {
   cycles_check_interval_secs?: number;
   cycles_icp_autoconvert?: boolean;
   cycles_sampling?: boolean;
+  cycles_sample_interval_secs?: number;
+  create_cycles?: number;
   display_currency?: string;
+  delegated_destroy_principals?: string[];
+  extra_controller_principals?: string[];
 }
 
 export async function syncControllers(opts: { dry_run?: boolean } = {}): Promise<{
@@ -1257,9 +1262,17 @@ export async function refreshControllersCache(): Promise<{
   };
 }
 
+/** `''` when no address is saved. `declined`: the address owner answered
+ *  "I did not ask for this"; `unsubscribed`: "Stop these emails". */
+export type NotificationEmailStatus = '' | 'confirmed' | 'pending' | 'unsubscribed' | 'declined';
+
 export async function getMySettings(): Promise<{
   notification_email?: string;
   notification_email_verified?: boolean;
+  notification_email_status?: NotificationEmailStatus;
+  /** Unix seconds; 0 when not unsubscribed. */
+  notification_email_unsubscribed_at?: number;
+  editable_settings?: EditableSettings;
 }> {
   return _parseQuery(await (await _actor(true)).get_my_settings());
 }
@@ -1267,11 +1280,40 @@ export async function getMySettings(): Promise<{
 export async function setMySettings(notificationEmail: string): Promise<UpdateResult & {
   notification_email?: string;
   notification_email_verified?: boolean;
+  notification_email_status?: NotificationEmailStatus;
 }> {
   return _parseUpdate(
     await (await _actor(true)).set_my_settings(
       JSON.stringify({ notification_email: notificationEmail }),
     ),
+  );
+}
+
+export interface NotificationRecipient {
+  principal: string;
+  /** Masked, e.g. `a***@example.com`. */
+  email: string;
+  status: Exclude<NotificationEmailStatus, ''>;
+  unsubscribed_at: number;
+}
+
+/** Controllers, or orchestra-wide commanders holding `notification.manage`. */
+export async function listNotificationRecipients(): Promise<{
+  recipients: NotificationRecipient[];
+  /** Masked orchestra-wide address, or `''`. */
+  legacy_email: string;
+}> {
+  const res = _parseQuery<{ recipients?: NotificationRecipient[]; legacy_email?: string }>(
+    await (await _actor(true)).list_notification_recipients(),
+  );
+  return { recipients: res.recipients ?? [], legacy_email: res.legacy_email ?? '' };
+}
+
+export async function removeNotificationEmail(
+  arg: { principal: string } | { legacy: true },
+): Promise<UpdateResult & { removed?: string }> {
+  return _parseUpdate<{ removed?: string }>(
+    await (await _actor(true)).remove_notification_email(JSON.stringify(arg)),
   );
 }
 

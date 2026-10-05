@@ -384,6 +384,28 @@ def _notification_email_verified(row) -> bool:
     return bool(getattr(row, "notification_email_verified", False))
 
 
+def _notification_email_unsubscribed(row) -> str:
+    """``""``, or why the address owner stopped the notices (``unsubscribed`` / ``not_me``)."""
+    if not int(getattr(row, "notification_email_unsubscribed_at", 0) or 0):
+        return ""
+    return (getattr(row, "notification_email_unsubscribed_reason", "") or "unsubscribed").strip()
+
+
+def _notification_email_status(row) -> str:
+    """``confirmed``, ``pending``, ``unsubscribed`` or ``declined`` (the owner said "not me")."""
+    why = _notification_email_unsubscribed(row)
+    if why:
+        return "declined" if why == "not_me" else "unsubscribed"
+    return "confirmed" if _notification_email_verified(row) else "pending"
+
+
+def _mask_email(addr: str) -> str:
+    local, _, domain = (addr or "").partition("@")
+    if not domain:
+        return "***"
+    return f"{local[:1]}***@{domain}"
+
+
 def _user_notification_emails() -> list:
     """Confirmed addresses the monitor may send operational notices to."""
     list(UserSettings.instances())
@@ -410,17 +432,19 @@ def _notification_email_entries() -> list:
             "principal": row.principal,
             "email": addr,
             "verified": _notification_email_verified(row),
+            "unsubscribed": bool(_notification_email_unsubscribed(row)),
         })
     return out
 
 
 def _notification_email_pending() -> list:
-    """Saved addresses that are still waiting for the confirmation link."""
+    """Saved addresses that are still waiting for the confirmation link. An
+    address whose owner stopped the notices is not pending: nobody asks again."""
     list(UserSettings.instances())
     out = []
     for row in UserSettings.instances():
         addr = (getattr(row, "notification_email", "") or "").strip()
-        if not addr or _notification_email_verified(row):
+        if not addr or _notification_email_verified(row) or _notification_email_unsubscribed(row):
             continue
         out.append({"principal": row.principal, "email": addr})
     return out
@@ -833,6 +857,62 @@ def _caller_can_manage_subnet_whitelist() -> bool:
 def _require_subnet_whitelist_auth() -> None:
     if not _caller_can_manage_subnet_whitelist():
         raise Exception("unauthorized: caller lacks subnet.whitelist permission")
+
+
+# `set_settings` fields a conductor commander may change with the named
+# permission. Anything else (open access, extra controllers, delegated
+# destroy, the store and frontend ids) decides who controls the orchestra or
+# where its code comes from, and stays with Casals controllers.
+SETTINGS_FIELD_PERMISSIONS = {
+    "orchestra_name": "settings.general",
+    "orchestra_description": "settings.general",
+    "display_currency": "settings.general",
+    "default_min_cycles": "settings.cycles",
+    "default_topup_cycles": "settings.cycles",
+    "treasury_reserve": "settings.cycles",
+    "create_cycles": "settings.cycles",
+    "cycles_autopilot": "settings.cycles",
+    "cycles_check_interval_secs": "settings.cycles",
+    "cycles_icp_autoconvert": "settings.cycles",
+    "cycles_sampling": "settings.cycles",
+    "cycles_sample_interval_secs": "settings.cycles",
+    "monitor_enabled": "settings.monitor",
+    "monitor_principal": "settings.monitor",
+    "monitor_service_url": "settings.monitor",
+    "notification_email": "notification.manage",
+    "alert_emails": "notification.manage",
+}
+
+
+def _require_settings_fields(params: dict) -> None:
+    """Controllers may set every field; a conductor commander only the fields
+    its permissions cover. One field outside them refuses the whole call."""
+    if _is_controller():
+        return
+    for key in sorted(params):
+        perm = SETTINGS_FIELD_PERMISSIONS.get(key)
+        if perm is None:
+            raise Exception(f"unauthorized: {key} can only be changed by a Casals controller")
+        if not _conductor_commander_can(perm):
+            raise Exception(f"unauthorized: {key} needs the {perm} permission")
+
+
+def _editable_settings() -> dict:
+    """Which Settings groups the caller may change, for the UI."""
+    if _is_controller():
+        return {"controller": True, "general": True, "cycles": True, "monitor": True, "notifications": True}
+    return {
+        "controller": False,
+        "general": _conductor_commander_can("settings.general"),
+        "cycles": _conductor_commander_can("settings.cycles"),
+        "monitor": _conductor_commander_can("settings.monitor"),
+        "notifications": _conductor_commander_can("notification.manage"),
+    }
+
+
+def _require_notification_manage() -> None:
+    if not (_is_controller() or _conductor_commander_can("notification.manage")):
+        raise Exception("unauthorized: needs a Casals controller or the notification.manage permission")
 
 
 def _require_can_add_in_section(sec, permission: str) -> None:
@@ -1424,7 +1504,14 @@ def get_my_settings() -> text:
     row = UserSettings[caller]
     email = (row.notification_email or "") if row is not None else ""
     verified = _notification_email_verified(row) if row is not None else False
-    return _ok(notification_email=email, notification_email_verified=verified)
+    return _ok(
+        notification_email=email,
+        notification_email_verified=verified,
+        notification_email_status=_notification_email_status(row) if email else "",
+        notification_email_unsubscribed_at=int(getattr(row, "notification_email_unsubscribed_at", 0) or 0)
+        if row is not None else 0,
+        editable_settings=_editable_settings(),
+    )
 
 
 @update
@@ -1456,8 +1543,102 @@ def set_my_settings(args: text) -> text:
             row.notification_email = email
             if prev != email:
                 row.notification_email_verified = False
+        # Saving is the owner asking for notices again; the monitor still asks
+        # them to confirm, and refuses an address whose owner said "not me".
+        row.notification_email_unsubscribed_at = 0
+        row.notification_email_unsubscribed_reason = ""
         verified = _notification_email_verified(row)
-        return _ok(notification_email=email, notification_email_verified=verified)
+        return _ok(notification_email=email, notification_email_verified=verified,
+                   notification_email_status=_notification_email_status(row))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def unsubscribe_notification_email(args: text) -> text:
+    """Monitor principal only. The owner of an address followed a link in a
+    Casals email: ``reason`` ``unsubscribed`` ("stop these emails") or
+    ``not_me`` ("I did not ask for this"). Every principal that saved that
+    address stops receiving notices; the rows stay so Settings can say why.
+    The monitor can only turn notices off here, never add or change an
+    address. Args (JSON): {email: str, reason: str}."""
+    try:
+        if not _is_monitor_caller():
+            return _err("monitor principal required")
+        params = json.loads(args) if args else {}
+        email = _normalize_notification_email(params.get("email"))
+        reason = (params.get("reason") or "unsubscribed").strip()
+        if not email:
+            return _err("expected email")
+        if reason not in ("unsubscribed", "not_me"):
+            return _err("reason must be unsubscribed or not_me")
+        now_s = int(ic.time() // 1_000_000_000)
+        list(UserSettings.instances())
+        principals = []
+        for row in UserSettings.instances():
+            if (getattr(row, "notification_email", "") or "").strip() != email:
+                continue
+            row.notification_email_verified = False
+            row.notification_email_unsubscribed_at = now_s
+            row.notification_email_unsubscribed_reason = reason
+            principals.append(row.principal)
+        if principals:
+            _append_event("notification_email_unsubscribed", "",
+                          {"email": _mask_email(email), "principals": principals, "reason": reason})
+        return _ok(email=email, reason=reason, principals=principals)
+    except Exception as e:
+        return _err(str(e))
+
+
+@query
+def list_notification_recipients() -> text:
+    """Controllers, or conductor commanders with ``notification.manage``.
+    Every saved notification address (masked) with its status, and the
+    legacy orchestra-wide address when one is set."""
+    try:
+        _require_notification_manage()
+        list(UserSettings.instances())
+        rows = []
+        for row in UserSettings.instances():
+            addr = (getattr(row, "notification_email", "") or "").strip()
+            if not addr:
+                continue
+            rows.append({
+                "principal": row.principal,
+                "email": _mask_email(addr),
+                "status": _notification_email_status(row),
+                "unsubscribed_at": int(getattr(row, "notification_email_unsubscribed_at", 0) or 0),
+            })
+        legacy = (_settings().alert_emails or "").strip()
+        return _ok(recipients=rows, legacy_email=_mask_email(legacy) if legacy else "")
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def remove_notification_email(args: text) -> text:
+    """Controllers, or conductor commanders with ``notification.manage``:
+    remove another principal's address (``{principal}``) or the legacy
+    orchestra-wide one (``{legacy: true}``). Logged in Activity."""
+    try:
+        _require_notification_manage()
+        params = json.loads(args) if args else {}
+        if params.get("legacy"):
+            s = _settings()
+            if not (s.alert_emails or "").strip():
+                return _err("no orchestra-wide address is set")
+            masked = _mask_email(s.alert_emails)
+            s.alert_emails = ""
+            _append_event("notification_email_removed", "", {"legacy": True, "email": masked})
+            return _ok(removed="legacy")
+        principal = (params.get("principal") or "").strip()
+        row = UserSettings[principal] if principal else None
+        if row is None or not (row.notification_email or "").strip():
+            return _err("that principal has no notification address")
+        masked = _mask_email(row.notification_email)
+        row.delete()
+        _append_event("notification_email_removed", "", {"principal": principal, "email": masked})
+        return _ok(removed=principal)
     except Exception as e:
         return _err(str(e))
 
@@ -1480,6 +1661,8 @@ def confirm_notification_email(args: text) -> text:
         row = UserSettings[principal]
         if row is None or (row.notification_email or "").strip() != email:
             return _err("that address is not pending for this principal")
+        if _notification_email_unsubscribed(row):
+            return _err("the owner stopped notices to this address; saving it again in Settings re-enables them")
         row.notification_email_verified = True
         return _ok(
             principal=principal,
@@ -1492,7 +1675,8 @@ def confirm_notification_email(args: text) -> text:
 
 @update
 def set_settings(args: text) -> text:
-    """Controller only. Args (JSON): any of
+    """Controllers, or conductor commanders for the fields their permissions
+    cover (``SETTINGS_FIELD_PERMISSIONS``). Args (JSON): any of
     {open_access: bool, wasm_store_canister_id: str,
      casals_frontend_canister_id: str,
      delegated_destroy_principals: [str],
@@ -1504,8 +1688,10 @@ def set_settings(args: text) -> text:
      cycles_icp_autoconvert: bool,
      extra_controller_principals: [str]}."""
     try:
-        _require_admin()
         params = json.loads(args)
+        if not isinstance(params, dict):
+            return _err("expected a JSON object")
+        _require_settings_fields(params)
         s = _settings()
         if "open_access" in params:
             s.open_access = 1 if params["open_access"] else 0
@@ -4809,9 +4995,11 @@ def sync_controllers(args: text) -> Async[text]:
     provisioning or by the baton.
 
     Args (JSON, optional): {"dry_run": true} to report without applying.
-    Returns: {updated, skipped, failed, dry_run, monitor_principal}."""
+    Returns: {updated, skipped, failed, dry_run, monitor_principal}.
+    Also open to conductor commanders holding ``settings.monitor``."""
     try:
-        _require_admin()
+        if not (_is_controller() or _conductor_commander_can("settings.monitor")):
+            raise Exception("unauthorized: needs a Casals controller or the settings.monitor permission")
         params = json.loads(args) if args else {}
         dry_run = bool(params.get("dry_run"))
         list(Canister.instances())

@@ -262,7 +262,10 @@ All methods accept and return a `text` containing JSON. Grouped by area:
 | `register_canister` | register an existing IC canister as a Canister |
 | `set_commander` / `set_permissions` | commander principal + permission keys (`sha256:<hex>` = unclaimed access-code slot) |
 | `claim_commander` | redeem an access code: the caller takes every slot whose checksum matches |
-| `set_settings` | instance settings |
+| `set_settings` | instance settings; each field needs its `settings.*` key (see Commanders & permissions), the whole call is refused if one field is not allowed |
+| `set_my_settings` / `get_my_settings` | the caller's notification address; `get_my_settings` also returns its status (`confirmed` / `pending` / `unsubscribed` / `declined`) and `editable_settings`, the settings groups the caller may change |
+| `list_notification_recipients` / `remove_notification_email` | everyone's notification addresses (masked) and removal, by principal or `{legacy: true}` for the old orchestra-wide address; controllers or `notification.manage`; removals are logged |
+| `confirm_notification_email` / `unsubscribe_notification_email` | monitor only: an address was confirmed / its owner stopped the notices (`unsubscribed`) or said they did not ask (`not_me`). Unsubscribe can only turn notices off; saving the address again turns them back on |
 
 ### Lifecycle
 
@@ -573,6 +576,14 @@ granular keys (e.g. `canister.create`, `canister.deploy`, `stand.create`,
 `subnet.whitelist`) configured on the **Commanders** page or via
 `set_permissions`. Empty / `*` = full access. The deploy/conductor principal is
 also a canister controller and bypasses commander checks for admin operations.
+
+Platform settings: an orchestra-wide (conductor) commander can change a settings
+group with its key: `settings.general` (name, description, currency),
+`settings.cycles` (cycle defaults, reserve, sampler, autopilot),
+`settings.monitor` (off-chain monitor, `sync_controllers`), and
+`notification.manage` (see and remove everyone's notification addresses).
+Section and stand commanders never qualify. Open access, extra controllers,
+delegated destroy, and the wasm store / frontend ids stay controller-only.
 
 Who may appoint, remove or re-grant other commanders is one rule shared by
 `set_commander`, `remove_commander`, `set_permissions` and the commanders a

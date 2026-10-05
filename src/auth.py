@@ -37,6 +37,10 @@ PERMISSIONS = [
     ("subnet.whitelist",   "Manage subnet whitelist",    "Platform"),
     ("wasm.upload",        "Upload files (WASMs, bundles) to the store", "Platform"),
     ("wasm.authorize",     "Authorize / revoke catalog WASMs", "Platform"),
+    ("settings.general",   "Change orchestra name, description and currency", "Platform"),
+    ("settings.cycles",    "Change cycle policy (defaults, reserve, sampler, autopilot)", "Platform"),
+    ("settings.monitor",   "Configure the off-chain monitor", "Platform"),
+    ("notification.manage", "See and remove notification addresses", "Platform"),
 ]
 PERMISSION_KEYS = [p[0] for p in PERMISSIONS]
 
