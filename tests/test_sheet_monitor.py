@@ -127,12 +127,14 @@ def test_settings_update_uses_icp_controller_flags():
     ic = RecordingIc()
     ic.icp = lambda argv, **kw: ic.record("icp", tuple(argv))
     from casals_cli.ic import IcClient
+    ic.read_controllers = lambda cid: ["b", "old"]
     IcClient.settings_update(ic, "c1", set_controllers=["a", "b"])
     IcClient.settings_update(ic, "c1", add_controllers=["x"], remove_controllers=["y"])
+    IcClient.settings_update(ic, "c1", set_controllers=["old", "b"])
     assert [args[0] for op, args, _ in ic.calls] == [
-        ("canister", "settings", "update", "c1", "-f", "--set-controller", "a", "--set-controller", "b"),
+        ("canister", "settings", "update", "c1", "-f", "--add-controller", "a", "--remove-controller", "old"),
         ("canister", "settings", "update", "c1", "-f", "--add-controller", "x", "--remove-controller", "y"),
-    ]
+    ], "only flags both icp 0.3 and 1.6 accept; an unchanged list makes no call"
 
 
 def test_up_lends_control_where_the_conductor_has_none_and_restores_it():

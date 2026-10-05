@@ -419,10 +419,19 @@ class IcClient:
     def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None,
                         add_controllers: list[str] | None = None,
                         remove_controllers: list[str] | None = None) -> None:
+        # icp 0.3 has --set-controller, 1.6 only --remove-all-controllers:
+        # replace the list with the add/remove flags both versions share.
+        add = list(add_controllers or [])
+        remove = list(remove_controllers or [])
+        if set_controllers is not None:
+            current = self.read_controllers(canister_id)
+            add += [c for c in set_controllers if c not in current and c not in add]
+            remove += [c for c in current if c not in set_controllers and c not in remove]
+        if not add and not remove:
+            return
         cmd = ["canister", "settings", "update", canister_id, "-f"]
-        for flag, principals in (("--set-controller", set_controllers), ("--add-controller", add_controllers),
-                                 ("--remove-controller", remove_controllers)):
-            for c in principals or []:
+        for flag, principals in (("--add-controller", add), ("--remove-controller", remove)):
+            for c in principals:
                 cmd += [flag, c]
         self.icp(cmd)
 
