@@ -716,6 +716,14 @@ policy, never under `treasury_reserve`), recorded as `source: "autotopup"`.
 `set_settings` refuses `extra_controller_principals` that include it. Pure
 helpers live in `src/monitor_access.py`.
 
+**Sheet-declared monitor.** `environments.<env>.monitor = {principal, url}`
+(`url` without `/v1/…`) is applied by `set_sheet` (`sheet_api.apply_sheet_monitor`)
+before plan/apply, same effect as saving off-chain mode in Settings; it returns
+`monitor_changed`. When that is true, or on `casals up --sync-monitor`,
+`casals_cli/monitor.grant_monitor_access` lends the conductor control of bound
+canisters it does not control, re-runs `sync_controllers`, and restores the
+controllers in a `finally`. No block leaves the settings alone.
+
 **Treasury deposit watch.** The cycle sampler (hourly), autopilot reconcile, and
 `get_cycles` compare the backend's ICP ledger balance and cycle balance against
 stored baselines. External deposits log `treasury_icp_deposit` or

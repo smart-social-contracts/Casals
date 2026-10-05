@@ -59,6 +59,9 @@ def _build_parser() -> argparse.ArgumentParser:
     up_p.add_argument("--max-items", type=int, default=5)
     up_p.add_argument("--bootstrap", action="store_true",
                       help="production only: allow creating a brand-new conductor when no bindings exist")
+    up_p.add_argument("--sync-monitor", action="store_true",
+                      help="re-grant the sheet's monitor read access on every canister, also those the "
+                           "conductor does not control (lends it control, then restores the controllers)")
     up_p.add_argument(
         "--local",
         action="store_true",
@@ -208,6 +211,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_items=args.max_items,
                 project_root=root,
                 bootstrap=args.bootstrap,
+                sync_monitor=args.sync_monitor,
             )
             emit_json(result)
         elif cmd == "plan":

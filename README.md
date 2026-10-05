@@ -53,9 +53,24 @@ For production deployments, cycle observation and auto top-ups can run in **[cas
 2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync monitor access**: `status_visibility = allowed_viewers [monitor]`), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
 3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h; the next **Sync monitor access** drops the viewer grant. Nothing else is needed.
 
-**What the monitor can and cannot do.** Its principal is an *allowed viewer*, never a controller: it can read `canister_status`, ask the conductor to `top_up` orchestra canisters (the conductor ignores the requested amount and deposits exactly what its own cycle policy says — zero when the canister is not below policy, never below `treasury_reserve`) and trigger `convert_treasury_icp` (ICP already on the treasury → cycles on the same treasury, at most once per 10 minutes). It cannot install, stop, destroy or reconfigure anything, and `set_settings` refuses to list it as an extra controller. New canisters get the viewer grant at provisioning, while Casals still controls them; canisters already handed to a baton are reported as `skipped: not a controller` by `sync_controllers` and need the grant via the baton (or were granted at creation). The conductor's own SPA asset canister is read by the monitor only if its viewer list is set by the multisig (`CallCanister → update_settings`).
+**What the monitor can and cannot do.** Its principal is an *allowed viewer*, never a controller: it can read `canister_status`, ask the conductor to `top_up` orchestra canisters (the conductor ignores the requested amount and deposits exactly what its own cycle policy says — zero when the canister is not below policy, never below `treasury_reserve`) and trigger `convert_treasury_icp` (ICP already on the treasury → cycles on the same treasury, at most once per 10 minutes). It cannot install, stop, destroy or reconfigure anything, and `set_settings` refuses to list it as an extra controller. New canisters get the viewer grant at provisioning, while Casals still controls them; canisters already handed to a baton are reported as `skipped: not a controller` by `sync_controllers`; `casals up --sync-monitor` grants those too (below). The conductor's own SPA asset canister is read by the monitor only if its viewer list is set by the multisig (`CallCanister → update_settings`).
 
 A self-hosted `casals-monitor` works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
+
+**Or declare it in the sheet**, so a fresh orchestra is watched from its first canister:
+
+```json
+"environments": {
+  "production": {
+    "monitor": {
+      "principal": "wdtda-uafrj-6down-pxxwi-emhpc-uivwv-zdi3c-szrq7-hxodh-wlvas-iqe",
+      "url": "https://service.ic-casals.tech"
+    }
+  }
+}
+```
+
+`url` is the service's base URL; the conductor appends `/v1/<its canister id>`. `casals up` hands the block to `set_sheet`, which switches the conductor to off-chain mode with these values before plan/apply creates anything, so every canister is provisioned with the viewer grant. When the block changes, or with `casals up --sync-monitor`, `up` also grants it on canisters the conductor no longer controls: it lends the conductor control of each one (as deployer, or through the multisig), runs `sync_controllers`, and puts the original controllers back. The canisters the deployer cannot reach are listed under `monitor_access.unreachable`. Registering with the service is still **Register / check status** in Settings (or `POST /v1/instances`).
 
 This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor sends operational notices (treasury cannot fund a top-up, monitor consent withdrawn, and later notices of the same kind) to those addresses. A legacy orchestra-wide address, if one was saved before this split, is included too.
 

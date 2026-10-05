@@ -235,6 +235,19 @@ def env_block(sheet: dict, env: str) -> dict:
     return block if isinstance(block, dict) else {}
 
 
+def env_monitor(sheet: dict, env: str) -> dict | None:
+    """``environments.<env>.monitor`` as ``{"principal", "url"}`` (the
+    monitor's base URL, no trailing slash), or ``None`` when the environment
+    names no off-chain monitor."""
+    block = env_block(sheet, env).get("monitor")
+    if not isinstance(block, dict):
+        return None
+    return {
+        "principal": (block.get("principal") or "").strip(),
+        "url": (block.get("url") or "").strip().rstrip("/"),
+    }
+
+
 def declared_subnet(spec: dict | None) -> tuple[str, str]:
     """``(subnet, subnet_type)`` written on one section or stand. Missing is empty."""
     if not isinstance(spec, dict):
@@ -1072,6 +1085,8 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
             errors.append(f"{path}.network is required")
         if "cycles" in block and isinstance(block["cycles"], dict):
             _validate_cycles_block(block["cycles"], f"{path}.cycles", errors)
+        if "monitor" in block:
+            _validate_monitor_block(block["monitor"], f"{path}.monitor", errors)
         # `bindings` names the ids of adopted canisters: code Casals never installs.
         bindings = block.get("bindings", {})
         if not isinstance(bindings, dict):
@@ -1083,6 +1098,33 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
                 errors.append(f"{path}.bindings.{cname}: unknown canister or empty id")
             elif (found[2].get("mode") or "managed") != "adopted":
                 errors.append(f"{path}.bindings.{cname}: only adopted canisters take a declared id")
+
+
+def _is_principal_text(text: str) -> bool:
+    groups = text.split("-")
+    return len(groups[0]) == 5 and all(
+        0 < len(g) <= 5 and all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in g) for g in groups
+    )
+
+
+def _validate_monitor_block(block, path: str, errors: list[str]) -> None:
+    """``{"principal": <monitor principal>, "url": <monitor base URL>}``. The
+    conductor's ``monitor_service_url`` is ``<url>/v1/<conductor id>``."""
+    if not isinstance(block, dict):
+        errors.append(f"{path} must be an object")
+        return
+    unknown = sorted(k for k in block if k not in ("principal", "url") and not k.startswith("$"))
+    if unknown:
+        errors.append(f"{path}: unknown field(s) {', '.join(unknown)}")
+    principal = block.get("principal")
+    if not isinstance(principal, str) or not _is_principal_text(principal.strip()):
+        errors.append(f"{path}.principal must be a principal id")
+    url = block.get("url")
+    host = url.strip().partition("://")[2].split("/")[0] if isinstance(url, str) else ""
+    if not isinstance(url, str) or not url.strip().startswith(("https://", "http://")) or not host or " " in host:
+        errors.append(f"{path}.url must be an http(s) URL")
+    elif "/v1/" in url:
+        errors.append(f"{path}.url is the monitor's base URL; the conductor appends /v1/<conductor id>")
 
 
 def _validate_registry(sheet: dict, env: str | None, errors: list[str]) -> None:

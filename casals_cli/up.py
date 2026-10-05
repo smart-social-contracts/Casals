@@ -12,10 +12,11 @@ import os
 import sys
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, sheet_hash, validate
+from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, env_monitor, sheet_hash, validate
 
 from casals_cli.bindings import Bindings, load_bindings, resolve_orchestra_refs
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
+from casals_cli.monitor import grant_monitor_access
 from casals_cli.multisig import ensure_control, set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads, resolve_source
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
@@ -524,6 +525,7 @@ def run_up(
     project_root: str | None = None,
     dry_run: bool = False,
     bootstrap: bool = False,
+    sync_monitor: bool = False,
 ) -> dict[str, Any]:
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
     `set_sheet` and returns the plan: it needs a conductor and never applies."""
@@ -638,6 +640,7 @@ def run_up(
         stored_hash, same_sheet, stored_bindings = "", False, {}
     bound_already = all(stored_bindings.get(k) == v for k, v in bind_map.items())
     planning_stored = False  # dry run against a stored sheet this caller may not replace
+    monitor_changed = False
     if same_sheet and bound_already:
         _progress(f"  sheet hash={stored_hash} (already stored; conductor bindings unchanged)")
     else:
@@ -663,6 +666,9 @@ def run_up(
                 raise RuntimeError(f"set_sheet failed: {set_res}")
         else:
             _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
+            monitor_changed = bool(set_res.get("monitor_changed"))
+            if monitor_changed:
+                _progress("  monitor settings applied from the sheet")
 
     if dry_run:
         res = ic.call_update(backend_id, "plan", "{}")
@@ -682,6 +688,16 @@ def run_up(
         ),
     )
 
+    monitor_access = None
+    if env_monitor(sheet, env) and (monitor_changed or sync_monitor):
+        live = ic.query(backend_id, "get_bindings")
+        live = (live.get("bindings") or {}) if isinstance(live, dict) else {}
+        monitor_access = grant_monitor_access(
+            ic, backend_id, deployer, multisig_id(ic, backend_id), live, progress=_progress,
+        )
+        _progress(f"  monitor read access: {len(monitor_access['updated'])} canister(s) updated, "
+                  f"{len(monitor_access['unreachable'])} unreachable")
+
     # 9. domains + bindings
     _step(7)
     domain_rows = reconcile_domains(sheet, env, bindings)
@@ -698,5 +714,6 @@ def run_up(
         "backend_id": backend_id,
         "bindings": bindings.to_dict(),
         "domains": domain_rows,
+        "monitor_access": monitor_access,
         "plan": plan,
     }

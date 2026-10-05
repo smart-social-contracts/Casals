@@ -37,6 +37,11 @@
       "website_host": "ic-casals.tech",
       "website_www_host": "www.ic-casals.tech",
       "demo_host": "demo.ic-casals.tech",
+      "monitor": {
+        "$comment": "Production monitor on casals-prod (GET https://service.ic-casals.tech/v1/service lists its principal).",
+        "principal": "wdtda-uafrj-6down-pxxwi-emhpc-uivwv-zdi3c-szrq7-hxodh-wlvas-iqe",
+        "url": "https://service.ic-casals.tech"
+      },
       "principals": {
         "operator": "$deployer",
         "$comment": "access-code slot: admin=CASALS (everything)",
@@ -61,6 +66,11 @@
       "website_host": "staging.ic-casals.tech",
       "website_www_host": "",
       "demo_host": "casals.staging.ic-casals.tech",
+      "monitor": {
+        "$comment": "Staging monitor on srv1; its mail subjects carry [TEST].",
+        "principal": "x5a7t-3syrx-klefo-c6ohm-gw4qj-lnkre-xv4fo-lxzw3-mpvz2-j4wr2-vae",
+        "url": "https://service.staging.ic-casals.tech"
+      },
       "principals": {
         "operator": "$deployer",
         "$comment": "access-code slot: admin=CASALS (everything)",

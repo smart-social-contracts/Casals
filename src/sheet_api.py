@@ -27,6 +27,7 @@ from sheetv2 import (
     LEGACY_CONDUCTOR_NAMES,
     ResolveContext,
     env_block,
+    env_monitor,
     find_canister,
     iter_canisters,
     materialize,
@@ -74,8 +75,46 @@ def set_sheet_impl(args: dict) -> dict:
         st.canister_id = cid.strip()
     # Pre-bound rows have no stand yet: home them where the sheet declares them.
     ensure_core_layout()
-    _append_event("sheet_set", "", {"env": env, "sheet_hash": sh})
-    return {"sheet_hash": sh, "env": env, "warnings": []}
+    monitor_changed = apply_sheet_monitor(env_monitor(sheet, env))
+    _append_event("sheet_set", "", {"env": env, "sheet_hash": sh, "monitor_changed": monitor_changed})
+    return {"sheet_hash": sh, "env": env, "warnings": [], "monitor_changed": monitor_changed}
+
+
+def apply_sheet_monitor(monitor: dict | None) -> bool:
+    """Make the conductor's monitor settings what the sheet declares, before
+    plan/apply creates anything: provisioning grants the monitor
+    ``status_visibility`` while Casals still controls a canister, which it no
+    longer does after a baton hand-off.
+
+    Same switch as Settings → off-chain monitor: the monitor tops up, so the
+    on-chain autopilot and sampler stop. No ``monitor`` block leaves the
+    settings alone. Returns whether anything changed."""
+    if not monitor:
+        return False
+    from lifecycle import _parse_extra_controller_principals
+    principal = monitor["principal"]
+    if principal in _parse_extra_controller_principals():
+        raise ValueError("monitor.principal is an extra controller: the monitor reads "
+                         "via status_visibility, never as a controller")
+    url = f"{monitor['url']}/v1/{ic.id().to_str()}"
+    s = _settings()
+    if (s.monitor_enabled and (s.monitor_principal or "") == principal
+            and (s.monitor_service_url or "") == url
+            and not s.cycles_autopilot and not s.cycles_sampling):
+        return False
+    s.monitor_enabled = 1
+    s.monitor_principal = principal
+    s.monitor_service_url = url
+    s.cycles_autopilot = 0
+    s.cycles_sampling = 0
+    from cycles import _arm_autopilot, _arm_cycle_sampler, refresh_cycles_snapshot_settings
+    _arm_autopilot()
+    _arm_cycle_sampler()
+    refresh_cycles_snapshot_settings()
+    _append_event("settings_changed", "", {"monitor_enabled": True, "monitor_principal": principal,
+                                           "monitor_service_url": url, "cycles_autopilot": False,
+                                           "cycles_sampling": False, "source": "sheet"})
+    return True
 
 
 def get_sheet_impl() -> dict:
