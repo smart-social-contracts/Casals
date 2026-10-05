@@ -27,7 +27,7 @@
     },
     "production": {
       "network": "ic",
-      "$comment": "operator is prod-identity (YubiKey). Deploy through an icp delegation from it (`prod-session`, docs/OPERATIONS.md, Hardware keys): the IC sees the same principal. DNS lives in the Cloudflare zone ic-casals.tech; the API token is read from $CLOUDFLARE_API_TOKEN, never written here. The CLI does not write Cloudflare records yet (`reconcile_domains` reports unverifiable): per host add, DNS only (grey cloud), CNAME <host> -> <host>.icp1.io, TXT _canister-id.<host> -> <canister id from bindings>, CNAME _acme-challenge.<host> -> _acme-challenge.<host>.icp2.io, then POST https://icp0.io/custom-domains/v1/<host>. Keep the service A record (165.22.84.246, the hosted monitor) and the MX/SPF rows.",
+      "$comment": "operator is prod-identity (YubiKey). Deploy through an icp delegation from it (`prod-session`, docs/OPERATIONS.md, Hardware keys): the IC sees the same principal. DNS lives in the Cloudflare zone ic-casals.tech; the API token is read from $CLOUDFLARE_API_TOKEN, never written here. The CLI does not write Cloudflare records yet (`reconcile_domains` reports unverifiable): per host add, DNS only (grey cloud), CNAME <host> -> <host>.icp1.io, TXT _canister-id.<host> -> <canister id from bindings>, CNAME _acme-challenge.<host> -> _acme-challenge.<host>.icp2.io, then POST https://icp0.io/custom-domains/v1/<host>. Keep the service A records (service -> 195.15.214.37, the production monitor; service.staging -> 165.22.84.246, the staging monitor) and the MX/SPF rows.",
       "dns": {
         "provider": "cloudflare",
         "zone": "ic-casals.tech",
@@ -47,6 +47,29 @@
       "cycles": {
         "min_balance_tc": 2.0,
         "budget_tc": 40
+      }
+    },
+    "staging": {
+      "network": "ic",
+      "$comment": "operator is dev-identity (YubiKey), never the prod stick. Same DNS steps as production, in the same zone. Monitored by the staging monitor (https://service.staging.ic-casals.tech, mail subjects prefixed [TEST]).",
+      "dns": {
+        "provider": "cloudflare",
+        "zone": "ic-casals.tech",
+        "token_env": "CLOUDFLARE_API_TOKEN",
+        "ttl": 60
+      },
+      "website_host": "staging.ic-casals.tech",
+      "website_www_host": "",
+      "demo_host": "casals.staging.ic-casals.tech",
+      "principals": {
+        "operator": "$deployer",
+        "$comment": "access-code slot: admin=CASALS (everything)",
+        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980",
+        "deployer": "$deployer"
+      },
+      "cycles": {
+        "min_balance_tc": 1.0,
+        "budget_tc": 30
       }
     }
   },
