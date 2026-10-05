@@ -12,7 +12,7 @@ Any project can operate its own Casals conductor to manage a canister fleet. [Re
 
 Casals lets a project **create, upgrade, roll back, and retire its canisters** under that coordinator — organized into **sections**, **stands**, and **canisters**. Governance is pluggable: each section delegates to one or more **commanders** (principals or external governance canisters). Casals provides the structure and executes approved actions; it never embeds voting logic inside the conductor.
 
-> **Live demo** — https://igz53-6qaaa-aaaao-bbapa-cai.icp0.io
+> **Live demo** — https://demo.ic-casals.tech
 
 > **Design rationale** — [docs/philosophy](docs/philosophy/README.md) (why orchestra / sections / stands / conductor / baton)
 
