@@ -459,6 +459,10 @@ class RecordingIc:
     def record(self, op: str, *args, **kwargs) -> None:
         self.calls.append((op, args, kwargs))
 
+    def _is_mainnet(self) -> bool:
+        url = (self.network_url or "").rstrip("/")
+        return url in (NETWORK_URLS["ic"].rstrip("/"), "https://ic0.app") or self.env in ("ic", "production")
+
     def deployer_principal(self) -> str:
         self.record("deployer_principal")
         return self.deployer
