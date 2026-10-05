@@ -646,6 +646,35 @@ class TestOracle:
         report = run_oracle(sheet, "local", bindings, ic)
         assert any(r.canister == "Motoko" and r.field == "commanders" and r.result == "FAIL" for r in report.rows)
 
+    def test_full_access_on_an_older_conductor_passes(self):
+        """A conductor from an older release knows fewer permission keys; its
+        `all_permissions` commanders still satisfy a declared "*"."""
+        ic = RecordingIc()
+        with open(CORPUS, encoding="utf-8") as f:
+            sheet = json.load(f)
+        bindings = {
+            "casals-backend": "backend-id",
+            "casals-store": "store-id",
+            "file-registry": "fr-id",
+            "file-registry-frontend": "fr-fe-id",
+            "casals-frontend": "fe-id",
+            "multisig": "ms-id",
+            "motoko-backend": "motoko-id",
+        }
+        _governed_live(ic, sheet, bindings)
+        from auth import PERMISSION_KEYS
+        conductor = ic.queries[(bindings["casals-backend"], "get_tree")]["sections"][0]
+        full = [c for c in conductor["commanders"] if set(c["permissions"]) == set(PERMISSION_KEYS)]
+        assert full
+        for c in full:
+            c.update(permissions=c["permissions"][:-4], all_permissions=True)
+        report = run_oracle(sheet, "local", bindings, ic)
+        assert not [r for r in report.rows if r.result == "FAIL"]
+        for c in full:
+            c["all_permissions"] = False
+        report = run_oracle(sheet, "local", bindings, ic)
+        assert any(r.canister == "Casals" and r.field == "commanders" and r.result == "FAIL" for r in report.rows)
+
     @pytest.mark.parametrize("field,mutator", [
         ("controllers", lambda ic, b: ic.controllers.__setitem__(b["motoko-backend"], ["wrong-principal"])),
         ("module_hash", lambda ic, b: ic.module_hashes.__setitem__(b["motoko-backend"], "b" * 64)),

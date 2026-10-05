@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from access_code import is_code_checksum, normalize_code_checksum
-from auth import _normalize_permissions, _parse_permissions
+from auth import PERMISSION_KEYS, _normalize_permissions, _parse_permissions
 from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
     HAND_OFF_SOLE,
@@ -136,8 +136,16 @@ def _grade_commanders(report: OracleReport, name: str, declared, live_entity: di
             except ValueError:
                 pass
             p = claimed_by.get(p, p)
-        want.setdefault(p, set()).update(_parse_permissions(_normalize_permissions(c.get("permissions"))))
-    have = {c["principal"]: set(c.get("permissions") or []) for c in live}
+        norm = _normalize_permissions(c.get("permissions"))
+        want.setdefault(p, set()).update({"*"} if norm in ("", "*") else _parse_permissions(norm))
+    # A conductor built from another Casals version knows a different key set,
+    # so full access is compared as full access, not as its expansion.
+    def live_keys(c: dict) -> set:
+        keys = set(c.get("permissions") or [])
+        return {"*"} if c.get("all_permissions") or keys >= set(PERMISSION_KEYS) else keys
+
+    have = {c["principal"]: live_keys(c) for c in live}
+    want = {p: {"*"} if "*" in keys else keys for p, keys in want.items()}
     if want == have:
         report.add(name, "commanders", "PASS", f"{len(want)} commanders")
     else:
