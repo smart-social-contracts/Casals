@@ -128,3 +128,68 @@ class TestMissingIcpCli:
             run_icp_cmd(["icp", "identity", "principal"])
         assert "No such file or directory" not in str(caught.value)
         assert "npm" not in str(caught.value)
+
+
+class TestOrchestraRefs:
+    """`$orchestra:<sheet>/<canister>` under environments.<env> becomes that
+    canister's id in the other orchestra's same environment."""
+
+    URL = "https://icp-api.io"
+
+    def _save(self, tmp_path, monkeypatch, sheet_name="realms-product", env="staging", url=URL):
+        from casals_cli.bindings import Bindings
+
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        Bindings(sheet_name=sheet_name, env=env, network_url=url, deployer="2vxsx-fae",
+                 conductor={"casals-backend": "lcbqk-5qaaa-aaaai-ravda-cai"},
+                 backend_id="lcbqk-5qaaa-aaaai-ravda-cai").save()
+
+    def _ic(self, bindings):
+        ic = MagicMock(network_url=self.URL)
+        ic.query.return_value = {"bindings": bindings}
+        return ic
+
+    def _sheet(self):
+        return {"name": "gaas", "environments": {
+            "staging": {"realms_product": {"marketplace_id": "$orchestra:realms-product/marketplace-backend"}},
+            "production": {"realms_product": {"marketplace_id": "$orchestra:realms-product/marketplace-backend"}},
+        }}
+
+    def test_resolves_only_the_target_environment(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_orchestra_refs
+
+        self._save(tmp_path, monkeypatch)
+        ic = self._ic({"marketplace-backend": "mkt7a-aaaaa-aaaai-ravdq-cai"})
+        sheet = self._sheet()
+        out = resolve_orchestra_refs(ic, sheet, "staging")
+        assert out["environments"]["staging"]["realms_product"]["marketplace_id"] == "mkt7a-aaaaa-aaaai-ravdq-cai"
+        assert out["environments"]["production"] == sheet["environments"]["production"]
+        assert sheet["environments"]["staging"]["realms_product"]["marketplace_id"].startswith("$orchestra:")
+        ic.query.assert_called_once_with("lcbqk-5qaaa-aaaai-ravda-cai", "get_bindings")
+
+    def test_missing_orchestra_says_deploy_it_first(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_orchestra_refs
+
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        with pytest.raises(RuntimeError, match="deploy realms-product staging first"):
+            resolve_orchestra_refs(self._ic({}), self._sheet(), "staging")
+
+    def test_missing_canister(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_orchestra_refs
+
+        self._save(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError, match="has no canister 'marketplace-backend'"):
+            resolve_orchestra_refs(self._ic({"token-backend": "aaaaa-aa"}), self._sheet(), "staging")
+
+    def test_bindings_from_another_network(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_orchestra_refs
+
+        self._save(tmp_path, monkeypatch, url="http://127.0.0.1:8000")
+        with pytest.raises(RuntimeError, match="belong to http://127.0.0.1:8000"):
+            resolve_orchestra_refs(self._ic({"marketplace-backend": "aaaaa-aa"}), self._sheet(), "staging")
+
+    def test_sheet_without_refs_is_returned_as_is(self):
+        from casals_cli.bindings import resolve_orchestra_refs
+
+        sheet = {"name": "x", "environments": {"staging": {"portal_url": "https://staging.gos.earth"}}}
+        assert resolve_orchestra_refs(MagicMock(), sheet, "staging") is sheet

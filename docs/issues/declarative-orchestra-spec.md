@@ -192,6 +192,7 @@ Anywhere a principal is expected:
 | `$principal:<alias>` | `principals.<alias>` → `environments.<env>.principals.<alias>`. The value may be an access-code checksum `sha256:<hex>` (`casals code new`): then the alias is only valid as a `commanders[].principal` and declares an *unclaimed slot* that `claim_commander` hands to whoever presents the code |
 | `$deployer` | the principal running `casals up` (local / bootstrap only; **rejected** in `production` sheets after bootstrap) |
 | `$env.<key>` | any value under `environments.<env>` (used in `config` args and `install_arg`); the value may itself hold placeholders |
+| `$orchestra:<sheet>/<canister>` | only as a value under `environments.<env>`: the id of `<canister>` in the same environment of another orchestra, read by the CLI from that orchestra's bindings file and conductor before `up`/`plan`/`upgrade`/`oracle`. The conductor stores the resolved id. Deploy the other orchestra first; `up` stops before spending anything otherwise |
 
 Placeholders may sit inside longer strings (`install_arg` candid text, `files`
 content, URLs). Where the token would run into following characters, delimit

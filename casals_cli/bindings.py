@@ -119,6 +119,50 @@ def live_bindings(ic, sheet_name: str, env: str, conductor_override: str | None 
     return backend, ids
 
 
+ORCHESTRA_REF = "$orchestra:"
+
+
+def resolve_orchestra_refs(ic, sheet: dict, env: str) -> dict:
+    """Replace each ``$orchestra:<sheet>/<canister>`` value under
+    ``environments.<env>`` with that canister's id in the same environment of
+    the other orchestra (its bindings file + conductor). The conductor stores
+    the resolved sheet; other environments stay as written."""
+    envs = sheet.get("environments")
+    if not isinstance(envs, dict) or not isinstance(envs.get(env), dict):
+        return sheet
+    found: dict[str, dict[str, str]] = {}
+
+    def lookup(ref: str) -> str:
+        other, sep, name = ref[len(ORCHESTRA_REF):].partition("/")
+        if not other or not sep or not name:
+            raise RuntimeError(f"{ref}: expected {ORCHESTRA_REF}<sheet>/<canister>")
+        if other not in found:
+            local = load_bindings(other, env)
+            if not local or not local.casals_backend_id:
+                raise RuntimeError(f"{ref}: no {other} orchestra in {env}; deploy {other} {env} first")
+            if local.network_url and local.network_url.rstrip("/") != ic.network_url.rstrip("/"):
+                raise RuntimeError(f"{ref}: the {other} {env} bindings belong to {local.network_url}, not {ic.network_url}")
+            found[other] = live_bindings(ic, other, env)[1]
+        cid = found[other].get(name)
+        if not cid:
+            raise RuntimeError(f"{ref}: {other} {env} has no canister {name!r}")
+        return cid
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, str) and value.startswith(ORCHESTRA_REF):
+            return lookup(value)
+        if isinstance(value, dict):
+            return {k: walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        return value
+
+    resolved = walk(envs[env])
+    if resolved == envs[env]:
+        return sheet
+    return {**sheet, "environments": {**envs, env: resolved}}
+
+
 def find_bindings_for_env(env: str, conductor: str | None = None) -> Bindings | None:
     """Locate a bindings file for ``env``, optionally matching ``conductor``."""
     if not os.path.isdir(bindings_dir()):

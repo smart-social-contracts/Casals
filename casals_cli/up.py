@@ -14,7 +14,7 @@ from typing import Any
 
 from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, sheet_hash, validate
 
-from casals_cli.bindings import Bindings, load_bindings
+from casals_cli.bindings import Bindings, load_bindings, resolve_orchestra_refs
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
 from casals_cli.multisig import ensure_control, set_controllers_via_multisig
 from casals_cli.registry import ensure_registry_uploads, resolve_source
@@ -528,7 +528,7 @@ def run_up(
     """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
     `set_sheet` and returns the plan: it needs a conductor and never applies."""
     project_root = project_root or os.getcwd()
-    sheet = load_json_file(sheet_path)
+    sheet = resolve_orchestra_refs(ic, load_json_file(sheet_path), env)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
     deployer = ic.deployer_principal()
     _print_step_list(sheet, sheet_name, env, ic.network_url, deployer, dry_run)
