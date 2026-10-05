@@ -137,6 +137,7 @@ service : {
   "get_bindings" : () -> (text) query;
   "get_my_settings" : () -> (text) query;
   "set_my_settings" : (text) -> (text);
+  "confirm_notification_email" : (text) -> (text);
   "set_settings" : (text) -> (text);
   "create_section" : (text) -> (text);
   "create_stand" : (text) -> (text);

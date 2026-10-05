@@ -1446,6 +1446,64 @@ def test_sync_assets_drops_stale_encodings_and_reports_real_counts(monkeypatch):
     assert result == {"stored": ["/index.html"], "deleted": ["/old-chunk.js"]}
 
 
+def test_sync_assets_batches_properties_by_shape(monkeypatch):
+    """Untyped Candid `vec` elements must share one type: the hello-world
+    policy gives index.html `is_aliased` on top of the `**/*` fields, which
+    an asset canister rejected as "Trailing value after finishing
+    deserialization" when both went into one `commit_batch`."""
+    import re
+    from unittest.mock import MagicMock
+    import live_state
+
+    policy_path = os.path.join(os.path.dirname(__file__), "..", "seed", "assets", "hello-world", ".ic-assets.json5")
+    policy = open(policy_path, encoding="utf-8").read()
+    commits = []
+
+    class FakeAsset:
+        def __init__(self, _principal):
+            pass
+
+        def grant_permission(self, arg):
+            return {"Ok": None}
+
+        def list(self, arg):
+            return {"Ok": []}
+
+        def store(self, arg):
+            return {"Ok": None}
+
+    def call_raw(_cid, method, arg, _cycles):
+        if method == "commit_batch":
+            commits.append(arg)
+        return {"Ok": "(record { batch_id = 7 : nat })"}
+
+    monkeypatch.setattr(lifecycle, "AssetCanisterService", FakeAsset)
+    monkeypatch.setattr(live_state, "AssetCanisterService", FakeAsset)
+    monkeypatch.setattr(lifecycle, "Principal", MagicMock(from_str=lambda s: s))
+    monkeypatch.setattr(live_state, "Principal", MagicMock(from_str=lambda s: s))
+    monkeypatch.setattr(lifecycle, "unwrap_call_result", lambda res: res["Ok"] if isinstance(res, dict) and "Ok" in res else res)
+    monkeypatch.setattr(live_state, "unwrap_call_result", lambda res: res["Ok"] if isinstance(res, dict) and "Ok" in res else res)
+    monkeypatch.setattr(lifecycle, "ic", MagicMock(id=lambda: "self", call_raw=call_raw,
+                                                   candid_encode=lambda s: s, candid_decode=lambda s: s))
+    monkeypatch.setattr(lifecycle, "_append_event", lambda *a, **k: None)
+
+    files = {lifecycle.POLICY_FILE: policy, "/index.html": "<html></html>", "/app.js": "x"}
+    keys = list(files)
+    gen = lifecycle._sync_assets_gen("fe-id", "", keys, files, keys)
+    try:
+        value = next(gen)
+        while True:
+            value = gen.send(value)
+    except StopIteration:
+        pass
+
+    assert len(commits) == 2, commits
+    for arg in commits:
+        shapes = {tuple(re.findall(r";\s*(\w+) =", op)) for op in arg.split("variant { SetAssetProperties")[1:]}
+        assert len(shapes) == 1, f"mixed operation shapes in one batch: {shapes}"
+    assert sum(arg.count("SetAssetProperties") for arg in commits) == len(keys)
+
+
 def test_render_canister_ids_js_drops_retired_placeholders():
     import json as _json
 

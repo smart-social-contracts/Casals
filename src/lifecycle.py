@@ -720,17 +720,25 @@ def _sync_assets_gen(canister_id: str, namespace: str, keys: list, files: dict, 
         # planner still lists as missing get theirs when they are stored.
         pending = set(keys) - set(stored)
         targets = [k for k in (all_keys or keys) if k not in pending] if POLICY_FILE in stored else stored
-        ops = [_set_properties_op(key, properties_for(key, rules)) for key in targets
-               if any_properties(properties_for(key, rules))]
+        # The batch is untyped Candid text, so a `vec` takes its element type
+        # from what is written: operations with different field sets in one
+        # vec encode to bytes the canister rejects ("Trailing value after
+        # finishing deserialization"). One batch per shape.
+        by_shape: dict = {}
+        for key in targets:
+            props = properties_for(key, rules)
+            if any_properties(props):
+                by_shape.setdefault(_properties_shape(props), []).append(_set_properties_op(key, props))
         # One `commit_batch` per slice: the asset canister certifies the whole
         # tree on commit (a bare `set_asset_properties` leaves it uncertified).
-        for start in range(0, len(ops), 50):
-            res = yield ic.call_raw(Principal.from_str(canister_id), "create_batch", ic.candid_encode("(record {})"), 0)
-            batch_id = _batch_id(ic.candid_decode(unwrap_call_result(res)))
-            arg = "(record { batch_id = " + batch_id + " : nat; operations = vec { " + "; ".join(ops[start:start + 50]) + " } })"
-            res = yield ic.call_raw(Principal.from_str(canister_id), "commit_batch", ic.candid_encode(arg), 0)
-            unwrap_call_result(res)
-            propertied += len(ops[start:start + 50])
+        for ops in by_shape.values():
+            for start in range(0, len(ops), 50):
+                res = yield ic.call_raw(Principal.from_str(canister_id), "create_batch", ic.candid_encode("(record {})"), 0)
+                batch_id = _batch_id(ic.candid_decode(unwrap_call_result(res)))
+                arg = "(record { batch_id = " + batch_id + " : nat; operations = vec { " + "; ".join(ops[start:start + 50]) + " } })"
+                res = yield ic.call_raw(Principal.from_str(canister_id), "commit_batch", ic.candid_encode(arg), 0)
+                unwrap_call_result(res)
+                propertied += len(ops[start:start + 50])
     deleted: list = []
     if len(stored) == len(keys):  # every write landed: now the removals
         for key in (delete_keys or [])[:SYNC_MAX_FILES]:
@@ -769,6 +777,18 @@ def _set_properties_op(key: str, props: dict) -> str:
     if props.get("enable_aliasing") is not None:
         fields.append(f"is_aliased = opt opt {str(bool(props['enable_aliasing'])).lower()}")
     return "variant { SetAssetProperties = record { " + "; ".join(fields) + " } }"
+
+
+def _properties_shape(props: dict) -> tuple:
+    """The Candid type `_set_properties_op` writes for ``props``: which fields
+    it sets, and whether ``headers`` is an empty vec (typed differently)."""
+    headers = props.get("headers")
+    return (
+        None if headers is None else bool(headers),
+        props.get("max_age") is not None,
+        props.get("allow_raw_access") is not None,
+        props.get("enable_aliasing") is not None,
+    )
 
 
 # ── Management canister helpers ───────────────────────────────────────────────
