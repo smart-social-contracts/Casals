@@ -16,11 +16,16 @@ from casals_cli.multisig import set_controllers_via_multisig
 def _set_controllers(ic, canister_id: str, controllers: list[str], deployer: str, multisig_id: str) -> None:
     current = ic.read_controllers(canister_id) or []
     if deployer in current:
-        ic.settings_update(canister_id, set_controllers=controllers)
+        added = [c for c in controllers if c not in current]
+        removed = [c for c in current if c not in controllers]
+        ic.settings_update(canister_id, add_controllers=added or None, remove_controllers=removed or None)
     elif multisig_id and multisig_id in current:
         set_controllers_via_multisig(ic, multisig_id, deployer, canister_id, controllers)
     else:
         raise RuntimeError(f"controlled by {current}: neither the deployer nor the multisig")
+    after = ic.read_controllers(canister_id) or []
+    if sorted(after) != sorted(controllers):
+        raise RuntimeError(f"controllers are {after}, expected {sorted(controllers)}")
 
 
 def _sync(ic, backend_id: str) -> dict:

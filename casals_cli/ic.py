@@ -416,12 +416,14 @@ class IcClient:
             timeout=900,
         )
 
-    def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None) -> None:
+    def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None,
+                        add_controllers: list[str] | None = None,
+                        remove_controllers: list[str] | None = None) -> None:
         cmd = ["canister", "settings", "update", canister_id, "-f"]
-        if set_controllers is not None:
-            cmd.append("--remove-all-controllers")
-            for c in set_controllers:
-                cmd += ["--add-controller", c]
+        for flag, principals in (("--set-controller", set_controllers), ("--add-controller", add_controllers),
+                                 ("--remove-controller", remove_controllers)):
+            for c in principals or []:
+                cmd += [flag, c]
         self.icp(cmd)
 
     def stop_canister(self, canister_id: str) -> None:
@@ -566,8 +568,18 @@ class RecordingIc:
     def install_wasm(self, canister_id: str, wasm_path: str, *, mode: str = "install") -> None:
         self.record("install_wasm", canister_id, wasm_path, mode=mode)
 
-    def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None) -> None:
-        self.record("settings_update", canister_id, set_controllers=set_controllers)
+    def settings_update(self, canister_id: str, *, set_controllers: list[str] | None = None,
+                        add_controllers: list[str] | None = None,
+                        remove_controllers: list[str] | None = None) -> None:
+        kw = {k: v for k, v in (("set_controllers", set_controllers), ("add_controllers", add_controllers),
+                                ("remove_controllers", remove_controllers)) if v is not None}
+        self.record("settings_update", canister_id, **kw)
+        if set_controllers is not None:
+            self.controllers[canister_id] = list(set_controllers)
+        current = self.controllers.get(canister_id)
+        if current is not None:
+            current += [c for c in add_controllers or [] if c not in current]
+            current[:] = [c for c in current if c not in (remove_controllers or [])]
 
     def stop_canister(self, canister_id: str) -> None:
         self.record("stop_canister", canister_id)
