@@ -3,7 +3,7 @@
 
 import json
 
-from auth import _normalize_permissions, _parse_permissions
+from auth import _parse_permissions, grants_all_permissions
 from commanders import commanders_view, legacy_commander_principal, legacy_permissions
 from models import CanisterStatus
 from util import canister_url
@@ -70,7 +70,7 @@ def _stand_view(dk) -> dict:
         "commanders": cmds,
         "commander_principal": legacy_commander_principal(dk),
         "permissions": _parse_permissions(legacy_perms),
-        "all_permissions": _normalize_permissions(legacy_perms) == "*" or legacy_perms == "",
+        "all_permissions": grants_all_permissions(legacy_perms),
         "min_cycles": int(dk.min_cycles or 0),
         "topup_cycles": int(dk.topup_cycles or 0),
         "subnet": dk.subnet or "",
@@ -99,7 +99,7 @@ def _section_view(sec) -> dict:
         "commanders": cmds,
         "commander_principal": legacy_commander_principal(sec),
         "permissions": _parse_permissions(legacy_perms),
-        "all_permissions": _normalize_permissions(legacy_perms) == "*" or legacy_perms == "",
+        "all_permissions": grants_all_permissions(legacy_perms),
         "min_cycles": int(sec.min_cycles or 0),
         "topup_cycles": int(sec.topup_cycles or 0),
         "subnet": sec.subnet or "",

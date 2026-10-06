@@ -1,18 +1,13 @@
 import type { Section, Stand, Tree } from './api';
 import { activeCommanders } from './commanderAccess';
-import { isOrchestraSectionName, ladderAllows } from './governanceUx';
+import { grantAllows, isOrchestraSectionName, ladderAllows } from './governanceUx';
 
 export function permissionsGrant(
   permissions: string[] | undefined,
   allPermissions: boolean | undefined,
   key: string,
 ): boolean {
-  if (allPermissions) return true;
-  if (!permissions?.length) return true;
-  if (permissions.includes(key)) return true;
-  // Legacy rows: governance commanders may manage the subnet whitelist.
-  if (key === 'subnet.whitelist' && permissions.includes('commander.assign')) return true;
-  return false;
+  return grantAllows({ permissions, all_permissions: allPermissions }, key);
 }
 
 /** The synthetic section carrying orchestra-level commanders (`conductor.commanders`), if present. */

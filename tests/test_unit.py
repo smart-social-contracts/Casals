@@ -621,8 +621,14 @@ def test_normalize_permissions_drops_unknown_keys():
     assert result == "canister.create"
 
 
-def test_normalize_permissions_empty_list_returns_empty():
-    assert auth._normalize_permissions([]) == ""
+def test_normalize_permissions_empty_list_stores_no_access():
+    # [] and a string with no keys are an explicit empty grant, not full access.
+    assert auth._normalize_permissions([]) == auth.NO_PERMISSIONS
+    assert auth._normalize_permissions("") == auth.NO_PERMISSIONS
+    assert auth._normalize_permissions(" ") == auth.NO_PERMISSIONS
+    assert auth._parse_permissions(auth.NO_PERMISSIONS) == []
+    assert auth._parse_permissions("") == auth.PERMISSION_KEYS
+    assert auth._normalize_permissions(None) == ""
 
 
 def test_normalize_permissions_string_input():
@@ -2459,9 +2465,13 @@ def test_delegation_error_three_checks():
     assert "own grant" in _cmd.delegation_error(OPERATOR, ceiling, OPERATOR, "canister.deploy", ["canister.deploy"])
     assert "holds permissions you do not" in _cmd.delegation_error(OPERATOR, ceiling, OTHER, "*", ["canister.deploy"])
     assert "only grant permissions you hold" in _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, ["canister.delete"])
-    # "*" (and its aliases: "", [], None-as-default) needs "*".
+    # "*" needs "*". An explicit empty grant confers nothing, so it fits under
+    # a partial ceiling. None on the new grant means removal, not full access.
     assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, "*")
-    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, [])
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, []) == ""
+    assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, None, auth.NO_PERMISSIONS) == ""
+    assert _cmd.delegation_error(OPERATOR, set(), OTHER, None, ["canister.deploy"])
+    assert _cmd.delegation_error(OPERATOR, set(auth.PERMISSION_KEYS), OTHER, None, []) == ""
     assert _cmd.delegation_error(OPERATOR, set(auth.PERMISSION_KEYS), OTHER, None, "*") == ""
     # Removal (new=None) only checks self + upward.
     assert _cmd.delegation_error(OPERATOR, ceiling, OTHER, "canister.deploy", None) == ""
@@ -2658,6 +2668,112 @@ def test_controller_is_unbounded(monkeypatch):
     assert _call("set_permissions", section=ORCH, commander_principal=BOSS, permissions=["wasm.upload"])["ok"]
     assert _call("set_commander", section=ORCH, commander_principal=OTHER, permissions="*")["ok"]
     assert _call("remove_commander", section=ORCH, commander_principal=OTHER)["ok"]
+
+
+def test_empty_permission_selection_stores_no_access(monkeypatch):
+    """Unticking every box sends permissions: [] (Commanders page submitPerms)."""
+    orch, _sec, _st = _orchestra(monkeypatch, controller=True, caller="deployer")
+    _cmd.add_commander(orch, OTHER, "*")
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=[])
+    assert res["ok"] is True, res
+    stored = _grant(orch, OTHER)
+    assert stored == auth.NO_PERMISSIONS
+    assert auth._parse_permissions(stored) == []
+    assert auth._has_permission(stored, "canister.deploy") is False
+    view = next(c for c in _cmd.commanders_view(orch) if c["principal"] == OTHER)
+    assert view["permissions"] == [] and view["all_permissions"] is False
+    # A * holder may clear someone; a holder of the sentinel cannot grant a key.
+    assert _cmd.delegation_error(OPERATOR, set(auth.PERMISSION_KEYS), OTHER, "*", []) == ""
+    assert _cmd.grant_keys(auth.NO_PERMISSIONS) == set()
+    _cmd.add_commander(orch, OPERATOR, [])
+    assert _cmd.effective_grant(OPERATOR, orch) == set()
+
+
+def test_star_holder_can_set_no_permissions(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch)
+    _cmd.add_commander(orch, OPERATOR, "*")
+    _cmd.add_commander(orch, OTHER, ["canister.deploy"])
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=[])
+    assert res["ok"] is True, res
+    assert _grant(orch, OTHER) == auth.NO_PERMISSIONS
+    assert auth._parse_permissions(_grant(orch, OTHER)) == []
+
+
+def test_unknown_permission_keys_are_rejected(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch, controller=True, caller="deployer")
+    _cmd.add_commander(orch, OTHER, "*")
+    for bad in ("canister.upgrade", "canister.Deploy", ["canister.Deploy"]):
+        res = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=bad)
+        assert res["ok"] is False and "unknown permission" in res["error"], res
+        assert _grant(orch, OTHER) == "*"
+    res = _call("set_commander", section=ORCH, commander_principal="new-principal", permissions="canister.upgrade")
+    assert res["ok"] is False and "canister.upgrade" in res["error"], res
+    assert not _cmd.has_entry(orch, "new-principal")
+    kept = _call("set_permissions", section=ORCH, commander_principal=OTHER, permissions=["canister.deploy"])
+    assert kept["ok"] is True, kept
+    assert _grant(orch, OTHER) == "canister.deploy"
+    assert auth._parse_permissions(_grant(orch, OTHER)) == ["canister.deploy"]
+
+
+def test_set_permissions_requires_the_field(monkeypatch):
+    orch, _sec, _st = _orchestra(monkeypatch, controller=True, caller="deployer")
+    _cmd.add_commander(orch, OTHER, "*")
+    res = _call("set_permissions", section=ORCH, commander_principal=OTHER)
+    assert res["ok"] is False and "permissions is required" in res["error"], res
+    assert _grant(orch, OTHER) == "*"
+    # Omitting the field on set_commander is still historical full access.
+    made = _call("set_commander", section=ORCH, commander_principal="new-principal")
+    assert made["ok"] is True, made
+    assert _grant(orch, "new-principal") == ""
+    assert auth._parse_permissions(_grant(orch, "new-principal")) == auth.PERMISSION_KEYS
+
+
+def test_stored_empty_string_stays_full_access_and_is_not_migrated():
+    import json
+    ent = _Entity("legacy")
+    ent.commanders_json = json.dumps([{"principal": "legacy-cmd", "permissions": ""}])
+    assert _cmd.list_commanders(ent)[0]["permissions"] == ""
+    assert auth._parse_permissions(_cmd.permissions_for(ent, "legacy-cmd")) == auth.PERMISSION_KEYS
+    assert _cmd.grant_keys("") == set(auth.PERMISSION_KEYS)
+    view = _cmd.commanders_view(ent)[0]
+    assert view["all_permissions"] is True
+    _cmd.persist_commanders(ent, _cmd.list_commanders(ent))
+    assert json.loads(ent.commanders_json)[0]["permissions"] == ""
+
+
+def test_create_stand_spec_rejects_unknown_and_stores_empty_grant(monkeypatch):
+    import main
+    _orch, sec, _st = _orchestra(monkeypatch, controller=True, caller="deployer")
+    with pytest.raises(ValueError, match="canister.upgrade"):
+        main._require_bounded_initial_commanders(
+            sec, {"commanders": [{"principal": OTHER, "permissions": "canister.upgrade"}]},
+        )
+    with pytest.raises(ValueError, match="canister.Deploy"):
+        main._require_bounded_initial_commanders(
+            sec, {"commander_principal": OTHER, "permissions": ["canister.Deploy"]},
+        )
+    ent = _Entity("born")
+    with pytest.raises(ValueError, match="unknown permission"):
+        _cmd.apply_commanders_from_spec(
+            ent, {"commanders": [{"principal": OTHER, "permissions": "canister.upgrade"}]},
+        )
+    _cmd.apply_commanders_from_spec(ent, {"commanders": [{"principal": OTHER, "permissions": []}]})
+    assert _cmd.permissions_for(ent, OTHER) == auth.NO_PERMISSIONS
+    full = _Entity("born-full")
+    _cmd.apply_commanders_from_spec(full, {"commander_principal": OTHER})
+    assert _cmd.permissions_for(full, OTHER) == ""
+
+
+def test_sheet_input_empty_string_is_no_access_but_stored_empty_is_not():
+    from planner import _normalize_commanders
+    cleared = _normalize_commanders([{"principal": "p", "permissions": ""}])
+    assert cleared[0]["permissions"] == auth.NO_PERMISSIONS
+    typo = _normalize_commanders([{"principal": "p", "permissions": "canister.upgrade"}])
+    assert typo[0]["permissions"] == auth.NO_PERMISSIONS
+    legacy = _normalize_commanders([{"principal": "p", "permissions": ""}], stored=True)
+    assert legacy[0]["permissions"] == ""
+    exact = _normalize_commanders([{"principal": "p", "permissions": "canister.deploy"}])
+    assert exact[0]["permissions"] == "canister.deploy"
 
 
 def test_create_stand_initial_commanders_are_bounded(monkeypatch):

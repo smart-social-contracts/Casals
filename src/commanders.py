@@ -16,7 +16,15 @@ from __future__ import annotations
 import json
 
 from access_code import checksums_equal, is_code_checksum, normalize_code_checksum
-from auth import PERMISSION_KEYS, _has_permission, _normalize_permissions, _parse_permissions
+from auth import (
+    PERMISSION_KEYS,
+    _has_permission,
+    _normalize_permissions,
+    _parse_permissions,
+    grants_all_permissions,
+    reject_unknown_permissions,
+    union_stored_permissions,
+)
 
 # The canister runtime's `re` module is only partial (see helpers.py), so the
 # method-name check stays on characters.
@@ -74,7 +82,13 @@ def _entry(principal: str, permissions, code_checksum: str = "", calls=None) -> 
     p = (principal or "").strip()
     if is_code_checksum(p):
         p = normalize_code_checksum(p)
-    perms = _normalize_permissions(permissions) if permissions is not None else ""
+    # Exact "" is the legacy stored full-access grant. Running it through
+    # _normalize_permissions would store the no-access sentinel and migrate
+    # every existing row. None means the same historical full access.
+    if permissions is None or permissions == "":
+        perms = ""
+    else:
+        perms = _normalize_permissions(permissions)
     out = {"principal": p, "permissions": perms}
     cc = (code_checksum or "").strip()
     if cc:
@@ -172,10 +186,9 @@ def entity_has_permission(entity, principal: str, permission: str) -> bool:
 
 
 def _union_permissions(a: str, b: str) -> str:
-    """Union of two stored grants; "" (everything) absorbs the other."""
-    if not a or not b:
-        return ""
-    return _normalize_permissions(f"{a},{b}")
+    """Union of two stored grants. "" (everything) absorbs the other.
+    The no-access sentinel contributes no keys."""
+    return union_stored_permissions(a, b)
 
 
 def set_calls(entity, principal: str, calls) -> bool:
@@ -286,7 +299,14 @@ def add_commander(entity, principal: str, permissions=None) -> bool:
     if is_code_checksum(p):
         p = normalize_code_checksum(p)
     entries = list_commanders(entity)
-    perms_norm = _normalize_permissions(permissions) if permissions is not None else None
+    # None leaves an existing grant unchanged and, for a new entry, stores
+    # legacy full access (""). An explicit [] or a string with no keys stores
+    # the no-access sentinel via _normalize_permissions.
+    if permissions is not None:
+        reject_unknown_permissions(permissions)
+        perms_norm = _normalize_permissions(permissions)
+    else:
+        perms_norm = None
     for e in entries:
         if e["principal"] == p:
             if perms_norm is not None:
@@ -391,7 +411,7 @@ def commander_view(entry: dict) -> dict:
     out = {
         "principal": entry["principal"],
         "permissions": _parse_permissions(perms),
-        "all_permissions": _normalize_permissions(perms) == "*" or perms == "",
+        "all_permissions": grants_all_permissions(perms),
         "unclaimed": is_unclaimed(entry),
     }
     cc = entry.get("code_checksum") or ""
@@ -487,9 +507,10 @@ def delegation_error(caller: str, ceiling: set, target: str, current, new) -> st
     ``ceiling`` is the caller's ``effective_grant`` at the target's rung and
     above; ``current`` is the target's stored grant (``None`` when the target
     is not listed yet); ``new`` is the grant being written — ``None`` means
-    *a removal, nothing is written* (callers must pass ``""`` for "full
-    access by default", never ``None``). Three checks, all needed — dropping
-    any one re-opens the hole:
+    *a removal, nothing is written*. Callers that mean "full access by
+    default" must pass ``"*"`` (never ``None``, and never ``""`` or ``[]``,
+    which store the no-access sentinel and confer nothing). Three checks,
+    all needed — dropping any one re-opens the hole:
 
       1. never yourself: a commander cannot edit or remove their own entry
          (no self-promotion, no orphaning a rung by mistake);
@@ -515,18 +536,66 @@ def delegation_error(caller: str, ceiling: set, target: str, current, new) -> st
     return ""
 
 
+def reject_spec_permissions(spec: dict) -> None:
+    """Reject unknown keys on a create/sheet commander spec. Does not store."""
+    if not isinstance(spec, dict):
+        return
+    commanders = spec.get("commanders")
+    if isinstance(commanders, list):
+        for item in commanders:
+            if isinstance(item, dict) and "permissions" in item and item.get("permissions") is not None:
+                reject_unknown_permissions(item.get("permissions"))
+    if "permissions" in spec and spec.get("permissions") is not None:
+        reject_unknown_permissions(spec.get("permissions"))
+
+
+def _spec_permissions(item: dict):
+    """Stored grant for one spec entry. A missing or null field is full access
+    (""); an explicit empty list or empty string is the no-access sentinel."""
+    if "permissions" not in item or item.get("permissions") is None:
+        return ""
+    raw = item.get("permissions")
+    reject_unknown_permissions(raw)
+    return _normalize_permissions(raw)
+
+
 def apply_commanders_from_spec(entity, spec: dict) -> None:
-    """Apply commanders from a create/sheet spec (supports legacy + new format)."""
+    """Apply commanders from a create/sheet spec (supports legacy + new format).
+
+    Unknown permission keys raise ValueError. A missing ``permissions`` field
+    is historical full access; an explicit empty grant stores the no-access
+    sentinel.
+    """
+    reject_spec_permissions(spec)
     commanders = spec.get("commanders")
     if isinstance(commanders, list) and commanders:
         entries = []
         for item in commanders:
-            e = _entry_from_item(item)
-            if e is not None:
-                entries.append(e)
+            if isinstance(item, str) and item.strip():
+                try:
+                    entries.append(_entry(item.strip(), ""))
+                except ValueError:
+                    continue
+                continue
+            if not isinstance(item, dict):
+                continue
+            p = (item.get("principal") or "").strip()
+            if not p:
+                continue
+            perms = _spec_permissions(item)
+            try:
+                entries.append(_entry(p, perms, item.get("code_checksum", ""), item.get("calls")))
+            except ValueError:
+                # Malformed access-code slot or call whitelist: drop the entry,
+                # matching the previous _entry_from_item behaviour. Unknown
+                # permission keys already raised above.
+                continue
         if entries:
             persist_commanders(entity, entries)
             return
     legacy = (spec.get("commander_principal") or "").strip()
     if legacy:
-        add_commander(entity, legacy, spec.get("permissions"))
+        if "permissions" in spec and spec.get("permissions") is not None:
+            add_commander(entity, legacy, spec.get("permissions"))
+        else:
+            add_commander(entity, legacy, None)
