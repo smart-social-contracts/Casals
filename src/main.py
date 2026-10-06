@@ -915,6 +915,19 @@ def _require_notification_manage() -> None:
         raise Exception("unauthorized: needs a Casals controller or the notification.manage permission")
 
 
+def _caller_may_read_notification_addresses() -> bool:
+    """Clear text in the public settings queries (Casals#64).
+
+    The enabled monitor (it sends the mail), a controller, or a conductor
+    commander with ``notification.manage``. Everyone else gets the address
+    fields omitted — not masked copies of them."""
+    return (
+        _is_monitor_caller()
+        or _is_controller()
+        or _conductor_commander_can("notification.manage")
+    )
+
+
 def _require_can_add_in_section(sec, permission: str) -> None:
     """Authorize a structural add (stand / canister registration) scoped to a
     section. Allowed for: Casals controllers; open-access authenticated callers;
@@ -1016,7 +1029,7 @@ def get_status() -> text:
 def casals_metadata() -> text:
     s = _settings()
     orchestra_name, orchestra_description = _orchestra_identity()
-    return json.dumps({
+    body = {
         "version": VERSION,
         "open_access": bool(s.open_access),
         "wasm_store_canister_id": s.wasm_store_canister_id,
@@ -1029,13 +1042,6 @@ def casals_metadata() -> text:
         # never as a controller; its convert requests are throttled on-chain.
         "monitor_access": "allowed_viewer",
         "monitor_convert_min_interval_secs": MONITOR_CONVERT_MIN_INTERVAL_SECS,
-        # Legacy orchestra-wide address (both names). Per-user addresses are
-        # ``notification_emails``.
-        "notification_email": (s.alert_emails or ""),
-        "alert_emails": (s.alert_emails or ""),
-        "notification_emails": _user_notification_emails(),
-        "notification_email_pending": _notification_email_pending(),
-        "notification_email_entries": _notification_email_entries(),
         "default_min_cycles": int(s.default_min_cycles or 0),
         "default_topup_cycles": int(s.default_topup_cycles or 0),
         "treasury_reserve": int(s.treasury_reserve or 0),
@@ -1058,7 +1064,16 @@ def casals_metadata() -> text:
         "orchestra_name": orchestra_name,
         "orchestra_description": orchestra_description,
         **treasury_deposit_fields(),
-    })
+    }
+    # Same field names the monitor already reads. Omitted, not masked, for
+    # every other caller — including an ordinary commander.
+    if _caller_may_read_notification_addresses():
+        body["notification_email"] = (s.alert_emails or "")
+        body["alert_emails"] = (s.alert_emails or "")
+        body["notification_emails"] = _user_notification_emails()
+        body["notification_email_pending"] = _notification_email_pending()
+        body["notification_email_entries"] = _notification_email_entries()
+    return json.dumps(body)
 
 
 @query

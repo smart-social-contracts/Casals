@@ -138,3 +138,77 @@ def test_commanders_change_only_the_settings_their_permissions_cover(main, monke
     monkeypatch.setattr(main, "_is_controller", lambda: True)
     assert _call(main.set_settings, {"open_access": True})["ok"]
     assert all(_call(main.get_my_settings)["editable_settings"].values())
+
+
+_ADDRESS_FIELDS = (
+    "notification_email",
+    "alert_emails",
+    "notification_emails",
+    "notification_email_pending",
+    "notification_email_entries",
+)
+MONITOR = "monitor-principal"
+
+
+def _seed_addresses(main):
+    _saved(main, ALICE, "alice@example.test", verified=True)
+    _saved(main, BOB, "bob@example.test")
+    s = main._settings()
+    s.alert_emails = "ops@example.test"
+    s.monitor_enabled = 1
+    s.monitor_principal = MONITOR
+
+
+def _queries(main):
+    """``get_settings`` is the same snapshot as ``casals_metadata``."""
+    meta = json.loads(main.casals_metadata())
+    settings = json.loads(main.get_settings())
+    assert settings == meta
+    return meta
+
+
+def _assert_addresses_omitted(payload):
+    for key in _ADDRESS_FIELDS:
+        assert key not in payload
+    blob = json.dumps(payload)
+    assert "alice@example.test" not in blob
+    assert "bob@example.test" not in blob
+    assert "ops@example.test" not in blob
+    assert "***@" not in blob
+
+
+def _assert_addresses_clear(payload):
+    assert payload["notification_email"] == "ops@example.test"
+    assert payload["alert_emails"] == "ops@example.test"
+    assert payload["notification_emails"] == ["alice@example.test"]
+    assert payload["notification_email_pending"] == [{"principal": BOB, "email": "bob@example.test"}]
+    by_principal = {e["principal"]: e["email"] for e in payload["notification_email_entries"]}
+    assert by_principal == {ALICE: "alice@example.test", BOB: "bob@example.test"}
+
+
+def test_public_queries_hide_notification_addresses(main, monkeypatch):
+    monkeypatch.setattr(main, "treasury_deposit_fields", lambda: {})
+    _seed_addresses(main)
+
+    _FakeIC.who = main.ANONYMOUS
+    _assert_addresses_omitted(_queries(main))
+
+    _FakeIC.who = "ordinary-commander"
+    monkeypatch.setattr(main, "_conductor_commander_can", lambda perm: perm == "settings.cycles")
+    _assert_addresses_omitted(_queries(main))
+
+    _FakeIC.who = MONITOR
+    monkeypatch.setattr(main, "_conductor_commander_can", lambda perm: False)
+    _assert_addresses_clear(_queries(main))
+    main._settings().monitor_enabled = 0
+    _assert_addresses_omitted(_queries(main))
+    main._settings().monitor_enabled = 1
+
+    _FakeIC.who = ALICE
+    monkeypatch.setattr(main, "_is_controller", lambda: True)
+    _assert_addresses_clear(_queries(main))
+
+    monkeypatch.setattr(main, "_is_controller", lambda: False)
+    _FakeIC.who = "notify-commander"
+    monkeypatch.setattr(main, "_conductor_commander_can", lambda perm: perm == "notification.manage")
+    _assert_addresses_clear(_queries(main))
