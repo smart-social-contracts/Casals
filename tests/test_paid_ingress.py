@@ -28,7 +28,7 @@ _PAID = [
     ("list_subnets", (), "_fetch_cmc_creatable_subnets"),
     ("refresh_fx", (), "_refresh_fx_gen"),
 ]
-_NOT_MONITOR = [row for row in _PAID if row[0] != "refresh_treasury"]
+_NOT_MONITOR = [row for row in _PAID if row[0] not in ("refresh_treasury", "refresh_fx")]
 
 
 class _P:
@@ -181,6 +181,28 @@ def test_monitor_cannot_call_other_paid_updates(main, monkeypatch, method, args,
     monkeypatch.setattr(main, outbound, _explode)
     body = _body(_returned(getattr(main, method)(*args)))
     assert "anonymous" not in body["error"]
+
+
+def test_monitor_refresh_fx_reaches_the_outbound_call(main, monkeypatch):
+    s = main._settings()
+    s.monitor_enabled = 1
+    s.monitor_principal = MONITOR
+    _FakeIC.who = MONITOR
+    called = []
+
+    def fx(*_a, **_k):
+        called.append(True)
+        if False:
+            yield None
+        return {"ok": True}
+
+    monkeypatch.setattr(main, "_refresh_fx_gen", fx)
+    gen = main.refresh_fx()
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+    assert called == [True]
 
 
 def test_monitor_refresh_treasury_reaches_the_outbound_call(main, monkeypatch):

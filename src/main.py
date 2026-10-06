@@ -766,8 +766,9 @@ def _require_operator(*, allow_monitor: bool = False) -> None:
 
     Anonymous is rejected before any further work (and therefore before an
     inter-canister call). The enabled monitor principal is accepted only
-    when ``allow_monitor`` is set — ``refresh_treasury``, which the monitor
-    already calls. It is not a pass for the other paid reads.
+    when ``allow_monitor`` is set: ``refresh_treasury`` and ``refresh_fx``,
+    which the off-chain monitor already calls. It is not a pass for the
+    other paid reads.
     """
     if _caller() == ANONYMOUS:
         raise Exception("unauthorized: anonymous caller")
@@ -3219,10 +3220,11 @@ def refresh_fx() -> Async[text]:
     """Fetch the cycles→currency rate for the configured display currency and
     cache it (see casals_metadata.fx_*). Throttled so frequent dashboard polls
     don't pay for an XRC call each time; the cached value is returned instead.
-    Controllers and authenticated commanders. Anonymous is rejected before
-    any XRC call."""
+    Controllers, authenticated commanders, and the enabled monitor principal
+    (casals-monitor's FX job calls this). Anonymous is rejected before any
+    XRC call."""
     try:
-        _require_operator()
+        _require_operator(allow_monitor=True)
         s = _settings()
         want = ((s.display_currency or "USD").strip().upper()) or "USD"
         fresh = (
