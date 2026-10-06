@@ -1878,7 +1878,7 @@ def create_stand(args: text) -> text:
             # call has to clear the error and try again.
             unbuilt = not int(getattr(dk, "built_at", 0) or 0)
             missing = any(Canister[n] is None for n in wanted)
-            if unbuilt and (missing or (dk.build_error or "").strip()):
+            if missing or (unbuilt and (dk.build_error or "").strip()):
                 dk.built_at = 0
                 dk.build_error = ""
                 _schedule_stand_build(name)
