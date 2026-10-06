@@ -14,6 +14,7 @@ from access_code import (
     is_code_checksum,
     normalize_code_checksum,
 )
+from auth import unknown_permission_keys
 
 
 SCHEMA_VERSION = 2
@@ -621,6 +622,8 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
                     f"conductor.{key} is no longer supported: the file-registry was replaced by the "
                     "casals-store canister (conductor.store); remove the block and its registry.wasms row"
                 )
+        if "commanders" in conductor:
+            _validate_commanders(conductor["commanders"], "conductor.commanders", errors)
 
     governance = sheet.get("governance")
     if governance is not None:
@@ -919,6 +922,14 @@ def _validate_commanders(value: Any, path: str, errors: list[str]) -> None:
             errors.append(f"{ep}.principal must be a string")
         if not isinstance(entry.get("permissions"), str):
             errors.append(f"{ep}.permissions must be a string")
+        else:
+            try:
+                bad = unknown_permission_keys(entry.get("permissions"))
+            except ValueError as exc:
+                errors.append(f"{ep}.permissions: {exc}")
+            else:
+                if bad:
+                    errors.append(f"{ep}.permissions: unknown permission: {', '.join(bad)}")
         if "calls" in entry and entry["calls"] is not None:
             from commanders import normalize_calls
             try:

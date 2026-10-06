@@ -6,7 +6,7 @@ import hashlib
 import json
 
 from access_code import is_code_checksum, normalize_code_checksum
-from auth import _normalize_permissions
+from auth import _normalize_permissions, union_stored_permissions
 from commanders import reconcile_claimed, union_calls
 from control_rules import lockout_error as _lockout_controllers
 from sheetv2 import (
@@ -369,7 +369,7 @@ class _PlanContext:
 
     def _plan_conductor_commanders(self):
         conductor = self.sheet.get("conductor") or {}
-        live = _normalize_commanders(self.live_state.get("conductor_commanders") or [])
+        live = _normalize_commanders(self.live_state.get("conductor_commanders") or [], stored=True)
         desired = _desired_commanders(conductor.get("commanders") or [], live)
         if desired == live:
             return
@@ -420,7 +420,9 @@ class _PlanContext:
                 section_order=si,
             )
         self._plan_subnet(sec_spec, self.sections_live.get(sname) or {}, sname, sname, None, si, 0)
-        live_sec = _normalize_commanders((self.sections_live.get(sname) or {}).get("commanders") or [])
+        live_sec = _normalize_commanders(
+            (self.sections_live.get(sname) or {}).get("commanders") or [], stored=True,
+        )
         desired_sec = _desired_commanders(sec_spec.get("commanders") or [], live_sec)
         if desired_sec and desired_sec != live_sec and not self.defer_if_unresolved(desired_sec, sname, "commanders"):
             self.add(
@@ -456,7 +458,9 @@ class _PlanContext:
                 section_order=si, stand_order=sj,
             )
         self._plan_subnet(stand_spec, self.stands_live.get(dname) or {}, dname, sname, dname, si, sj)
-        live_st = _normalize_commanders((self.stands_live.get(dname) or {}).get("commanders") or [])
+        live_st = _normalize_commanders(
+            (self.stands_live.get(dname) or {}).get("commanders") or [], stored=True,
+        )
         desired_st = _desired_commanders(stand_spec.get("commanders") or [], live_st)
         if desired_st and desired_st != live_st and not self.defer_if_unresolved(desired_st, dname, "commanders"):
             self.add(
@@ -888,10 +892,15 @@ def _expected_wasm_hash(sheet: dict, spec: dict) -> str:
     return ""
 
 
-def _normalize_commanders(entries: list) -> list[dict]:
+def _normalize_commanders(entries: list, *, stored: bool = False) -> list[dict]:
     """One entry per principal, permissions normalized; a principal listed twice
     gets the union of its grants ("" = everything). ``sha256:`` slot principals
-    are canonicalised; a claimed commander keeps its ``code_checksum``."""
+    are canonicalised; a claimed commander keeps its ``code_checksum``.
+
+    ``stored=True`` is for rows read back from Casals: an exact ``""`` stays
+    legacy full access. Sheet and other input leave it false, so a string
+    with no keys becomes the no-access sentinel instead of ``*``.
+    """
     grants: dict[str, str] = {}
     checksums: dict[str, str] = {}
     calls: dict[str, list] = {}
@@ -904,7 +913,12 @@ def _normalize_commanders(entries: list) -> list[dict]:
                 p = normalize_code_checksum(p)
             except ValueError:
                 continue
-        perms = _normalize_permissions(e.get("permissions")) if isinstance(e, dict) else ""
+        if not isinstance(e, dict) or "permissions" not in e or e.get("permissions") is None:
+            perms = ""
+        elif stored and isinstance(e.get("permissions"), str) and e.get("permissions") == "":
+            perms = ""
+        else:
+            perms = _normalize_permissions(e.get("permissions"))
         cc = str(e.get("code_checksum") or "").strip() if isinstance(e, dict) else ""
         if cc and not checksums.get(p):
             checksums[p] = cc
@@ -913,10 +927,8 @@ def _normalize_commanders(entries: list) -> list[dict]:
         prev = grants.get(p)
         if prev is None:
             grants[p] = perms
-        elif prev and perms:
-            grants[p] = _normalize_permissions(f"{prev},{perms}")
         else:
-            grants[p] = ""
+            grants[p] = union_stored_permissions(prev, perms)
     out = []
     for p in sorted(grants):
         entry = {"principal": p, "permissions": grants[p]}

@@ -619,3 +619,16 @@ def test_numbered_member_must_be_optional():
     tmpl["canisters"].append({"name": "{stand}-shard-{n}", "kind": "backend", "mode": "managed",
                               "wasm": "hello-world-rust@1.0.0", "controllers": ["$self"]})
     assert any("numbered members ({n}) must be optional" in e for e in sv2.validate(sheet, "local"))
+
+
+def test_unknown_commander_permission_fails_validate():
+    sheet = _load_corpus("minimal")
+    sheet["conductor"]["commanders"][0]["permissions"] = "canister.upgrade"
+    errors = sv2.validate(sheet, "local")
+    assert any("unknown permission" in e and "canister.upgrade" in e for e in errors)
+    sheet["conductor"]["commanders"][0]["permissions"] = "canister.Deploy"
+    assert any("canister.Deploy" in e for e in sv2.validate(sheet, "local"))
+    sheet["conductor"]["commanders"][0]["permissions"] = "canister.deploy"
+    assert sv2.validate(sheet, "local") == []
+    sheet["conductor"]["commanders"][0]["permissions"] = "canister.*"
+    assert sv2.validate(sheet, "local") == []

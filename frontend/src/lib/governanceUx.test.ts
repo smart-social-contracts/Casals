@@ -134,6 +134,13 @@ test('ladderAllows: orchestra grant is permission-scoped and tolerates missing r
   assert.equal(ladderAllows('auditor', 'canister.tag', {}), false);
   // Legacy empty permission list means full access, as in the backend.
   assert.ok(ladderAllows('legacy', 'stand.delete', { stand: [{ principal: 'legacy', permissions: [] }] }));
+  // An explicit empty grant (all_permissions false, no keys) cannot act.
+  assert.equal(
+    ladderAllows('cleared', 'canister.deploy', {
+      stand: [{ principal: 'cleared', permissions: [], all_permissions: false }],
+    }),
+    false,
+  );
 });
 
 test('describeMultisigSignerStatus', () => {

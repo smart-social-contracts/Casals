@@ -48,6 +48,7 @@ from auth import (
     _has_permission,
     _normalize_permissions,
     _parse_permissions,
+    reject_unknown_permissions,
 )
 from access_code import code_checksum, is_code_checksum, normalize_code_checksum
 from commanders import (
@@ -65,6 +66,7 @@ from commanders import (
     list_commanders,
     normalize_calls,
     permissions_for,
+    reject_spec_permissions,
     remove_commander as _remove_commander_entity,
     runnable_calls,
     section_commander_can,
@@ -814,9 +816,11 @@ def _require_bounded_delegation(entity, section, target: str, new_perms, *, remo
     list(Section.instances())
     ceiling = effective_grant(_caller(), Section[SYNTHETIC_SECTION_CONDUCTOR], section)
     current = permissions_for(entity, target) if has_entry(entity, target) else None
-    # A missing ``permissions`` has always meant full access ("") — the bound
-    # must see it as such, not as "nothing to check".
-    new = None if removing else ("" if new_perms is None else new_perms)
+    # A missing ``permissions`` has always meant full access. Pass "*" so the
+    # bound sees every key. Storage still writes "" for that None (see
+    # add_commander); "" and [] are the no-access sentinel and must not be
+    # used here to mean full access.
+    new = None if removing else ("*" if new_perms is None else new_perms)
     why = delegation_error(_caller(), ceiling, target, current, new)
     if why:
         raise Exception(why)
@@ -827,18 +831,24 @@ def _require_bounded_initial_commanders(section, spec: dict) -> None:
     ``commanders`` / ``commander_principal`` + ``permissions``) go through the
     same bound as ``set_commander`` — otherwise ``stand.create`` alone would be
     a side door to a ``*`` grant. Controllers are unbounded; so are open-access
-    callers, where the whole point is that anyone may run their own stand."""
+    callers, where the whole point is that anyone may run their own stand.
+    Unknown keys are rejected for every caller, including controllers."""
+    reject_spec_permissions(spec)
     if _is_controller() or (_settings().open_access and _caller() != ANONYMOUS):
         return
     declared = spec.get("commanders")
     if isinstance(declared, list) and declared:
-        pairs = [
-            (item.get("principal"), item.get("permissions", "")) if isinstance(item, dict) else (item, "")
-            for item in declared
-        ]
+        pairs = []
+        for item in declared:
+            if isinstance(item, dict):
+                perms = item["permissions"] if "permissions" in item else None
+                pairs.append((item.get("principal"), perms))
+            else:
+                pairs.append((item, None))
     else:
         legacy = (spec.get("commander_principal") or "").strip()
-        pairs = [(legacy, spec.get("permissions"))] if legacy else []
+        legacy_perms = spec["permissions"] if "permissions" in spec else None
+        pairs = [(legacy, legacy_perms)] if legacy else []
     if not pairs:
         return
     list(Section.instances())
@@ -846,8 +856,8 @@ def _require_bounded_initial_commanders(section, spec: dict) -> None:
     for principal, perms in pairs:
         # A brand-new stand: the creator naming themselves is fine (there is no
         # own entry to inflate), so only the grant bound applies here. A missing
-        # ``permissions`` is full access, as everywhere else.
-        why = delegation_error("", ceiling, principal, None, "" if perms is None else perms)
+        # ``permissions`` is full access ("*"); an explicit empty grant is nothing.
+        why = delegation_error("", ceiling, principal, None, "*" if perms is None else perms)
         if why:
             raise Exception(why)
 
@@ -1847,6 +1857,7 @@ def create_section(args: text) -> text:
         list(Section.instances())
         if Section[name] is not None:
             return _err(f"section '{name}' already exists")
+        reject_spec_permissions(params)
         sec = Section(name=name)
         sec.description = (params.get("description") or "")[:512]
         apply_commanders_from_spec(sec, params)
@@ -2303,6 +2314,8 @@ def set_commander(args: text) -> text:
         if is_code_checksum(commander):
             commander = normalize_code_checksum(commander)
         perms = params.get("permissions", None)
+        if perms is not None:
+            reject_unknown_permissions(perms)
         caller = _caller()
         if params.get("stand"):
             list(Stand.instances())
@@ -2401,7 +2414,10 @@ def set_permissions(args: text) -> text:
     """
     try:
         params = json.loads(args)
-        perms = params.get("permissions", [])
+        if "permissions" not in params or params.get("permissions") is None:
+            return _err("permissions is required")
+        perms = params["permissions"]
+        reject_unknown_permissions(perms)
         commander = (params.get("commander_principal") or "").strip()
         if not commander:
             return _err("commander_principal is required")

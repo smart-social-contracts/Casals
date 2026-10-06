@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from access_code import is_code_checksum, normalize_code_checksum
-from auth import PERMISSION_KEYS, _normalize_permissions, _parse_permissions
+from auth import NO_PERMISSIONS, PERMISSION_KEYS, _normalize_permissions, _parse_permissions
 from ic_assets import POLICY_FILE, properties_for, rules_from
 from sheetv2 import (
     HAND_OFF_SOLE,
@@ -137,7 +137,15 @@ def _grade_commanders(report: OracleReport, name: str, declared, live_entity: di
                 pass
             p = claimed_by.get(p, p)
         norm = _normalize_permissions(c.get("permissions"))
-        want.setdefault(p, set()).update({"*"} if norm in ("", "*") else _parse_permissions(norm))
+        # Legacy "" and "*" are full access. The no-access sentinel holds nothing,
+        # so an explicit empty grant must not compare equal to "*".
+        if norm == NO_PERMISSIONS:
+            granted: set = set()
+        elif norm in ("", "*"):
+            granted = {"*"}
+        else:
+            granted = set(_parse_permissions(norm))
+        want.setdefault(p, set()).update(granted)
     # A conductor built from another Casals version knows a different key set,
     # so full access is compared as full access, not as its expansion.
     def live_keys(c: dict) -> set:

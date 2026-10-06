@@ -134,11 +134,17 @@ export function canEditSectionArrangement(
   return false;
 }
 
-function grantAllows(grant: ScopedGrant, key: string): boolean {
+export function grantAllows(
+  grant: { permissions?: string[]; all_permissions?: boolean },
+  key: string,
+): boolean {
   if (grant.all_permissions) return true;
-  if (!grant.permissions?.length) return true; // legacy empty grant == full access
-  if (grant.permissions.includes(key)) return true;
-  return key === 'subnet.whitelist' && grant.permissions.includes('commander.assign');
+  const perms = grant.permissions ?? [];
+  // all_permissions: false with an empty list is the no-access sentinel.
+  // A missing flag plus an empty list is still the legacy full-access grant.
+  if (grant.all_permissions !== false && perms.length === 0) return true;
+  if (perms.includes(key)) return true;
+  return key === 'subnet.whitelist' && perms.includes('commander.assign');
 }
 
 /**
