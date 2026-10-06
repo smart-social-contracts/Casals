@@ -111,6 +111,31 @@ def test_version_accepts_record_like_request():
     assert resp["status_code"] == 200
 
 
+def test_http_request_query_upgrades_only_get_version():
+    upgraded = version_http.http_request_query(dict(_REQ))
+    assert upgraded["upgrade"] is True
+    assert upgraded["status_code"] == 200
+    assert upgraded["body"] == b""
+
+    queried = version_http.http_request_query({**_REQ, "url": "/version?foo=1"})
+    assert queried["upgrade"] is True
+
+    other = version_http.http_request_query({**_REQ, "url": "/status"})
+    assert other["status_code"] == 404
+    assert not other.get("upgrade")
+
+    root = version_http.http_request_query({**_REQ, "url": "/"})
+    assert root["status_code"] == 404
+    assert not root.get("upgrade")
+
+    preflight = version_http.http_request_query({**_REQ, "method": "OPTIONS", "url": "/version"})
+    assert preflight["status_code"] == 204
+    assert not preflight.get("upgrade")
+
+    posted = version_http.http_request_query({**_REQ, "method": "POST", "url": "/version"})
+    assert not posted.get("upgrade")
+
+
 def test_version_never_invents_at_query_time():
     # Placeholders must stay in source; query-time code must not call git/date.
     assert version_http._SHA_STAMP == "COMMIT_HASH_PLACEHOLDER"

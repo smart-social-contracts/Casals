@@ -29,6 +29,7 @@ from basilisk import (
     blob,
     ic,
     init,
+    inspect_message,
     nat16,
     nat64,
     post_upgrade,
@@ -235,7 +236,8 @@ from sheetv2 import (
     unknown_members,
 )
 from views import _canister_view, _section_view, _stand_view
-from version_http import version_http_response
+from ingress import accept_ingress
+from version_http import http_request_query, version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from wasm_types import infer_wasm_type, wasm_type_of_wasm
 
@@ -759,6 +761,21 @@ def _require_any_commander() -> None:
     raise Exception("unauthorized: caller is not a commander")
 
 
+def _require_operator(*, allow_monitor: bool = False) -> None:
+    """Controllers and any authenticated commander.
+
+    Anonymous is rejected before any further work (and therefore before an
+    inter-canister call). The enabled monitor principal is accepted only
+    when ``allow_monitor`` is set — ``refresh_treasury``, which the monitor
+    already calls. It is not a pass for the other paid reads.
+    """
+    if _caller() == ANONYMOUS:
+        raise Exception("unauthorized: anonymous caller")
+    if allow_monitor and _is_monitor_caller():
+        return
+    _require_any_commander()
+
+
 def _conductor_commander_can(permission: str) -> bool:
     """Conductor commanders (`conductor.commanders`, kept on the synthetic
     `Casals` section) act anywhere their permissions allow."""
@@ -988,16 +1005,22 @@ def _require_commander(stand: Stand, permission: str = "") -> None:
 
 # ── Query endpoints ──────────────────────────────────────────────────────────
 
+@inspect_message
+def inspect_message_() -> void:
+    """Ingress gate. No canister state: method name, caller, accept or not.
+
+    ``http_request_update`` is accepted from every caller. Every other
+    update rejects the anonymous principal. Anyone else is accepted.
+    Skipping ``accept_message`` rejects the ingress. Queries are not inspected.
+    """
+    if accept_ingress(ic.method_name(), ic.caller().to_str()):
+        ic.accept_message()
+
+
 @query
 def http_request(req: HttpRequest) -> HttpResponseIncoming:
-    """Upgrade to an update call so the /version response is certified."""
-    return {
-        "status_code": 200,
-        "headers": [],
-        "body": b"",
-        "streaming_strategy": None,
-        "upgrade": True,
-    }
+    """Upgrade only GET /version. Every other path is answered on this query."""
+    return http_request_query(req)
 
 
 @update
@@ -2737,9 +2760,10 @@ def delete_principal_alias(args: text) -> text:
 def list_backend_controllers(_args: text) -> Async[text]:
     """Live IC controllers of this Casals backend (for the Commanders UI).
 
-    Callable by any principal — deputies cannot read controller lists via the
-    management canister directly, but Casals can query its own status."""
+    Controllers and authenticated commanders. Anonymous is rejected before
+    the management-canister call."""
     try:
+        _require_operator()
         controllers = yield from _fetch_canister_controllers(ic.id().to_str())
         return _ok(controllers=controllers)
     except Exception as e:
@@ -3176,8 +3200,10 @@ def list_subnets() -> Async[text]:
     """Return subnet ids the CMC creates on by default. When a whitelist is
     active, only whitelisted ids are returned. Also returns ``creatable_subnets``:
     all subnets this Casals instance may create canisters on (default + any
-    explicitly authorized for the Casals principal)."""
+    explicitly authorized for the Casals principal). Controllers and
+    authenticated commanders; anonymous is rejected before the CMC calls."""
     try:
+        _require_operator()
         creatable = yield from _fetch_cmc_creatable_subnets()
         ids = list(creatable)
         allowed = set(subnet_whitelist())
@@ -3193,8 +3219,10 @@ def refresh_fx() -> Async[text]:
     """Fetch the cycles→currency rate for the configured display currency and
     cache it (see casals_metadata.fx_*). Throttled so frequent dashboard polls
     don't pay for an XRC call each time; the cached value is returned instead.
-    Anyone may call this — it only refreshes a public, read-only factor."""
+    Controllers and authenticated commanders. Anonymous is rejected before
+    any XRC call."""
     try:
+        _require_operator()
         s = _settings()
         want = ((s.display_currency or "USD").strip().upper()) or "USD"
         fresh = (
@@ -4051,6 +4079,32 @@ def set_log_visibility(args: text) -> Async[text]:
 
 # ── Basilisk introspection relay (browse / shell) ──────────────────────────
 
+def _browse_canister_known(st, cid: str) -> bool:
+    """A registered Canister row, or this conductor's own backend, frontend, or store.
+
+    Backend is ``ic.id()``. Frontend and wasm store are the ids already kept
+    on Settings. An id the orchestra does not know is not a relay target.
+    """
+    cid = (cid or "").strip()
+    if not cid:
+        return False
+    if st is not None and (getattr(st, "canister_id", "") or "").strip() == cid:
+        return True
+    own = set()
+    try:
+        self_id = ic.id().to_str()
+    except Exception:
+        self_id = ""
+    if self_id:
+        own.add(self_id)
+    s = _settings()
+    for attr in ("casals_frontend_canister_id", "wasm_store_canister_id"):
+        other = (getattr(s, attr, None) or "").strip()
+        if other:
+            own.add(other)
+    return cid in own
+
+
 def _resolve_relay_canister(params: dict) -> tuple:
     """Resolve (Canister entity | None, ic canister id) from name and/or canister_id."""
     list(Canister.instances())
@@ -4072,19 +4126,21 @@ def _resolve_relay_canister(params: dict) -> tuple:
 def canister_browse(args: text) -> Async[text]:
     """Read-only introspection of a Basilisk canister's stable data.
 
-    Relays to the canister's public `__browse__` query (only present when the canister
-    was built with `__basilisk_features__` including "browse"). Read-only, so no
-    privileged caller is required — the same data is already public on the canister.
+    Relays to the canister's `__browse__` query (only present when the canister
+    was built with `__basilisk_features__` including "browse"). Callers must be
+    a controller or an authenticated commander. The relay target must be a
+    registered Canister or one of this conductor's own canisters (backend,
+    frontend, wasm store). Anonymous is rejected before any relay.
 
     Args (JSON): {"canister": "<name>", "canister_id": "<id>", "query": {<browse query>}}
-      Either canister name or canister_id is required. canister_id allows relay to
-      canisters shown in the UI but not registered in the orchestra tree (e.g.
-      casals-backend). query defaults to {"action": "schema"}.
+      Either canister name or canister_id is required. query defaults to
+      {"action": "schema"}.
     """
     try:
+        _require_operator()
         params = json.loads(args) if args else {}
-        _st, cid = _resolve_relay_canister(params)
-        if not cid:
+        st, cid = _resolve_relay_canister(params)
+        if not _browse_canister_known(st, cid):
             target = params.get("canister") or params.get("canister_id") or ""
             return _err(f"unknown canister '{target}'")
         q = params.get("query") or {"action": "schema"}
@@ -4462,8 +4518,13 @@ def refresh_treasury(args: text = "") -> Async[text]:
 
     Does not scan orchestra canisters — safe for large deployments where ``get_cycles``
     exceeds the IC instruction limit. Merges into the cached snapshot and persists it.
+
+    Controllers, authenticated commanders, and the enabled monitor principal
+    (casals-monitor calls this with the monitor identity). Anonymous is
+    rejected before the ledger read.
     """
     try:
+        _require_operator(allow_monitor=True)
         treasury_obj = yield from _build_treasury_obj_gen(force_convert=False)
         data = _load_cycles_snapshot_data()
         merged_treasury = dict(data.get("treasury") or {})
@@ -5087,8 +5148,11 @@ def refresh_controllers_cache(_args: text) -> Async[text]:
     """Fetch IC controller lists and live module hashes for Orchestra canisters.
 
     Updates cached ``ic_controllers``, ``wasm_hash``, and ``wasm_key`` (when the
-    module hash matches a catalog entry). Safe to call after Baton upgrades."""
+    module hash matches a catalog entry). Safe to call after Baton upgrades.
+    Controllers and authenticated commanders. Anonymous is rejected before
+    the per-canister status calls."""
     try:
+        _require_operator()
         updated, failed = yield from _refresh_controllers_cache_gen()
         return _ok(updated=updated, failed=failed)
     except Exception as e:
