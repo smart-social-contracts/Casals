@@ -144,7 +144,7 @@ export async function fetchControllersMap(ids: string[]): Promise<Map<string, st
       try {
         return [id, await listCanisterControllers(id)] as const;
       } catch {
-        return [id, []] as const;
+        return [id, [] as string[]] as const;
       }
     }),
   );

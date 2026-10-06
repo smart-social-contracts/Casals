@@ -311,7 +311,12 @@ export function augmentTreeWithCasals(
         if (canisters.some((c) => isMultisigCanister(c))) casalsHasMultisig = true;
         return { ...stand, canisters };
       });
-      casals = casals ? { ...casals, stands: [...casals.stands, ...stands] } : { ...sec, stands };
+      if (casals !== null) {
+        const current: Section = casals;
+        casals = { ...current, stands: [...current.stands, ...stands] };
+      } else {
+        casals = { ...sec, stands };
+      }
       continue;
     }
     // Legacy trees: core canisters parked on other sections are pulled out.

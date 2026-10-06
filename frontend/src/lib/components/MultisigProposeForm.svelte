@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Identity } from '@dfinity/agent';
   import type { AuthorizedWasm, Sheet, Tree } from '$lib/api';
   import { backendCanisterId, casalsMetadata, getSheetDocument, getTree, listAuthorizedWasms, storeBundle } from '$lib/api';
   import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
@@ -68,9 +69,48 @@
   let bundleFiles = $state(0);
   let bundleReading = $state(false);
   let bundleError = $state('');
+  interface CanisterOption {
+    id: string;
+    label: string;
+    controllers?: string[];
+    /** true / false from the tree's cached controllers; undefined when unknown. */
+    controlled?: boolean;
+    wasm_key?: string;
+    wasm_type?: string;
+    wasm_hash?: string;
+  }
+
+  function isSelf(p: string): boolean {
+    return p.toLowerCase() === canisterId.toLowerCase();
+  }
+
+  const canisterOptions = $derived.by((): CanisterOption[] => {
+    const src = loadedTree ?? tree;
+    if (!src) return [];
+    const out: CanisterOption[] = [];
+    for (const sec of src.sections) {
+      for (const stand of sec.stands) {
+        for (const c of stand.canisters) {
+          if (!c.canister_id) continue;
+          const ctrls = c.controllers;
+          out.push({
+            id: c.canister_id,
+            label: c.name,
+            controllers: ctrls,
+            controlled: ctrls && ctrls.length ? ctrls.some(isSelf) : undefined,
+            wasm_key: c.wasm_key,
+            wasm_type: c.wasm_type,
+            wasm_hash: c.wasm_hash,
+          });
+        }
+      }
+    }
+    return out;
+  });
+
   const isBundleAction = $derived(actionType === 'DeployBundle');
   const bundleNamespaces = $derived(knownContentNamespaces(storedSheet));
-  const bundleTargets = $derived(canisterOptions.filter((o) => isFrontend({ kind: 'backend', wasm_key: o.wasm_key, wasm_type: o.wasm_type })));
+  const bundleTargets = $derived(canisterOptions.filter((o) => isFrontend({ kind: 'backend', wasm_key: o.wasm_key ?? '', wasm_type: o.wasm_type })));
 
   async function ensureStoredSheet() {
     if (storedSheet) return;
@@ -113,45 +153,6 @@
   const isUpgradeAction = $derived(actionType === 'UpgradeCanister');
   /** Actions that call the IC management canister: the committee must be a controller. */
   const needsControl = $derived(isControllerAction || isUpgradeAction);
-
-  interface CanisterOption {
-    id: string;
-    label: string;
-    controllers?: string[];
-    /** true / false from the tree's cached controllers; undefined when unknown. */
-    controlled?: boolean;
-    wasm_key?: string;
-    wasm_type?: string;
-    wasm_hash?: string;
-  }
-
-  function isSelf(p: string): boolean {
-    return p.toLowerCase() === canisterId.toLowerCase();
-  }
-
-  const canisterOptions = $derived.by((): CanisterOption[] => {
-    const src = loadedTree ?? tree;
-    if (!src) return [];
-    const out: CanisterOption[] = [];
-    for (const sec of src.sections) {
-      for (const stand of sec.stands) {
-        for (const c of stand.canisters) {
-          if (!c.canister_id) continue;
-          const ctrls = c.controllers;
-          out.push({
-            id: c.canister_id,
-            label: c.name,
-            controllers: ctrls,
-            controlled: ctrls && ctrls.length ? ctrls.some(isSelf) : undefined,
-            wasm_key: c.wasm_key,
-            wasm_type: c.wasm_type,
-            wasm_hash: c.wasm_hash,
-          });
-        }
-      }
-    }
-    return out;
-  });
 
   /** Targets the committee can act on via the management canister (unknown = allowed, checked at submit). */
   const controlledOptions = $derived(canisterOptions.filter((o) => o.controlled !== false));
@@ -369,10 +370,10 @@
     return new Error(message);
   }
 
-  async function resolveControllersForSubmit(identity: NonNullable<ReturnType<typeof get>>) {
+  async function resolveControllersForSubmit(id: Identity) {
     let controllers = currentControllers;
     if (!controllers.length) {
-      const list = await resolveCanisterControllers(targetCanister, identity);
+      const list = await resolveCanisterControllers(targetCanister, id);
       liveControllers = list;
       controllers = list;
       if (list.length) {
@@ -438,7 +439,12 @@
           ? storeKey(selectedWasm.registry_namespace, selectedWasm.registry_path)
           : '',
         sha256: selectedWasm?.wasm_hash ?? '',
-        arg: selectedWasm ? defaultInstallArg(selectedWasm, selectedOption ?? {}) : undefined,
+        arg: selectedWasm
+          ? defaultInstallArg(selectedWasm, {
+              wasm_key: selectedOption?.wasm_key,
+              wasm_type: selectedOption?.wasm_type,
+            })
+          : undefined,
         wasm_memory_keep: selectedWasm ? upgradeMemoryKeepForWasm(selectedWasm) : false,
         add_signers: addSigners,
         remove_signers: removeSigners,

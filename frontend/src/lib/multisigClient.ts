@@ -175,12 +175,40 @@ async function agent(identity?: Identity | null): Promise<HttpAgent> {
   return a;
 }
 
-async function multisigActor(canisterId: string, identity?: Identity | null) {
+interface PrincipalLike {
+  toText(): string;
+}
+
+interface RawProposal {
+  id: bigint;
+  action: Record<string, unknown>;
+  proposed_by: PrincipalLike;
+  approvals: PrincipalLike[];
+  status: unknown;
+  created_at: bigint;
+  expires_at: bigint;
+  result?: unknown;
+}
+
+type MultisigResult = { ok: null } | { err: string };
+
+interface MultisigService {
+  list_signers: () => Promise<{ signers: PrincipalLike[]; threshold: bigint }>;
+  list_proposals: () => Promise<RawProposal[]>;
+  get_proposal: (id: bigint) => Promise<[] | [RawProposal]>;
+  list_events: () => Promise<{ at: bigint; kind: string; detail: string }[]>;
+  default_proposal_expiry_secs: () => Promise<bigint>;
+  propose: (action: unknown, expiry: bigint[]) => Promise<bigint>;
+  approve: (id: bigint) => Promise<MultisigResult>;
+  reject: (id: bigint) => Promise<MultisigResult>;
+}
+
+async function multisigActor(canisterId: string, identity?: Identity | null): Promise<MultisigService> {
   const ag = await agent(identity);
-  return Actor.createActor(multisigIdlFactory, {
+  return Actor.createActor(multisigIdlFactory as unknown as Parameters<typeof Actor.createActor>[0], {
     agent: ag,
     canisterId: Principal.fromText(canisterId),
-  });
+  }) as unknown as MultisigService;
 }
 
 export async function multisigListSigners(canisterId: string) {

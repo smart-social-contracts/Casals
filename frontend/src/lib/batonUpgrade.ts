@@ -32,7 +32,9 @@ export async function fetchCanisterModuleHash(
   const res = await mgmt.canisterStatus(P.fromText(canisterId));
   const raw = res?.module_hash;
   if (!raw) return '';
-  const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer);
+  const chunk = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? raw[0] : undefined;
+  if (chunk == null || (Array.isArray(chunk) && chunk.length === 0 && !(chunk instanceof Uint8Array))) return '';
+  const bytes = chunk instanceof Uint8Array ? chunk : Uint8Array.from(chunk);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('').toLowerCase();
 }
 

@@ -305,7 +305,7 @@ export function buildControlGraph(
   }
 
   function resolveNodeId(principal: string): string {
-    const found = findCanisterByPrincipal(tree, principal);
+    const found = tree ? findCanisterByPrincipal(tree, principal) : null;
     if (found) {
       return ensureCanisterNode(found.canister, found.section, found.stand);
     }

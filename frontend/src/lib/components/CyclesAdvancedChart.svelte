@@ -9,6 +9,7 @@
     ColorType,
     type IChartApi,
     type ISeriesApi,
+    type Time,
     type UTCTimestamp,
   } from 'lightweight-charts';
   import {
@@ -813,7 +814,7 @@
       },
       localization: {
         locale: typeof navigator !== 'undefined' ? navigator.language : undefined,
-        timeFormatter: (t) => formatCrosshairTime(t as UTCTimestamp),
+        timeFormatter: (t: Time) => (typeof t === 'number' ? formatCrosshairTime(t as UTCTimestamp) : ''),
         priceFormatter: (tc: number) =>
           `${tc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })} TC`,
       },
@@ -823,7 +824,12 @@
 
     chart = c;
     c.subscribeClick(onClick);
-    c.subscribeCrosshairMove(onMove);
+    c.subscribeCrosshairMove((param) => {
+      onMove({
+        point: param.point,
+        time: typeof param.time === 'number' ? param.time : undefined,
+      });
+    });
     c.timeScale().subscribeVisibleTimeRangeChange(onRange);
     const chartNode = containerEl;
     chartNode.addEventListener('wheel', onScaleInteraction, { passive: true });

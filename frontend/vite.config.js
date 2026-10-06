@@ -10,6 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
 
+/** @param {Date} date */
 function utcStamp(date) {
   return date.toISOString().replace('T', ' ').substring(0, 19);
 }
@@ -68,6 +69,9 @@ const buildValues = getBuildTimeValues();
 
 export default defineConfig({
   plugins: [sveltekit()],
+  worker: {
+    format: 'es',
+  },
   define: {
     __BUILD_VERSION__: JSON.stringify(buildValues.version),
     __BUILD_COMMIT__: JSON.stringify(buildValues.commitHash),

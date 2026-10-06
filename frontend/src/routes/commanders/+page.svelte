@@ -372,7 +372,13 @@
       for (const stand of sec.stands) {
         if (row.scope === 'stand' && stand.name !== row.stand) continue;
         if (row.scope === 'section' && sec.name !== row.section) continue;
-        if (row.scope === 'orchestra' || orchestra || row.scope !== 'orchestra') {
+        // Orchestra grants cover every canister. Section and stand grants stay
+        // in that scope; a same-named stand on the synthetic orchestra section
+        // is not offered to a product stand.
+        if (
+          row.scope !== 'controller' &&
+          (row.scope === 'orchestra' || !orchestra || sec.name === row.section)
+        ) {
           for (const c of stand.canisters) {
             if (!c.canister_id) continue;
             if (row.scope === 'section' && sec.name !== row.section) continue;
