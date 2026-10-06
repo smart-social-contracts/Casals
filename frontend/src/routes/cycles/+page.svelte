@@ -71,7 +71,7 @@
   import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
-  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, aggregateBurnIntervalSeries, burnIntervalSeriesFromSamples, bucketBurnSeries, burnBucketChoicesForSpan, defaultBurnBucketIndex, dedupeSeriesPoints, type ChartEventMarker, type Series, type TreemapInput } from '$lib/charts';
+  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, aggregateBurnIntervalSeries, burnIntervalSeriesFromSamples, bucketBurnSeries, burnBucketChoicesForSpan, defaultBurnBucketIndex, dedupeSeriesPoints, type ChartEventMarker, type Series, type SeriesPoint, type TreemapInput } from '$lib/charts';
   import { isSelfReportedCycles } from '$lib/cyclesSelfReported';
 
   let report = $state<CyclesReport | null>(null);
@@ -540,7 +540,7 @@
         ...new Set([
           ...orchestraCanisterNames(treeData),
           ...(merged.canisters ?? []).map((c) => c.name),
-          ...(history?.samples ?? []).map((s) => s.canister_name),
+          ...(history?.samples ?? []).map((s) => s.canister),
         ].filter(Boolean)),
       ];
       if (names.length === 0) {
@@ -1407,6 +1407,7 @@
   }
 
   async function confirmProposeDestroy() {
+    if (busy === 'bulk:destroy') return;
     const id = get(identity);
     if (!id) {
       toasts.error('Login required');
@@ -1439,6 +1440,7 @@
     let executed = 0;
     let pending = 0;
     let lastErr = '';
+    let pid: bigint | null = null;
 
     try {
       if (!canisterIds.length) {
@@ -1450,7 +1452,7 @@
           canister_ids: canisterIds,
           casals_backend: backendCanisterId(),
         });
-        const pid = await multisigPropose(msId, action, id);
+        pid = await multisigPropose(msId, action, id);
         proposed = 1;
         const allProposals = await multisigListProposals(msId);
         const snapEvents = await multisigListEvents(msId).catch(() => []);
@@ -1489,7 +1491,7 @@
             refreshTreasuryOnly(),
             getTree().then((t) => { tree = t; }).catch(() => {}),
           ]);
-        } else if (pending > 0) {
+        } else if (pending > 0 && pid != null) {
           toasts.success(
             `Proposed destroy of ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'} — approve at ${proposalPagePath(pid, msId)}`,
           );

@@ -83,8 +83,15 @@ export interface BatonActionRecord {
   bake_until?: number;
 }
 
-function parseJsonText<T>(raw: string): T {
-  return JSON.parse(raw) as T;
+function asText(raw: unknown): string {
+  if (typeof raw !== 'string') {
+    throw new Error('Expected a text reply from the canister');
+  }
+  return raw;
+}
+
+function parseJsonText<T>(raw: unknown): T {
+  return JSON.parse(asText(raw)) as T;
 }
 
 async function agent(identity?: Identity | null): Promise<HttpAgent> {
@@ -95,7 +102,7 @@ async function agent(identity?: Identity | null): Promise<HttpAgent> {
 
 async function batonActor(canisterId: string, identity?: Identity | null) {
   const ag = await agent(identity);
-  return Actor.createActor(batonIdlFactory, {
+  return Actor.createActor(batonIdlFactory as unknown as Parameters<typeof Actor.createActor>[0], {
     agent: ag,
     canisterId: Principal.fromText(canisterId),
   });
@@ -149,12 +156,13 @@ export interface BatonUpdateResult {
   upgrade_index?: number;
 }
 
-function parseUpdate(raw: string): BatonUpdateResult {
+function parseUpdate(raw: unknown): BatonUpdateResult {
+  const text = asText(raw);
   try {
-    const data = JSON.parse(raw) as BatonUpdateResult;
-    return { ok: data.ok !== false, ...data };
+    const data = JSON.parse(text) as BatonUpdateResult;
+    return { ...data, ok: data.ok !== false };
   } catch {
-    return { ok: false, error: raw };
+    return { ok: false, error: text };
   }
 }
 

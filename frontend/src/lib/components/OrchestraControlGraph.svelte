@@ -947,6 +947,7 @@
               {#if pos}
                 {@const style = nodeStyle(node)}
                 {@const isDragging = draggingId === node.id}
+                {@const dimEdgeId = hoveredEdge?.id}
                 <g
                   transform="translate({pos.x - CONTROL_NODE_WIDTH / 2}, {pos.y - CONTROL_NODE_HEIGHT / 2})"
                   class="cursor-grab {isDragging ? 'cursor-grabbing' : ''} {node.canister || node.principal ? 'cursor-pointer' : ''}"
@@ -963,7 +964,7 @@
                     fill={style.fill}
                     stroke={isDragging ? '#334155' : style.stroke}
                     stroke-width={isDragging ? 2.5 : 2}
-                    opacity={hoveredEdge && !graph.edges.some((e) => (e.from === node.id || e.to === node.id) && e.id === hoveredEdge.id) ? 0.55 : 1}
+                    opacity={dimEdgeId && !graph.edges.some((e) => (e.from === node.id || e.to === node.id) && e.id === dimEdgeId) ? 0.55 : 1}
                   />
                   <foreignObject
                     x="8"

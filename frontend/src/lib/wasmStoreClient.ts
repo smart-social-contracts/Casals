@@ -64,7 +64,7 @@ const assetStoreIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
 async function storeActor(identity: Identity, canisterId: string) {
   const agent = createHttpAgent({ identity, host: icHost() });
   if (isLocalHost()) await agent.fetchRootKey();
-  return Actor.createActor(assetStoreIdlFactory, { agent, canisterId }) as unknown as {
+  return Actor.createActor(assetStoreIdlFactory as unknown as Parameters<typeof Actor.createActor>[0], { agent, canisterId }) as unknown as {
     create_batch: (a: Record<string, never>) => Promise<{ batch_id: bigint }>;
     create_chunk: (a: { batch_id: bigint; content: Uint8Array }) => Promise<{ chunk_id: bigint }>;
     commit_batch: (a: { batch_id: bigint; operations: unknown[] }) => Promise<void>;

@@ -97,11 +97,10 @@ export function actionSummary(action: Record<string, unknown>): string {
     case 'DestroyCanister':
       return `Destroy canister ${fmtPrincipal(payload?.canister_id)}`;
     case 'DestroyCanisters': {
-      const ids = payload?.canister_ids;
-      const n = Array.isArray(ids) ? ids.length : 0;
-      return n === 1
-        ? `Destroy canister ${fmtPrincipal(ids?.[0])}`
-        : `Destroy ${n} canisters`;
+      const ids = Array.isArray(payload?.canister_ids) ? payload.canister_ids : [];
+      return ids.length === 1
+        ? `Destroy canister ${fmtPrincipal(ids[0])}`
+        : `Destroy ${ids.length} canisters`;
     }
     case 'ApplySheet':
       return `Apply sheet ${String(payload?.plan_hash ?? '').slice(0, 12) || '—'}`;

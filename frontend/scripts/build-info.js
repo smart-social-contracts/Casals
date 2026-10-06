@@ -26,6 +26,7 @@ function buildStamp(env = process.env) {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/** @param {string} repoRoot */
 function gitShortSha(repoRoot) {
   try {
     return execSync('git rev-parse --short HEAD', {
@@ -38,6 +39,7 @@ function gitShortSha(repoRoot) {
   }
 }
 
+/** @param {string} repoRoot */
 export function gitReleaseTag(repoRoot) {
   try {
     return execSync('git describe --exact-match --tags HEAD', {
@@ -76,6 +78,9 @@ export function buildVersionPayload(canisterName, repoRoot) {
 /**
  * Footer / Vite ``__BUILD_VERSION__``: exact git tag when HEAD is tagged,
  * otherwise the package semver fallback (version.txt / package.json).
+ *
+ * @param {string} repoRoot
+ * @param {string} fallback
  */
 export function displayVersion(repoRoot, fallback) {
   return gitReleaseTag(repoRoot) || fallback;

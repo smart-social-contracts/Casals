@@ -96,8 +96,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm --prefix frontend ci
 
-      # A successful production build type-checks the SvelteKit app, including
-      # the Cycles page and the cycles bindings in lib/api.ts.
+      # vite build strips types. svelte-check type-checks the SvelteKit app,
+      # including the Cycles page and the cycles bindings in lib/api.ts.
+      - name: Type-check frontend
+        run: npm --prefix frontend run check
+
       - name: Build frontend
         run: npm --prefix frontend run build
 
