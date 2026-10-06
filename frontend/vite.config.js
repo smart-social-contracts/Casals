@@ -71,6 +71,7 @@ const buildValues = getBuildTimeValues();
 // inter-canister `store` call. That call cannot carry more than 2 MiB, so
 // Monaco (one ~4 MiB chunk if left together) is split into several chunks.
 // No single Monaco source file is that large; the buckets only group modules.
+/** @param {string} id */
 function monacoChunk(id) {
   if (!id.includes('node_modules/monaco-editor/')) return undefined;
   let hash = 0;

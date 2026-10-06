@@ -575,7 +575,14 @@ def access_code(o: Orchestra) -> None:
         return next(st for sec in tree["sections"] for st in sec["stands"] if st["name"] == stand)["commanders"]
 
     def claim(identity: str, code: str) -> dict:
-        res = IcClient(env=ENV, identity=identity).call_update(backend, "claim_commander", json.dumps({"code": code}))
+        try:
+            res = IcClient(env=ENV, identity=identity).call_update(backend, "claim_commander", json.dumps({"code": code}))
+        except RuntimeError as exc:
+            # inspect_message rejects anonymous ingress before the method runs,
+            # so the call never returns the JSON error the method would have.
+            if "rejected the message" in str(exc):
+                return {"ok": False, "error": "rejected"}
+            raise
         return res if isinstance(res, dict) else {"ok": False, "raw": res}
 
     pending = [c for c in stand_commanders() if c.get("unclaimed")]
