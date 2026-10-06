@@ -12,8 +12,8 @@ deploy their own conductor instances and supply sheets from their own repos.
 ## Declarative model
 
 One `casals.json` sheet describes an environment on day one;
-`python -m casals_cli.main -e <env> up <sheet> --yes` builds it (`--local` starts
-a laptop replica, creates `local-dev`, and mints cycles). `up` bootstraps
+`python -m casals_cli.main -e <env> up <sheet> --yes` builds it (`--local`
+creates `local-dev`, then starts a laptop replica and funds it). `up` bootstraps
 the conductor (backend, frontend, `casals-store` store) if it is not bound yet,
 publishes the wasms the `registry` block names, stores the sheet (`set_sheet`),
 then runs the conductor's `plan` → `apply` until the plan is empty (bootstrap

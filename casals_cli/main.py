@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from casals_cli import __version__, commands, show, up, upgrade
+from casals_cli import __version__, commands, init, show, up, upgrade
 from casals_cli.bindings import live_bindings, resolve_orchestra_refs
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
@@ -52,6 +52,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-V", action="version", version=f"casals {__version__}")
     _common_flags(ap)
     sub = ap.add_subparsers(dest="command", required=True)
+
+    init_p = sub.add_parser("init", help="write an example sheet to start from (installs from a Casals release)")
+    init_p.add_argument("example", nargs="?", default="minimal", choices=init.EXAMPLES)
+    init_p.add_argument("-o", "--output", default="casals.json", help="where to write the sheet (default casals.json)")
+    init_p.add_argument("--release", default=None,
+                        help="Casals release tag to install from (default $CASALS_RELEASE, else this CLI's v<version>)")
+    init_p.add_argument("--force", action="store_true", help="overwrite an existing file")
 
     up_p = sub.add_parser("up", help="build (or resume building) an orchestra from a sheet")
     up_p.add_argument("sheet", help="path to casals.json")
@@ -190,6 +197,9 @@ def _sheet_name_from_args(args) -> str:
 def main(argv: list[str] | None = None) -> None:
     ap = _build_parser()
     args = ap.parse_args(argv)
+    if args.command == "init":
+        init.cmd_init(args)
+        return
     args.sheet_name = _sheet_name_from_args(args) if getattr(args, "sheet", None) else ""
     root = project_root()
 

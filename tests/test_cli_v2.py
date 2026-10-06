@@ -124,6 +124,116 @@ class TestLocalFlag:
         apply_local_flag(args)
         assert args.identity is None
 
+    def test_identity_exists_before_the_network_starts(self, monkeypatch):
+        # The network seeds only the identities that exist when it starts.
+        import casals_cli.local as local
+        from casals_cli.replica import Replica
+
+        order = []
+        monkeypatch.setattr(local, "ensure_identity", lambda name: order.append(("identity", name)))
+        monkeypatch.setattr(local, "start", lambda: order.append(("start",)) or Replica(None, 8000, "http://127.0.0.1:8000", False))
+        monkeypatch.setattr(local, "ensure_cycles", lambda name: order.append(("cycles", name)))
+        assert local.prepare_local() == "local-dev"
+        assert order == [("identity", "local-dev"), ("start",), ("cycles", "local-dev")]
+
+    def test_short_identity_is_funded_from_anonymous(self, monkeypatch):
+        import casals_cli.local as local
+
+        calls = []
+
+        def fake_icp(argv, **_kw):
+            calls.append(argv)
+            if argv[:2] == ["cycles", "balance"]:
+                return 0, "0\n"
+            if argv[:2] == ["identity", "principal"]:
+                return 0, "aaaaa-aa\n"
+            return 0, "1\n"
+
+        monkeypatch.setattr(local, "_icp", fake_icp)
+        local.ensure_cycles("local-dev", min_tc=500)
+        transfer = next(c for c in calls if c[:2] == ["cycles", "transfer"])
+        assert transfer[2:4] == ["1000t", "aaaaa-aa"]
+        assert transfer[transfer.index("--identity") + 1] == "anonymous"
+        assert not any(c[:2] == ["cycles", "mint"] for c in calls)
+
+    def test_funded_identity_is_left_alone(self, monkeypatch):
+        import casals_cli.local as local
+
+        calls = []
+        monkeypatch.setattr(local, "_icp", lambda argv, **_kw: calls.append(argv) or (0, "1_000_000_000_000_000\n"))
+        local.ensure_cycles("local-dev", min_tc=500)
+        assert [c[:2] for c in calls] == [["cycles", "balance"]]
+
+
+class TestImplicitReplicaProject:
+    @pytest.fixture(autouse=True)
+    def _no_isolation(self, monkeypatch):
+        for var in ("CASALS_REPLICA", "CASALS_REPLICA_PORT", "CASALS_REPLICA_HOME"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_inside_a_project_nothing_changes(self, tmp_path, monkeypatch):
+        from casals_cli.replica import activate, implicit_home
+
+        (tmp_path / "icp.yaml").write_text("networks: []\n")
+        sub = tmp_path / "deep" / "dir"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+        assert implicit_home(created=False) is None
+        assert activate().home is None
+
+    def test_outside_a_project_the_replica_gets_one(self, tmp_path, monkeypatch):
+        from casals_cli.replica import activate, icp_project_args, implicit_home
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        assert implicit_home() is None  # nothing written yet
+        replica = activate()
+        assert replica.home and replica.port == 8000 and not replica.isolated
+        yaml = open(os.path.join(replica.home, "icp.yaml"), encoding="utf-8").read()
+        assert "port: 8000" in yaml and "name: local" in yaml
+        assert icp_project_args() == ["--project-root-override", replica.home]
+
+    def test_mainnet_ignores_the_implicit_project(self, tmp_path, monkeypatch):
+        from casals_cli.replica import activate
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        home = activate().home
+        local = IcClient(env="local")
+        mainnet = IcClient(env="production")
+        assert local.project_root == home and local._project_root_flag() == ["--project-root-override", home]
+        assert mainnet.project_root != home and mainnet._project_root_flag() == []
+
+
+class TestInit:
+    def test_writes_a_valid_sheet_for_this_release(self, tmp_path, monkeypatch):
+        import sheetv2
+        from casals_cli import __version__
+        from casals_cli.main import main
+
+        monkeypatch.delenv("CASALS_RELEASE", raising=False)
+        out = tmp_path / "casals.json"
+        main(["init", "-o", str(out)])
+        sheet = json.loads(out.read_text())
+        assert sheetv2.validate(sheet, "local") == []
+        sources = [w["source"] for w in sheet["registry"]["wasms"]] + [b["source"] for b in sheet["registry"]["bundles"]]
+        assert all(f"v{__version__}" in s for s in sources)
+        assert not any(s.startswith(("local:", "build:")) for s in sources)
+
+    def test_release_override_and_no_overwrite(self, tmp_path, monkeypatch):
+        from casals_cli.main import main
+
+        monkeypatch.setenv("CASALS_RELEASE", "v0.4.0")
+        out = tmp_path / "casals.json"
+        main(["init", "-o", str(out)])
+        assert "Casals@v0.4.0:" in out.read_text()
+        with pytest.raises(SystemExit):
+            main(["init", "-o", str(out)])
+        main(["init", "-o", str(out), "--release", "v9.9.9", "--force"])
+        assert "Casals@v9.9.9:" in out.read_text()
+
 
 # ── util / candid ────────────────────────────────────────────────────────────
 

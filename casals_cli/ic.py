@@ -152,10 +152,6 @@ class IcClient:
     ) -> None:
         self.env = env
         self.identity = identity
-        # Isolated replicas own their icp.yaml; product builds still use the
-        # Casals checkout (passed as project_root by the CLI for wasm paths).
-        isolated = replica_home()
-        self.project_root = isolated or project_root or os.getcwd()
         if network_url:
             self.network_url = network_url
         elif env in ("ic", "production"):
@@ -164,6 +160,10 @@ class IcClient:
             self.network_url = NETWORK_URLS["ic"]
         else:
             self.network_url = replica_network_url()
+        # Isolated replicas own their icp.yaml; product builds still use the
+        # Casals checkout (passed as project_root by the CLI for wasm paths).
+        isolated = replica_home(implicit=not self._is_mainnet())
+        self.project_root = isolated or project_root or os.getcwd()
         self._agent = None
         # icp has no DFX_HSM_PIN: it prompts, and we capture stdout so that
         # is "not a terminal". A PIN in the env (or a file) is written to a
@@ -190,7 +190,7 @@ class IcClient:
         return flags
 
     def _project_root_flag(self) -> list[str]:
-        extra = icp_project_args()
+        extra = icp_project_args(implicit=not self._is_mainnet())
         if extra:
             return extra
         if os.path.isfile(os.path.join(self.project_root, "icp.yaml")):

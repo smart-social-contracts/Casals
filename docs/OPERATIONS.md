@@ -27,15 +27,24 @@ runbook.
 ## Local replica
 
 ```sh
-casals up path/to/casals.json --yes --local    # starts the replica, creates local-dev, mints cycles
-# equivalent, already-running replica:
+casals up path/to/casals.json --yes --local    # creates local-dev, starts the replica, funds local-dev
+# equivalent, by hand (the identity first: a network funds the identities that exist when it starts):
+icp identity new local-dev --storage plaintext
 icp network start -e local --background        # once
 casals -e local --identity local-dev up path/to/casals.json --yes
 ```
 
-CI (`tests/e2e/pip_install_up.sh`) is the advertised install path against the
-corpus minimal sheet: `pip install ic-casals` then
-`casals up tests/e2e/orchestras/minimal/casals.json --yes --local`.
+An identity created while the network already runs gets no ICP; `--local`
+then transfers it cycles from the anonymous identity, which every local
+network funds. Outside an `icp` project (an empty directory after
+`pip install ic-casals`), `--local` writes the replica a project under
+`$CASALS_HOME/replica` (default `~/.casals/replica`), on `:8000`.
+
+The advertised install path is `pip install ic-casals`, `casals init`,
+`casals up casals.json --yes --local` in an empty directory. CI runs it in
+`tests/e2e/pip_install_up.sh` (this checkout's wheel, the latest release's
+artifacts) and again from PyPI once a release is published
+(`release-verify.yml`).
 
 One laptop can run several replicas at once. icp binds one gateway per project
 directory; Casals defaults to the implicit `local` network on `:8000`. To give

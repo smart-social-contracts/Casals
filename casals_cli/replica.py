@@ -81,12 +81,40 @@ def isolating() -> bool:
     return flag in ("1", "true", "yes", "auto")
 
 
-def replica_home() -> str | None:
+def in_icp_project(path: str | None = None) -> bool:
+    """`icp` finds its project by walking up from the working directory."""
+    here = os.path.abspath(path or os.getcwd())
+    while True:
+        if os.path.isfile(os.path.join(here, "icp.yaml")):
+            return True
+        parent = os.path.dirname(here)
+        if parent == here:
+            return False
+        here = parent
+
+
+def implicit_home(*, created: bool = True) -> str | None:
+    """The default replica's project when the working directory has none.
+
+    `icp` cannot run a network outside a project, and `pip install ic-casals`
+    in an empty directory has none: the replica then gets one under the
+    Casals home, on the default port. ``created`` limits this to a project an
+    earlier `casals up --local` already wrote."""
+    if in_icp_project():
+        return None
+    root = (os.environ.get("CASALS_HOME") or "").strip() or os.path.expanduser("~/.casals")
+    home = os.path.abspath(os.path.join(root, "replica"))
+    if created and not os.path.isfile(os.path.join(home, "icp.yaml")):
+        return None
+    return home
+
+
+def replica_home(*, implicit: bool = True) -> str | None:
     home = (os.environ.get("CASALS_REPLICA_HOME") or "").strip()
     if home:
         return os.path.abspath(home)
     if not isolating():
-        return None
+        return implicit_home() if implicit else None
     root = (os.environ.get("CASALS_HOME") or "").strip() or os.path.join(
         os.path.expanduser("~"), "casals-home"
     )
@@ -164,8 +192,8 @@ def export_env(replica: Replica) -> None:
     os.environ["CASALS_NETWORK_URL"] = replica.url
 
 
-def icp_project_args() -> list[str]:
-    home = replica_home()
+def icp_project_args(*, implicit: bool = True) -> list[str]:
+    home = replica_home(implicit=implicit)
     if home and os.path.isfile(os.path.join(home, "icp.yaml")):
         return ["--project-root-override", home]
     return []
@@ -174,8 +202,10 @@ def icp_project_args() -> list[str]:
 def activate() -> Replica:
     """Resolve isolation, write the sidecar project, export env. Does not start icp."""
     if not isolating():
-        replica = Replica(home=None, port=DEFAULT_PORT, url=DEFAULT_URL, isolated=False)
-        return replica
+        home = implicit_home(created=False)
+        if home:
+            write_replica_project(home, DEFAULT_PORT)
+        return Replica(home=home, port=DEFAULT_PORT, url=DEFAULT_URL, isolated=False)
 
     home = replica_home()
     assert home is not None
@@ -229,11 +259,11 @@ def start(replica: Replica | None = None) -> Replica:
         _icp(["network", "stop", "-e", "local"], timeout=120)
     extra = ["--project-root-override", replica.home] if replica.home else []
     cwd = replica.home or os.getcwd()
-    # Isolated sidecars declare environment `local`. The repo icp.yaml does
+    # Sidecar projects declare environment `local`. The repo icp.yaml does
     # not; `icp network start --background` is the same as tests/conftest.py
     # (`-d`) and is what GitHub CI already uses for the integration suite.
     start_cmd = ["icp", "network", "start", "--background", *extra]
-    if replica.isolated:
+    if replica.home:
         start_cmd = ["icp", "network", "start", "-e", "local", "--background", *extra]
     res = run_icp_cmd(
         start_cmd,

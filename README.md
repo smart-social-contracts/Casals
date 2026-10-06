@@ -88,16 +88,28 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 
 ## Quick start
 
+Needs Python 3.10+ and [icp-cli](https://github.com/dfinity/icp-cli). No checkout of this repo.
+
 ```bash
-pip install ic-casals ic-basilisk-toolkit
+pip install ic-casals
+casals init                            # writes casals.json, the minimal example
+casals up casals.json --yes --local
+```
+
+`casals init` writes a sheet that installs the conductor, its store and its UI from the Casals GitHub release that matches the CLI (`--release <tag>` picks another). `--local` creates the `local-dev` identity, starts a local network and funds the identity. Outside an `icp` project, the network gets its own project under `~/.casals/replica`.
+
+In a checkout of this repo, the corpus sheets build the conductor from source instead (`pip install . -r requirements.txt`, plus `make` and Node/npm for the UI):
+
+```bash
 casals up tests/e2e/orchestras/minimal/casals.json --yes --local
 ```
 
-`--local` starts a local replica if needed, creates the `local-dev` identity, and mints cycles. Without it:
+Without `--local`, create the identity before the network starts: a local network funds only the identities that exist when it starts.
 
 ```bash
-icp network start -e local          # terminal 1 — keep replica running
-python3 -m casals_cli.main -e local --identity local-dev up tests/e2e/orchestras/minimal/casals.json --yes
+icp identity new local-dev --storage plaintext
+icp network start -d
+casals -e local --identity local-dev up tests/e2e/orchestras/minimal/casals.json --yes
 ```
 
 `casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-store` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
@@ -176,7 +188,8 @@ casals tree                                        # Section → Stand → Canis
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
 casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
-casals up tests/e2e/orchestras/minimal/casals.json --yes --local   # day one, local replica
+casals init                                        # write casals.json, the minimal example
+casals up casals.json --yes --local                # day one, local replica
 casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the new build
 casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the store's bundle
 casals cycles                                      # treasury + per-canister balances

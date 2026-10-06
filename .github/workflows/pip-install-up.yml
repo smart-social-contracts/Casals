@@ -1,10 +1,13 @@
-# The advertised install path, against the corpus minimal sheet on a local replica:
+# The advertised install path, in an empty directory on a local replica:
 #
 #   pip install ic-casals
-#   casals up tests/e2e/orchestras/minimal/casals.json --yes --local
+#   casals init
+#   casals up casals.json --yes --local
 #
-# Builds this checkout's wheel (same shape as PyPI) and runs the installed
-# `casals` entry point — not `python -m casals_cli.main` from the tree.
+# Installs this checkout's wheel (same shape as PyPI) and runs the installed
+# `casals` entry point outside the checkout, with no identity created first and
+# nothing built: the example installs the newest release's artifacts.
+# release-verify.yml repeats it from PyPI after a release.
 
 name: pip install + casals up
 
@@ -13,12 +16,22 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      from_pypi:
+        description: install ic-casals==<release without the v> from PyPI instead of this checkout's wheel
+        type: boolean
+        default: false
+      release:
+        description: release whose artifacts the example installs (default the newest)
+        type: string
+        default: ""
 
 jobs:
   pip-install-up:
-    name: pip install ic-casals && casals up --local
+    name: pip install ic-casals && casals init && casals up --local
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
@@ -31,22 +44,35 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install icp-cli and ic-wasm
+      - name: Install icp-cli
         run: |
-          npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+          npm install -g @icp-sdk/icp-cli
           echo "$(npm config get prefix)/bin" >> "$GITHUB_PATH"
           icp --version
 
-      - name: Create the test identity
-        run: icp identity new local-dev --storage plaintext || true
-
-      - name: pip install + casals up (minimal, local replica)
+      - name: Wait for the package on PyPI
+        if: ${{ inputs.from_pypi }}
         env:
-          CASALS_HOME: ${{ runner.temp }}/casals-pip-up
+          RELEASE: ${{ inputs.release }}
+        run: |
+          PIP_SPEC="ic-casals==${RELEASE#v}"
+          echo "CASALS_PIP_SPEC=$PIP_SPEC" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if python -m pip download --no-deps -q -d /tmp/pypi-probe "$PIP_SPEC"; then exit 0; fi
+            echo "not on PyPI yet ($i/30)"; sleep 20
+          done
+          exit 1
+
+      - name: pip install + casals init + casals up (empty directory, local replica)
+        env:
           CASALS_PIP_UP_WORKDIR: ${{ runner.temp }}/ic-casals-pip-up
+          CASALS_RELEASE: ${{ inputs.release }}
+          GITHUB_TOKEN: ${{ github.token }}
           PYTHONUNBUFFERED: "1"
         run: bash tests/e2e/pip_install_up.sh
 
       - name: Stop local replica (safety net)
         if: always()
-        run: icp network stop -e local || icp network stop || true
+        run: |
+          icp network stop --project-root-override "$RUNNER_TEMP/ic-casals-pip-up/casals-home/replica" || true
+          icp network stop || true

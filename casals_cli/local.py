@@ -1,4 +1,4 @@
-"""`casals up --local`: start a replica, ensure a plaintext identity, mint cycles."""
+"""`casals up --local`: ensure a plaintext identity, start a replica, fund the identity."""
 
 from __future__ import annotations
 
@@ -52,6 +52,11 @@ def ensure_identity(name: str) -> None:
 
 
 def ensure_cycles(identity: str, *, min_tc: int = LOCAL_MINT_TC) -> None:
+    """Top `identity` up to `min_tc` on the local network.
+
+    The network seeds only the identities that existed when it started; one
+    created later has no ICP to mint with. The anonymous identity is always
+    seeded, so the shortfall is transferred from it."""
     code, out = _icp(["cycles", "balance", "-q", "-e", "local", "--identity", identity])
     if code != 0:
         raise RuntimeError(f"icp cycles balance failed:\n{out[-800:]}")
@@ -59,22 +64,31 @@ def ensure_cycles(identity: str, *, min_tc: int = LOCAL_MINT_TC) -> None:
     need = min_tc * 10**12
     if have >= need:
         return
-    mint = f"{min_tc * 2}t"
-    _progress(f"  minting {mint} cycles for {identity} (have {have})")
-    code, out = _icp(["cycles", "mint", "--cycles", mint, "-e", "local", "--identity", identity])
+    code, out = _icp(["identity", "principal", "--identity", identity])
     if code != 0:
-        raise RuntimeError(f"icp cycles mint failed:\n{out[-800:]}")
+        raise RuntimeError(f"icp identity principal failed:\n{out[-800:]}")
+    principal = out.strip().splitlines()[-1].strip()
+    amount = f"{min_tc * 2}t"
+    _progress(f"  transferring {amount} cycles to {identity} from the anonymous identity (have {have})")
+    code, out = _icp(["cycles", "transfer", amount, principal, "-e", "local", "--identity", "anonymous"])
+    if code != 0:
+        raise RuntimeError(
+            f"icp cycles transfer to {identity} failed:\n{out[-800:]}\n"
+            "Restarting the local network funds every existing identity: "
+            "`icp network stop`, then run this again."
+        )
 
 
 def prepare_local(*, identity: str | None = None) -> str:
-    """Start the local replica, ensure a plaintext identity, mint cycles.
+    """Ensure a plaintext identity, start the local replica, fund the identity.
 
-    Returns the identity name Casals should sign as (`local-dev` unless
-    `--identity` named another).
+    The identity comes first: the network seeds the identities that exist when
+    it starts. Returns the identity name Casals should sign as (`local-dev`
+    unless `--identity` named another).
     """
     name = (identity or LOCAL_IDENTITY).strip() or LOCAL_IDENTITY
+    ensure_identity(name)
     replica = start()
     _progress(f"  local replica {replica.url}")
-    ensure_identity(name)
     ensure_cycles(name)
     return name
