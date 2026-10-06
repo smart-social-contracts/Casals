@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import sheetv2 as sv2  # noqa: E402
+from access_code import PUBLISHED_ACCESS_CODE_CHECKSUMS, code_checksum  # noqa: E402
 
 CORPUS_DIR = os.path.join(os.path.dirname(__file__), "e2e", "orchestras")
 CORPUS_NAMES = [
@@ -251,6 +252,115 @@ def test_production_deployer_allowed_when_listed():
         "principals": {"operator": "$deployer"},
     }
     assert not any("$deployer is not allowed" in e for e in sv2.validate(sheet, "production"))
+
+
+# Plaintexts named in access_code.PUBLISHED_ACCESS_CODE_CHECKSUMS. The
+# validation error must not repeat them.
+_PUBLISHED_ACCESS_CODES = (
+    "CASALS",
+    "CASALS-E2E-ACCESS-CODE",
+    "casals",
+    "casals-auditor",
+    "casals-dev",
+    "casals-lifecycle",
+    "casals-motoko",
+    "casals-operator",
+    "casals-owner",
+    "casals-platform",
+    "casals-python",
+    "casals-realms",
+    "casals-release",
+    "casals-rust",
+    "casals-sre",
+    "casals-steward",
+)
+
+
+def _assert_published_code_absent(errors: list[str]) -> None:
+    message = "\n".join(errors)
+    for code in _PUBLISHED_ACCESS_CODES:
+        assert code not in message
+
+
+def _production_from_minimal(checksums: dict[str, str]) -> dict:
+    """Minimal corpus with a production (network ic) copy of its local principals."""
+    sheet = _load_corpus("minimal")
+    env = copy.deepcopy(sheet["environments"]["local"])
+    env["network"] = "ic"
+    env["principals"].update(checksums)
+    sheet["environments"]["production"] = env
+    return sheet
+
+
+def test_published_access_code_digests_match_the_named_sources():
+    assert {code_checksum(code) for code in _PUBLISHED_ACCESS_CODES} == PUBLISHED_ACCESS_CODE_CHECKSUMS
+
+
+def test_published_admin_checksum_refused_on_production_network():
+    """The live sheet's admin slot is a published checksum. Production refuses it;
+    local still accepts it; a fresh checksum on production validates."""
+    path = os.path.join(os.path.dirname(__file__), "..", "casals.json")
+    with open(path, encoding="utf-8") as fh:
+        sheet = json.load(fh)
+
+    errors = sv2.validate(sheet, "production")
+    assert errors and all("published in this repository" in e for e in errors)
+    assert any("environments.production.principals.admin" in e for e in errors)
+    assert any("conductor.commanders" in e and ".principal" in e for e in errors)
+    _assert_published_code_absent(errors)
+    assert sv2.validate(sheet, "local") == []
+
+    staging = sv2.validate(sheet, "staging")
+    assert staging and all("published in this repository" in e for e in staging)
+    _assert_published_code_absent(staging)
+
+    fresh = code_checksum("K7MQ2-XTR4V-9BCDF-HJ3NP")
+    sheet["environments"]["production"]["principals"]["admin"] = fresh
+    assert sv2.validate(sheet, "production") == []
+
+
+def test_published_checksum_refused_only_off_local_network():
+    published = code_checksum("casals")
+    fresh = {
+        "admin": code_checksum("M8NR3-YVT5W-2CDEG-KL4PQ"),
+        "app_operator": code_checksum("N9PS4-ZWU6X-3DEFH-MN5RS"),
+        "hello_dev": code_checksum("P2QT5-AXV7Y-4EFGJ-NQ6ST"),
+    }
+    sheet = _production_from_minimal(fresh)
+    assert sv2.validate(sheet, "production") == []
+
+    sheet["environments"]["production"]["principals"]["admin"] = published
+    errors = sv2.validate(sheet, "production")
+    assert any("environments.production.principals.admin" in e for e in errors)
+    _assert_published_code_absent(errors)
+
+    sheet["environments"]["production"]["network"] = "local"
+    assert sv2.validate(sheet, "production") == []
+
+    sheet["environments"]["production"]["network"] = "playground"
+    again = sv2.validate(sheet, "production")
+    assert any("refused on network 'playground'" in e for e in again)
+    _assert_published_code_absent(again)
+
+
+def test_raw_published_commander_principal_refused_on_ic():
+    fresh = {
+        "admin": code_checksum("Q3RU6-BYW8Z-5FGHK-PR7UV"),
+        "app_operator": code_checksum("R4SV7-CZW9A-6GHJM-QS8VW"),
+        "hello_dev": code_checksum("S5TW8-DAX2B-7HKNP-RT9WX"),
+    }
+    sheet = _production_from_minimal(fresh)
+    unrelated = code_checksum("T6UX9-EBY3C-8JMQR-SU2XY")
+    sheet["conductor"]["commanders"].append({"principal": unrelated, "permissions": "canister.tag"})
+    assert sv2.validate(sheet, "production") == []
+
+    sheet["conductor"]["commanders"].append({
+        "principal": "SHA256:" + code_checksum("casals-sre").split(":", 1)[1].upper(),
+        "permissions": "canister.topup",
+    })
+    errors = sv2.validate(sheet, "production")
+    assert any(e.startswith("conductor.commanders[") and "published in this repository" in e for e in errors)
+    _assert_published_code_absent(errors)
 
 
 def test_find_placeholders_nested():

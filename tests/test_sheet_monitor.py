@@ -26,6 +26,9 @@ MONITOR = "x5a7t-3syrx-klefo-c6ohm-gw4qj-lnkre-xv4fo-lxzw3-mpvz2-j4wr2-vae"
 def _sheet(monitor=None):
     sheet = json.load(open(os.path.join(ROOT, "casals.json"), encoding="utf-8"))
     sheet["environments"]["staging"].pop("monitor", None)
+    # The committed staging admin slot is a checksum this repository publishes.
+    # This file checks the monitor block, so give that slot an unlisted digest.
+    sheet["environments"]["staging"]["principals"]["admin"] = "sha256:" + ("ab" * 32)
     if monitor is not None:
         sheet["environments"]["staging"]["monitor"] = monitor
     return sheet

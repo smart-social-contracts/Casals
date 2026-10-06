@@ -9,7 +9,11 @@ import hashlib
 import json
 from typing import Any, Iterator
 
-from access_code import is_code_checksum, normalize_code_checksum
+from access_code import (
+    PUBLISHED_ACCESS_CODE_CHECKSUMS,
+    is_code_checksum,
+    normalize_code_checksum,
+)
 
 
 SCHEMA_VERSION = 2
@@ -697,6 +701,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
     _validate_env_principals(sheet, errors)
 
     for target_env in env_targets:
+        _validate_published_access_codes(sheet, target_env, errors)
         _validate_placeholders_for_env(sheet, target_env, names, errors)
 
     return errors
@@ -1420,6 +1425,79 @@ def _is_commander_principal_path(path: str) -> bool:
     base, br, idx = head.rpartition("[")
     return (br == "[" and idx.endswith("]") and idx[:-1].isdigit()
             and base.endswith(".commanders") and not base.endswith(".baton.commanders"))
+
+
+def _is_published_access_checksum(value: Any) -> bool:
+    """True when ``value`` is a well-formed checksum of a code this repo publishes."""
+    if not isinstance(value, str) or not is_code_checksum(value):
+        return False
+    try:
+        canon = normalize_code_checksum(value)
+    except ValueError:
+        return False
+    return canon in PUBLISHED_ACCESS_CODE_CHECKSUMS
+
+
+def _commander_uses_published_checksum(value: Any, principals: dict) -> bool:
+    """A commander principal is either a raw checksum or a ``$principal:`` alias."""
+    if _is_published_access_checksum(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    token = value.strip()
+    if not token.startswith("$principal:"):
+        return False
+    alias = token.split(":", 1)[1]
+    return _is_published_access_checksum(principals.get(alias))
+
+
+def _iter_commander_principals(value: Any, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Every ``commanders`` principal in the sheet (orchestra, section, stand, baton)."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _is_comment_key(key):
+                continue
+            child_path = f"{path}.{key}" if path else key
+            if key == "commanders" and isinstance(child, list):
+                for i, entry in enumerate(child):
+                    entry_path = f"{child_path}[{i}]"
+                    if isinstance(entry, str):
+                        yield entry_path, entry
+                    elif isinstance(entry, dict) and "principal" in entry:
+                        yield f"{entry_path}.principal", entry.get("principal")
+            else:
+                yield from _iter_commander_principals(child, child_path)
+    elif isinstance(value, list):
+        for i, child in enumerate(value):
+            yield from _iter_commander_principals(child, f"{path}[{i}]")
+
+
+def _validate_published_access_codes(sheet: dict, env: str, errors: list[str]) -> None:
+    """Refuse a published access-code checksum on any network other than local.
+
+    The digests live in ``access_code.PUBLISHED_ACCESS_CODE_CHECKSUMS``. The
+    error text names the slot, not the code.
+    """
+    network = (env_block(sheet, env).get("network") or "").strip().lower()
+    if network == "local":
+        return
+    principals = env_block(sheet, env).get("principals")
+    if not isinstance(principals, dict):
+        principals = {}
+    for alias, value in principals.items():
+        if _is_comment_key(alias):
+            continue
+        if _is_published_access_checksum(value):
+            errors.append(
+                f"environments.{env}.principals.{alias}: access-code checksum is published "
+                f"in this repository and is refused on network {network!r}"
+            )
+    for path, principal in _iter_commander_principals(sheet):
+        if _commander_uses_published_checksum(principal, principals):
+            errors.append(
+                f"{path}: access-code checksum is published in this repository "
+                f"and is refused on network {network!r}"
+            )
 
 
 def _validate_env_principals(sheet: dict, errors: list[str]) -> None:
