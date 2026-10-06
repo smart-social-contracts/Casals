@@ -67,10 +67,30 @@ function getBuildTimeValues() {
 
 const buildValues = getBuildTimeValues();
 
+// The conductor copies each built file onto the asset canister in one
+// inter-canister `store` call. That call cannot carry more than 2 MiB, so
+// Monaco (one ~4 MiB chunk if left together) is split into several chunks.
+// No single Monaco source file is that large; the buckets only group modules.
+function monacoChunk(id) {
+  if (!id.includes('node_modules/monaco-editor/')) return undefined;
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (Math.imul(hash, 31) + id.charCodeAt(i)) >>> 0;
+  return `monaco-${hash % 8}`;
+}
+
 export default defineConfig({
   plugins: [sveltekit()],
   worker: {
     format: 'es',
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          return monacoChunk(id);
+        },
+      },
+    },
   },
   define: {
     __BUILD_VERSION__: JSON.stringify(buildValues.version),
