@@ -33,6 +33,7 @@ jobs:
           pytest -v
           tests/test_unit.py
           tests/test_version_http.py
+          tests/test_paid_ingress.py
           tests/test_sheetv2.py
           tests/test_planner.py
           tests/test_access_code.py

@@ -919,7 +919,7 @@ export type SubnetListResult = UpdateResult & {
 };
 
 export async function listSubnetPlacement(): Promise<SubnetListResult> {
-  return _parseUpdate(await (await _actor()).list_subnets()) as SubnetListResult;
+  return _parseUpdate(await (await _actor(true)).list_subnets()) as SubnetListResult;
 }
 
 export async function listSubnets(): Promise<string[]> {
@@ -1031,7 +1031,7 @@ export async function refreshCanisters(args: { canisters: string[] }): Promise<C
 export async function refreshTreasury(): Promise<CyclesReport> {
   return normalizeCyclesReport(
     _parseQuery<CyclesReport>(
-      await (await _actor()).refresh_treasury(''),
+      await (await _actor(true)).refresh_treasury(''),
     ),
   );
 }
@@ -1334,9 +1334,9 @@ export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResul
 }
 
 // Refresh (and cache, server-side) the cycles→currency rate for the configured
-// display currency. Throttled on the backend; safe to call on page load.
+// display currency. Throttled on the backend. Needs a signed-in operator.
 export async function refreshFx(): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor()).refresh_fx());
+  return _parseUpdate(await (await _actor(true)).refresh_fx());
 }
 
 export async function createSection(args: {
@@ -1502,7 +1502,7 @@ export async function deletePrincipalAlias(principal: string): Promise<void> {
 
 export async function listBackendControllers(): Promise<string[]> {
   const res = _parseUpdate<{ controllers?: string[] }>(
-    await (await _actor()).list_backend_controllers('{}'),
+    await (await _actor(true)).list_backend_controllers('{}'),
   );
   return res.controllers ?? [];
 }
@@ -1776,8 +1776,8 @@ export interface ExecResult extends UpdateResult {
   output?: string;
 }
 
-// Read-only data introspection. `query` defaults to {action:"schema"} on the
-// backend. Other actions: len / keys / get / items.
+// Read-only data introspection. Requires a signed-in commander or controller.
+// `query` defaults to {action:"schema"} on the backend. Other actions: len / keys / get / items.
 export async function canisterBrowse(
   canister: string,
   query?: Record<string, unknown>,
@@ -1786,7 +1786,7 @@ export async function canisterBrowse(
   const args: Record<string, unknown> = { canister };
   if (canisterId) args.canister_id = canisterId;
   if (query) args.query = query;
-  return _parseUpdate(await (await _actor()).canister_browse(JSON.stringify(args))) as BrowseResult;
+  return _parseUpdate(await (await _actor(true)).canister_browse(JSON.stringify(args))) as BrowseResult;
 }
 
 // Run Python inside the canister (controller-gated). Requires auth.

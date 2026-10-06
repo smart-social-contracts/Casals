@@ -7,8 +7,9 @@ placeholders below). A field still holding its placeholder (local/dev
 builds) is omitted honestly — never invented at query time.
 
 This module is basilisk-free so unit tests can import it without the
-IC runtime. ``http_request`` / ``http_request_update`` in ``main.py``
-are thin wrappers around ``version_http_response``.
+IC runtime. ``http_request_update`` serves ``version_http_response``.
+``http_request`` upgrades only GET /version and otherwise returns that
+same query response (404 or OPTIONS) with ``upgrade`` left null.
 """
 
 import json
@@ -74,3 +75,31 @@ def version_http_response(req) -> dict:
         )
     body = json.dumps({"error": "not found", "path": path or "/"}).encode("utf-8")
     return _http_response(404, body, "application/json")
+
+
+def _is_get_version(req) -> bool:
+    method = (_req_field(req, "method") or "GET").upper()
+    path = (_req_field(req, "url") or "").split("?")[0].split("#")[0].strip()
+    return method == "GET" and path == "/version"
+
+
+def http_request_query(req) -> dict:
+    """Query ``http_request`` body.
+
+    GET /version asks the HTTP gateway to upgrade into ``http_request_update``.
+    Every other method or path is ``version_http_response`` (404 or OPTIONS)
+    with ``upgrade`` null, so the query is not turned into a paid update.
+    """
+    if _is_get_version(req):
+        return {
+            "status_code": 200,
+            "headers": [],
+            "body": b"",
+            "streaming_strategy": None,
+            "upgrade": True,
+        }
+    resp = version_http_response(req)
+    if resp.get("upgrade"):
+        resp = dict(resp)
+        resp["upgrade"] = None
+    return resp
