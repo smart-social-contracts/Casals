@@ -364,3 +364,103 @@ def test_mark_built_stands_skips_a_stand_grown_while_the_plan_was_in_flight(db):
     # unchanged members: marked
     same = {"realm-x": {"section": "Realms", "members": ["{stand}-quarter-2"], "built": False}}
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=same) == ["realm-x"]
+
+
+_QUARTER_TEMPLATE = {
+    "name_pattern": "realm-*",
+    "created_by": "aaaaa-aa",
+    "canisters": [
+        {"name": "{stand}-baton"},
+        {"name": "{stand}-quarter-{n}", "optional": True},
+    ],
+}
+
+
+def _grow_stand(monkeypatch, *, name, built_at, build_error, members, call_members):
+    """An existing runtime stand, then one `create_stand` as a controller.
+
+    Returns `(response, timers armed, stand)`. The stand-build queue is cleared
+    first so a re-arm is this call's, not a leftover from another test."""
+    import main
+    from models import Section, Stand
+
+    sec = Section(name="Realms")
+    st = Stand(name=name)
+    st.section = sec
+    st.built_at = built_at
+    st.build_error = build_error
+    st.members_json = json.dumps(members) if members else ""
+    monkeypatch.setattr(main, "_is_controller", lambda: True)
+    monkeypatch.setattr(
+        main,
+        "load_sheet_doc",
+        lambda: (
+            {"sections": [{"name": "Realms", "arrangements": {"stand_template": _QUARTER_TEMPLATE}}]},
+            "local",
+            "h",
+        ),
+    )
+    timers = []
+    main._stand_build_queue.clear()
+    main._stand_build_rounds.clear()
+    main._stand_build_timer["id"] = None
+    monkeypatch.setattr(main.ic, "set_timer", lambda _d, cb: timers.append(cb) or len(timers), raising=False)
+    args = {"section": "Realms", "name": name}
+    if call_members is not None:
+        args["members"] = call_members
+    res = json.loads(main.create_stand(json.dumps(args)))
+    return res, timers, st
+
+
+def test_growing_a_built_stand_reopens_the_build(db, monkeypatch):
+    """A stand already marked built still re-arms when `create_stand` names a
+    member that has no Canister row (dynamic-stands / realm-e2e growth)."""
+    import main
+    from models import Canister, Stand
+
+    res, timers, _st = _grow_stand(
+        monkeypatch,
+        name="realm-e2e",
+        built_at=42,
+        build_error="",
+        members=["{stand}-quarter-1"],
+        call_members=["{stand}-quarter-2"],
+    )
+    assert res["ok"] is True and res["created"] is False, res
+    assert res["members"] == ["{stand}-quarter-1", "{stand}-quarter-2"]
+    list(Stand.instances())
+    st = Stand["realm-e2e"]
+    assert st.built_at == 0
+    assert st.build_error == ""
+    assert main._stand_build_queue == ["realm-e2e"]
+    assert len(timers) == 1
+    list(Canister.instances())
+    assert Canister["realm-e2e-quarter-2"] is None
+
+
+def test_rekick_clears_a_build_error_on_an_unbuilt_stand(db, monkeypatch):
+    """The installer re-calls `create_stand` with no new members while it waits.
+    An unbuilt stand that stopped on `build_error` clears the error and re-arms."""
+    import main
+    from models import Canister, Stand
+
+    have = Canister(name="realm-e2e-quarter-1")
+    have.canister_id = "aaaaa-aa"
+    res, timers, _st = _grow_stand(
+        monkeypatch,
+        name="realm-e2e",
+        built_at=0,
+        build_error="a build round changed nothing",
+        members=["{stand}-quarter-1"],
+        call_members=["{stand}-quarter-1"],
+    )
+    assert res["ok"] is True and res["created"] is False, res
+    assert res["members"] == ["{stand}-quarter-1"]
+    list(Stand.instances())
+    st = Stand["realm-e2e"]
+    assert st.built_at == 0
+    assert st.build_error == ""
+    assert main._stand_build_queue == ["realm-e2e"]
+    assert len(timers) == 1
+    list(Canister.instances())
+    assert Canister["realm-e2e-quarter-1"] is have
