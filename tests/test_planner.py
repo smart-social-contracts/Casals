@@ -638,10 +638,7 @@ def test_product_demo_stands_are_sole_batonned():
     with open(path, encoding="utf-8") as fh:
         sheet = json.load(fh)
     assert sv2.validate(sheet, "local") == []
-    production_errors = sv2.validate(sheet, "production")
-    assert production_errors and all(
-        "access-code checksum is published in this repository" in e for e in production_errors
-    )
+    assert sv2.validate(sheet, "production") == []
     for _section, _stand, name, canister in sv2.iter_canisters(sheet):
         assert "$deployer" in (canister.get("controllers") or []), name
     demo = next(s for s in sheet["sections"] if s["name"] == "Demo")

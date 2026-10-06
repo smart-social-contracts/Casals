@@ -44,8 +44,8 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slot: a checksum. The code must not be written in this file.",
-        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980",
+        "$comment": "admin redeemed the previous access-code slot on 2026-10-05. The code is not written here.",
+        "admin": "lubdh-3xlmm-xvrgd-dik3k-qwk42-jq7ja-p73py-xm2wx-qgies-gfre7-nae",
         "$comment_deployer": "Demo exception: the identity that ran casals up stays an IC controller of every canister. Listing the token here is what allows $deployer on production.",
         "deployer": "$deployer"
       },
@@ -73,8 +73,8 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slot: a checksum. The code must not be written in this file.",
-        "admin": "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980",
+        "$comment": "admin redeemed the previous access-code slot on 2026-10-05. The code is not written here.",
+        "admin": "p6fix-kizta-n2rj5-nibj2-b6wt7-zpjki-ktkll-ystdq-su7md-5kcoa-eae",
         "deployer": "$deployer"
       },
       "cycles": {

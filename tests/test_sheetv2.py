@@ -297,19 +297,26 @@ def test_published_access_code_digests_match_the_named_sources():
 
 
 def test_published_admin_checksum_refused_on_production_network():
-    """The live sheet's admin slot is a published checksum. Production refuses it;
-    local still accepts it; a fresh checksum on production validates."""
+    """Putting a published checksum back on the production admin slot is refused.
+    The committed sheet names the principal that already redeemed that slot, so
+    production and staging validate, and local may still use the example code."""
     path = os.path.join(os.path.dirname(__file__), "..", "casals.json")
     with open(path, encoding="utf-8") as fh:
         sheet = json.load(fh)
 
+    assert sv2.validate(sheet, "local") == []
+    assert sv2.validate(sheet, "production") == []
+    assert sv2.validate(sheet, "staging") == []
+
+    published = "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+    sheet["environments"]["production"]["principals"]["admin"] = published
     errors = sv2.validate(sheet, "production")
     assert errors and all("published in this repository" in e for e in errors)
     assert any("environments.production.principals.admin" in e for e in errors)
     assert any("conductor.commanders" in e and ".principal" in e for e in errors)
     _assert_published_code_absent(errors)
-    assert sv2.validate(sheet, "local") == []
 
+    sheet["environments"]["staging"]["principals"]["admin"] = published
     staging = sv2.validate(sheet, "staging")
     assert staging and all("published in this repository" in e for e in staging)
     _assert_published_code_absent(staging)
