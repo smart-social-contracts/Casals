@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import sys
-import types
 from unittest.mock import patch
 
 import pytest
@@ -27,7 +26,7 @@ from casals_cli.main import apply_local_flag, _build_parser, looks_like_checkout
 from casals_cli.local import cycles_balance, identity_names  # noqa: E402
 from casals_cli.oracle import run_oracle  # noqa: E402
 from casals_cli.registry import release_asset_url, resolve_source, sha256_hex  # noqa: E402
-from casals_cli.show import build_live_view, mermaid_graph, render_show_text  # noqa: E402
+from casals_cli.show import mermaid_graph, render_show_text  # noqa: E402
 from casals_cli.up import run_up  # noqa: E402
 from casals_cli.util import candid_text_arg, candid_unescape, parse_icp_output  # noqa: E402
 from casals_cli.wasm_store import FakeAssetStore  # noqa: E402
@@ -234,6 +233,30 @@ class TestInit:
         main(["init", "-o", str(out), "--release", "v9.9.9", "--force"])
         assert "Casals@v9.9.9:" in out.read_text()
 
+    def test_hello_world_is_an_orchestra_in_casals_json(self, tmp_path, monkeypatch):
+        import sheetv2
+        from casals_cli.catalog import resolve_sheet
+        from casals_cli.main import main
+
+        monkeypatch.delenv("CASALS_RELEASE", raising=False)
+        monkeypatch.chdir(tmp_path)
+        main(["init", "hello-world"])
+        doc = json.loads((tmp_path / "casals.json").read_text())
+        sheet = doc["orchestras"]["hello-world"]
+        assert sheetv2.validate(sheet, "local") == []
+        sources = [w["source"] for w in sheet["registry"]["wasms"]]
+        assert any("hello-world-basilisk@" in s for s in sources)
+        assert any("hello-world-frontend.wasm.gz" in s for s in sources)
+        assert not any("hello-world-rust" in s for s in sources)
+        wasms = {c["wasm"] for c in sheet["sections"][0]["stands"][0]["canisters"]}
+        assert wasms == {"hello-world-basilisk@1.0.0", "hello-world-frontend@1.0.0"}
+        with pytest.raises(SystemExit):
+            main(["init", "hello-world"])
+        _path, resolved = resolve_sheet("hello-world")
+        assert resolved["name"] == "hello-world"
+        with pytest.raises(RuntimeError, match="lists orchestras"):
+            resolve_sheet("casals.json")
+
 
 # ── util / candid ────────────────────────────────────────────────────────────
 
@@ -381,6 +404,41 @@ class TestUpSequencing:
         assert ic.store.grants == [(DEPLOYER, "Commit")]
         sequence = [c[1][1] for c in ic.calls if c[0] in ("call_candid", "call_update")]
         assert sequence.index("grant_permission") < sequence.index("set_sheet")
+
+    def test_up_summary_is_the_terminal_and_the_detail_is_the_log(self, tmp_path, monkeypatch, capsys):
+        ic = self._governed_ic()
+        ic.converged = True
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+
+        def _fake_bootstrap(_ic, _sheet, bindings, **kwargs):
+            bindings.conductor["casals-backend"] = "backend-id"
+            bindings.conductor["casals-frontend"] = "frontend-id"
+            bindings.conductor["casals-store"] = "store-id"
+            bindings.backend_id = "backend-id"
+            ic.controllers["store-id"] = [DEPLOYER]
+            return bindings
+
+        monkeypatch.setattr("casals_cli.up.bootstrap_conductor", _fake_bootstrap)
+        monkeypatch.setattr("casals_cli.up.ensure_registry_uploads", lambda *a, **k: [
+            {"kind": "wasm", "family": "hello-world-rust", "bytes": 2_097_152},
+            {"kind": "bundle", "action": "uploaded", "path": "frontend/casals-ui/main/index.html"},
+        ])
+        monkeypatch.setattr("casals_cli.up.bind_conductor", lambda *a, **k: None)
+        run_up(ic, CORPUS, "local", yes=True, project_root=REPO_ROOT)
+        err = capsys.readouterr().err
+        assert "[1/7] Checking the sheet — ok" in err
+        assert "[3/7] Creating the conductor, the UI, and the store" in err
+        assert "casals-frontend" in err and "frontend-id" in err
+        assert "hello-world-rust — 2.0 MB" in err
+        assert "Open Casals" in err
+        assert "http://frontend-id.localhost:8000/" in err
+        assert "plan hash=" not in err
+        logs = list((tmp_path / "logs").glob("*.log"))
+        assert len(logs) == 1
+        text = logs[0].read_text()
+        assert "plan hash=" in text or "plan: converged" in text
+        assert "step 1/" in text
+        assert str(logs[0]) in err or logs[0].name in err
 
     def test_second_up_skips_create_install(self, tmp_path, monkeypatch):
         ic = self._governed_ic()
@@ -1188,8 +1246,6 @@ class TestDestroy:
         assert "product-id" not in deleted
 
     def test_pre_store_conductor_without_get_bindings_uses_the_tree(self):
-        from argparse import Namespace
-        from casals_cli.commands import cmd_destroy
 
         ic = RecordingIc(env="production")
         ic.deployer = "deployer"

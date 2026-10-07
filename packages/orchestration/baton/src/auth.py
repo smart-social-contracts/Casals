@@ -1,6 +1,5 @@
 """Commander capability checks."""
 
-from typing import Optional
 
 from models import decode_record
 

@@ -709,7 +709,7 @@ class TestGovernanceTakeover:
         casals_main = (root / "src/main.py").read_text()
 
         baton_variants = re.findall(r"#\w+", types_mo.split("public type BatonAction")[1].split("};")[0])
-        assert baton_variants, f"could not parse BatonAction variants from types.mo"
+        assert baton_variants, "could not parse BatonAction variants from types.mo"
         forbidden = {"DestroyOrchestra", "EvacuateTreasury", "ConvertTreasuryIcp"}
         assert not (set(baton_variants) & forbidden), (
             f"unexpected admin-only BatonAction variants: {baton_variants}"

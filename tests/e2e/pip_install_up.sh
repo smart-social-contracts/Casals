@@ -2,8 +2,8 @@
 # What the landing page / README advertise, in an empty directory:
 #
 #   pip install ic-casals
-#   casals init
-#   casals up casals.json --yes --local
+#   casals init hello-world
+#   casals up hello-world --yes --local
 #
 # By default the CLI is this checkout's wheel (the PyPI shape) and the example
 # installs the newest published release's artifacts, since the CLI's own
@@ -62,13 +62,13 @@ echo "release artifacts: $CASALS_RELEASE"
 
 cd "$SITE"
 
-group "casals init"
-casals init
+group "casals init hello-world"
+casals init hello-world
 endgroup
 
-group "casals up --local"
-# stderr = progress (GHA log); stdout = the JSON result we grade
-casals up casals.json --yes --local > "$UP_JSON"
+group "casals up hello-world --local"
+# stderr = the short step log (GHA log); stdout = the JSON result we grade
+casals up hello-world --yes --local --json > "$UP_JSON"
 endgroup
 
 python -c '
@@ -84,7 +84,7 @@ print("up ok; plan empty; conductor", data.get("backend_id"))
 ' "$UP_JSON"
 
 group "oracle"
-casals --identity local-dev oracle casals.json
+casals --identity local-dev oracle hello-world
 endgroup
 
-echo "pip install ic-casals && casals init && casals up casals.json --yes --local: ok ($CASALS_RELEASE)"
+echo "pip install ic-casals && casals init hello-world && casals up hello-world --yes --local: ok ($CASALS_RELEASE)"

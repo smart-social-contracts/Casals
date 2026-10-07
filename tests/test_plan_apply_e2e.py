@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from conftest import REPO_ROOT, call_canister, canister_controllers_live, store_put
+from conftest import REPO_ROOT, call_canister, store_put
 
 SHEET_PATH = os.path.join(REPO_ROOT, "tests/e2e/orchestras/minimal/casals.json")
 
@@ -82,7 +82,6 @@ class TestPlanApplySmoke:
         cid = bindings.get(target_name)
         if not cid:
             pytest.skip("hello-backend not bound yet")
-        before = canister_controllers_live(cid)
         extra = "rd4en-xnpkg-b6cu3-lueiv-o53vx-g5ueq-gqe"
         import subprocess
         subprocess.run(

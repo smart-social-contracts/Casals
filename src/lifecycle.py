@@ -26,7 +26,6 @@ from helpers import (
     ANONYMOUS,
     _caller,
     _find_canister_by_id,
-    _nat64s_in,
     _principals_in,
     _require_unique_canister_name,
     _settings,

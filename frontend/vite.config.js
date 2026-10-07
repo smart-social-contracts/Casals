@@ -5,6 +5,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { displayVersion } from './scripts/build-info.js';
+import { monacoChunkFor } from './scripts/monaco-chunks.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -68,19 +69,53 @@ function getBuildTimeValues() {
 const buildValues = getBuildTimeValues();
 
 // The conductor copies each built file onto the asset canister in one
-// inter-canister `store` call. That call cannot carry more than 2 MiB, so
-// Monaco (one ~4 MiB chunk if left together) is split into several chunks.
-// No single Monaco source file is that large; the buckets only group modules.
-/** @param {string} id */
-function monacoChunk(id) {
-  if (!id.includes('node_modules/monaco-editor/')) return undefined;
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (Math.imul(hash, 31) + id.charCodeAt(i)) >>> 0;
-  return `monaco-${hash % 8}`;
+// inter-canister `store` call. That call cannot carry 2 MiB. Stay under it
+// with room for the candid envelope around the bytes.
+const INGRESS_ASSET_LIMIT = 1_900_000;
+
+/**
+ * @returns {import('vite').Plugin}
+ */
+function ingressAssetLimit() {
+  return {
+    name: 'ingress-asset-limit',
+    /**
+     * @param {unknown} _options
+     * @param {Record<string, { type: string, code?: string, source?: string | Uint8Array }>} bundle
+     */
+    generateBundle(_options, bundle) {
+      for (const [file, item] of Object.entries(bundle)) {
+        const size =
+          item.type === 'chunk'
+            ? Buffer.byteLength(item.code ?? '')
+            : typeof item.source === 'string'
+              ? Buffer.byteLength(item.source)
+              : (item.source?.byteLength ?? 0);
+        if (size > INGRESS_ASSET_LIMIT) {
+          throw new Error(
+            `${file} is ${size} bytes. The conductor stores each frontend file in one ` +
+              'inter-canister call, which cannot carry 2 MiB.',
+          );
+        }
+      }
+    },
+  };
+}
+
+/**
+ * Keep Vite's preload helper out of the editor chunks. A hash split of Monaco
+ * trapped that helper inside a chunk cycle, so the shell imported it at
+ * startup and died before render.
+ * @param {string} id
+ * @returns {string | undefined}
+ */
+function manualChunk(id) {
+  if (id.includes('vite/preload-helper')) return 'preload-helper';
+  return monacoChunkFor(id);
 }
 
 export default defineConfig({
-  plugins: [sveltekit()],
+  plugins: [sveltekit(), ingressAssetLimit()],
   worker: {
     format: 'es',
   },
@@ -88,7 +123,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          return monacoChunk(id);
+          return manualChunk(id);
         },
       },
     },

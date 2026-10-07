@@ -1,8 +1,8 @@
 # The advertised install path, in an empty directory on a local replica:
 #
 #   pip install ic-casals
-#   casals init
-#   casals up casals.json --yes --local
+#   casals init hello-world
+#   casals up hello-world --yes --local
 #
 # Installs this checkout's wheel (same shape as PyPI) and runs the installed
 # `casals` entry point outside the checkout, with no identity created first and
@@ -29,7 +29,7 @@ on:
 
 jobs:
   pip-install-up:
-    name: pip install ic-casals && casals init && casals up --local
+    name: pip install ic-casals && casals init hello-world && casals up hello-world --local
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -63,7 +63,7 @@ jobs:
           done
           exit 1
 
-      - name: pip install + casals init + casals up (empty directory, local replica)
+      - name: pip install + casals init hello-world + casals up hello-world (empty directory, local replica)
         env:
           CASALS_PIP_UP_WORKDIR: ${{ runner.temp }}/ic-casals-pip-up
           CASALS_RELEASE: ${{ inputs.release }}

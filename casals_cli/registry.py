@@ -310,7 +310,8 @@ def ensure_registry_uploads(
         existing = target.file_hashes(namespace)
         for _entry, family, version, path, data, digest in resolved:
             chunks = max(1, (len(data) + CHUNK_BYTES - 1) // CHUNK_BYTES)
-            row = {"family": family, "version": version, "path": path, "sha256": digest, "store": target.label}
+            row = {"family": family, "version": version, "path": path, "sha256": digest,
+                   "store": target.label, "kind": "wasm", "bytes": len(data)}
             if existing.get(path, "") == digest:
                 if progress:
                     progress(f"  {family}@{version}: already in the {target.label} (sha256 {digest[:12]}…), skipped")
@@ -374,12 +375,13 @@ def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, pr
             target.upload(ns, path, files[path], hashes[path], **kw)
             action = "uploaded"
         rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": action,
-                     "sha256": hashes[path], "store": target.label, "bundle_sha256": digest})
+                     "sha256": hashes[path], "store": target.label, "bundle_sha256": digest, "kind": "bundle"})
     for path in plan["delete"]:
         target.delete(ns, path)
         if meter is not None:
             meter.advance(1, f"store delete {ns}/{path}")
         rows.append({"family": ns, "version": "", "path": f"{ns}/{path}", "action": "deleted",
-                     "sha256": existing.get(path, ""), "store": target.label, "bundle_sha256": digest})
+                     "sha256": existing.get(path, ""), "store": target.label, "bundle_sha256": digest,
+                     "kind": "bundle"})
     return rows
 

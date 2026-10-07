@@ -27,9 +27,7 @@ from ic_python_logging import get_logger
 
 from auth import (
     AuthError,
-    get_top_commander,
     has_capability,
-    is_top_commander,
     require_capability,
     require_top_commander,
 )
@@ -51,7 +49,6 @@ from models import (
     ACTION_TYPE_ASSET_PROVISION,
     ACTION_TYPE_MANAGED_UPGRADE,
     ALL_CAPABILITIES,
-    CAP_MANAGE_COMMANDERS,
     CAP_MANAGE_MANAGED,
     CAP_PROPOSE,
     CAP_EXECUTE,

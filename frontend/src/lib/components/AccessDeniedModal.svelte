@@ -78,9 +78,10 @@
           <input
             id="access-code"
             type="text"
-            class="input flex-1 min-w-0 font-mono text-sm uppercase"
-            placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
+            class="input flex-1 min-w-0 font-mono text-sm"
             autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
             spellcheck="false"
             bind:value={code}
             disabled={claiming}

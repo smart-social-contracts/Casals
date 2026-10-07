@@ -303,7 +303,6 @@ def test_patch_cycles_snapshot_remove_canisters():
 
 def test_should_record_cycle_sample_respects_gap(monkeypatch):
     import cycles as cycles_mod
-    import models as models_mod
 
     class S:
         cycles_sampling = True
@@ -1010,7 +1009,6 @@ def test_assert_subnet_allowed_empty_whitelist():
 
 def test_assert_subnet_allowed_rejects_unknown(monkeypatch):
     import subnets
-    from helpers import _settings
 
     class S:
         subnet_whitelist_json = '["known-subnet"]'
@@ -1545,7 +1543,6 @@ def test_memory_keep_for_wasm_type_rule_and_catalog_override():
 
 # ── Principal aliases ─────────────────────────────────────────────────────────
 
-import util  # noqa: E402
 
 
 def test_validate_alias_name_accepts_simple_names():

@@ -1365,7 +1365,6 @@ def _maybe_convert_icp_to_cycles_gen(force: bool = False):
 
     try:
         canister_id = ic.id()
-        cid_str = str(canister_id)
         sub = _cmc_subaccount_from_principal(canister_id)
         to_acct = Principal.from_str(_CMC_CANISTER_ID).to_account_id(subaccount=sub)
         to_hex = _ledger_account_bytes(to_acct).hex()

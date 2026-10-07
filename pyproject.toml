@@ -44,6 +44,9 @@ casals = "casals_cli.main:main"
 packages = ["casals_cli"]
 py-modules = ["sheetv2", "access_code", "auth", "ic_assets"]
 
+[tool.ruff.lint]
+select = ["F"]
+
 [tool.setuptools.package-data]
 casals_cli = ["examples/*.json"]
 

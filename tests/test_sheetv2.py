@@ -390,6 +390,7 @@ def test_canonical_json_key_order_independent():
 def test_iter_canisters_includes_conductor_and_multisig():
     sheet = _load_corpus("governed")
     names = [n for _s, _t, n, _c in sv2.iter_canisters(sheet)]
+    assert "multisig" in names
     logical = sv2.canister_names(sheet)
     assert "casals-backend" in logical
     assert "multisig" in logical
@@ -418,6 +419,23 @@ def test_resolve_stand_backend():
     ]
     # `$stand.baton` on the backend resolves to the baton's id.
     assert resolved["sections"][0]["stands"][0]["canisters"][1]["controllers"] == ["baton-id"]
+
+
+def test_product_demo_alias_shares_the_frontend():
+    """Production lists casals.ic-casals.tech beside demo.ic-casals.tech on the
+    demo frontend. Local and staging leave the alias empty."""
+    path = os.path.join(os.path.dirname(__file__), "..", "casals.json")
+    with open(path, encoding="utf-8") as fh:
+        sheet = json.load(fh)
+
+    def domains_file(env):
+        ctx = _ctx(sheet, env_values=sv2.env_block(sheet, env))
+        resolved, _unresolved = sv2.resolve_partial(sheet, env, ctx, partial=True)
+        return resolved["conductor"]["frontend"].get("files", {}).get(sv2.IC_DOMAINS_FILE)
+
+    assert domains_file("production") == "demo.ic-casals.tech\ncasals.ic-casals.tech\n"
+    assert domains_file("staging") == "casals.staging.ic-casals.tech\n"
+    assert domains_file("local") is None
 
 
 def test_domains_materialize_ic_domains_file():

@@ -31,7 +31,6 @@ from basilisk import (
     init,
     inspect_message,
     nat16,
-    nat64,
     post_upgrade,
     query,
     text,
@@ -44,9 +43,6 @@ from ic_python_logging import get_logger
 
 from auth import (
     PERMISSIONS,
-    PERMISSION_KEYS,
-    _has_permission,
-    _normalize_permissions,
     _parse_permissions,
     reject_unknown_permissions,
 )
@@ -84,7 +80,7 @@ from orchestration_bridge import (
     _baton_in_stand_optional, _baton_propose_assets_gen, _baton_propose_targets_gen, _multisig_configure_gen,
 )
 from control_rules import controller_change_error
-from audit import _append_event, _last_event, find_canister_deployment
+from audit import _append_event, find_canister_deployment
 from config_call import call_text_method_gen
 import cycles as _cycles_mod
 import store_uploads as _store_uploads
@@ -103,12 +99,9 @@ from cycles import (
     _record_cycle_sample,
     _status_cycles,
     _status_freezing,
-    _ic_run_status,
     _fetch_canister_status_gen,
     _fetch_canister_status_result_gen,
     apply_canister_balance_to_row,
-    _sync_treasury_baseline,
-    _treasury_ledger_account_hex,
     treasury_deposit_fields,
     _treasury_watch_begin_gen,
     _sync_treasury_baseline_gen,
@@ -119,7 +112,6 @@ from cycles import (
     _fetch_icp_cycles_per_e8s_gen,
     _notify_top_up_gen,
     icp_autoconvert_enabled,
-    overlay_treasury_settings,
     overlay_treasury_baselines,
     refresh_cycles_snapshot_settings,
     REFRESH_CANISTERS_BATCH_MAX,
@@ -134,11 +126,9 @@ from helpers import (
     _canister_name_taken,
     _err,
     _is_controller,
-    _nat64s_in,
     _ok,
     _principals_in,
     _parse_principal_subnet_auth_map,
-    _require_unique_canister_name,
     _find_canister_by_id,
     _orchestra_identity,
     _settings,
@@ -147,16 +137,12 @@ from helpers import (
 )
 from lifecycle import (
     CMC_CANISTER_ID,
-    CREATE_CYCLES,
     _add_controllers,
-    _allocate_canister,
     _assign_pool_canister,
-    _ensure_provision_controllers_gen,
     _fetch_canister_controllers,
     _install_arg_for,
     _resolve_install_arg,
     choose_reinstall_arg_spec,
-    _maybe_provision_assets,
     _provision_canister,
     _pull_and_install,
     _refresh_controllers_cache_gen,
@@ -167,24 +153,18 @@ from lifecycle import (
     _destroy_stand_gen,
     _evacuate_treasury_gen,
     _governance_multisig_id,
-    _adopt_registered_canister_gen,
     _apply_monitor_visibility_gen,
     _fetch_canister_settings_raw_gen,
     _parse_extra_controller_principals,
-    _retire_canister,
     _safe_entity_delete,
     repair_section_stands,
     repair_section_stands_gen,
     _set_log_visibility,
-    _spec_target_subnet,
-    _target_subnet,
-    _teardown_priority_from_spec,
     _upload_bundle,
     _grant_backend_commit,
     _maybe_grant_commit_after_backend,
     _provision_assets,
     _verify_module_hash,
-    _versions_in_family,
     SYNC_MAX_FILES,
     _list_registry_files,
     _sync_assets_gen,
@@ -204,14 +184,13 @@ from models import (
     PooledCanister,
     PrincipalAlias,
     Section,
-    Settings,
     StoreUploadGrant,
     UserSettings,
     Canister,
     CanisterKind,
     CanisterStatus,
 )
-from pool import _pool_free, _pool_mark_in_use, _pool_register, _pool_take_free
+from pool import _pool_free, _pool_mark_in_use
 from subnets import (
     assert_subnet_allowed,
     parse_subnet_whitelist,
@@ -220,13 +199,8 @@ from subnets import (
 )
 from services import (
     AssetCanisterService,
-    AssetPermission,
-    GrantPermissionArg,
-    StoreArg,
 )
 from util import (
-    canister_url,
-    cycles_status,
     decide_topup,
     to_hex as _to_hex,
 )
@@ -237,7 +211,7 @@ from sheetv2 import (
     section_arrangement,
     unknown_members,
 )
-from views import _canister_view, _section_view, _stand_view
+from views import _canister_view, _section_view
 from ingress import accept_ingress
 from version_http import http_request_query, version_http_response
 from wasm_helpers import _family_of, _split_key, _ver_tuple

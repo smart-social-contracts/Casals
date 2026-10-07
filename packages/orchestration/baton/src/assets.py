@@ -9,7 +9,6 @@ served before the failed file.
 """
 
 import base64
-import json
 from typing import Any
 
 from basilisk import Async, Opt, Principal, Record, Service, Variant, blob, ic, service_update, text, void

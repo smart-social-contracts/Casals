@@ -4,7 +4,6 @@ import os
 import sys
 import types
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import lifecycle  # noqa: E402

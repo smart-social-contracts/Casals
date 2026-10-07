@@ -1,7 +1,7 @@
 """Managed-upgrade pipeline — pure helpers + async phase generators."""
 
 import json
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable
 
 from basilisk import Async, CallResult, Principal, Service, ic, service_query, text
 from basilisk.canisters.management import management_canister
@@ -11,7 +11,6 @@ from models import (
     STATUS_APPROVED,
     STATUS_PENDING,
     STATUS_PRE_FLIGHT,
-    STATUS_UPGRADING,
     append_phase_log,
     phase_entry,
 )

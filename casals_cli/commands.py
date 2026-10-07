@@ -8,6 +8,7 @@ import time
 
 
 from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, resolve_backend_id
+from casals_cli.catalog import resolve_sheet
 from casals_cli.up import converge, multisig_id, print_plan_table, run_up
 from casals_cli.util import emit_error, emit_json
 
@@ -27,8 +28,10 @@ def cmd_plan(ic, args, project_root: str) -> None:
     """What `casals up` would still do (a dry run: the sheet file diffed against
     the world); without a file, the conductor's plan for the sheet it holds."""
     if getattr(args, "sheet", None):
-        res = run_up(ic, args.sheet, args.env, conductor_override=getattr(args, "conductor", None),
-                     project_root=project_root, dry_run=True)
+        sheet_path, sheet = resolve_sheet(args.sheet)
+        res = run_up(ic, sheet_path, args.env, conductor_override=getattr(args, "conductor", None),
+                     project_root=project_root, dry_run=True, verbose=getattr(args, "verbose", False),
+                     sheet=sheet)
     else:
         backend, _ = _backend(args)
         res = ic.call_update(backend, "plan", "{}")
@@ -95,6 +98,7 @@ def cmd_apply(ic, args) -> None:
         yes=bool(getattr(args, "confirm_destructive", False)),
         max_items=int(getattr(args, "max_items", 5) or 5),
     )
+    final.pop("_rounds", None)
     if getattr(args, "json", False):
         emit_json({"ok": True, "plan": final})
 

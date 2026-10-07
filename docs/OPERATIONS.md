@@ -40,8 +40,15 @@ network funds. Outside an `icp` project (an empty directory after
 `pip install ic-casals`), `--local` writes the replica a project under
 `$CASALS_HOME/replica` (default `~/.casals/replica`), on `:8000`.
 
-The advertised install path is `pip install ic-casals`, `casals init`,
-`casals up casals.json --yes --local` in an empty directory. CI runs it in
+`casals up` prints a short step log and ends with the UI address. The full
+log is one file per run under `$CASALS_HOME/logs` (default `~/.casals/logs`);
+`--verbose` also prints it on the terminal, and `--json` prints the result
+on stdout.
+
+The advertised install path is `pip install ic-casals`, `casals init hello-world`,
+`casals up hello-world --yes --local` in an empty directory. `casals.json` holds
+named orchestras; `casals up <name>` applies that one. A path to a sheet file
+still works. CI runs it in
 `tests/e2e/pip_install_up.sh` (this checkout's wheel, the latest release's
 artifacts) and again from PyPI once a release is published
 (`release-verify.yml`).
@@ -157,6 +164,7 @@ it); with a session identity those lines no longer mean a touch.
 | ship a new frontend build | build `dist/` (or `casals bundle dist/ -o app-1.2.0.tgz`, `docs/BUNDLES.md`) and have the `registry.bundles` row's `source` point at it, then `casals -e <env> upgrade sheet.json --content <namespace>`: the bundle is uploaded when missing and every frontend whose `content` is that namespace serves exactly what the store holds (`sync_content`, repeated until no file remains). From the browser instead: `/files` → *Upload bundle*, then Orchestra → select the frontend → *Deploy frontend bundle* (`deploy_content`: the conductor runs the rounds itself and the modal shows progress), or *Platform committee → Propose → Deploy frontend bundle* when the release should be approved by the signers. The Casals UI itself is `frontend/casals-ui/main` (`conductor.frontend.content`) |
 | move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
 | tear everything down | `casals -e local destroy sheet.json --confirm-destructive` |
+| ship this checkout's conductor | `scripts/deploy.sh` (`frontend`, `backend`, or both). Signs with a delegated session identity: the longest-lived unexpired `prod-session*`, or `--identity` / `$CASALS_IDENTITY`. `--skip-build` ships artifacts already built |
 
 Add `--json` for machine-readable output. The conductor's frontend shows the
 same things: Orchestra tree and Control graph.
@@ -260,6 +268,31 @@ treat built stands like any declared canister. A later template change (new
 realm wasm, new bundle) reaches the existing realms with
 `casals upgrade --wasm` / `--content` (narrow with `--section Realms` or
 `--stand realm-x`).
+
+## Off-chain cycle monitor
+
+Balance checks and auto top-ups can run in [casals-monitor](https://github.com/smart-social-contracts/casals-monitor) instead of the conductor's timers. The hosted service is `https://service.ic-casals.tech` (staging: `https://service.staging.ic-casals.tech`). A self-hosted monitor works the same way; its origin has to be in `connect-src` in `frontend/static/.ic-assets.json5`, or the two fields below are filled by hand.
+
+In **Settings → Cycle operations**, choose **Off-chain monitor**, paste the service base URL, and click **Use this service**. The UI reads the principal from `GET /v1/service` and fills **Monitor service URL** (`<base>/v1/<this conductor>`) and **Monitor principal**. **Save** stores `monitor_enabled`, `monitor_principal`, and `monitor_service_url`, grants the monitor `status_visibility` on canisters the conductor still controls, and `POST`s `/v1/instances`. The status card shows `active`, `consent revoked`, or `unreachable`. **Register / check status** repeats that registration.
+
+The monitor is an allowed viewer, never a controller. It can read `canister_status`, ask the conductor to `top_up` (the conductor deposits what its own policy says: nothing when the canister is above the floor, and never below `treasury_reserve`), and call `convert_treasury_icp` at most once per 10 minutes. It cannot install, stop, delete, or reconfigure, and `set_settings` will not list it as a controller. Canisters already handed to a baton come back from `sync_controllers` as `skipped: not a controller`; `casals up --sync-monitor` lends the conductor control, grants the viewer, and restores the previous controllers. Canisters the deployer cannot reach are listed under `monitor_access.unreachable`. The conductor's own frontend is visible to the monitor only after the multisig sets its viewer list.
+
+Declare it on a fresh orchestra so the first canisters are created with the grant:
+
+```json
+"environments": {
+  "production": {
+    "monitor": {
+      "principal": "<monitor principal>",
+      "url": "https://service.ic-casals.tech"
+    }
+  }
+}
+```
+
+`url` is the service base; the conductor appends `/v1/<its canister id>`. `set_sheet` applies this only while the conductor has no monitor URL and principal yet. A later deploy keeps whatever Settings holds. Turning the monitor on also sets `cycles_sampling` and `cycles_autopilot` to false. Registering with the service is still **Register / check status** (or `POST /v1/instances`). Switching back to **On-chain** and saving stops top-ups on the monitor's next pass; the instance is disabled after 24 hours, and the next **Sync monitor access** drops the viewer grant.
+
+Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor mails operational notices (treasury cannot fund a top-up, consent withdrawn, and later notices of the same kind). `scripts/examples/wire_monitor.py` does the same wiring from a JSON config.
 
 ## Testing
 

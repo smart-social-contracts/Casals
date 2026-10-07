@@ -92,11 +92,13 @@ Needs Python 3.10+ and [icp-cli](https://github.com/dfinity/icp-cli). No checkou
 
 ```bash
 pip install ic-casals
-casals init                            # writes casals.json, the minimal example
-casals up casals.json --yes --local
+casals init hello-world
+casals up hello-world --yes --local
 ```
 
-`casals init` writes a sheet that installs the conductor, its store and its UI from the Casals GitHub release that matches the CLI (`--release <tag>` picks another). `--local` creates the `local-dev` identity, starts a local network and funds the identity. Outside an `icp` project, the network gets its own project under `~/.casals/replica`.
+`casals init hello-world` adds that orchestra to `casals.json`: a Basilisk backend and a hello-world frontend, plus the conductor that runs them, installed from the Casals GitHub release that matches the CLI (`--release <tag>` picks another). `casals up <name>` applies that orchestra from `casals.json`. A path to a sheet file still works. `--local` creates the `local-dev` identity, starts a local network and funds the identity. Outside an `icp` project, the network gets its own project under `~/.casals/replica`.
+
+`casals up` prints a short step log (`[1/7]`, a clock time, and the address to open). The full log of that run is a file under `~/.casals/logs` (or `$CASALS_HOME/logs`). `--verbose` prints the full log on the terminal as well. `--json` prints the machine-readable result on stdout.
 
 In a checkout of this repo, the corpus sheets build the conductor from source instead (`pip install . -r requirements.txt`, plus `make` and Node/npm for the UI):
 
@@ -188,8 +190,8 @@ casals tree                                        # Section → Stand → Canis
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
 casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
-casals init                                        # write casals.json, the minimal example
-casals up casals.json --yes --local                # day one, local replica
+casals init hello-world                           # add the hello-world orchestra to casals.json
+casals up hello-world --yes --local                # day one, local replica
 casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the new build
 casals upgrade sheet.json --content my-frontend    # release: every frontend with that content serves the store's bundle
 casals cycles                                      # treasury + per-canister balances

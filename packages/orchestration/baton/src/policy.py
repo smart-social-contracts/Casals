@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from auth import AuthError
-from models import ALL_CAPABILITIES, decode_record, encode_record, new_commander
+from models import ALL_CAPABILITIES, encode_record, new_commander
 
 
 def parse_policy(raw: str | None) -> dict[str, Any] | None:

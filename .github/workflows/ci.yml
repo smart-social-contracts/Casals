@@ -9,6 +9,25 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Every Python file compiles
+        run: python -m compileall -q casals_cli src scripts packages/orchestration/baton/src tests
+
+      - name: Ruff
+        run: |
+          pip install ruff==0.14.6
+          ruff check casals_cli src scripts packages/orchestration/baton/src tests
+
   backend-unit:
     name: Backend unit tests
     runs-on: ubuntu-latest
@@ -50,6 +69,10 @@ jobs:
           tests/test_replica.py
           tests/test_meter.py
           tests/test_asset_permission_did.py
+          tests/test_canister_calls.py
+          tests/test_notification_settings.py
+          tests/test_orchestra_tree_cache.py
+          tests/test_sheet_monitor.py
 
   cli-unit:
     name: CLI unit tests
@@ -72,7 +95,7 @@ jobs:
       # _load_sheet_file, call() subprocess wiring (mocked), error exit codes,
       # and a full subprocess suite using a pure-Python fake icp binary.
       - name: Run CLI unit tests
-        run: pytest tests/test_cli_unit.py -v tests/test_cli_v2.py
+        run: pytest -v tests/test_cli_unit.py tests/test_cli_v2.py tests/test_runlog.py
 
       - name: CLI carries no principal / controller / commander tables
         # Every id and every controller/commander set comes from the sheet the
@@ -109,7 +132,7 @@ jobs:
         run: node --experimental-strip-types --test frontend/src/lib/*.test.ts
 
       - name: Frontend /version build-info tests
-        run: node --test frontend/scripts/build-info.test.js
+        run: node --test frontend/scripts/build-info.test.js frontend/scripts/monaco-chunks.test.js
 
   orchestration-unit:
     name: Orchestration unit tests

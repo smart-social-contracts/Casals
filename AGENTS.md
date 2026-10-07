@@ -119,6 +119,11 @@ the `casals-store` store, uploads every `registry.wasms` entry into it, then
 
 ### Known quirks
 
+**Do not add a new name to `from util import` in `src/main.py`.**
+Basilisk can keep the previous `util` module across an upgrade and then trap
+`post_upgrade` on the missing export. Put a new helper in `main.py` (see
+`_normalize_notification_email`).
+
 **`icp.yaml` — asset sync path must be a top-level `dist`.**
 The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths like
 `frontend/dist`. The SvelteKit static adapter builds into the repo-root `dist`

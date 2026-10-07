@@ -7,6 +7,7 @@ import os
 import sys
 
 from casals_cli import __version__, commands, init, show, up, upgrade
+from casals_cli.catalog import resolve_sheet
 from casals_cli.bindings import live_bindings, resolve_orchestra_refs
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
@@ -38,30 +39,41 @@ def project_root(*, packaged: str | None = None, cwd: str | None = None) -> str:
 REPO_ROOT = project_root()
 
 
-def _common_flags(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("-e", "--env", default="local", help="sheet environment (local|production); production talks to the IC")
-    ap.add_argument("--identity", default=None,
+def _common_flags(ap: argparse.ArgumentParser, *, suppress: bool = False) -> None:
+    """The global flags. Subcommands repeat them with ``suppress`` so they work on
+    either side of the subcommand without overwriting a value given before it."""
+    def default(value):
+        return argparse.SUPPRESS if suppress else value
+
+    ap.add_argument("-e", "--env", default=default("local"),
+                    help="sheet environment (local|staging|production); staging and production talk to the IC")
+    ap.add_argument("--identity", default=default(None),
                     help="icp identity (with a touch-policy HSM, pass a delegated session identity: "
                          "`icp identity delegation` — see docs/OPERATIONS.md)")
-    ap.add_argument("--conductor", default=None, help="conductor backend canister id override")
-    ap.add_argument("--json", action="store_true", help="JSON output")
+    ap.add_argument("--conductor", default=default(None), help="conductor backend canister id override")
+    ap.add_argument("--json", action="store_true", default=default(False), help="JSON output on stdout")
+    ap.add_argument("--verbose", "-v", action="store_true", default=default(False),
+                    help="also print the full casals up log on the terminal (it is always saved under ~/.casals/logs)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="casals", description="Casals declarative orchestra CLI")
     ap.add_argument("-V", action="version", version=f"casals {__version__}")
     _common_flags(ap)
-    sub = ap.add_subparsers(dest="command", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    _common_flags(common, suppress=True)
+    sub = ap.add_subparsers(dest="command", required=True, parser_class=_subparser_class(common))
 
     init_p = sub.add_parser("init", help="write an example sheet to start from (installs from a Casals release)")
-    init_p.add_argument("example", nargs="?", default="minimal", choices=init.EXAMPLES)
+    init_p.add_argument("example", nargs="?", default="minimal", choices=init.EXAMPLES,
+                        help="hello-world adds that orchestra to casals.json; minimal writes one sheet")
     init_p.add_argument("-o", "--output", default="casals.json", help="where to write the sheet (default casals.json)")
     init_p.add_argument("--release", default=None,
                         help="Casals release tag to install from (default $CASALS_RELEASE, else this CLI's v<version>)")
     init_p.add_argument("--force", action="store_true", help="overwrite an existing file")
 
-    up_p = sub.add_parser("up", help="build (or resume building) an orchestra from a sheet")
-    up_p.add_argument("sheet", help="path to casals.json")
+    up_p = sub.add_parser("up", help="build (or resume building) an orchestra from casals.json")
+    up_p.add_argument("sheet", help="orchestra name in casals.json, or a path to a sheet file")
     up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
     up_p.add_argument("--max-items", type=int, default=5)
     up_p.add_argument("--bootstrap", action="store_true",
@@ -134,7 +146,6 @@ def _build_parser() -> argparse.ArgumentParser:
     destroy_p.add_argument("sheet", nargs="?", help="path to casals.json (or pass --conductor)")
     destroy_p.add_argument("--all", action="store_true")
     destroy_p.add_argument("--confirm-destructive", action="store_true")
-    destroy_p.add_argument("--json", action="store_true", help="JSON output")
 
     reg_p = sub.add_parser("register", help="register an existing canister")
     reg_p.add_argument("stand")
@@ -157,12 +168,30 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _subparser_class(common: argparse.ArgumentParser):
+    """Every subcommand parser (nested ones too) inherits the global flags."""
+    class _Sub(argparse.ArgumentParser):
+        def __init__(self, *a, **kw):
+            parents = list(kw.pop("parents", []) or [])
+            super().__init__(*a, parents=[common, *parents], **kw)
+
+        def add_subparsers(self, **kw):
+            kw.setdefault("parser_class", _Sub)
+            return super().add_subparsers(**kw)
+
+    return _Sub
+
+
 def _ic_from_args(args, root: str) -> IcClient:
     network_url = None
     path = getattr(args, "sheet", None)
     if path and getattr(args, "env", None) not in (None, "local"):
-        sheet = load_json_file(path)
-        net = str(((sheet.get("environments") or {}).get(args.env) or {}).get("network") or "")
+        try:
+            _sheet_path, sheet = resolve_sheet(path)
+        except RuntimeError:
+            sheet = None
+        env_block = ((sheet or {}).get("environments") or {}).get(args.env) or {}
+        net = str((env_block or {}).get("network") or "")
         if net == "ic":
             from casals_cli.ic import NETWORK_URLS
             network_url = NETWORK_URLS["ic"]
@@ -188,9 +217,12 @@ def apply_local_flag(args) -> None:
 
 def _sheet_name_from_args(args) -> str:
     path = getattr(args, "sheet", None)
-    if not path:
+    if not path or not os.path.isfile(path):
         return ""
-    sheet = load_json_file(path)
+    try:
+        _sheet_path, sheet = resolve_sheet(path)
+    except RuntimeError:
+        return ""
     return str(sheet.get("name") or "")
 
 
@@ -212,9 +244,11 @@ def main(argv: list[str] | None = None) -> None:
     try:
         cmd = args.command
         if cmd == "up":
+            sheet_path, sheet = resolve_sheet(args.sheet)
+            args.sheet_name = str(sheet.get("name") or args.sheet)
             result = up.run_up(
                 ic,
-                args.sheet,
+                sheet_path,
                 args.env,
                 yes=args.yes,
                 conductor_override=args.conductor,
@@ -222,6 +256,8 @@ def main(argv: list[str] | None = None) -> None:
                 project_root=root,
                 bootstrap=args.bootstrap,
                 sync_monitor=args.sync_monitor,
+                verbose=args.verbose,
+                sheet=sheet,
             )
             emit_json(result)
         elif cmd == "plan":
@@ -243,7 +279,8 @@ def main(argv: list[str] | None = None) -> None:
             sheet = load_json_file(args.sheet) if args.sheet else {"name": args.sheet_name, "environments": {args.env: {}}}
             show.cmd_graph(ic, args, sheet)
         elif cmd == "oracle":
-            sheet = resolve_orchestra_refs(ic, load_json_file(args.sheet), args.env)
+            _sheet_path, loaded = resolve_sheet(args.sheet)
+            sheet = resolve_orchestra_refs(ic, loaded, args.env)
             _backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, args.conductor)
             report = run_oracle(sheet, args.env, bmap, ic)
             if args.json:

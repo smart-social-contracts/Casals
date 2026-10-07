@@ -8,7 +8,7 @@ evident.  Only `_append_event` writes; everything else is a helper query.
 import json
 
 from basilisk import ic
-from helpers import _caller, _find_canister_by_id, unwrap_call_result
+from helpers import _caller, _find_canister_by_id
 from models import CanisterStatus, OrchestrationEvent
 from util import audit_block_hash
 

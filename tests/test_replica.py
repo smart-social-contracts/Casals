@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import socket
 
-import pytest
 
 from casals_cli.replica import (
     DEFAULT_PORT,
