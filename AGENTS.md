@@ -35,12 +35,11 @@ This repo is **`icp-cli` only** — never invoke `dfx` for Casals work. Deploy,
 network, canister, and identity commands all go through `icp` (see `icp.yaml`).
 
 - **Require icp-cli ≥ 1.3.0** — check with `icp --version`. Install or upgrade:
-  `npm i -g @icp-sdk/icp-cli`.
-- If `dfx` is on your PATH on operator hosts (e.g. srv1), it may be a **deprecation
-  gate** that exits unless you pass `--run-deprecated`. Ignore it for this repo — use
-  `icp`.
-- **Identities** live under icp-cli (`icp identity …`), not dfx. The deploy identity
-  PEM is at `~/.local/share/icp-cli/identity/keys/<name>.pem`.
+  `npm i -g @icp-sdk/icp-cli` (CI pins the version it tests).
+- **Identities** live under icp-cli (`icp identity …`), not dfx. Mainnet
+  deployers are hardware keys signing through a short-lived delegation
+  (`docs/OPERATIONS.md`, Hardware keys); a plaintext identity is for the local
+  network only.
 
 ## Repository layout
 
@@ -71,8 +70,7 @@ seed/assets/         — frontend asset files (index.html) uploaded into fronten
 scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
                        examples/wire_monitor.py (off-chain monitor wiring example)
 tests/               — pytest unit + integration suites (incl. test_cli_unit.py); tests/e2e/ corpus
-.icp/data/           — committed icp-cli canister-ID mappings (do NOT delete)
-dist/                  — SvelteKit static build output (repo root; consumed by icp.yaml)
+dist/                — SvelteKit static build output (repo root; consumed by icp.yaml)
 ```
 
 ## Frontend pages
@@ -93,8 +91,9 @@ rendered by `frontend/src/routes/+layout.svelte`:
 
 `/baton` (Baton upgrade pipeline view) exists as a route but is not linked from the nav.
 
-Login uses Internet Identity. Only principals listed as commanders (or canister
-controllers) may authenticate.
+Login uses Internet Identity. A private orchestra (the default) shows its
+pages only to its controllers, commanders and enabled monitor; with the sheet's
+`public_read` on, visitors browse it read-only.
 
 ## Local development
 
@@ -130,32 +129,6 @@ The `@dfinity/asset-canister@v2.2.0` sync plugin cannot resolve nested paths lik
 (`pages`/`assets: '../dist'` in `frontend/svelte.config.js`), and `icp.yaml`
 uses `dir: dist`. Do not change `dir` to `frontend/dist`.
 
-**`apply` needs a well-funded treasury.**
-`casals_backend` acts as the cycles treasury — it creates canisters and sends
-them cycles. A fresh local replica seeds each canister with ~1.4T cycles, which is not
-enough to create 6 canisters. Before applying a plan that creates canisters, top
-up the backend with at least 100T:
-
-```bash
-icp canister top-up --amount 100t casals_backend -e local
-```
-
-On local you have 1 000 000 seeded ICP so this costs nothing.
-
-**`provision_assets` is an additive upsert — stale encodings survive upgrades.**
-`provision_assets` calls `store(key, content_encoding, ...)` for each file in the
-new bundle. If a previous deploy stored a *gzip* or *br* encoding for a path (e.g.
-because `precompress: true` was set in the SvelteKit adapter at the time), and the
-new build is *identity-only* (`precompress: false`), the old compressed blob for
-that path remains in the asset canister's stable store. Browsers send
-`Accept-Encoding: gzip` and will keep getting the stale version even though a fresh
-identity copy was provisioned. The symptom is: `curl` (identity) shows the new
-build, a real browser shows the old one.
-Fix: run the rollout with `--mode reinstall` to wipe the asset canister before
-provisioning. This is safe for frontend canisters because their entire state is the
-asset bundle, which Casals re-uploads from the WASM store immediately after the
-wipe.
-
 **Frontend shows local data, not the demo deployment.**
 The `ic_env` cookie served by the asset canister contains the local canister IDs.
 The frontend reads from it, so it always talks to the local backend. Symptoms that
@@ -171,32 +144,32 @@ still 404s. On local, links must go through the replica's Candid UI:
 ### Run tests
 
 ```bash
-python -m pytest -q tests --ignore=tests/e2e   # unit tests, no replica
-python tests/e2e/run_e2e.py                    # the corpus: every orchestra, every scenario (starts the replica if needed)
+make unit                        # the replica-free suites (what CI's backend unit job runs)
+python tests/e2e/run_e2e.py      # the corpus: every orchestra, every scenario (starts the replica if needed)
 ```
+
+`pytest -q` on its own also collects the integration suites, which need a local
+network.
 
 ## Deploy to IC mainnet
 
-Follow `docs/OPERATIONS.md`: the same `casals up <sheet>` with `-e ic` and the
-environment's deployer identity. The conductor itself (backend, frontend,
-`casals-store` store) is created by `up`'s bootstrap when the sheet is not
-bound yet.
+Follow `docs/OPERATIONS.md`: the same `casals up <sheet> -e <env>` for an
+environment whose `network` is `ic`, signed by that environment's deployer. The
+conductor itself (backend, frontend, `casals-store` store) is created by `up`'s
+bootstrap when the environment has no bindings yet; on mainnet that needs
+`--bootstrap`, so a lost bindings file cannot mint a second conductor.
 
 ## Open access
 
-By default only the controller can create sections and stands. To allow any
-authenticated user (e.g. for demos):
+By default only controllers and commanders can create sections and stands. A
+controller can let any signed-in user do it (e.g. for demos):
 
 ```bash
-icp canister call casals_backend set_settings '("{\"open_access\":true}")' \
-  -e ic --identity casals
+icp canister call <casals-backend id> set_settings '("{\"open_access\":true}")' \
+  -n ic --identity <controller>
 ```
 
-To re-lock:
-```bash
-icp canister call casals_backend set_settings '("{\"open_access\":false}")' \
-  -e ic --identity casals
-```
+Set it back to `false` to re-lock.
 
 ## CLI (`casals`)
 
@@ -224,7 +197,9 @@ Day-to-day usage is in `docs/OPERATIONS.md`.
 
 ## Backend API (JSON-in / JSON-out)
 
-All methods accept and return a `text` containing JSON. Grouped by area:
+All methods accept and return a `text` containing JSON. The complete list is
+the Candid interface, [`casals_backend.did`](casals_backend.did); the main
+ones by area:
 
 ### Queries
 
@@ -580,8 +555,9 @@ button on **Cycles** / **Sheet**:
 Each section (and optionally stand) has a `commander_principal`. Permissions are
 granular keys (e.g. `canister.create`, `canister.deploy`, `stand.create`,
 `subnet.whitelist`) configured on the **Commanders** page or via
-`set_permissions`. Empty / `*` = full access. The deploy/conductor principal is
-also a canister controller and bypasses commander checks for admin operations.
+`set_permissions`. `*` or a missing `permissions` field is full access; an
+explicit empty grant (`[]` or `""`) is no access. IC controllers of the
+conductor bypass commander checks.
 
 Platform settings: an orchestra-wide (conductor) commander can change a settings
 group with its key: `settings.general` (name, description, currency),
@@ -592,7 +568,9 @@ principal the UI reads from `<url>/v1/service`), and
 Section and stand commanders never qualify. Open access, extra controllers,
 delegated destroy, and the wasm store / frontend ids stay controller-only.
 The sheet's `monitor` block sets the service URL and principal on the first
-deploy only; later deploys keep whatever Settings holds.
+deploy only; later deploys keep whatever Settings holds. While the block stays
+in the sheet, a `casals up` that stores a changed sheet switches off-chain mode
+back on.
 
 Who may appoint, remove or re-grant other commanders is one rule shared by
 `set_commander`, `remove_commander`, `set_permissions` and the commanders a
@@ -610,10 +588,7 @@ Who may appoint, remove or re-grant other commanders is one rule shared by
     orchestra rung and, for a stand, on its section. A missing `permissions`
     means full access, so appointing without a grant requires holding `*`.
 
-History: 8108e8f kept section-level appointment controller-only "to prevent
-escalation"; f33cc92 opened it to `commander.assign` holders without a bound,
-which let any holder mint a `*` commander (or `*` themselves). The bound above
-closes that; `tests/test_unit.py` (bounded delegation) is the regression guard.
+`tests/test_unit.py` (bounded delegation) is the regression guard for this rule.
 
 ### Access codes (inviting an operator whose principal is unknown)
 
@@ -622,7 +597,7 @@ instead of a principal. In the sheet the checksum is a `principals` alias:
 
 ```json
 "environments": { "local": { "principals": {
-  "new_operator": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  "new_operator": "sha256:<the checksum `casals code new` printed>"
 } } },
 "sections": [{ "name": "Product", "commanders": [
   { "principal": "$principal:new_operator", "permissions": "canister.*" }

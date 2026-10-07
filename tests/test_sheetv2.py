@@ -59,7 +59,7 @@ def test_corpus_validates_for_local(name):
 def test_conductor_wasms_was_renamed_to_store():
     sheet = _load_corpus("minimal")
     sheet["conductor"]["wasms"] = sheet["conductor"].pop("store")
-    assert any("renamed to conductor.store" in e for e in sv2.validate(sheet, "local"))
+    assert "conductor.wasms was renamed to conductor.store" in sv2.validate(sheet, "local")
 
 
 def test_publish_key_was_renamed_to_bundles():

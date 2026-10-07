@@ -53,38 +53,14 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      # Replica-free modules only (#57). test_sheetv2.py is the casals.json
-      # syntax suite (validate + placeholder resolution); test_planner.py,
+      # Replica-free modules only (#57), listed in the Makefile's `unit` target.
+      # test_sheetv2.py is the casals.json syntax suite (validate + placeholder
+      # resolution); test_planner.py,
       # test_access_code.py, and test_control_rules.py cover what a valid
       # sheet means. The rest are pure helpers. None of these start a replica.
       # Live conductor coverage stays in the replica workflows.
       - name: Run unit tests
-        run: >
-          pytest -v
-          tests/test_unit.py
-          tests/test_version_http.py
-          tests/test_paid_ingress.py
-          tests/test_private_reads.py
-          tests/test_sheetv2.py
-          tests/test_planner.py
-          tests/test_access_code.py
-          tests/test_control_rules.py
-          tests/test_bundle.py
-          tests/test_core_layout.py
-          tests/test_release_bookkeeping.py
-          tests/test_store_uploads.py
-          tests/test_wasm_store.py
-          tests/test_cli_wasm_store.py
-          tests/test_wasm_types.py
-          tests/test_ic_assets.py
-          tests/test_destroy_orchestra.py
-          tests/test_replica.py
-          tests/test_meter.py
-          tests/test_asset_permission_did.py
-          tests/test_canister_calls.py
-          tests/test_notification_settings.py
-          tests/test_orchestra_tree_cache.py
-          tests/test_sheet_monitor.py
+        run: make unit PYTEST_ARGS=-v
 
   cli-unit:
     name: CLI unit tests

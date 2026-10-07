@@ -30,7 +30,7 @@ module {
     };
     #CallCanister : { canister : Principal; method : Text; arg_json : Text };
     /// Upgrade a canister this multisig controls with a module streamed from
-    /// the ``casals-wasms`` store (``store``/``key``). ``sha256`` pins the
+    /// the ``casals-store`` store (``store``/``key``). ``sha256`` pins the
     /// module the committee approved; ``install_chunked_code`` refuses anything
     /// else. ``wasm_memory_keep`` is the EOP switch (Motoko yes, Rust/Basilisk no).
     #UpgradeCanister : {

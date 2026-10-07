@@ -99,7 +99,7 @@ STEPS: list[dict] = [
         "rail": "Registry & cycles",
         "title": "Two more pieces: a WASM registry and a treasury",
         "points": [
-            "<strong>casals-wasms</strong> — a certified file registry: chunked upload, <strong>sha256 computed on-chain</strong>, pinned per release. Every install <strong>streams the WASM from it</strong>; only authorized WASMs, and the conductor verifies <code>module_hash</code> afterwards. user1 and user2 provably run the same build.",
+            "<strong>casals-store</strong> — a certified file registry: chunked upload, <strong>sha256 computed on-chain</strong>, pinned per release. Every install <strong>streams the WASM from it</strong>; only authorized WASMs, and the conductor verifies <code>module_hash</code> afterwards. user1 and user2 provably run the same build.",
             "<strong>Cycles</strong> — the conductor holds a <strong>native treasury</strong> that the multisig funds. A cycle policy per section, stand or canister; an on-chain autopilot (or an off-chain monitor paying from the same treasury) refills before anything runs dry. Every top-up is an audited event.",
         ],
         "therefore": "Code and cycles both flow from Casals — on-chain, verifiable, audited.",
@@ -993,8 +993,8 @@ CSS = """
     .rationale-slide[data-phase="baton"] .stand[data-stand="u2"] { border-color: var(--gray-900); }
 
     /* Phase 8 — services: WASM registry and cycles treasury */
-    .casals-box.casals-wasms, .cycles-tag { display: none; }
-    .rationale-slide[data-phase="services"] .casals-box.casals-wasms { display: block; border-width: 2px; border-color: var(--gray-900); }
+    .casals-box.casals-store, .cycles-tag { display: none; }
+    .rationale-slide[data-phase="services"] .casals-box.casals-store { display: block; border-width: 2px; border-color: var(--gray-900); }
     .rationale-slide[data-phase="services"] .casals-row { gap: 0.5rem; }
     .rationale-slide[data-phase="services"] .casals-box { padding: 0.4rem 0.7rem; }
     .rationale-slide[data-phase="services"] .casals-box-name { font-size: 0.86rem; white-space: nowrap; }
@@ -1191,13 +1191,13 @@ CSS = """
     .today-diagram .multisig-pill,
     .today-diagram .arrow-down,
     .today-diagram .casals-row,
-    .today-diagram .casals-box.casals-wasms,
+    .today-diagram .casals-box.casals-store,
     .today-diagram .orch-label,
     .today-diagram .sec-label,
     .today-diagram .stand-label { display: block; }
     .today-diagram .casals-row { display: flex; }
     .today-diagram .can.baton { display: inline-block; }
-    .today-diagram .casals-box.casals-wasms { border-style: solid; border-color: var(--gray-700); background: #fff; }
+    .today-diagram .casals-box.casals-store { border-style: solid; border-color: var(--gray-700); background: #fff; }
     .today-diagram .stand-label em { font-style: normal; font-weight: 700; color: var(--gray-900); }
     .today-diagram .sections { align-items: stretch; }
     .today-diagram .section {
@@ -1513,8 +1513,8 @@ class RationaleSlide(Slide):
                         <div class="casals-box-name">casals-frontend</div>
                         <div class="casals-box-note">the team's console</div>
                       </div>
-                      <div class="casals-box casals-wasms">
-                        <div class="casals-box-name">casals-wasms</div>
+                      <div class="casals-box casals-store">
+                        <div class="casals-box-name">casals-store</div>
                         <div class="casals-box-note">WASM registry · sha256</div>
                       </div>
                       <div class="commanders">
@@ -1693,7 +1693,7 @@ class TodaySlide(Slide):
                       <div class="today-h">How it uses Casals</div>
                       <ul class="bullets-hollow">
                         <li>The registry accepts a deploy; the <strong>installer</strong> asks the <strong>Casals conductor</strong>.</li>
-                        <li>The conductor creates the realm as a new <strong>stand</strong> in Deployments, streams the GOS build from <strong>casals-wasms</strong> and funds it from the treasury.</li>
+                        <li>The conductor creates the realm as a new <strong>stand</strong> in Deployments, streams the GOS build from <strong>casals-store</strong> and funds it from the treasury.</li>
                         <li>A new GOS release rolls out realm by realm; each realm's <strong>baton</strong> (Casals and the realm itself) must agree before the upgrade lands.</li>
                       </ul>
                     </div>
@@ -1703,7 +1703,7 @@ class TodaySlide(Slide):
                     <div class="arrow-down">↓</div>
                     <div class="casals-row">
                       <div class="casals-box"><div class="casals-box-name">casals-backend</div><div class="casals-box-note">conductor · treasury</div></div>
-                      <div class="casals-box casals-wasms"><div class="casals-box-name">casals-wasms</div><div class="casals-box-note">GOS builds</div></div>
+                      <div class="casals-box casals-store"><div class="casals-box-name">casals-store</div><div class="casals-box-note">GOS builds</div></div>
                     </div>
                     <div class="arrow-down">↓<span class="arrow-label">controls</span></div>
                     <div class="orchestra">

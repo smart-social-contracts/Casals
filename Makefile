@@ -1,8 +1,8 @@
-.PHONY: build build-backend build-templates build-orchestration cli test clean
+.PHONY: build build-backend build-templates build-orchestration cli test unit clean
 
 # Build the Basilisk conductor backend. icp-cli's prebuilt recipe then installs
 # the artifact from .basilisk/casals_backend/casals_backend.wasm (see icp.yaml).
-# The WASM store (casals-wasms) is a stock certified-assets canister from
+# The WASM store (casals-store) is a stock certified-assets canister from
 # seed/templates/, so there is nothing else to build for the core.
 build: build-backend
 
@@ -31,6 +31,36 @@ cli:
 
 test:
 	pytest -q
+
+# Replica-free suites; CI's backend unit job runs exactly this list.
+UNIT_TESTS = \
+	tests/test_unit.py \
+	tests/test_version_http.py \
+	tests/test_paid_ingress.py \
+	tests/test_private_reads.py \
+	tests/test_sheetv2.py \
+	tests/test_planner.py \
+	tests/test_access_code.py \
+	tests/test_control_rules.py \
+	tests/test_bundle.py \
+	tests/test_core_layout.py \
+	tests/test_release_bookkeeping.py \
+	tests/test_store_uploads.py \
+	tests/test_wasm_store.py \
+	tests/test_cli_wasm_store.py \
+	tests/test_wasm_types.py \
+	tests/test_ic_assets.py \
+	tests/test_destroy_orchestra.py \
+	tests/test_replica.py \
+	tests/test_meter.py \
+	tests/test_asset_permission_did.py \
+	tests/test_canister_calls.py \
+	tests/test_notification_settings.py \
+	tests/test_orchestra_tree_cache.py \
+	tests/test_sheet_monitor.py
+
+unit:
+	pytest -q $(PYTEST_ARGS) $(UNIT_TESTS)
 
 clean:
 	rm -rf .basilisk dist frontend/.svelte-kit frontend/node_modules \

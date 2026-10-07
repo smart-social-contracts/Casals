@@ -9,10 +9,6 @@
       "dns": {
         "provider": "none"
       },
-      "flags": {
-        "test_mode": true,
-        "ii_bypass": true
-      },
       "principals": {
         "operator": "$deployer"
       },
@@ -344,7 +340,6 @@
   ],
   "cycles": {
     "min_balance_tc": 0.5,
-    "top_up_from": "$self",
     "conductor_min_balance_tc": 2.0
   }
 }

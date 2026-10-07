@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="Casals logo" width="160" />
+  <img src="https://raw.githubusercontent.com/smart-social-contracts/Casals/main/frontend/static/logo.png" alt="Casals logo" width="160" />
 </p>
 
 # Casals
@@ -14,7 +14,7 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 > **Live demo** — https://demo.ic-casals.tech
 
-> **Design rationale** — [docs/philosophy](docs/philosophy/README.md) (why orchestra / sections / stands / conductor / baton)
+> **Design rationale** — [docs/philosophy](https://github.com/smart-social-contracts/Casals/blob/main/docs/philosophy/README.md) (why orchestra / sections / stands / conductor / baton)
 
 ---
 
@@ -34,28 +34,45 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 ## Key features
 
 - **Lifecycle** — create, chunked install/upgrade, snapshot, `module_hash` verification, all-or-nothing rollback across a stand.
-- **Sheets** — declare a whole orchestra in one JSON document; `deploy_sheet` idempotently brings it to life.
+- **Sheets** — declare a whole orchestra in one JSON document ([schema](https://github.com/smart-social-contracts/Casals/blob/main/docs/SHEET.md)); `casals up` builds it on day one and resumes where a failed run stopped.
 - **Canister pool** — reuses existing canisters before creating new ones (creation is expensive).
 - **Cycles management** — native treasury, per-section/stand/canister policy, optional on-chain autopilot, or an **off-chain monitor** (`casals-monitor`) that polls balances, runs auto top-ups, and serves the Cycles UI without burning conductor cycles on hourly samplers.
 - **Authorized WASMs** — ships with hello-world templates (Motoko, Rust, Basilisk, certified-assets frontend) plus orchestration templates (Baton, multisig); more added via governed list.
-- **Commanders & permissions** — multiple commanders per section/stand; granular permission keys for create, upgrade, subnet whitelist, and shell access.
-- **Frontend** — SvelteKit + Internet Identity (1-week delegation, no idle logout): Orchestra tree, Commanders, Orchestration consoles, sheet editor, cycles dashboard, WASM catalog, settings. Open the **☰ menu** (top-left) for app navigation.
+- **Commanders & permissions** — multiple commanders per section/stand; granular permission keys for create, upgrade, subnet whitelist, canister calls, and shell.
+- **Shell and browse** — optional. When a Basilisk canister is built with its `__shell__` / `__browse__` endpoints, the Inspect panel offers a shell and a file browser for it; otherwise the panel leaves them out.
+- **Frontend** — SvelteKit + Internet Identity (8-hour delegation, signed out after 30 minutes idle): Orchestra tree, Commanders, Orchestration consoles, sheet editor, cycles dashboard, WASM catalog, settings. Open the **☰ menu** (top-left) for app navigation.
+
+---
+
+## Who can read an orchestra
+
+A conductor answers its reads (`get_tree`, `get_sheet`, `get_events`, cycles, pool, plans) only to its IC controllers, its commanders (each sees the sections and stands it commands) and its enabled monitor. Anyone else gets the version and the orchestra name. The Baton and multisig canisters follow the same rule (a multisig's signer list stays public).
+
+To open an orchestra to everyone, as the public demo does, set it in the sheet:
+
+```json
+"environments": {
+  "production": { "network": "ic", "public_read": true }
+}
+```
+
+`casals up` carries the setting to the conductor, the multisig and every Baton.
 
 ---
 
 ## Off-chain cycle monitor
 
-For production deployments, cycle observation and auto top-ups can run in **[casals-monitor](https://github.com/smart-social-contracts/casals-monitor)** instead of on-chain timers.
+For production deployments, cycle observation and auto top-ups can run in **casals-monitor**, a hosted service, instead of on-chain timers.
 
 **Use the hosted monitor** (no account; your conductor's settings are the credential):
 
 1. In **Settings → Cycle operations**, choose **Off-chain monitor**, paste `https://service.ic-casals.tech` under **Hosted monitor service** and click **Use this service**. Casals reads the service's principal from `GET /v1/service` and fills in **Monitor service URL** (`<base>/v1/<this conductor's canister id>`) and **Monitor principal**.
 2. **Save.** Casals stores `monitor_enabled` / `monitor_principal` / `monitor_service_url` on-chain, grants the monitor read access to managed canisters (**Sync monitor access**: `status_visibility = allowed_viewers [monitor]`), then calls `POST /v1/instances` on the service, which verifies those settings and starts polling. The **Hosted monitor status** card shows state (`active` / `consent revoked` / `unreachable`), last poll and cadence; **Register / check status** re-runs the registration.
-3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h; the next **Sync monitor access** drops the viewer grant. Nothing else is needed.
+3. To leave, switch back to **On-chain** (or change the principal) and save: the service stops auto top-ups at its next pass and disables the instance after 24 h; the next **Sync monitor access** drops the viewer grant. If the sheet declares a `monitor` block (below), remove it too: a `casals up` that stores a changed sheet switches the monitor back on.
 
 **What the monitor can and cannot do.** Its principal is an *allowed viewer*, never a controller: it can read `canister_status`, ask the conductor to `top_up` orchestra canisters (the conductor ignores the requested amount and deposits exactly what its own cycle policy says — zero when the canister is not below policy, never below `treasury_reserve`) and trigger `convert_treasury_icp` (ICP already on the treasury → cycles on the same treasury, at most once per 10 minutes). It cannot install, stop, destroy or reconfigure anything, and `set_settings` refuses to list it as an extra controller. New canisters get the viewer grant at provisioning, while Casals still controls them; canisters already handed to a baton are reported as `skipped: not a controller` by `sync_controllers`; `casals up --sync-monitor` grants those too (below). The conductor's own SPA asset canister is read by the monitor only if its viewer list is set by the multisig (`CallCanister → update_settings`).
 
-A self-hosted `casals-monitor` works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
+A self-hosted monitor works the same way; its host must be added to `connect-src` in `frontend/static/.ic-assets.json5`, or you fill the two fields by hand.
 
 **Or declare it in the sheet**, so a fresh orchestra is watched from its first canister:
 
@@ -70,11 +87,11 @@ A self-hosted `casals-monitor` works the same way; its host must be added to `co
 }
 ```
 
-`url` is the service's base URL; the conductor appends `/v1/<its canister id>`. `casals up` hands the block to `set_sheet`, which switches the conductor to off-chain mode with these values before plan/apply creates anything, so every canister is provisioned with the viewer grant. When the block changes, or with `casals up --sync-monitor`, `up` also grants it on canisters the conductor no longer controls: it lends the conductor control of each one (as deployer, or through the multisig), runs `sync_controllers`, and puts the original controllers back. The canisters the deployer cannot reach are listed under `monitor_access.unreachable`. Registering with the service is still **Register / check status** in Settings (or `POST /v1/instances`).
+`url` is the service's base URL; the conductor appends `/v1/<its canister id>`. `casals up` hands the block to `set_sheet`, which switches the conductor to off-chain mode before plan/apply creates anything, so every canister is provisioned with the viewer grant. The block's URL and principal are a first default: once the conductor has a service URL (from an earlier deploy or from Settings) it keeps that one, so change them in Settings. When the block changes, or with `casals up --sync-monitor`, `up` also grants it on canisters the conductor no longer controls: it lends the conductor control of each one (as deployer, or through the multisig), runs `sync_controllers`, and puts the original controllers back. The canisters the deployer cannot reach are listed under `monitor_access.unreachable`. Registering with the service is still **Register / check status** in Settings (or `POST /v1/instances`).
 
 This disables on-chain balance sampling and autopilot on the conductor (`cycles_sampling: false`, `cycles_autopilot: false`) while the monitor paymaster tops up from the same Casals treasury. Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor sends operational notices (treasury cannot fund a top-up, monitor consent withdrawn, and later notices of the same kind) to those addresses. A legacy orchestra-wide address, if one was saved before this split, is included too.
 
-For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `monitor_url`, `monitor_principal`, `casals_backend`, `casals_frontend`).
+For scripted wiring, see [`scripts/examples/wire_monitor.py`](https://github.com/smart-social-contracts/Casals/blob/main/scripts/examples/wire_monitor.py) (JSON config with `monitor_url`, `monitor_principal`, `casals_backend`, `casals_frontend`).
 
 ---
 
@@ -82,7 +99,7 @@ For scripted wiring, see `scripts/examples/wire_monitor.py` (JSON config with `m
 
 - **`icp-cli`** for build & deploy (`icp.yaml`); dfx is not used.
 - **Basilisk** + `ic-basilisk-toolkit` for the backend.
-- **`casals-store`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it — and every frontend asset bundle (`docs/BUNDLES.md`). Upload from the CLI (`casals up`) or from the browser on `/files`.
+- **`casals-store`** — the WASM store: a [certified-assets](https://github.com/smart-social-contracts/certified-assets) canister (chunked batch upload, on-chain sha256, pinned directories) that `casals up` creates and seeds; every install streams from it — and every frontend asset bundle ([docs/BUNDLES.md](https://github.com/smart-social-contracts/Casals/blob/main/docs/BUNDLES.md)). Upload from the CLI (`casals up`) or from the browser on `/files`.
 
 ---
 
@@ -100,7 +117,7 @@ casals up hello-world --yes --local
 
 `casals up` prints a short step log (`[1/7]`, a clock time, and the address to open). The full log of that run is a file under `~/.casals/logs` (or `$CASALS_HOME/logs`). `--verbose` prints the full log on the terminal as well. `--json` prints the machine-readable result on stdout.
 
-In a checkout of this repo, the corpus sheets build the conductor from source instead (`pip install . -r requirements.txt`, plus `make` and Node/npm for the UI):
+In a checkout of this repo, the corpus sheets build the conductor from source instead (`pip install -e . -r requirements-dev.txt`, plus `make` and Node/npm for the UI):
 
 ```bash
 casals up tests/e2e/orchestras/minimal/casals.json --yes --local
@@ -114,7 +131,9 @@ icp network start -d
 casals -e local --identity local-dev up tests/e2e/orchestras/minimal/casals.json --yes
 ```
 
-`casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-store` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop (issue #52).
+`casals up <sheet>` is the day-one deploy path: it validates the sheet, builds and deploys the conductor and the `casals-store` store, uploads the referenced WASMs into it, and builds what the sheet declares (`set_sheet` → `plan` → `apply`). From then on the orchestra is operated imperatively — the UI, `casals upgrade`, `create_stand`, `upgrade_to`, … — with no on-chain reconciliation loop ([issue #52](https://github.com/smart-social-contracts/Casals/issues/52)).
+
+On mainnet, `casals up` stops when it finds no bindings for the environment (under `~/.casals`, or `$CASALS_HOME`) rather than create a second conductor. Point it at the live one with `--conductor <casals-backend id>`, or pass `--bootstrap` for a genuine first deploy.
 
 ### Why the sheet stops being the truth after day one
 
@@ -133,7 +152,7 @@ orchestra under shared governance satisfies none of those:
   wait days or never pass. A loop that treats that as failure blocks or nags
   forever; the right behaviour is to file a proposal and stop.
 - **The orchestra is itself an actor.** Stands minted at runtime, a tenant's
-  instance growing a canister (`sync: manual`, issue #51) — not drift, the system
+  instance growing a canister (`sync: manual`, [issue #51](https://github.com/smart-social-contracts/Casals/issues/51)) — not drift, the system
   working. This holds even with a single controller, so it is not only a
   consequence of decentralized control.
 
@@ -146,13 +165,13 @@ hand-edited and re-running `up` on a governed orchestra is the one way to get
 this wrong: it will plan to undo governance changes it knows nothing about.
 
 The full argument is the *genesis document* slide in
-[docs/philosophy](docs/philosophy/README.md).
+[docs/philosophy](https://github.com/smart-social-contracts/Casals/blob/main/docs/philosophy/README.md).
 
 Open **http://casals_frontend.local.localhost:8000/** — log in with Internet Identity using a principal listed on **Commanders** (or a Casals controller).
 
 ### Shipping this conductor
 
-`casals up` is day one. A later change to **this** repo's backend or UI is [`scripts/deploy.sh`](scripts/deploy.sh): it rebuilds what you name and ships it with a delegated session identity. The production YubiKey signs that session once ([docs/OPERATIONS.md](docs/OPERATIONS.md#hardware-keys-one-touch-per-run)); the deploy itself does not touch the key. With no `--identity` and no `$CASALS_IDENTITY`, the script uses the `prod-session*` delegation that expires last and skips an expired one.
+`casals up` is day one. A later change to **this** repo's backend or UI is [`scripts/deploy.sh`](https://github.com/smart-social-contracts/Casals/blob/main/scripts/deploy.sh): it rebuilds what you name and ships it with a delegated session identity. The production YubiKey signs that session once ([docs/OPERATIONS.md](https://github.com/smart-social-contracts/Casals/blob/main/docs/OPERATIONS.md#hardware-keys-one-touch-per-run)); the deploy itself does not touch the key. With no `--identity` and no `$CASALS_IDENTITY`, the script uses the `prod-session*` delegation that expires last and skips an expired one.
 
 ```bash
 scripts/deploy.sh                         # backend and frontend
@@ -170,7 +189,7 @@ The UI is uploaded to the wasm store and copied onto the Casals frontend in batc
 
 A backend install is a single call, so its slice of the bar moves when the call returns. The footer’s first timestamp is the git commit time; `deployed …` is the wall clock of the frontend build that was shipped.
 
-Do not add a new name to `from util import` in `src/main.py`. Basilisk can keep the previous `util` module across an upgrade and then trap `post_upgrade` on the missing export. Put the helper in `main.py` instead (see `_normalize_notification_email`).
+Contributing: [AGENTS.md](https://github.com/smart-social-contracts/Casals/blob/main/AGENTS.md) is the contributor guide (layout, tests, known quirks).
 
 ---
 
@@ -182,14 +201,14 @@ Install the `casals` command:
 pip install ic-casals
 ```
 
-Run from your project directory (where `icp.yaml` lives):
+Run from your project directory (where `casals.json` lives):
 
 ```bash
 casals status                                      # version + object counts
 casals tree                                        # Section → Stand → Canister tree
 casals events                                      # audit log
 casals wasms                                       # authorized WASM catalog
-casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle (docs/BUNDLES.md)
+casals bundle dist/ -o app-1.2.0.tgz               # pack a frontend build into a hashed bundle
 casals init hello-world                           # add the hello-world orchestra to casals.json
 casals up hello-world --yes --local                # day one, local replica
 casals upgrade sheet.json --wasm my-backend        # release: move every canister running that family to the new build
@@ -197,14 +216,12 @@ casals upgrade sheet.json --content my-frontend    # release: every frontend wit
 casals cycles                                      # treasury + per-canister balances
 casals pool                                        # canister pool
 casals export sheet.json                           # the sheet the conductor was built from + bindings
-casals new [-y]                                    # build, deploy, and seed (fresh canisters)
-casals new ids.json [-y]                           # deploy with existing canister IDs
-casals new -e ic --identity casals ids.json        # mainnet upgrade from ID map
+casals oracle sheet.json                           # check the live orchestra against the sheet
 
-casals -e ic --identity casals status              # mainnet, explicit identity
+casals -e production --identity my-key status      # a mainnet environment of the sheet, explicit identity
 ```
 
-All output is JSON. Errors go to stderr as `{"ok": false, "error": "..."}` with exit code 1.
+`-e` names an environment of the sheet; its `network` says where it runs. Read commands (`status`, `tree`, `events`, `wasms`, `cycles`, `pool`, `export`) print JSON. `up`, `plan`, `upgrade` and `oracle` print a step log or a table; `--json` gives the machine-readable result instead. Errors go to stderr as `{"ok": false, "error": "..."}` with exit code 1.
 
 Without installing, the same commands are available via:
 
@@ -234,7 +251,7 @@ JSON-in / JSON-out text endpoints. Returns `{"ok": true, …}` or `{"ok": false,
 | update | `top_up` / `reconcile` / `set_cycle_policy` | cycles management |
 | update | `sync_controllers` | sync monitor read access (`status_visibility` allowed viewer) on managed canisters |
 
-Full endpoint list: [AGENTS.md](AGENTS.md).
+Full endpoint list: [`casals_backend.did`](https://github.com/smart-social-contracts/Casals/blob/main/casals_backend.did).
 
 ---
 
@@ -256,4 +273,4 @@ Casals is in early development (alpha). It may contain bugs, breaking changes, a
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/smart-social-contracts/Casals/blob/main/LICENSE).

@@ -12,10 +12,6 @@
       "website_www_host": "",
       "demo_host": "",
       "demo_alias_host": "",
-      "flags": {
-        "test_mode": true,
-        "ii_bypass": true
-      },
       "principals": {
         "operator": "$deployer",
         "$comment": "local demo access-code slot: a checksum. The code must not be written in this file.",
@@ -28,7 +24,8 @@
     },
     "production": {
       "network": "ic",
-      "$comment": "operator is prod-identity (YubiKey). Deploy through an icp delegation from it (`prod-session`, docs/OPERATIONS.md, Hardware keys): the IC sees the same principal. DNS lives in the Cloudflare zone ic-casals.tech; the API token is read from $CLOUDFLARE_API_TOKEN, never written here. The CLI does not write Cloudflare records yet (`reconcile_domains` reports unverifiable): per host add, DNS only (grey cloud), CNAME <host> -> <host>.icp1.io, TXT _canister-id.<host> -> <canister id from bindings>, CNAME _acme-challenge.<host> -> _acme-challenge.<host>.icp2.io, then POST https://icp0.io/custom-domains/v1/<host>. Keep the service A records (service -> 195.15.214.37, the production monitor; service.staging -> 195.15.240.28, the staging monitor) and the MX/SPF rows.",
+      "$comment_public_read": "The public demo: anyone may read the orchestra. Other environments keep the private default.",
+      "public_read": true,
       "dns": {
         "provider": "cloudflare",
         "zone": "ic-casals.tech",
@@ -40,13 +37,12 @@
       "demo_host": "demo.ic-casals.tech",
       "demo_alias_host": "casals.ic-casals.tech",
       "monitor": {
-        "$comment": "Production monitor on casals-prod (GET https://service.ic-casals.tech/v1/service lists its principal).",
+        "$comment": "GET <url>/v1/service lists the monitor's principal.",
         "principal": "wdtda-uafrj-6down-pxxwi-emhpc-uivwv-zdi3c-szrq7-hxodh-wlvas-iqe",
         "url": "https://service.ic-casals.tech"
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "admin redeemed the previous access-code slot on 2026-10-05. The code is not written here.",
         "admin": "lubdh-3xlmm-xvrgd-dik3k-qwk42-jq7ja-p73py-xm2wx-qgies-gfre7-nae",
         "$comment_deployer": "Demo exception: the identity that ran casals up stays an IC controller of every canister. Listing the token here is what allows $deployer on production.",
         "deployer": "$deployer"
@@ -58,7 +54,6 @@
     },
     "staging": {
       "network": "ic",
-      "$comment": "operator is dev-identity (YubiKey), never the prod stick. Same DNS steps as production, in the same zone. Monitored by the staging monitor (https://service.staging.ic-casals.tech, mail subjects prefixed [TEST]).",
       "dns": {
         "provider": "cloudflare",
         "zone": "ic-casals.tech",
@@ -70,13 +65,12 @@
       "demo_host": "casals.staging.ic-casals.tech",
       "demo_alias_host": "",
       "monitor": {
-        "$comment": "Staging monitor on srv1; its mail subjects carry [TEST].",
+        "$comment": "The staging monitor; its mail subjects carry [TEST].",
         "principal": "x5a7t-3syrx-klefo-c6ohm-gw4qj-lnkre-xv4fo-lxzw3-mpvz2-j4wr2-vae",
         "url": "https://service.staging.ic-casals.tech"
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "admin redeemed the previous access-code slot on 2026-10-05. The code is not written here.",
         "admin": "p6fix-kizta-n2rj5-nibj2-b6wt7-zpjki-ktkll-ystdq-su7md-5kcoa-eae",
         "deployer": "$deployer"
       },
@@ -265,7 +259,6 @@
     {
       "name": "Website",
       "description": "Landing site served at ic-casals.tech (and www).",
-      "$comment": "The live orchestra was bootstrapped with this section named Public. `casals up` registers sections by name and never moves a stand, so rename it in place first (admin, one call): rename_section {\"section\": \"Public\", \"new_name\": \"Website\"} from the Casals UI or `icp canister call <casals-backend> rename_section`.",
       "stands": [
         {
           "name": "Website",
@@ -501,7 +494,6 @@
   ],
   "cycles": {
     "min_balance_tc": 0.5,
-    "top_up_from": "$self",
     "conductor_min_balance_tc": 2.0
   }
 }

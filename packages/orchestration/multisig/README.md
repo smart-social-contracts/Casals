@@ -1,12 +1,18 @@
 # Multisig
 
-Minimal n-of-m multisig canister. Sole IC controller and top commander of all Batons.
+Minimal n-of-m multisig canister (version 1.7.0). An IC controller of every
+Baton in the orchestra; Casals is the Batons' top commander.
+
+The canister takes no install argument. A controller calls
+`configure(signers, threshold, expiry_secs)` once; during `casals up` the
+conductor does this from the sheet's `governance.multisig` block, while it is
+still a controller. A second call returns `already configured`.
 
 ## Design choices
 
 - **Auto-execute on threshold** — when the nth approval arrives (including the proposer's implicit approval in `propose`), the action runs immediately. No separate `execute` call.
 - **Single threshold** — per-action-type thresholds deferred.
-- **Default proposal expiry** — constructor argument `proposal_expiry_secs` (suggest 7 days = 604800).
+- **Default proposal expiry** — the `expiry_secs` passed to `configure` (604800, 7 days, until then); `default_proposal_expiry_secs()` reads it.
 - **Execute failure ≠ reject** — failed actions land as `#failed` (audit `execute_failed`); signer `reject` stays `#rejected`.
 - **Destroy ops (v1.4)** — `DestroyCanisters` accepts many canister IDs plus the Casals treasury principal in one proposal. Approval executes, as the multisig (the sole platform controller): reinstall a tiny sweeper → `deposit_cycles` to `casals_backend` **before** `stop_canister` + `delete_canister` on `aaaaa-aa`. If the drain fails, the canister is left intact. IC `delete_canister` does not credit the caller; leftover cycles are burned if they are not drained first. There is no raw stop+delete path. Casals is never added as a controller.
 - **ApplySheet / CallCanister (v1.5)** — `ApplySheet` calls `casals_backend.apply` with `{"plan_hash","max_items","confirm_destructive"}` in a loop (cap 50) until `remaining == 0`, `failed != null`, `ok == false`, or the cap. `CallCanister` is a generic text→text IC call; replies land in `proposal.result` (4 KiB max). See `../README.md` for the exact apply JSON.

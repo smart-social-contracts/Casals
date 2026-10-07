@@ -20,7 +20,7 @@ runbook.
   in this repo (the CLI is `python -m casals_cli.main`; `casals` below means that).
 - An identity known to `icp`: `local-dev` for the local replica; on the IC, the
   YubiKey-backed deployer identity of the environment.
-- For product sheets (`../gos-as-a-service/casals.json`, `../realms/casals.json`)
+- For product sheets (`../gos-as-a-service/casals.json`, `../realms-gos/casals.json`)
   the product artifacts the sheet lists as `local:` must be built first; the
   recipes are the build steps of `gos-as-a-service/.github/workflows/gaas-e2e.yml`.
 
@@ -64,11 +64,13 @@ CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
 
 # product orchestra on another free port
 CASALS_HOME=~/casals-home-b \
-  ../realms/scripts/local_up.sh --gaas --replica-port=auto
+  ../realms-gos/scripts/local_up.sh --gaas --replica-port=auto
 ```
 
 `CASALS_REPLICA=1` is the same as `CASALS_REPLICA_PORT=auto`. Bindings stay
-under `CASALS_HOME`; replica state lives in `$CASALS_HOME/.replica`.
+under `CASALS_HOME`; replica state lives in `$CASALS_HOME/.replica`
+(`~/casals-home/.replica` when `CASALS_HOME` is unset; `CASALS_REPLICA_HOME`
+overrides both).
 `--down` / a harness teardown without `KEEP=1` stop only that replica.
 `python3 -m casals_cli.replica status|stop` inspects or kills it.
 
@@ -119,10 +121,12 @@ everything after, and canisters still see the hardware key's principal.
 icp identity delegation request prod-session > /tmp/prod-session.pub.pem
 
 # 2. the one touch: the hardware identity signs a delegation to that key
-printf '%s' "$DFX_HSM_PIN" > /tmp/pin && chmod 600 /tmp/pin
-icp identity delegation sign --identity prod-identity --identity-password-file /tmp/pin \
+#    (the PIN goes through a private temp file that is removed on exit)
+pin=$(umask 077; mktemp) && trap 'rm -f "$pin"' EXIT
+printf '%s' "$DFX_HSM_PIN" > "$pin"
+icp identity delegation sign --identity my-hsm-identity --identity-password-file "$pin" \
   --key-pem /tmp/prod-session.pub.pem --duration 2h > /tmp/prod-session.chain.json
-rm /tmp/pin
+rm -f "$pin"
 
 # 3. attach the chain; the session identity is now usable
 icp identity delegation use --from-json /tmp/prod-session.chain.json prod-session
@@ -205,7 +209,7 @@ Identity principal, declare the slot by the checksum of a secret code:
 ```bash
 casals code new
 # code:     K7MQ2-XTR4V-9BCDF-HJ3NP
-# checksum: sha256:9f86d0…
+# checksum: sha256:…
 ```
 
 Add the checksum under `environments.<env>.principals` (say `"new_operator"`),
@@ -271,7 +275,7 @@ realm wasm, new bundle) reaches the existing realms with
 
 ## Off-chain cycle monitor
 
-Balance checks and auto top-ups can run in [casals-monitor](https://github.com/smart-social-contracts/casals-monitor) instead of the conductor's timers. The hosted service is `https://service.ic-casals.tech` (staging: `https://service.staging.ic-casals.tech`). A self-hosted monitor works the same way; its origin has to be in `connect-src` in `frontend/static/.ic-assets.json5`, or the two fields below are filled by hand.
+Balance checks and auto top-ups can run in casals-monitor, a hosted service, instead of the conductor's timers. The hosted service is `https://service.ic-casals.tech` (staging: `https://service.staging.ic-casals.tech`). A self-hosted monitor works the same way; its origin has to be in `connect-src` in `frontend/static/.ic-assets.json5`, or the two fields below are filled by hand.
 
 In **Settings → Cycle operations**, choose **Off-chain monitor**, paste the service base URL, and click **Use this service**. The UI reads the principal from `GET /v1/service` and fills **Monitor service URL** (`<base>/v1/<this conductor>`) and **Monitor principal**. **Save** stores `monitor_enabled`, `monitor_principal`, and `monitor_service_url`, grants the monitor `status_visibility` on canisters the conductor still controls, and `POST`s `/v1/instances`. The status card shows `active`, `consent revoked`, or `unreachable`. **Register / check status** repeats that registration.
 
@@ -290,17 +294,17 @@ Declare it on a fresh orchestra so the first canisters are created with the gran
 }
 ```
 
-`url` is the service base; the conductor appends `/v1/<its canister id>`. `set_sheet` applies this only while the conductor has no monitor URL and principal yet. A later deploy keeps whatever Settings holds. Turning the monitor on also sets `cycles_sampling` and `cycles_autopilot` to false. Registering with the service is still **Register / check status** (or `POST /v1/instances`). Switching back to **On-chain** and saving stops top-ups on the monitor's next pass; the instance is disabled after 24 hours, and the next **Sync monitor access** drops the viewer grant.
+`url` is the service base; the conductor appends `/v1/<its canister id>`. The block's URL and principal are used only while the conductor has none yet; a later deploy keeps whatever Settings holds. The block itself is not a one-off: while it stays in the sheet, every `set_sheet` (a `casals up` with a changed sheet) switches off-chain mode back on, which also sets `cycles_sampling` and `cycles_autopilot` to false. Registering with the service is still **Register / check status** (or `POST /v1/instances`). Switching back to **On-chain** and saving stops top-ups on the monitor's next pass; the instance is disabled after 24 hours, and the next **Sync monitor access** drops the viewer grant. Remove the sheet's `monitor` block as well, or the next changed-sheet `up` turns the monitor back on.
 
 Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor mails operational notices (treasury cannot fund a top-up, consent withdrawn, and later notices of the same kind). `scripts/examples/wire_monitor.py` does the same wiring from a JSON config.
 
 ## Testing
 
 ```sh
-python tests/e2e/run_e2e.py                       # the corpus: 7 orchestras, 10 scenarios
+python tests/e2e/run_e2e.py                       # the corpus: 7 orchestras, 8 scenarios
 KEEP=1 python tests/e2e/run_e2e.py minimal        # one orchestra, left running to browse
-SCENARIOS=fresh,idempotent python tests/e2e/run_e2e.py ../realms/casals.json
-python -m pytest -q tests --ignore=tests/e2e      # unit tests, no replica
+SCENARIOS=fresh,idempotent python tests/e2e/run_e2e.py ../realms-gos/casals.json
+make unit                                         # unit tests, no replica
 ```
 
 The harness starts the replica if needed, funds `local-dev`, gives every

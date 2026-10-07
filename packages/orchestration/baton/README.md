@@ -1,6 +1,7 @@
 # Baton orchestrator
 
-Application-agnostic managed-canister upgrade orchestrator (Basilisk / Python).
+Application-agnostic managed-canister upgrade orchestrator (Basilisk / Python),
+version 1.6.0 (`BATON_VERSION` in `src/config.py`; `get_config` reports it).
 
 See [issue #9](https://github.com/smart-social-contracts/Casals/issues/9).
 
@@ -76,9 +77,9 @@ to pump a phase by hand, but only one executor runs a phase of an action at a
 time — a concurrent call (or a timer tick racing an operator) gets
 `action <id> is already in progress` and nothing is done twice. Arming a resume
 timer cancels the previous one, so a hand-pumped phase does not leave a second
-timer ticking next to its own. (1.5.1: before this guard two executors could
-run the UPGRADE step at once; the second found the chunk store the first one
-had already cleared and the action was reverted.)
+timer ticking next to its own. (Before 1.5.1 two executors could run the
+UPGRADE step at once; the second found the chunk store the first one had
+already cleared and the action was reverted.)
 
 ## Health probe contract
 

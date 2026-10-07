@@ -13,10 +13,8 @@ canister_ids.json
 .env
 frontend/static/local-network.json
 
-# icp-cli local replica cache (do NOT commit). The mainnet canister-ID
-# mappings live in .icp/data and MUST be kept, so they are re-included.
-/.icp/*
-!/.icp/data/
+# icp-cli state. Casals keeps canister ids in its bindings ($CASALS_HOME).
+/.icp/
 .venv-basilisk/
 
 # scripts/release.sh output (upload from the UI)

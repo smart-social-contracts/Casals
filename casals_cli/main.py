@@ -77,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
     up_p.add_argument("--max-items", type=int, default=5)
     up_p.add_argument("--bootstrap", action="store_true",
-                      help="production only: allow creating a brand-new conductor when no bindings exist")
+                      help="mainnet: allow creating a brand-new conductor when no bindings exist")
     up_p.add_argument("--sync-monitor", action="store_true",
                       help="re-grant the sheet's monitor read access on every canister, also those the "
                            "conductor does not control (lends it control, then restores the controllers)")

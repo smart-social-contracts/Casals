@@ -629,7 +629,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
             _validate_canister(block, path, errors, in_sections=False)
             _check_raw_principals(block, path, errors)
         if "wasms" in conductor:
-            errors.append("conductor.store was renamed to conductor.store")
+            errors.append("conductor.wasms was renamed to conductor.store")
         if isinstance(conductor.get("store"), dict) and (conductor["store"].get("kind") or "frontend") != "frontend":
             errors.append("conductor.store.kind must be frontend (a certified-assets canister)")
         for key in LEGACY_CONDUCTOR_KEYS:
