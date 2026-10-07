@@ -19,7 +19,7 @@ corpus under [`tests/e2e/orchestras/`](../tests/e2e/orchestras).
 | Key | Required | Meaning |
 |---|---|---|
 | `version` | yes | `2` |
-| `name` | no | The orchestra name (default: the file name). Bindings are saved as `$CASALS_HOME/<name>.<env>.json`. |
+| `name` | no | The orchestra name (default: the file name). Bindings are saved as `<name>.<env>.json` in `$CASALS_HOME` (default `~/.casals`). |
 | `description` | no | Shown in the UI when Settings has none. |
 | `environments` | yes | Non-empty object, one block per environment (below). |
 | `conductor` | yes | The conductor's three canisters and orchestra-wide commanders. |
