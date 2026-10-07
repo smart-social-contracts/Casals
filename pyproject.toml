@@ -37,19 +37,13 @@ Issues = "https://github.com/smart-social-contracts/Casals/issues"
 [project.scripts]
 casals = "casals_cli.main:main"
 
-# The CLI imports a few pure modules from src/ (sheetv2, access_code, auth,
-# ic_assets). Ship them as top-level modules so `pip install ic-casals` works
-# outside this checkout. Do not package the rest of src/ — that is the canister.
+# The CLI's shared modules from src/ go into casals_cli/_shared/ (setup.py).
+# Do not package the rest of src/ — that is the canister.
 [tool.setuptools]
 packages = ["casals_cli"]
-py-modules = ["sheetv2", "access_code", "auth", "ic_assets"]
 
 [tool.ruff.lint]
 select = ["F"]
 
 [tool.setuptools.package-data]
 casals_cli = ["examples/*.json"]
-
-[tool.setuptools.package-dir]
-"" = "src"
-casals_cli = "casals_cli"

@@ -84,7 +84,10 @@ Python API: `casals_cli.bundle` — `read_dir`, `read_tgz`, `write_tgz`,
   (`local:<dir>`, `local:<file>.tgz`, or an `https://` release URL) and may
   declare `sha256` — the *bundle* hash, an optional checksum: a source that
   hashes to anything else is refused. A canister row consumes it via
-  `"content": "<namespace>"`.
+  `"content": "<namespace>"`. A `local:` path must resolve inside the sheet's
+  directory or the Casals checkout; anything else needs its directory in
+  `CASALS_LOCAL_ROOTS` (`:`-separated), set by the operator. Downloads and
+  gunzipped data stop at 256 MiB.
 - **Store.** `casals up` step 4 (or the browser's *Upload bundle*) puts the
   files under `/<namespace>/<path>`. The store's namespace *is* a bundle: its
   hash is computed from its files.

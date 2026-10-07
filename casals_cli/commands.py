@@ -195,10 +195,9 @@ def cmd_destroy(ic, args) -> None:
     if not backend:
         raise RuntimeError("no conductor bindings for destroy (pass --conductor <backend id>)")
 
-    confirm = bool(getattr(args, "confirm_destructive", False))
+    if not getattr(args, "confirm_destructive", False):
+        raise RuntimeError("destroy deletes every canister of the orchestra; pass --confirm-destructive")
     destroy_all = bool(getattr(args, "all", False))
-    if destroy_all and not confirm:
-        raise RuntimeError("destroy --all requires --confirm-destructive")
 
     deployer = ic.deployer_principal()
     conductor = _conductor_canisters(ic, backend, bindings)
@@ -405,6 +404,8 @@ def cmd_code_new(args) -> None:
 
 def cmd_orchestra_destroy(ic, args) -> None:
     """Legacy orchestra destroy via conductor destroy_orchestra batches."""
+    if not getattr(args, "confirm_destructive", False):
+        raise RuntimeError("orchestra destroy deletes every canister not preserved; pass --confirm-destructive")
     backend, _ = _backend(args)
     preserve = list(args.preserve or [])
     destroyed = []

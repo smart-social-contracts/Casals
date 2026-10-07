@@ -1,6 +1,6 @@
-include LICENSE README.md pyproject.toml
+include LICENSE README.md pyproject.toml setup.py
 recursive-include casals_cli *.py
-include src/sheetv2.py src/access_code.py src/auth.py src/ic_assets.py
+include src/sheetv2.py src/access_code.py src/auth.py src/ic_assets.py src/commanders.py
 prune tests
 recursive-exclude * *.egg-info
 global-exclude *.pyc

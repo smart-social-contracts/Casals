@@ -422,7 +422,8 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
 - **Shipping.** `casals bundle dist/ -o app-1.2.0.tgz` writes a canonical
   gzip tarball (sorted entries, zeroed mtimes, `manifest.json` inside) and
   prints the bundle hash. A `registry.bundles` row's `source` may be a
-  directory, a `.tgz` (`local:`), an `https://` URL or `release:`; an optional
+  directory, a `.tgz` (`local:`, inside the sheet's directory or the checkout
+  unless `CASALS_LOCAL_ROOTS` lists another), an `https://` URL or `release:`; an optional
   `sha256` is the bundle hash, a checksum on the source (`casals bundle
   --verify` prints it; `up` / `upgrade` refuse a source that hashes differently).
 - **Day one.** The planner (`_plan_assets`) compares what the canister serves

@@ -36,13 +36,15 @@ jobs:
           python -m pip install --upgrade pip build twine
           python -m build
           twine check dist/*
+          python scripts/check_wheel.py dist/*.whl
 
       - name: Smoke-install the wheel
+        working-directory: ${{ runner.temp }}
         run: |
-          python -m venv /tmp/ic-casals-wheel
-          /tmp/ic-casals-wheel/bin/pip install dist/*.whl
-          /tmp/ic-casals-wheel/bin/casals -V
-          /tmp/ic-casals-wheel/bin/python -c "import casals_cli, sheetv2, access_code, auth, ic_assets; print('imports ok', casals_cli.__version__)"
+          python -m venv ic-casals-wheel
+          ic-casals-wheel/bin/pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          ic-casals-wheel/bin/casals -V
+          ic-casals-wheel/bin/python -c "import casals_cli, sheetv2, access_code, auth, ic_assets, commanders; print('imports ok', casals_cli.__version__)"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

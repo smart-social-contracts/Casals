@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import atexit
+import contextlib
 import json
 import os
 import re
@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 from casals_cli.replica import icp_project_args, network_url as replica_network_url, replica_home
 from casals_cli.util import candid_text_arg, parse_icp_output, run_icp_cmd
@@ -59,9 +59,6 @@ def is_transient_ic_error(text: str) -> bool:
     return any(m in t for m in _TRANSIENT_MARKERS)
 
 
-_PIN_FILES: list[str] = []
-
-
 def hsm_pin_hint(output: str) -> str | None:
     """How to feed icp a PIV PIN when it cannot prompt (stdout is captured).
 
@@ -88,36 +85,35 @@ def hsm_pin_hint(output: str) -> str | None:
     )
 
 
-def _hsm_pin_file() -> str | None:
-    """Path to a PIN file icp will accept, or None.
+def has_hsm_pin() -> bool:
+    return bool((os.environ.get("ICP_IDENTITY_PASSWORD_FILE") or "").strip() or os.environ.get("DFX_HSM_PIN"))
+
+
+@contextlib.contextmanager
+def hsm_pin_file() -> Iterator[str | None]:
+    """A PIN file for one icp call, or None.
 
     icp ignores ``DFX_HSM_PIN`` and cannot prompt when stdout is captured.
-    ``ICP_IDENTITY_PASSWORD_FILE`` is used as-is; otherwise a 0600 tempfile
-    is created from ``DFX_HSM_PIN`` for this process."""
+    ``ICP_IDENTITY_PASSWORD_FILE`` is used as-is; otherwise ``DFX_HSM_PIN``
+    goes into a 0600 temp file that is deleted as soon as the call returns."""
     explicit = (os.environ.get("ICP_IDENTITY_PASSWORD_FILE") or "").strip()
     if explicit:
-        return explicit
+        yield explicit
+        return
     pin = os.environ.get("DFX_HSM_PIN") or ""
     if not pin:
-        return None
-    tmp = tempfile.NamedTemporaryFile("w", prefix="casals-hsm-pin-", delete=False)
-    os.chmod(tmp.name, 0o600)
-    tmp.write(pin)
-    tmp.close()
-    _PIN_FILES.append(tmp.name)
-    return tmp.name
-
-
-def _cleanup_pin_files() -> None:
-    for path in _PIN_FILES:
+        yield None
+        return
+    fd, path = tempfile.mkstemp(prefix="casals-hsm-pin-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(pin)
+        yield path
+    finally:
         try:
             os.unlink(path)
         except OSError:
             pass
-    _PIN_FILES.clear()
-
-
-atexit.register(_cleanup_pin_files)
 
 
 class IcAccess(Protocol):
@@ -166,15 +162,14 @@ class IcClient:
         self.project_root = isolated or project_root or os.getcwd()
         self._agent = None
         # icp has no DFX_HSM_PIN: it prompts, and we capture stdout so that
-        # is "not a terminal". A PIN in the env (or a file) is written to a
-        # 0600 temp file and passed as --identity-password-file on every call.
-        self._pin_file = _hsm_pin_file()
+        # is "not a terminal". Each call gets the PIN as --identity-password-file
+        # (see `hsm_pin_file`).
 
     def _is_mainnet(self) -> bool:
         url = (self.network_url or "").rstrip("/")
         return url in (NETWORK_URLS["ic"].rstrip("/"), "https://ic0.app") or self.env in ("ic", "production")
 
-    def _base_flags(self, env: bool = True) -> list[str]:
+    def _base_flags(self, env: bool = True, pin_file: str | None = None) -> list[str]:
         # Mainnet: `-n ic`. A sheet env named `production` is not an icp
         # environment in this repo's icp.yaml (`-e production` fails).
         if not env:
@@ -185,8 +180,8 @@ class IcClient:
             flags = ["-e", self.env]
         if self.identity:
             flags += ["--identity", self.identity]
-        if self._pin_file:
-            flags += ["--identity-password-file", self._pin_file]
+        if pin_file:
+            flags += ["--identity-password-file", pin_file]
         return flags
 
     def _project_root_flag(self) -> list[str]:
@@ -201,23 +196,24 @@ class IcClient:
         """A hardware key signs every call and may want a touch; icp's own
         prompt is swallowed with its stdout, so say what is being signed
         (`CASALS_QUIET_SIGNING=1` silences it)."""
-        if not self._pin_file or os.environ.get("CASALS_QUIET_SIGNING") or argv[:2] == ["canister", "link"]:
+        if not has_hsm_pin() or os.environ.get("CASALS_QUIET_SIGNING") or argv[:2] == ["canister", "link"]:
             return
         what = " ".join(argv[:4]) if argv[:2] == ["canister", "call"] else " ".join(argv[:3])
         print(f"  signing {what} as {self.identity or 'default'}", file=sys.stderr, flush=True)
 
     def icp(self, argv: list[str], *, timeout: int = 300, check: bool = True, env: bool = True) -> subprocess.CompletedProcess[str]:
-        cmd = ["icp"] + argv + self._base_flags(env) + self._project_root_flag()
         attempts = TRANSIENT_ATTEMPTS if tuple(argv[:2]) in RETRYABLE_OPS else 1
         self._announce_signing(argv)
         for attempt in range(1, attempts + 1):
-            result = run_icp_cmd(
-                cmd,
-                cwd=self.project_root,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            with hsm_pin_file() as pin:
+                cmd = ["icp"] + argv + self._base_flags(env, pin) + self._project_root_flag()
+                result = run_icp_cmd(
+                    cmd,
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
             if result.returncode == 0 or not check:
                 return result
             if attempt < attempts and is_transient_ic_error(result.stderr + result.stdout):
@@ -375,16 +371,17 @@ class IcClient:
         flags = ["-e", self.env]
         if needs_identity and self.identity:
             flags += ["--identity", self.identity]
-        if needs_identity and self._pin_file:
-            flags += ["--identity-password-file", self._pin_file]
-        cmd = ["icp"] + argv + flags + ["--project-root-override", project_dir]
-        result = run_icp_cmd(
-            cmd,
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        with hsm_pin_file() as pin:
+            if needs_identity and pin:
+                flags += ["--identity-password-file", pin]
+            cmd = ["icp"] + argv + flags + ["--project-root-override", project_dir]
+            result = run_icp_cmd(
+                cmd,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
         if check and result.returncode != 0:
             raise RuntimeError(
                 f"icp {' '.join(argv)} failed (project={project_dir}):\n"

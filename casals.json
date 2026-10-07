@@ -169,7 +169,7 @@
     }
   ],
   "registry": {
-    "$comment": "Sources resolve from this checkout (the sheet's directory): templates under seed/, the conductor wasm by the CLI (build:). The landing site is ../casals-website/dist (run ../casals-website/scripts/build.sh first). A row's sha256 is an optional checksum on its source (mismatch is an error): the fixed seed templates carry one; the build: row and the website bundle, which change with every deploy, do not — `casals upgrade --content frontend/website/main` ships whatever the store holds.",
+    "$comment": "Sources resolve from this checkout (the sheet's directory): templates under seed/, the conductor wasm by the CLI (build:). The landing site is ../casals-website/dist (run ../casals-website/scripts/build.sh first, and export CASALS_LOCAL_ROOTS=../casals-website: a local: source outside this checkout is refused otherwise). A row's sha256 is an optional checksum on its source (mismatch is an error): the fixed seed templates carry one; the build: row and the website bundle, which change with every deploy, do not — `casals upgrade --content frontend/website/main` ships whatever the store holds.",
     "wasms": [
       {
         "family": "casals-backend",

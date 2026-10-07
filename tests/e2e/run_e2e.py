@@ -126,7 +126,9 @@ class Orchestra:
         # conductor; on a loaded local replica that alone can pass 30 min.
         # Capture stdout (the --json result) but inherit stderr so the plan
         # table and "applied …" lines show up instead of a 30-minute silence.
-        full_env = {**os.environ, "CASALS_HOME": self.home}
+        # `_absolutize_local_sources` points into the product checkout, which is
+        # neither the sheet copy's directory nor this checkout.
+        full_env = {**os.environ, "CASALS_HOME": self.home, "CASALS_LOCAL_ROOTS": self.sheet_dir}
         cmd = [sys.executable, "-m", "casals_cli.main", "--json", "-e", ENV, "--identity", IDENTITY, *args]
         res = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=None, text=True,

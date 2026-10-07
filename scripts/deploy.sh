@@ -5,14 +5,16 @@
 # session first (one touch, then the key can be unplugged) — key-ceremony
 # REFERENCE, "Short-lived delegation".
 #
-#   scripts/deploy.sh                                  # backend and frontend
-#   scripts/deploy.sh frontend                         # UI only
-#   scripts/deploy.sh backend                          # conductor wasm only
-#   scripts/deploy.sh --identity prod-session-20h frontend
+# `-e` names the sheet environment and is required:
+#
+#   scripts/deploy.sh -e production                    # backend and frontend
+#   scripts/deploy.sh -e staging frontend              # UI only
+#   scripts/deploy.sh -e production backend            # conductor wasm only
+#   scripts/deploy.sh -e production --identity prod-session-20h frontend
 #
 # With no --identity and no $CASALS_IDENTITY, the longest-lived unexpired
 # prod-session* delegation is used. An expired `prod-session` is skipped.
-#   scripts/deploy.sh --skip-build both                # ship the artifacts already built
+#   scripts/deploy.sh -e production --skip-build both  # ship the artifacts already built
 #
 # While the deploy is on mainnet the script keeps one status line current:
 #

@@ -41,7 +41,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--identity", default=None,
                    help="delegated session identity (default: $CASALS_IDENTITY, "
                         "or the prod-session* delegation that expires last)")
-    p.add_argument("-e", "--env", default="production", help="sheet environment (default: production)")
+    p.add_argument("-e", "--env", required=True,
+                   help="sheet environment, e.g. production or staging (no default: name the target)")
     p.add_argument("--sheet", default="casals.json", help="orchestra sheet (default: casals.json)")
     p.add_argument("--skip-build", action="store_true", help="deploy the wasm and dist already on disk")
     args = p.parse_args(argv)
@@ -166,7 +167,7 @@ def _install_backend(ic, root: str, env: str, sheet: str, meter: ProgressMeter) 
     bindings = load_bindings(sheet_name, env)
     backend_id = bindings.casals_backend_id if bindings else ""
     if not backend_id:
-        raise SystemExit(f"no production bindings for {sheet_name}/{env}; run casals up once before deploy.sh")
+        raise SystemExit(f"no bindings for {sheet_name}/{env}; run casals up once before deploy.sh")
     wasm_path = os.path.join(root, WASM_REL)
     if not os.path.isfile(wasm_path):
         raise SystemExit(f"no backend wasm at {wasm_path}; build it first")

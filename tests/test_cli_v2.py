@@ -282,6 +282,70 @@ class TestRegistry:
         got, d2 = resolve_source(f"local:{gz_path}", sheet_dir=str(tmp_path), project_root=REPO_ROOT)
         assert got == data and d2 == digest
 
+    def test_local_sources_stay_inside_the_sheet_dir_and_project(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CASALS_LOCAL_ROOTS", raising=False)
+        sheet_dir, project, outside = tmp_path / "sheet", tmp_path / "project", tmp_path / "home"
+        for d in (sheet_dir, project, outside):
+            d.mkdir()
+        (outside / "id_ed25519").write_bytes(b"secret")
+        (project / "t.wasm").write_bytes(b"\0asm")
+        (sheet_dir / "link.wasm").symlink_to(outside / "id_ed25519")
+        kw = {"sheet_dir": str(sheet_dir), "project_root": str(project)}
+
+        assert resolve_source("local:t.wasm", **kw)[0] == b"\0asm"
+        assert resolve_source(f"local:{project / 't.wasm'}", **kw)[0] == b"\0asm"
+        for src in (f"local:{outside / 'id_ed25519'}", "local:../home/id_ed25519", "local:link.wasm"):
+            with pytest.raises(ValueError, match="outside the sheet's directory"):
+                resolve_source(src, **kw)
+
+        monkeypatch.setenv("CASALS_LOCAL_ROOTS", str(outside))
+        assert resolve_source("local:../home/id_ed25519", **kw)[0] == b"secret"
+
+    def test_local_bundles_stay_inside_too(self, tmp_path, monkeypatch):
+        from casals_cli.registry import resolve_bundle
+
+        monkeypatch.delenv("CASALS_LOCAL_ROOTS", raising=False)
+        site = tmp_path / "sibling" / "dist"
+        site.mkdir(parents=True)
+        (site / "index.html").write_bytes(b"<p>hi</p>")
+        sheet_dir = tmp_path / "Casals"
+        sheet_dir.mkdir()
+        kw = {"sheet_dir": str(sheet_dir), "project_root": str(sheet_dir)}
+        with pytest.raises(ValueError, match="CASALS_LOCAL_ROOTS"):
+            resolve_bundle("local:../sibling/dist", **kw)
+        monkeypatch.setenv("CASALS_LOCAL_ROOTS", str(tmp_path / "sibling"))
+        assert resolve_bundle("local:../sibling/dist", **kw) == {"index.html": b"<p>hi</p>"}
+
+    def test_gunzip_and_downloads_are_capped(self, monkeypatch):
+        from casals_cli import registry
+        from casals_cli.util import gunzip
+
+        bomb = gzip.compress(b"\0" * 4096)
+        assert gunzip(bomb, limit=4096) == b"\0" * 4096
+        with pytest.raises(ValueError, match="inflates past"):
+            gunzip(bomb, limit=4095)
+
+        class Resp:
+            def __init__(self, body, length=None):
+                self.body, self.headers = body, {"Content-Length": length} if length else {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, n=-1):
+                return self.body[:n] if n >= 0 else self.body
+
+        monkeypatch.setattr(registry.urllib.request, "urlopen", lambda *_a, **_k: Resp(b"x" * 11))
+        assert registry._http_get("https://example.test/a", limit=11) == b"x" * 11
+        with pytest.raises(RuntimeError, match="larger than the 10-byte limit"):
+            registry._http_get("https://example.test/a", limit=10)
+        monkeypatch.setattr(registry.urllib.request, "urlopen", lambda *_a, **_k: Resp(b"", "999"))
+        with pytest.raises(RuntimeError, match="999 bytes"):
+            registry._http_get("https://example.test/a", limit=10)
+
     def test_sha256_mismatch_raises(self, tmp_path):
         data = b"hello-wasm"
         path = tmp_path / "t.wasm"
@@ -1169,28 +1233,53 @@ class TestIcClientNetwork:
         assert ic._base_flags(env=False)[:1] != ["-n"]
 
     def test_hsm_pin_becomes_a_password_file(self, tmp_path, monkeypatch):
-        from casals_cli.ic import _cleanup_pin_files, _hsm_pin_file
+        from casals_cli.ic import hsm_pin_file
 
         monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE", raising=False)
         monkeypatch.delenv("DFX_HSM_PIN", raising=False)
-        assert _hsm_pin_file() is None
+        with hsm_pin_file() as pin:
+            assert pin is None
 
         given = tmp_path / "pin"
         given.write_text("from-file")
         monkeypatch.setenv("ICP_IDENTITY_PASSWORD_FILE", str(given))
-        assert _hsm_pin_file() == str(given)
+        with hsm_pin_file() as pin:
+            assert pin == str(given)
+        assert given.exists(), "a file the operator supplied is never deleted"
 
         monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE")
         monkeypatch.setenv("DFX_HSM_PIN", "221000")
-        path = _hsm_pin_file()
-        assert path and os.path.isfile(path)
-        assert oct(os.stat(path).st_mode & 0o777) == "0o600"
-        assert open(path).read() == "221000"
-        _cleanup_pin_files()
+        with hsm_pin_file() as path:
+            assert path and os.path.isfile(path)
+            assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+            assert open(path).read() == "221000"
         assert not os.path.exists(path)
 
         ic = IcClient(env="production", identity="hsm-deployer")
-        assert "--identity-password-file" in ic._base_flags()
+        assert "--identity-password-file" in ic._base_flags(pin_file="/tmp/x")
+
+    def test_each_icp_call_gets_its_own_pin_file(self, monkeypatch):
+        import subprocess
+
+        import casals_cli.ic as icmod
+
+        monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE", raising=False)
+        monkeypatch.setenv("DFX_HSM_PIN", "221000")
+        monkeypatch.setenv("CASALS_QUIET_SIGNING", "1")
+        seen = []
+
+        def fake_run(cmd, **_kw):
+            path = cmd[cmd.index("--identity-password-file") + 1]
+            seen.append((path, os.path.isfile(path)))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(icmod, "run_icp_cmd", fake_run)
+        ic = IcClient(env="production", identity="hsm-deployer")
+        ic.icp(["canister", "status", "aaaaa-aa"])
+        ic.icp_project("/tmp", ["canister", "status", "aaaaa-aa"])
+        assert [exists for _, exists in seen] == [True, True]
+        assert seen[0][0] != seen[1][0]
+        assert not any(os.path.exists(p) for p, _ in seen)
 
     def test_hsm_pin_error_tells_the_export(self, monkeypatch):
         from casals_cli.ic import hsm_pin_hint
@@ -1490,15 +1579,17 @@ class TestProductionGuards:
             run_up(ic, str(sheet_path), "production", yes=True, project_root=REPO_ROOT)
         assert not [c for c in ic.calls if c[0] == "call_update"]  # nothing touched the network
 
-    def test_signing_line_names_the_call_when_a_pin_file_is_set(self, capsys):
+    def test_signing_line_names_the_call_when_a_pin_file_is_set(self, capsys, monkeypatch):
+        monkeypatch.delenv("CASALS_QUIET_SIGNING", raising=False)
+        monkeypatch.delenv("ICP_IDENTITY_PASSWORD_FILE", raising=False)
+        monkeypatch.setenv("DFX_HSM_PIN", "221000")
         client = IcClient.__new__(IcClient)
-        client._pin_file = "/tmp/pin"
         client.identity = "prod-identity"
         client._announce_signing(["canister", "call", "aaaaa-aa", "set_sheet", "--args-file", "x"])
         client._announce_signing(["canister", "link", "x", "y"])
         err = capsys.readouterr().err
         assert err == "  signing canister call aaaaa-aa set_sheet as prod-identity\n"
-        client._pin_file = None
+        monkeypatch.delenv("DFX_HSM_PIN")
         client._announce_signing(["canister", "call", "aaaaa-aa", "plan"])
         assert capsys.readouterr().err == ""
 
@@ -1572,3 +1663,31 @@ class TestLocalAssetPolicy:
         deployed = (tmp_path / "proj" / "casals_frontend_dist" / ".ic-assets.json5").read_text()
         assert ("http://localhost:*" in deployed) is local
         assert (dist / ".ic-assets.json5").read_text() == self.POLICY
+
+
+class TestDestroyNeedsConfirmation:
+    def test_destroy_refuses_without_confirm_destructive(self):
+        from argparse import Namespace
+        from casals_cli.commands import cmd_destroy
+
+        ic = RecordingIc()
+        args = Namespace(env="local", sheet_name="", conductor="backend-id", confirm_destructive=False, all=False)
+        with pytest.raises(RuntimeError, match="--confirm-destructive"):
+            cmd_destroy(ic, args)
+        assert not [c for c in ic.calls if c[0] in ("call_update", "delete_canister")]
+
+    def test_orchestra_destroy_refuses_without_confirm_destructive(self):
+        from argparse import Namespace
+        from casals_cli.commands import cmd_orchestra_destroy
+
+        ic = RecordingIc()
+        args = Namespace(env="local", conductor="backend-id", preserve=["keep"], batch=1, confirm_destructive=False)
+        with pytest.raises(RuntimeError, match="--confirm-destructive"):
+            cmd_orchestra_destroy(ic, args)
+        assert not ic.calls
+
+    def test_both_destroy_commands_take_the_flag(self):
+        parser = _build_parser()
+        assert parser.parse_args(["destroy", "--confirm-destructive"]).confirm_destructive is True
+        od = parser.parse_args(["orchestra", "destroy", "--preserve", "x", "--confirm-destructive"])
+        assert od.confirm_destructive is True

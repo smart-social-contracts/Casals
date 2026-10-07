@@ -130,6 +130,41 @@ class TestMissingIcpCli:
         assert "npm" not in str(caught.value)
 
 
+def _fake_wheel(path, files: dict[str, bytes]) -> str:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("ic_casals-0.0.0.dist-info/METADATA", "")
+        for name, data in files.items():
+            z.writestr(name, data)
+    return str(path)
+
+
+def test_check_wheel_wants_exact_copies_of_everything_the_cli_imports(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_wheel", os.path.join(REPO_ROOT, "scripts", "check_wheel.py"))
+    cw = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cw)
+    src = {n: open(os.path.join(REPO_ROOT, "src", f"{n}.py"), "rb").read()
+           for n in ("sheetv2", "access_code", "auth", "ic_assets", "commanders")}
+    shared = {f"casals_cli/_shared/{n}.py": data for n, data in src.items()}
+    cli = {"casals_cli/oracle.py": b"from sheetv2 import validate\n"}
+
+    assert cw.check(_fake_wheel(tmp_path / "ok.whl", {**cli, **shared})) == []
+
+    no_commanders = {k: v for k, v in shared.items() if "commanders" not in k}
+    assert cw.check(_fake_wheel(tmp_path / "a.whl", {**cli, **no_commanders})) == [
+        "imported from src/ but not in casals_cli/_shared/: commanders"]  # sheetv2 imports it lazily
+
+    stale = {**shared, "casals_cli/_shared/auth.py": b"# old\n"}
+    assert cw.check(_fake_wheel(tmp_path / "b.whl", {**cli, **stale})) == [
+        "casals_cli/_shared/auth.py differs from src/auth.py"]
+
+    assert cw.check(_fake_wheel(tmp_path / "c.whl", {**cli, **shared, "sheetv2.py": src["sheetv2"]})) == [
+        "installed outside casals_cli/: sheetv2.py"]
+
+
 class TestOrchestraRefs:
     """`$orchestra:<sheet>/<canister>` under environments.<env> becomes that
     canister's id in the other orchestra's same environment."""

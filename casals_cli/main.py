@@ -164,6 +164,7 @@ def _build_parser() -> argparse.ArgumentParser:
     od = orch_sub.add_parser("destroy", help="destroy via conductor destroy_orchestra")
     od.add_argument("--preserve", action="append", required=True)
     od.add_argument("--batch", type=int, default=1)
+    od.add_argument("--confirm-destructive", action="store_true")
 
     return ap
 

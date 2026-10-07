@@ -28,6 +28,8 @@ from typing import Iterable
 
 from sheetv2 import BUNDLE_MANIFEST, bundle_hash as _shared_bundle_hash
 
+from casals_cli.util import gunzip
+
 FORMAT = "casals-bundle/1"
 MANIFEST_NAME = BUNDLE_MANIFEST
 INDEX = "index.html"
@@ -160,7 +162,7 @@ def read_tgz(data: bytes) -> tuple[dict[str, bytes], dict | None]:
     hash disagrees with it — a tampered or mis-packed bundle fails here, not
     in a canister."""
     if data[:2] == b"\x1f\x8b":
-        data = gzip.decompress(data)
+        data = gunzip(data)
     files: dict[str, bytes] = {}
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
         for member in tar:

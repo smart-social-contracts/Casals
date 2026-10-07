@@ -46,15 +46,23 @@ def test_finish_fills_the_bar():
 
 
 def test_parse_targets():
-    both = parse_args([])
+    both = parse_args(["-e", "production"])
     assert both.backend and both.frontend
     assert both.identity is None
-    fe = parse_args(["frontend", "--identity", "prod-session-20h", "--skip-build"])
+    assert both.env == "production"
+    fe = parse_args(["-e", "staging", "frontend", "--identity", "prod-session-20h", "--skip-build"])
     assert fe.frontend and not fe.backend
     assert fe.identity == "prod-session-20h"
     assert fe.skip_build
-    be = parse_args(["backend"])
+    be = parse_args(["backend", "-e", "production"])
     assert be.backend and not be.frontend
+
+
+def test_the_environment_must_be_named():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        parse_args(["frontend"])
 
 
 def test_pick_live_session_skips_expired():

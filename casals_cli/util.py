@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import subprocess
 import sys
@@ -9,6 +11,18 @@ from typing import Any
 
 # Official install docs — do not embed a command here; the repo is the source.
 ICP_CLI_REPO = "https://github.com/dfinity/icp-cli"
+
+# A downloaded, read or inflated wasm or bundle; the IC's own wasm limit is 100 MiB.
+MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+
+
+def gunzip(data: bytes, limit: int = MAX_ARTIFACT_BYTES) -> bytes:
+    """``gzip.decompress`` that refuses to inflate past ``limit`` bytes."""
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as g:
+        out = g.read(limit + 1)
+    if len(out) > limit:
+        raise ValueError(f"gzip data inflates past the {limit}-byte limit")
+    return out
 
 
 def missing_icp_cli_message() -> str:

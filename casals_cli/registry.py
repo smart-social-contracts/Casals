@@ -9,7 +9,6 @@ conductor's install path (``src/wasm_store.py``) reads."""
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import mimetypes
 import os
@@ -23,8 +22,10 @@ from dataclasses import dataclass
 
 from casals_cli import bundle as _bundle
 from casals_cli import wasm_store as _store
+from casals_cli.util import MAX_ARTIFACT_BYTES, gunzip
 
 CHUNK_BYTES = 1024 * 1024
+LOCAL_ROOTS_ENV = "CASALS_LOCAL_ROOTS"
 RELEASE_RE = re.compile(r"^release:([^/]+)/([^@]+)@([^:]+):(.+)$")
 
 BUILD_TARGETS = {
@@ -68,21 +69,18 @@ def resolve_source(
     data: bytes
 
     if src.startswith("local:"):
-        rel = src[6:]
-        # Relative paths resolve against the sheet's directory, then the project root.
-        candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
-        path = next((c for c in candidates if os.path.isfile(c)), None)
-        if path is None:
-            raise FileNotFoundError(f"local source not found: {' or '.join(candidates)}")
+        path = local_source_path(src[6:], sheet_dir=sheet_dir, project_root=project_root)
+        if os.path.getsize(path) > MAX_ARTIFACT_BYTES:
+            raise ValueError(f"local source {path} is larger than {MAX_ARTIFACT_BYTES} bytes")
         with open(path, "rb") as f:
             raw = f.read()
-        data = gzip.decompress(raw) if path.endswith(".gz") else raw
+        data = gunzip(raw) if path.endswith(".gz") else raw
     elif src.startswith("build:"):
         canister = src[6:].strip()
         data = _build_canister_artifact(canister, project_root)
     elif src.startswith("https://") or src.startswith("http://"):
         raw = _http_get(src)
-        data = gzip.decompress(raw) if src.endswith(".gz") else raw
+        data = gunzip(raw) if src.endswith(".gz") else raw
     elif src.startswith("release:"):
         data = _download_github_release(src)
     else:
@@ -95,6 +93,30 @@ def resolve_source(
         )
     return data, digest
 
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def local_source_path(rel: str, *, sheet_dir: str, project_root: str, what: str = "local source",
+                      exists=os.path.isfile) -> str:
+    """The file a ``local:`` source names. Relative paths resolve against the
+    sheet's directory, then the project root, and the result (symlinks
+    resolved) must lie inside one of them or a directory the operator lists
+    in ``CASALS_LOCAL_ROOTS``: a sheet cannot pick files off the rest of the disk."""
+    candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
+    found = [c for c in candidates if exists(c)]
+    if not found:
+        raise FileNotFoundError(f"{what} not found: {' or '.join(candidates)}")
+    extra = [p for p in (os.environ.get(LOCAL_ROOTS_ENV) or "").split(os.pathsep) if p.strip()]
+    roots = [os.path.realpath(r) for r in (sheet_dir, project_root, *extra)]
+    for path in found:
+        if any(_inside(os.path.realpath(path), r) for r in roots):
+            return path
+    raise ValueError(
+        f"{what} {rel!r} resolves outside the sheet's directory and the project "
+        f"({roots[0]}, {roots[1]}); add its directory to {LOCAL_ROOTS_ENV} to allow it"
+    )
 
 def _newest_mtime(paths: list[str]) -> float:
     newest = 0.0
@@ -142,22 +164,29 @@ def release_asset_url(source: str) -> str:
     return f"https://github.com/{owner}/{repo}/releases/download/{tag}/{asset}"
 
 
-def _http_get(url: str) -> bytes:
-    """GET ``url``. A failure names the URL; urllib's own error does not."""
+def _http_get(url: str, limit: int | None = None) -> bytes:
+    """GET ``url``, at most ``limit`` bytes. A failure names the URL; urllib's own error does not."""
+    limit = MAX_ARTIFACT_BYTES if limit is None else limit
     try:
         with urllib.request.urlopen(url, timeout=120) as resp:
-            return resp.read()
+            length = resp.headers.get("Content-Length") or ""
+            if length.isdigit() and int(length) > limit:
+                raise RuntimeError(f"{url} is {length} bytes, more than the {limit}-byte limit")
+            data = resp.read(limit + 1)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"could not retrieve {url}: HTTP {exc.code} {exc.reason}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not retrieve {url}: {exc.reason}") from exc
+    if len(data) > limit:
+        raise RuntimeError(f"{url} is larger than the {limit}-byte limit")
+    return data
 
 
 def _download_github_release(source: str) -> bytes:
     url = release_asset_url(source)
     asset = url.rsplit("/", 1)[-1]
     raw = _http_get(url)
-    return gzip.decompress(raw) if asset.endswith(".gz") else raw
+    return gunzip(raw) if asset.endswith(".gz") else raw
 
 
 def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[str, bytes]:
@@ -167,11 +196,8 @@ def resolve_bundle(source: str, *, sheet_dir: str, project_root: str) -> dict[st
     files are errors here, before anything reaches the store."""
     src = (source or "").strip()
     if src.startswith("local:"):
-        rel = src[6:]
-        candidates = [rel] if os.path.isabs(rel) else [os.path.join(sheet_dir, rel), os.path.join(project_root, rel)]
-        path = next((c for c in candidates if os.path.exists(c)), None)
-        if path is None:
-            raise FileNotFoundError(f"bundle source not found: {' or '.join(candidates)}")
+        path = local_source_path(src[6:], sheet_dir=sheet_dir, project_root=project_root,
+                                 what="bundle source", exists=os.path.exists)
         return _bundle.read_bundle(path)
     if src.startswith("https://") or src.startswith("http://"):
         return _bundle.read_tgz(_http_get(src))[0]

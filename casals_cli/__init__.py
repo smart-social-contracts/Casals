@@ -10,8 +10,10 @@ __version__ = "0.6.0"
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _SRC = os.path.join(_ROOT, "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+# A checkout imports sheetv2 & co. from src/; a wheel carries copies (setup.py).
+_SHARED = _SRC if os.path.isfile(os.path.join(_SRC, "sheetv2.py")) else os.path.join(os.path.dirname(__file__), "_shared")
+if _SHARED not in sys.path:
+    sys.path.insert(0, _SHARED)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 

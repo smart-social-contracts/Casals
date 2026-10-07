@@ -31,6 +31,11 @@ jobs:
           pip install ruff==0.14.6
           ruff check casals_cli src scripts packages/orchestration/baton/src tests
 
+      - name: The wheel ships src/ copies under casals_cli/_shared only
+        run: |
+          python -m pip wheel --no-deps -q -w "$RUNNER_TEMP/wheel" .
+          python scripts/check_wheel.py "$RUNNER_TEMP"/wheel/ic_casals-*.whl
+
   backend-unit:
     name: Backend unit tests
     runs-on: ubuntu-latest
