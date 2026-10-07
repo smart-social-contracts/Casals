@@ -580,6 +580,24 @@ class TestBatonV160Hardening:
             ok(call(baton_id, "set_config", json.dumps({"public_read": False})))
         assert call(baton_id, "list_actions", identity="baton-outsider").get("ok") is False
 
+    def test_readers_see_a_private_baton(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        reader = ensure_identity("baton-reader")
+        try:
+            assert call(baton_id, "list_commanders", identity="baton-reader").get("ok") is False
+            ok(call(baton_id, "set_config", json.dumps({"readers": [reader]})))
+            assert call(baton_id, "get_config", identity="baton-reader")["readers"] == [reader]
+            for method, arg in self.READS:
+                res = call(baton_id, method, arg, identity="baton-reader")
+                assert not (isinstance(res, dict) and "unauthorized" in res.get("error", "")), (method, res)
+            res = call(baton_id, "set_config", json.dumps({"readers": []}), identity="baton-reader")
+            assert res.get("ok") is False and "top commander" in res.get("error", ""), res
+        finally:
+            ok(call(baton_id, "set_config", json.dumps({"readers": []})))
+        assert call(baton_id, "list_commanders", identity="baton-reader").get("ok") is False
+        res = call(baton_id, "set_config", json.dumps({"readers": "everyone"}))
+        assert res.get("ok") is False and "readers must be a list" in res.get("error", ""), res
+
     def test_public_read_must_be_a_boolean(self, baton_env):
         res = call(baton_env["baton_id"], "set_config", json.dumps({"public_read": "yes"}))
         assert res.get("ok") is False and "true or false" in res.get("error", ""), res

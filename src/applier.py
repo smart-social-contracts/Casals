@@ -277,7 +277,7 @@ def _execute_item(item: dict, sheet: dict, env: str = ""):
         yield from _configure_baton_gen(
             baton_st, commanders=desired.get("commanders"),
             approval_policy={"threshold": int(desired.get("threshold") or 1)},
-            remove=stale, public_read=desired.get("public_read"),
+            remove=stale, public_read=desired.get("public_read"), readers=desired.get("readers"),
         )
         return
     if kind == "upgrade_via_baton":

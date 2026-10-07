@@ -234,7 +234,9 @@ from sheet_api import (
     record_wasm_release,
     set_sheet_impl,
 )
-from sheet_storage import get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc, store_sheet_doc
+from sheet_storage import (
+    get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc, sheet_deployer, store_sheet_doc,
+)
 from live_state import _asset_encodings_gen
 from planner import desired_assets
 
@@ -1501,7 +1503,8 @@ def set_section_arrangement(args: text) -> text:
         if not sheet:
             return _err("no sheet stored")
         updated = replace_section_arrangement(sheet, name, params.get("arrangements"))
-        sh = store_sheet_doc(updated, env, _caller())
+        # The editor may be a section commander; `$deployer` stays whoever set the sheet.
+        sh = store_sheet_doc(updated, env, sheet_deployer())
         _append_event("arrangement_set", "", {"section": name, "sheet_hash": sh})
         saved = next(s for s in updated["sections"] if s.get("name") == name)
         block = saved.get("arrangements")

@@ -198,7 +198,7 @@
         "family": "orchestration-baton",
         "version": "1.6.0",
         "source": "local:seed/templates/orchestration-baton@1.6.0.wasm.gz",
-        "sha256": "6d4a471d0f0ed4c1664ed96dfd0e89125ac4d4c5ca9821b06264343789f3990d"
+        "sha256": "76dc936cca49b6931467397fd5cd760bb47992fef3e702da596db725a277aeb9"
       },
       {
         "family": "hello-world-motoko",

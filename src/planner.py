@@ -546,10 +546,13 @@ class _PlanContext:
         live_threshold = int((live_config.get("upgrade_approval_policy") or {}).get("threshold") or 0)
         current = {"commanders": live_cmd, "threshold": live_threshold}
         desired = {"commanders": desired_cmd, "threshold": desired_threshold}
-        # Batons before 1.6.0 have no public_read; their state is always public.
+        # Batons before 1.6.0 have no public_read or readers; their state is always public.
         if "public_read" in live_config:
             current["public_read"] = bool(live_config.get("public_read"))
             desired["public_read"] = env_public_read(self.sheet, self.env)
+        if "readers" in live_config:
+            current["readers"] = sorted(live_config.get("readers") or [])
+            desired["readers"] = sorted(self.live_state.get("baton_readers") or [])
         if current != desired:
             self.add(
                 "configure_baton",

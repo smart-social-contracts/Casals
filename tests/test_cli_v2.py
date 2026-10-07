@@ -1594,6 +1594,26 @@ class TestProductionGuards:
         assert capsys.readouterr().err == ""
 
 
+class TestOracleBatonReads:
+    def test_a_refused_baton_read_says_so(self):
+        """A private baton answers {ok: false} to a non-reader; the oracle names
+        that instead of reporting an empty commander list as drift."""
+        from sheetv2 import canister_names
+
+        sheet = json.load(open(TestProductionGuards.BATON))
+        bindings = {n: f"id-{n}" for n in canister_names(sheet)}
+        bindings["casals-backend"] = "backend-id"
+        ic = RecordingIc()
+        ic.candid.update(FakeAssetStore().handlers())
+        refusal = {"ok": False, "error": "unauthorized: this baton is readable by its commanders and controllers only"}
+        for m in ("get_config", "list_commanders", "list_managed_canisters"):
+            ic.queries[(bindings["rust-baton"], m)] = refusal
+        rows = [r for r in run_oracle(sheet, "local", bindings, ic).rows
+                if r.canister == "rust-baton" and r.field.startswith("baton")]
+        assert [(r.field, r.result) for r in rows] == [("baton", "FAIL")]
+        assert "refused the read: unauthorized" in rows[0].detail
+
+
 class TestMultisigPublicRead:
     def _ic(self, have: str):
         ic = RecordingIc()

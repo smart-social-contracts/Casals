@@ -28,7 +28,9 @@ from ic_python_logging import get_logger
 
 from auth import (
     AuthError,
+    config_readers,
     has_capability,
+    parse_readers,
     require_capability,
     require_top_commander,
 )
@@ -212,11 +214,13 @@ def _public_read() -> bool:
 def _reader_refusal() -> text | None:
     """With public_read off (the default) the baton's state — commanders,
     managed canisters, config, actions — is readable only by its commanders,
-    the top commander and its controllers."""
+    the top commander, the ``readers`` it names and the baton's controllers."""
     if _public_read():
         return None
     caller = _caller()
     if caller == (_config.get("top_commander") or "") or _commanders.contains_key(caller):
+        return None
+    if caller in config_readers(_config):
         return None
     if ic.is_controller(ic.caller()):
         return None
@@ -665,11 +669,12 @@ def list_managed_canisters() -> text:
 @update
 def set_config(args: text) -> text:
     """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, action_expiry_days?,
-    install_cycles_buffer?, wasm_store_canister_id?, upgrade_approval_policy?, public_read?}.
+    install_cycles_buffer?, wasm_store_canister_id?, upgrade_approval_policy?, public_read?, readers?}.
 
     ``wasm_store_canister_id`` is Casals' `casals-store` certified-assets store,
     the source of every WASM / bundle Baton installs. ``public_read`` (bool)
-    lets anyone read the baton's state."""
+    lets anyone read the baton's state; ``readers`` (principals, replacing the
+    list) lets those read it while it is private."""
     try:
         require_top_commander(_caller(), _config)
         params = json.loads(args)
@@ -683,6 +688,12 @@ def set_config(args: text) -> text:
             if not isinstance(params["public_read"], bool):
                 return _err("public_read must be true or false")
             _config.insert("public_read", "1" if params["public_read"] else "0")
+        if "readers" in params:
+            try:
+                readers = parse_readers(params["readers"])
+            except ValueError as e:
+                return _err(str(e))
+            _config.insert("readers", json.dumps(readers))
         if "upgrade_approval_policy" in params:
             policy = parse_approval_policy(params["upgrade_approval_policy"])
             _config.insert(
@@ -722,6 +733,7 @@ def get_config() -> text:
         "wasm_store_canister_id": _config.get("wasm_store_canister_id"),
         "upgrade_approval_policy": approval_policy,
         "public_read": _public_read(),
+        "readers": config_readers(_config),
         "test_hooks": _config.get("test_hooks") == "1",
     })
 

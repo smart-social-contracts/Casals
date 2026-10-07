@@ -9,8 +9,10 @@ from basilisk.canisters.management import management_canister
 from commanders import list_commanders
 from config_call import call_text_method_gen
 from cycles import _status_cycles, _ic_run_status
-from helpers import unwrap_call_result
+from helpers import _settings, unwrap_call_result
 from lifecycle import _canister_info_gen, _list_registry_files
+from monitor_access import baton_readers
+from sheet_storage import sheet_deployer
 from services import AssetCanisterService
 from models import AuthorizedWasm, Canister, Section, Stand
 from views import stand_members
@@ -143,6 +145,7 @@ def collect_live_state_gen(resolved_sheet: dict, bindings: dict[str, str], *, se
         "assets": {},
         "published": {},
         "bindings": dict(bindings or {}),
+        "baton_readers": baton_readers(_settings(), sheet_deployer()),
     }
 
     sheet_names = set(canister_names(resolved_sheet))

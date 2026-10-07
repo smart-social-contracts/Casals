@@ -1,5 +1,6 @@
 """Commander capability checks."""
 
+import json
 
 from models import decode_record
 
@@ -49,6 +50,30 @@ def has_capability(caller: str, capability: str, commanders_store, config_store)
 def require_capability(caller: str, capability: str, commanders_store, config_store) -> None:
     if not has_capability(caller, capability, commanders_store, config_store):
         raise AuthError(f"missing capability: {capability}")
+
+
+MAX_READERS = 16
+
+
+def parse_readers(value) -> list[str]:
+    """``set_config`` ``readers``: principals (text) that may read the baton's
+    state without being commanders. Sorted, without duplicates."""
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        raise ValueError("readers must be a list of principal texts")
+    readers = sorted({p.strip() for p in value if p.strip()})
+    if len(readers) > MAX_READERS:
+        raise ValueError(f"readers holds at most {MAX_READERS} principals")
+    for p in readers:
+        if len(p) > 63 or not all(c.isalnum() or c == "-" for c in p) or p != p.lower():
+            raise ValueError(f"not a principal: {p!r}")
+    return readers
+
+
+def config_readers(config_store) -> list[str]:
+    try:
+        return json.loads(config_store.get("readers") or "[]")
+    except ValueError:
+        return []
 
 
 def require_top_commander(caller: str, config_store) -> None:

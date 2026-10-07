@@ -302,6 +302,32 @@ class TestAuth:
             require_capability("nobody", CAP_PROPOSE, commanders, config)
 
 
+class TestReaders:
+    def test_readers_are_sorted_principals(self):
+        from auth import parse_readers
+
+        assert parse_readers([" 2vxsx-fae ", "aaaaa-aa", "2vxsx-fae", ""]) == ["2vxsx-fae", "aaaaa-aa"]
+        assert parse_readers([]) == []
+
+    @pytest.mark.parametrize("bad", ["aaaaa-aa", [1], ["AAAAA-AA"], ["a a"], ["x" * 64], [f"p{i}" for i in range(17)]])
+    def test_bad_readers_are_refused(self, bad):
+        from auth import parse_readers
+
+        with pytest.raises(ValueError):
+            parse_readers(bad)
+
+    def test_stored_readers_read_back(self):
+        from auth import config_readers
+
+        assert config_readers(FakeMap()) == []
+        assert config_readers(FakeMap({"readers": '["aaaaa-aa"]'})) == ["aaaaa-aa"]
+        assert config_readers(FakeMap({"readers": "not json"})) == []
+
+    def test_reader_refusal_admits_readers(self):
+        body = TestBatonSourceShape.SRC_MAIN.split("def _reader_refusal(", 1)[1].split("\ndef ", 1)[0]
+        assert "config_readers(_config)" in body
+
+
 class TestConcurrencyGuard:
     def test_one_non_terminal_action(self):
         actions = {

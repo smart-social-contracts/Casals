@@ -37,9 +37,12 @@ everywhere else.
 Unless `set_config({"public_read": true})` turns it on, `get_config`,
 `list_commanders`, `list_managed_canisters`, `get_commander_policy`,
 `get_action` and `list_actions` answer only the top commander, registered
-commanders and the baton's controllers; anyone else gets
-`{"ok": false, "error": "unauthorized: …"}`. Casals sets `public_read` from the
-sheet's `environments.<env>.public_read` (`configure_baton`).
+commanders, the principals in `readers` and the baton's controllers; anyone
+else gets `{"ok": false, "error": "unauthorized: …"}`. `set_config({"readers":
+[…]})` replaces that list (at most 16). Casals sets `public_read` from the
+sheet's `environments.<env>.public_read` and `readers` to the operator who ran
+`casals up` plus the enabled monitor (`configure_baton`), so the oracle, the
+console and the monitor can read a baton that hands nothing to them.
 `read_cycle_balance` takes managed canisters only.
 
 ## Approvals

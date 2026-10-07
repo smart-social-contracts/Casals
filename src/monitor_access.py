@@ -248,6 +248,16 @@ def is_monitor_principal(settings, caller: str) -> bool:
     return bool(getattr(settings, "monitor_enabled", 0)) and bool(mid) and (caller or "") == mid
 
 
+def baton_readers(settings, deployer: str) -> list[str]:
+    """Who may read a private Baton besides its commanders and controllers:
+    the operator who set the sheet (``$deployer``) and the enabled monitor."""
+    out = {(deployer or "").strip()}
+    mid = (getattr(settings, "monitor_principal", "") or "").strip()
+    if getattr(settings, "monitor_enabled", 0) and mid:
+        out.add(mid)
+    return sorted(p for p in out if p)
+
+
 def monitor_convert_wait_secs(last_ts: int, now: int,
                               min_interval: int = MONITOR_CONVERT_MIN_INTERVAL_SECS) -> int:
     """Seconds the monitor must still wait before ``convert_treasury_icp`` is

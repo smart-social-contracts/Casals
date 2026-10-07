@@ -336,10 +336,15 @@ def run_oracle(
             try:
                 cfg = ic.query(bid, "get_config")
                 cmds = ic.query(bid, "list_commanders")
-                managed = set(ic.query(bid, "list_managed_canisters") or [])
+                managed_raw = ic.query(bid, "list_managed_canisters")
             except Exception as exc:
                 report.add(bname, "baton", "FAIL", str(exc))
                 continue
+            refused = next((r for r in (cfg, cmds, managed_raw) if isinstance(r, dict) and r.get("ok") is False), None)
+            if refused:
+                report.add(bname, "baton", "FAIL", f"the baton refused the read: {refused.get('error')}")
+                continue
+            managed = set(managed_raw or [])
             # commanders with their weights (a baton from before weights reports none → 1)
             want_cmds = {(c["principal"], c["weight"]) for c in baton_commanders(baton)}
             have_cmds = {(c.get("principal"), int(c.get("weight") or 1)) for c in cmds or [] if isinstance(c, dict)}

@@ -171,9 +171,10 @@ def _multisig_configure_gen(canister_id: str, signers: list, threshold: int, exp
         raise Exception(f"multisig configure refused: {str(reply)[:300]}")
 
 
-def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove=(), public_read=None):
+def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove=(), public_read=None,
+                         readers=None):
     """Generator: register commanders, the upgrade approval policy, and (when
-    not None) ``public_read`` on a Baton.
+    not None) ``public_read`` and ``readers`` on a Baton.
 
     Casals must be the Baton's top commander (i.e. the Baton was created with
     ``install_arg.top_commander`` pointing at this canister) — ``add_commander``
@@ -240,12 +241,19 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
         }))
         _parse_baton_reply(reply)
 
+    if readers is not None:
+        reply = yield from _call_text_method(baton_id, "set_config", json.dumps({
+            "readers": sorted(readers),
+        }))
+        _parse_baton_reply(reply)
+
     _append_event("baton_configured", baton_id, {
         "baton": baton_st.name,
         "commanders": added,
         "removed": removed,
         "approval_policy": policy_set,
         "public_read": public_read,
+        "readers": readers,
     })
     return {
         "baton": baton_st.name,
@@ -254,6 +262,7 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
         "removed": removed,
         "approval_policy": policy_set,
         "public_read": public_read,
+        "readers": readers,
     }
 
 

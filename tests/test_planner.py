@@ -289,6 +289,38 @@ def test_baton_public_read_follows_the_sheet():
     assert build_plan(resolved, env, live, self_id=SELF)["items"] == []
 
 
+def test_baton_readers_follow_the_conductor():
+    """A private baton (1.6.0+) names the conductor's readers — the deployer and
+    the monitor — so the operator's oracle and console can still read it."""
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    (bname, bat), = live["batons"].items()
+    bat["config"]["readers"] = [DEPLOYER]
+    live["baton_readers"] = [DEPLOYER]
+    assert build_plan(resolved, env, live, self_id=SELF)["items"] == []
+
+    live["baton_readers"] = ["mon-principal", DEPLOYER]
+    items = build_plan(resolved, env, live, self_id=SELF)["items"]
+    assert [(it["kind"], it["target"]["name"], it["current"]["readers"], it["desired"]["readers"])
+            for it in items] == [("configure_baton", bname, [DEPLOYER], sorted(["mon-principal", DEPLOYER]))]
+
+    del bat["config"]["readers"]
+    assert build_plan(resolved, env, live, self_id=SELF)["items"] == []
+
+
+def test_baton_readers_are_the_deployer_and_the_enabled_monitor():
+    from monitor_access import baton_readers
+
+    class S:
+        monitor_principal = "mon"
+        monitor_enabled = 1
+
+    assert baton_readers(S(), " dep ") == ["dep", "mon"]
+    S.monitor_enabled = 0
+    assert baton_readers(S(), "dep") == ["dep"]
+    assert baton_readers(S(), "") == []
+
+
 def test_baton_handback_is_not_destructive():
     """Casals dropping exactly itself from a baton's controllers is the sheet's
     rule (no $self on batons), so a stand build may apply it unattended.

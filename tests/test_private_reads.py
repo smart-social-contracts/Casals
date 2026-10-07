@@ -212,6 +212,32 @@ def test_set_sheet_applies_public_read(main, monkeypatch):
     assert main._settings().public_read == 0
 
 
+def test_an_arrangement_edit_does_not_make_the_editor_the_deployer(main, monkeypatch):
+    """`$deployer` resolves to whoever stored the sheet; a section commander
+    editing an arrangement must not become it (controllers, commanders and
+    baton readers follow `$deployer`)."""
+    from commanders import add_commander
+    from models import Section
+    import sheet_storage
+
+    deployer = "deployer-principal"
+    _orchestra(main)
+    add_commander(Section["shop"], ALICE, ["arrangement.edit"])
+    stored = {}
+
+    def store(sheet, env, by):
+        stored["deployer"] = by
+        return "h2"
+
+    monkeypatch.setattr(main, "load_sheet_doc", lambda: ({"sections": [{"name": "shop"}]}, "local", "h"))
+    monkeypatch.setattr(sheet_storage, "_doc", lambda: type("Row", (), {"deployer": deployer})())
+    monkeypatch.setattr(main, "store_sheet_doc", store)
+    _FakeIC.who = ALICE
+    res = _call(main.set_section_arrangement, {"section": "shop", "arrangements": None})
+    assert res["ok"] is True, res
+    assert stored["deployer"] == deployer
+
+
 # ── call lists ───────────────────────────────────────────────────────────────
 
 def _call(fn, params):

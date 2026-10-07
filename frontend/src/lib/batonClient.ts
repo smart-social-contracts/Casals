@@ -60,6 +60,7 @@ export interface BatonConfig {
   action_expiry_days?: number;
   /** When false, only commanders and controllers can read the baton. */
   public_read?: boolean;
+  readers?: string[];
 }
 
 export interface BatonCommander {
