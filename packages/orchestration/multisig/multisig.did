@@ -38,7 +38,8 @@ type BatonAction = variant {
   };
 };
 
-type ProposalStatus = variant { pending; executed; rejected; failed; expired };
+// executing: the threshold was met and the action is running.
+type ProposalStatus = variant { pending; executing; executed; rejected; failed; expired };
 
 type Proposal = record {
   id : nat;
@@ -69,6 +70,9 @@ service : {
   list_signers : () -> (record { signers : vec principal; threshold : nat }) query;
   list_events : () -> (vec AuditEvent) query;
   default_proposal_expiry_secs : () -> (nat) query;
+  get_public_read : () -> (bool) query;
+  // Controller-only; "true" or "false". Replies {"ok": ...} JSON.
+  set_public_read : (text) -> (text);
   cycles_balance : () -> (nat) query;
   version : () -> (text) query;
 };

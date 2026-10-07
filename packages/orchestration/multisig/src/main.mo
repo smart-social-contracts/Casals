@@ -6,6 +6,7 @@ import IC "mo:core/InternetComputer";
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
 import Principal "mo:core/Principal";
+import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 
@@ -31,7 +32,7 @@ persistent actor Self {
   // constants that follow. Drop them with a migration in a later major.
   private let VERSION : Text = "1.6.0"; // frozen legacy stable — do not read
   private let MAX_APPLY_ITERATIONS : Nat = 50; // frozen legacy stable — do not read
-  private transient let CODE_VERSION : Text = "1.6.0";
+  private transient let CODE_VERSION : Text = "1.7.0";
   private transient let APPLY_ITERATION_CAP : Nat = 50;
 
   private stable var signers : [Principal] = [];
@@ -40,6 +41,9 @@ persistent actor Self {
   private stable var next_proposal_id : Nat = 0;
   private stable var proposal_entries : [(Nat, Proposal)] = [];
   private stable var event_log : [AuditEvent] = [];
+  /// Anyone may read proposals and events when true; otherwise only signers
+  /// and controllers. ``set_public_read`` changes it.
+  private stable var public_read : Bool = false;
 
   private func now() : Timestamp { Time.now() };
 
@@ -51,11 +55,31 @@ persistent actor Self {
     Array.find<Principal>(signers, func(x) { x == p }) != null;
   };
 
+  private func requireReader(caller : Principal) {
+    if (not (public_read or isSigner(caller) or Principal.isController(caller))) {
+      Runtime.trap("unauthorized: proposals and events are readable by signers and controllers only");
+    };
+  };
+
   private func validateSigners(th : Nat, ss : [Principal]) : Result {
     let m = ss.size();
     if (m == 0) { return #err("signer set cannot be empty") };
     if (th == 0 or th > m) { return #err("threshold must satisfy 1 <= n <= m") };
+    for (i in ss.keys()) {
+      if (Principal.isAnonymous(ss[i])) { return #err("the anonymous principal cannot be a signer") };
+      for (j in ss.keys()) {
+        if (i < j and ss[i] == ss[j]) { return #err("duplicate signer " # Principal.toText(ss[i])) };
+      };
+    };
     #ok;
+  };
+
+  /// Approvals from principals that are signers now. A signer removed by
+  /// ``ManageSigners`` no longer counts toward a pending proposal.
+  private func approvalCount(p : Proposal) : Nat {
+    var n = 0;
+    for (a in p.approvals.vals()) { if (isSigner(a)) { n += 1 } };
+    n;
   };
 
   public shared ({ caller }) func configure(
@@ -63,6 +87,7 @@ persistent actor Self {
     init_threshold : Nat,
     expiry_secs : Nat,
   ) : async Result {
+    if (not Principal.isController(caller)) { return #err("only a controller may configure the multisig") };
     if (signers.size() != 0) { return #err("already configured") };
     switch (validateSigners(init_threshold, init_signers)) {
       case (#ok) {};
@@ -97,14 +122,17 @@ persistent actor Self {
     Array.find<Principal>(p.approvals, func(x) { x == signer }) != null;
   };
 
-  private func tryExecute(p : Proposal) : async Proposal {
-    if (p.approvals.size() < threshold) return p;
-    switch (p.status) {
-      case (#pending) {};
-      case (_) { return p };
+  /// Store ``p``. If its current signers' approvals meet the threshold, it is
+  /// stored as ``#executing`` before the first await (``async*`` runs this
+  /// part in the caller's message), so a concurrent ``approve`` finds it no
+  /// longer pending. Then run the action and store the outcome.
+  private func runIfApproved(p : Proposal) : async* () {
+    if (p.status != #pending or approvalCount(p) < threshold) {
+      setProposal(p.id, p);
+      return;
     };
-    let executed = await executeAction(p.action);
-    switch (executed) {
+    setProposal(p.id, { p with status = #executing });
+    let done = switch (await executeAction(p.action)) {
       case (#ok(r)) {
         log("executed", "proposal " # Nat.toText(p.id));
         { p with status = #executed; result = r };
@@ -114,11 +142,18 @@ persistent actor Self {
         { p with status = #failed; result = ?e };
       };
     };
+    setProposal(p.id, done);
   };
 
-  /// Casals destroy_* returns JSON ``{"ok": true, ...}`` or ``{"ok": false, "error": "..."}``.
+  /// Casals and Baton reply ``{"ok": true, ...}`` or ``{"ok": false, "error": "..."}``.
   private func casalsResponseOk(resp : Text) : Bool {
-    Text.contains(resp, #text "\"ok\": true") or Text.contains(resp, #text "\"ok\":true");
+    JsonParse.topLevelOk(resp) == ?true;
+  };
+
+  private func batonReply(what : Text, resp : Text) : ExecuteResult {
+    if (casalsResponseOk(resp)) { #ok(null) } else {
+      #err(what # " refused: " # JsonParse.truncate(resp, 512));
+    };
   };
 
   /// Escalating headroom left on a doomed canister while it deposits to
@@ -580,7 +615,11 @@ persistent actor Self {
         } catch (_) { #err("install_code failed") };
       };
       case (#UpdateBatonSettings(a)) {
+        if (a.add_controllers.size() + a.remove_controllers.size() == 0) { return #ok(null) };
         let ic = actor ("aaaaa-aa") : actor {
+          canister_status : shared { canister_id : Principal } -> async {
+            settings : { controllers : [Principal] };
+          };
           update_settings : shared {
             canister_id : Principal;
             settings : {
@@ -591,11 +630,21 @@ persistent actor Self {
             };
           } -> async ();
         };
+        let current = try {
+          (await ic.canister_status({ canister_id = a.baton_id })).settings.controllers;
+        } catch (_) { return #err("canister_status failed: " # Principal.toText(a.baton_id)) };
+        var next : [Principal] = [];
+        for (c in Array.concat(current, a.add_controllers).vals()) {
+          let removed = Array.find<Principal>(a.remove_controllers, func(r) { r == c }) != null;
+          let seen = Array.find<Principal>(next, func(x) { x == c }) != null;
+          if (not removed and not seen) { next := Array.concat(next, [c]) };
+        };
+        if (next.size() == 0) { return #err("refusing to leave the baton without a controller") };
         try {
           await ic.update_settings({
             canister_id = a.baton_id;
             settings = {
-              controllers = if (a.add_controllers.size() + a.remove_controllers.size() == 0) null else ?a.add_controllers;
+              controllers = ?next;
               compute_allocation = null;
               memory_allocation = null;
               freezing_threshold = null;
@@ -636,8 +685,7 @@ persistent actor Self {
         let payload = "{\"principal\":\"" # Principal.toText(a.commander) # "\",\"capabilities\":" #
           encodeCaps(a.capabilities) # "}";
         try {
-          ignore await baton.add_commander(payload);
-          #ok(null);
+          batonReply("add_commander", await baton.add_commander(payload));
         } catch (_) { #err("add_commander failed") };
       };
       case (#RemoveCommander(a)) {
@@ -645,8 +693,7 @@ persistent actor Self {
           remove_commander : shared Text -> async Text;
         };
         try {
-          ignore await baton.remove_commander(Principal.toText(a.commander));
-          #ok(null);
+          batonReply("remove_commander", await baton.remove_commander(Principal.toText(a.commander)));
         } catch (_) { #err("remove_commander failed") };
       };
       case (#SetPolicy(p)) {
@@ -654,9 +701,9 @@ persistent actor Self {
           set_commander_policy : shared Text -> async Text;
         };
         try {
-          ignore await baton.set_commander_policy(p.policy_json);
-          log("set_policy", p.policy_json);
-          #ok(null);
+          let r = batonReply("set_commander_policy", await baton.set_commander_policy(p.policy_json));
+          switch (r) { case (#ok(_)) { log("set_policy", p.policy_json) }; case (#err(_)) {} };
+          r;
         } catch (_) { #err("set_commander_policy failed") };
       };
       case (#ManageSigners(a)) {
@@ -737,8 +784,7 @@ persistent actor Self {
       result = null;
     };
     log("proposed", Nat.toText(id));
-    let executed = await tryExecute(p);
-    setProposal(id, executed);
+    await* runIfApproved(p);
     id;
   };
 
@@ -757,8 +803,7 @@ persistent actor Self {
           p with approvals = Array.concat(p.approvals, [caller]);
         };
         log("approved", Nat.toText(proposal_id));
-        let executed = await tryExecute(updated);
-        setProposal(proposal_id, executed);
+        await* runIfApproved(updated);
         #ok;
       };
     };
@@ -777,11 +822,13 @@ persistent actor Self {
     };
   };
 
-  public query func get_proposal(proposal_id : Nat) : async ?Proposal {
+  public shared query ({ caller }) func get_proposal(proposal_id : Nat) : async ?Proposal {
+    requireReader(caller);
     getProposal(proposal_id);
   };
 
-  public query func list_proposals() : async [Proposal] {
+  public shared query ({ caller }) func list_proposals() : async [Proposal] {
+    requireReader(caller);
     var out : [Proposal] = [];
     for ((_, p) in proposal_entries.vals()) {
       out := Array.concat(out, [p]);
@@ -789,12 +836,34 @@ persistent actor Self {
     out;
   };
 
+  /// Public: the conductor plans against the signer set after it handed the
+  /// multisig its own controllers, when it is neither a signer nor a controller.
   public query func list_signers() : async { signers : [Principal]; threshold : Nat } {
     { signers; threshold };
   };
 
-  public query func list_events() : async [AuditEvent] {
+  public shared query ({ caller }) func list_events() : async [AuditEvent] {
+    requireReader(caller);
     event_log;
+  };
+
+  public query func get_public_read() : async Bool {
+    public_read;
+  };
+
+  /// Controller-only; ``arg`` is ``true`` or ``false``. Text in and out so the
+  /// committee, its own controller, can set it through a ``CallCanister``
+  /// proposal on itself.
+  public shared ({ caller }) func set_public_read(arg : Text) : async Text {
+    if (not Principal.isController(caller)) {
+      return "{\"ok\":false,\"error\":\"only a controller may set public_read\"}";
+    };
+    let v = Text.trim(arg, #predicate(func(c : Char) : Bool { c == ' ' or c == '\"' or c == '\n' }));
+    if (v == "true") { public_read := true } else if (v == "false") { public_read := false } else {
+      return "{\"ok\":false,\"error\":\"expected true or false\"}";
+    };
+    log("public_read", v);
+    "{\"ok\":true,\"public_read\":" # v # "}";
   };
 
   /// Public cycle balance — used by the create/destroy lock to prove

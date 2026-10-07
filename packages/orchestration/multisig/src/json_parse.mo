@@ -88,11 +88,86 @@ module {
     };
   };
 
-  /// True when the envelope reports ``{"ok": false, ...}``.
+  /// Index just past the string starting at ``cs[start]`` (a double quote).
+  private func skipString(cs : [Char], start : Nat) : ?Nat {
+    var j = start + 1;
+    while (j < cs.size()) {
+      let c = cs[j];
+      if (c == '\\') { j += 2 } else if (c == dquote()) { return ?(j + 1) } else { j += 1 };
+    };
+    null;
+  };
+
+  /// Index just past the JSON value starting at or after ``start``.
+  private func skipValue(cs : [Char], start : Nat) : ?Nat {
+    var j = skipSpace(cs, start);
+    if (j >= cs.size()) return null;
+    if (cs[j] == dquote()) return skipString(cs, j);
+    if (cs[j] == '{' or cs[j] == '[') {
+      var depth : Nat = 0;
+      while (j < cs.size()) {
+        let c = cs[j];
+        if (c == dquote()) {
+          switch (skipString(cs, j)) {
+            case null { return null };
+            case (?k) { j := k };
+          };
+        } else {
+          if (c == '{' or c == '[') {
+            depth += 1;
+          } else if (c == '}' or c == ']') {
+            if (depth <= 1) return ?(j + 1);
+            depth -= 1;
+          };
+          j += 1;
+        };
+      };
+      return null;
+    };
+    while (j < cs.size() and cs[j] != ',' and cs[j] != '}' and cs[j] != ']' and not isSpace(cs[j])) {
+      j += 1;
+    };
+    ?j;
+  };
+
+  /// The reply's top-level ``"ok"`` member: ``?true``, ``?false``, or null
+  /// when the reply is not a JSON object with a boolean ``ok``. Strings and
+  /// nested values are skipped, so an ``"ok": true`` quoted inside an error
+  /// message or a nested result does not count.
+  public func topLevelOk(t : Text) : ?Bool {
+    let cs = chars(t);
+    var i = skipSpace(cs, 0);
+    if (i >= cs.size() or cs[i] != '{') return null;
+    i := skipSpace(cs, i + 1);
+    var found : ?Bool = null;
+    label members while (i < cs.size()) {
+      if (cs[i] == '}') break members;
+      if (cs[i] != dquote()) return null;
+      let keyEnd = switch (skipString(cs, i)) {
+        case null { return null };
+        case (?k) { k };
+      };
+      let key = fromChars(slice(cs, i + 1, keyEnd - i - 2));
+      i := skipSpace(cs, keyEnd);
+      if (i >= cs.size() or cs[i] != ':') return null;
+      let valueStart = skipSpace(cs, i + 1);
+      let valueEnd = switch (skipValue(cs, valueStart)) {
+        case null { return null };
+        case (?k) { k };
+      };
+      if (key == "ok") {
+        let v = fromChars(slice(cs, valueStart, valueEnd - valueStart));
+        if (v == "true") { found := ?true } else if (v == "false") { found := ?false } else { return null };
+      };
+      i := skipSpace(cs, valueEnd);
+      if (i < cs.size() and cs[i] == ',') { i := skipSpace(cs, i + 1) };
+    };
+    found;
+  };
+
+  /// True unless the reply is a JSON object whose top-level ``ok`` is true.
   public func responseNotOk(t : Text) : Bool {
-    Text.contains(t, #text "\"ok\": false")
-    or Text.contains(t, #text "\"ok\":false")
-    or Text.contains(t, #text "\"ok\":  false");
+    topLevelOk(t) != ?true;
   };
 
   /// True when ``"failed"`` is present and not ``null``.

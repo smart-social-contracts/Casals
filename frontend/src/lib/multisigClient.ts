@@ -76,6 +76,7 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
   });
   const ProposalStatus = I.Variant({
     pending: I.Null,
+    executing: I.Null,
     executed: I.Null,
     rejected: I.Null,
     failed: I.Null,
@@ -108,10 +109,11 @@ const multisigIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     approve: I.Func([I.Nat], [Result], []),
     reject: I.Func([I.Nat], [Result], []),
     cycles_balance: I.Func([], [I.Nat], ['query']),
+    get_public_read: I.Func([], [I.Bool], ['query']),
   });
 };
 
-export type MultisigProposalStatus = 'pending' | 'executed' | 'rejected' | 'failed' | 'expired';
+export type MultisigProposalStatus = 'pending' | 'executing' | 'executed' | 'rejected' | 'failed' | 'expired';
 
 export interface MultisigProposal {
   id: bigint;
@@ -134,7 +136,7 @@ export interface MultisigEvent {
 function statusKey(s: unknown): MultisigProposalStatus {
   if (s && typeof s === 'object') {
     const k = Object.keys(s as object)[0];
-    if (k === 'pending' || k === 'executed' || k === 'rejected' || k === 'failed' || k === 'expired') {
+    if (k === 'pending' || k === 'executing' || k === 'executed' || k === 'rejected' || k === 'failed' || k === 'expired') {
       return k;
     }
   }

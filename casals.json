@@ -136,7 +136,7 @@
   },
   "governance": {
     "multisig": {
-      "wasm": "orchestration-multisig@1.6.0",
+      "wasm": "orchestration-multisig@1.7.0",
       "kind": "backend",
       "mode": "managed",
       "signers": [
@@ -190,9 +190,9 @@
       },
       {
         "family": "orchestration-multisig",
-        "version": "1.6.0",
-        "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz",
-        "sha256": "c8d3adecf9bea8d9e7811cfa5d9eda8f61723c770f85132b91c8b2cffb37974f"
+        "version": "1.7.0",
+        "source": "local:seed/templates/orchestration-multisig@1.7.0.wasm.gz",
+        "sha256": "68732f3a69213475a53971d51ca6a43c19610f8bbc5bbcf6a0c0404b7f6ae204"
       },
       {
         "family": "orchestration-baton",

@@ -5,7 +5,7 @@
 
 import { describeDeployBundle, parseDeployBundleCall } from './contentDeploy.ts';
 
-export type ProposalStatus = 'pending' | 'executed' | 'rejected' | 'failed' | 'expired';
+export type ProposalStatus = 'pending' | 'executing' | 'executed' | 'rejected' | 'failed' | 'expired';
 
 export interface ProposalField {
   label: string;
@@ -49,7 +49,7 @@ export function committeePagePath(canisterId?: string): string {
 
 export function proposalStatusClass(status: string): string {
   if (status === 'executed') return 'text-emerald-700 bg-emerald-50';
-  if (status === 'pending') return 'text-amber-800 bg-amber-50';
+  if (status === 'pending' || status === 'executing') return 'text-amber-800 bg-amber-50';
   if (status === 'failed') return 'text-red-700 bg-red-50';
   if (status === 'rejected') return 'text-slate-600 bg-slate-50';
   return 'text-primary-500 bg-primary-50';

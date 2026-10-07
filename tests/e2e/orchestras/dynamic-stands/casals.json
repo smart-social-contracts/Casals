@@ -46,7 +46,7 @@
   "governance": {
     "multisig": {
       "$comment": "The one key that can reinstall a stand's baton. One signer at threshold 1 on a laptop; staging and production need real signers and a threshold >= 2 for 'the multisig guards the baton' to mean anything.",
-      "wasm": "orchestration-multisig@1.6.0",
+      "wasm": "orchestration-multisig@1.7.0",
       "kind": "backend",
       "mode": "managed",
       "signers": ["$principal:operator", "$principal:casals_ii"],
@@ -62,7 +62,7 @@
       { "family": "hello-world-basilisk", "version": "1.0.0", "source": "local:seed/templates/hello-world-basilisk@1.0.0.wasm.gz" },
       { "family": "hello-world-rust", "version": "1.0.0", "source": "local:seed/templates/hello-world-rust.wasm.gz" },
       { "family": "hello-world-frontend", "version": "1.0.0", "source": "local:seed/templates/hello-world-frontend.wasm.gz" },
-      { "family": "orchestration-multisig", "version": "1.6.0", "source": "local:seed/templates/orchestration-multisig@1.6.0.wasm.gz" },
+      { "family": "orchestration-multisig", "version": "1.7.0", "source": "local:seed/templates/orchestration-multisig@1.7.0.wasm.gz" },
       { "family": "orchestration-baton", "version": "1.5.1", "source": "local:seed/templates/orchestration-baton@1.5.1.wasm.gz" }
     ]
   },

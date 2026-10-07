@@ -13,9 +13,11 @@ _baton_conftest = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
 _spec.loader.exec_module(_baton_conftest)
 
+CASALS_ROOT = _baton_conftest.CASALS_ROOT
 MULTISIG_ROOT = _baton_conftest.MULTISIG_ROOT
 build_multisig = _baton_conftest.build_multisig
 call = _baton_conftest.call
+create_detached = _baton_conftest.create_detached
 icp = _baton_conftest.icp
 identity_principal = _baton_conftest.identity_principal
 install_baton = _baton_conftest.install_baton

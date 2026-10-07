@@ -11,12 +11,14 @@ import time
 import os
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, env_monitor, sheet_hash, validate
+from sheetv2 import (
+    CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, env_monitor, env_public_read, sheet_hash, validate,
+)
 
 from casals_cli.bindings import Bindings, load_bindings, resolve_orchestra_refs
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
 from casals_cli.monitor import grant_monitor_access
-from casals_cli.multisig import ensure_control, set_controllers_via_multisig
+from casals_cli.multisig import ensure_control, set_controllers_via_multisig, sync_public_read
 from casals_cli.registry import ensure_registry_uploads, resolve_source
 from casals_cli.runlog import detail, logged_run, summary
 from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
@@ -831,6 +833,14 @@ def _execute_up(
             f"monitor read access on {len(monitor_access['updated'])} canister(s)"
             + (f", {len(monitor_access['unreachable'])} unreachable" if monitor_access["unreachable"] else "")
         )
+
+    ms_id = multisig_id(ic, backend_id)
+    if ms_id:
+        want_public = env_public_read(sheet, env)
+        synced = sync_public_read(ic, ms_id, deployer, want_public)
+        if synced in ("set", "proposed"):
+            _progress(f"  multisig public_read → {str(want_public).lower()} ({synced})")
+            _note(f"multisig proposals and events are {'public' if want_public else 'private'}")
 
     rounds = plan.pop("_rounds", None)
     if rounds:

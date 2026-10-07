@@ -44,6 +44,31 @@ def set_controllers_via_multisig(ic, ms_id: str, deployer: str, canister_id: str
                f'variant {{ SetCanisterControllers = record {{ canister_id = principal "{canister_id}"; controllers = vec {{ {vec} }} }} }}')
 
 
+def sync_public_read(ic, ms_id: str, deployer: str, want: bool) -> str:
+    """Make the multisig's `public_read` match the sheet: directly while the
+    deployer is a controller, else as a signer through a `CallCanister`
+    proposal on the multisig itself (its own controller). Returns
+    unchanged | set | proposed | unsupported (a multisig older than 1.7.0)."""
+    res = ic.icp(["canister", "call", ms_id, "get_public_read", "--query", "()"], check=False)
+    out = f"{res.stdout or ''}{res.stderr or ''}"
+    if res.returncode != 0:
+        if "IC0536" in out or "no query method" in out:
+            return "unsupported"
+        raise RuntimeError(f"multisig get_public_read failed: {out.strip()[:400]}")
+    if ("true" in out) == want:
+        return "unchanged"
+    arg = "true" if want else "false"
+    if deployer in (ic.read_controllers(ms_id) or []):
+        reply = ic.icp(["canister", "call", ms_id, "set_public_read", f'("{arg}")']).stdout
+        if '\\"ok\\":true' not in reply and '"ok":true' not in reply:
+            raise RuntimeError(f"multisig set_public_read refused: {reply.strip()}")
+        return "set"
+    _as_signer(ic, ms_id, deployer, "set the multisig's public_read",
+               f'variant {{ CallCanister = record {{ canister = principal "{ms_id}"; '
+               f'method = "set_public_read"; arg_json = "{arg}" }} }}')
+    return "proposed"
+
+
 def ensure_control(ic, canister_id: str, deployer: str, multisig_id: str) -> None:
     """Before the CLI changes a canister as deployer: make the deployer a controller,
     through the multisig if the canister was handed over. The next plan removes it again."""

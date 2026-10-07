@@ -1501,3 +1501,40 @@ class TestProductionGuards:
         client._pin_file = None
         client._announce_signing(["canister", "call", "aaaaa-aa", "plan"])
         assert capsys.readouterr().err == ""
+
+
+class TestMultisigPublicRead:
+    def _ic(self, have: str):
+        ic = RecordingIc()
+        ic.icp_outputs = {("canister", "call", "ms-id", "get_public_read"): f"({have})"}
+        return ic
+
+    def _sets(self, ic):
+        return [a[0] for op, a, _ in ic.calls if op == "icp" and "set_public_read" in a[0]]
+
+    def test_unchanged_when_it_already_matches(self):
+        from casals_cli.multisig import sync_public_read
+        ic = self._ic("false")
+        assert sync_public_read(ic, "ms-id", ic.deployer, False) == "unchanged"
+        assert self._sets(ic) == []
+
+    def test_a_controller_deployer_sets_it_directly(self):
+        from casals_cli.multisig import sync_public_read
+        ic = self._ic("false")
+        ic.controllers["ms-id"] = [ic.deployer]
+        ic.icp_outputs[("canister", "call", "ms-id", "set_public_read")] = '("{\\"ok\\":true,\\"public_read\\":true}")'
+        assert sync_public_read(ic, "ms-id", ic.deployer, True) == "set"
+        assert self._sets(ic) == [("canister", "call", "ms-id", "set_public_read", '("true")')]
+
+    def test_a_signer_deployer_proposes_it_to_the_committee(self):
+        from casals_cli.multisig import sync_public_read
+        ic = self._ic("true")
+        ic.controllers["ms-id"] = ["ms-id"]
+        ic.icp_outputs.update({
+            ("canister", "call", "ms-id", "list_signers"): f'(record {{ signers = vec {{ principal "{ic.deployer}" }}; threshold = 1 : nat }})',
+            ("canister", "call", "ms-id", "propose"): "(7 : nat)",
+            ("canister", "call", "ms-id", "get_proposal"): "(opt record { status = variant { executed }; })",
+        })
+        assert sync_public_read(ic, "ms-id", ic.deployer, False) == "proposed"
+        proposal = next(a[0] for op, a, _ in ic.calls if op == "icp" and "propose" in a[0])
+        assert 'method = "set_public_read"; arg_json = "false"' in proposal[-1]

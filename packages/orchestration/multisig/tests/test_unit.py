@@ -529,11 +529,48 @@ class TestMultisigV150Source:
         assert "IC.call" in main
         assert 'apply : shared Text -> async Text' in main
         assert "result : ?Text" in types
-        assert 'transient let CODE_VERSION : Text = "1.6.0"' in main  # persistent actor: a plain let is stable (frozen)
+        assert 'transient let CODE_VERSION : Text = "1.7.0"' in main  # persistent actor: a plain let is stable (frozen)
         assert "ApplySheet" in did
         assert "CallCanister" in did
         assert "result : opt text" in did
         assert "version : () -> (text) query" in did
+
+
+class TestMultisigV170Hardening:
+    """1.7.0 safeguards, checked on the source (the replica suite exercises them)."""
+
+    def _src(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        return ((root / "src" / "types.mo").read_text(), (root / "src" / "main.mo").read_text(),
+                (root / "multisig.did").read_text(), (root / "src" / "sweeper.mo").read_text())
+
+    def test_configure_is_controller_only(self):
+        _, main, _, _ = self._src()
+        body = main.split("func configure(", 1)[1].split("};\n\n", 1)[0]
+        assert "Principal.isController(caller)" in body
+
+    def test_threshold_met_is_stored_as_executing_before_any_await(self):
+        types, main, did, _ = self._src()
+        assert "#executing" in types and "executing;" in did
+        body = main.split("private func runIfApproved", 1)[1].split("\n  };\n", 1)[0]
+        assert "async*" in body.split("{", 1)[0], "async* keeps the status write in the caller's message"
+        assert body.index("#executing") < body.index("await")
+        assert "await* runIfApproved" in main.split("func propose(", 1)[1].split("\n  };\n", 1)[0]
+        assert "await* runIfApproved" in main.split("func approve(", 1)[1].split("\n  };\n", 1)[0]
+
+    def test_proposals_and_events_are_gated(self):
+        _, main, did, _ = self._src()
+        for fn in ("get_proposal", "list_proposals", "list_events"):
+            body = main.split(f"func {fn}(", 1)[1].split("\n  };\n", 1)[0]
+            assert "requireReader(caller)" in body, fn
+        assert "set_public_read : (text) -> (text);" in did
+        assert "get_public_read : () -> (bool) query;" in did
+
+    def test_sweep_is_controller_only(self):
+        _, _, _, sweeper = self._src()
+        assert "Principal.isController(caller)" in sweeper.split("func sweep(", 1)[1]
 
 
 class TestMultisigV160UpgradeCanister:

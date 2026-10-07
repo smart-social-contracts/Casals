@@ -43,7 +43,9 @@ module {
     };
   };
 
-  public type ProposalStatus = { #pending; #executed; #rejected; #failed; #expired };
+  /// ``#executing``: the threshold was met and the action is running; set
+  /// before the first await so a concurrent approval cannot run it again.
+  public type ProposalStatus = { #pending; #executing; #executed; #rejected; #failed; #expired };
 
   public type Proposal = {
     id : Nat;

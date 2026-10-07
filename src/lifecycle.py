@@ -307,22 +307,34 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
 _FEATURE_METHODS = (("shell", "__shell__"), ("browse", "__browse__"))
 
 
+def _declares_method(candid: str, method: str) -> bool:
+    """``method`` appears as a service member name (``name :`` or ``"name" :``).
+    Plain string scanning: the canister's ``re`` lacks ``search``."""
+    for token in (f'"{method}"', method):
+        i = candid.find(token)
+        while i >= 0:
+            before = candid[i - 1] if i > 0 else " "
+            if before in " \t\r\n;{" and candid[i + len(token):].lstrip().startswith(":"):
+                return True
+            i = candid.find(token, i + 1)
+    return False
+
+
 def candid_features(candid: str) -> list:
     """Which of ``_FEATURE_METHODS`` a Candid service description declares."""
-    return [name for name, method in _FEATURE_METHODS
-            if re.search(r'(^|[\s;{])"?' + method + r'"?\s*:', candid or "")]
+    return [name for name, method in _FEATURE_METHODS if _declares_method(candid or "", method)]
 
 
 def _record_features_gen(target_id: str):
     """Generator: read the installed code's Candid and keep its optional
     endpoints on the Canister row. A canister that does not answer keeps
-    what was recorded before."""
+    what was recorded before; this never fails the install."""
     try:
         candid = yield from call_text_method_gen(target_id, "__get_candid_interface_tmp_hack", None)
+        features = candid_features(candid)
     except Exception as e:
         _log.info(f"features of {target_id}: candid unavailable ({e})")
         return
-    features = candid_features(candid)
     for st in iter_instances(Canister):
         if (st.canister_id or "").strip() == target_id:
             st.features_json = json.dumps(features)
