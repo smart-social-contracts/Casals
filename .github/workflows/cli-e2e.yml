@@ -20,6 +20,14 @@ on:
         type: string
         default: ""
 
+permissions:
+  contents: read
+
+env:
+  # icp-cli looks the network launcher up on the GitHub API; unauthenticated,
+  # runners share one rate limit and `icp network start` fails with a 403.
+  ICP_CLI_GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   corpus-e2e:
     name: corpus e2e (local replica)
@@ -27,18 +35,18 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
       - name: Install icp-cli and ic-wasm
-        run: npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+        run: npm install -g @icp-sdk/icp-cli@1.6.0 @icp-sdk/ic-wasm@0.11.1
 
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
@@ -49,7 +57,13 @@ jobs:
       - name: Run the corpus
         env:
           CASALS_HOME: ${{ runner.temp }}/casals
-        run: python3 -u tests/e2e/run_e2e.py ${{ inputs.orchestras }}
+          ORCHESTRAS: ${{ inputs.orchestras }}
+        run: |
+          read -ra names <<< "$ORCHESTRAS"
+          for n in "${names[@]}"; do
+            [[ "$n" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "::error::not an orchestra name: $n"; exit 1; }
+          done
+          python3 -u tests/e2e/run_e2e.py "${names[@]}"
 
       - name: Stop local replica (safety net)
         if: always()
