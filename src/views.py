@@ -30,6 +30,19 @@ def _parse_user_tags_json(raw: str) -> list:
     return [str(t).strip() for t in parsed if str(t).strip()]
 
 
+def _canister_features(st):
+    """Optional endpoints read from the canister's Candid, or ``None`` when
+    the conductor never checked (installed before it did)."""
+    raw = (getattr(st, "features_json", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    return [str(f) for f in parsed] if isinstance(parsed, list) else None
+
+
 def _canister_view(st) -> dict:
     controllers = []
     raw = getattr(st, "ic_controllers", "") or ""
@@ -58,6 +71,7 @@ def _canister_view(st) -> dict:
         "topup_cycles": int(st.topup_cycles or 0),
         "subnet": st.subnet or "",
         "controllers": controllers,
+        "features": _canister_features(st),
     }
 
 

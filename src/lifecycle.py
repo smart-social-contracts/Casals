@@ -20,6 +20,7 @@ from ic_assets import POLICY_FILE, any_properties, properties_for, rules_from
 from wasm_helpers import _family_of, _split_key, _ver_tuple
 from audit import _append_event
 from commanders import commander_principals
+from config_call import call_text_method_gen
 from subnets import assert_subnet_allowed
 
 from helpers import (
@@ -29,6 +30,7 @@ from helpers import (
     _principals_in,
     _require_unique_canister_name,
     _settings,
+    iter_instances,
     unwrap_call_result,
 )
 from cycles import _status_cycles, _sync_treasury_baseline, _treasury_watch_begin_gen
@@ -297,6 +299,33 @@ def _pull_and_install(target_id: str, namespace: str, path: str, expected_hash_h
         yield management_canister.clear_chunk_store({"canister_id": target})
     except Exception:
         pass  # best-effort cleanup; never fail a good install on store cleanup
+    yield from _record_features_gen(target_id)
+
+
+# Optional Basilisk endpoints (`__basilisk_features__`), by the feature name
+# the UI shows. A canister built without one has no such method.
+_FEATURE_METHODS = (("shell", "__shell__"), ("browse", "__browse__"))
+
+
+def candid_features(candid: str) -> list:
+    """Which of ``_FEATURE_METHODS`` a Candid service description declares."""
+    return [name for name, method in _FEATURE_METHODS
+            if re.search(r'(^|[\s;{])"?' + method + r'"?\s*:', candid or "")]
+
+
+def _record_features_gen(target_id: str):
+    """Generator: read the installed code's Candid and keep its optional
+    endpoints on the Canister row. A canister that does not answer keeps
+    what was recorded before."""
+    try:
+        candid = yield from call_text_method_gen(target_id, "__get_candid_interface_tmp_hack", None)
+    except Exception as e:
+        _log.info(f"features of {target_id}: candid unavailable ({e})")
+        return
+    features = candid_features(candid)
+    for st in iter_instances(Canister):
+        if (st.canister_id or "").strip() == target_id:
+            st.features_json = json.dumps(features)
 
 
 def _pull_registry_bytes(namespace: str, path: str):

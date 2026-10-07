@@ -43,6 +43,12 @@ def _valid_method_name(name: str) -> bool:
     return True
 
 
+def is_reserved_method(method) -> bool:
+    """``__``-prefixed methods (``__shell__``, ``__browse__``, …) are canister
+    internals, never a ``calls`` grant."""
+    return str(method or "").strip().startswith("__")
+
+
 def normalize_calls(raw) -> list:
     """``[{canister, method}]``, sorted and de-duplicated.
 
@@ -63,6 +69,8 @@ def normalize_calls(raw) -> list:
             raise ValueError("call canister must be a canister id or $canister: name")
         if not _valid_method_name(method):
             raise ValueError(f"call method must be a Candid name: {method!r}")
+        if is_reserved_method(method):
+            raise ValueError(f"call method {method!r} is reserved: shell and browse have their own permissions")
         key = (canister, method)
         if key in seen:
             continue
@@ -104,8 +112,13 @@ def _entry_from_item(item) -> dict | None:
         p = (item.get("principal") or "").strip()
         if not p:
             return None
+        calls = item.get("calls")
+        if isinstance(calls, list):
+            # A row stored before reserved methods were refused keeps its
+            # commander; only the reserved grant is dropped.
+            calls = [c for c in calls if not (isinstance(c, dict) and is_reserved_method(c.get("method")))]
         try:
-            return _entry(p, item.get("permissions", ""), item.get("code_checksum", ""), item.get("calls"))
+            return _entry(p, item.get("permissions", ""), item.get("code_checksum", ""), calls)
         except ValueError:
             return None
     if isinstance(item, str) and item.strip():
@@ -249,6 +262,8 @@ def runnable_calls(caller: str, scopes: list, canisters: list, *, orchestra_sect
                 elif not orchestra and (target.get("section") or "") != section:
                     continue
                 method = call.get("method") or ""
+                if is_reserved_method(method):
+                    continue
                 key = ((target.get("canister_id") or "").strip(), method)
                 if not key[0] or key in seen:
                     continue

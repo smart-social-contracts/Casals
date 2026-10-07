@@ -2823,6 +2823,7 @@ def _content_deploy_harness(monkeypatch, rounds):
     fe = MagicMock(); fe.name = "web"; fe.canister_id = "fe-id"
     monkeypatch.setattr(main, "Canister", MagicMock(instances=lambda: [], __getitem__=lambda _s, k: fe if k == "web" else None))
     monkeypatch.setattr(main, "_require_commander", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_reader_scope", lambda: None)
     monkeypatch.setattr(main, "_sync_content_round_gen", fake_round)
     monkeypatch.setattr(main, "_append_event", lambda *a, **k: None)
     monkeypatch.setattr(main, "_now_ns", lambda: 7)

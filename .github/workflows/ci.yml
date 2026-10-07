@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Every version copy matches version.txt
+        run: python scripts/check_versions.py
+
       - name: Every Python file compiles
         run: python -m compileall -q casals_cli src scripts packages/orchestration/baton/src tests
 
@@ -53,6 +56,7 @@ jobs:
           tests/test_unit.py
           tests/test_version_http.py
           tests/test_paid_ingress.py
+          tests/test_private_reads.py
           tests/test_sheetv2.py
           tests/test_planner.py
           tests/test_access_code.py

@@ -213,9 +213,19 @@ def wasm_ref(s: str) -> tuple[str, str | None]:
     return text, None
 
 
+def strip_comments(obj: Any) -> Any:
+    """A copy of ``obj`` without its ``$comment`` keys, at any depth."""
+    if isinstance(obj, dict):
+        return {k: strip_comments(v) for k, v in obj.items() if not _is_comment_key(k)}
+    if isinstance(obj, list):
+        return [strip_comments(v) for v in obj]
+    return obj
+
+
 def canonical_json(obj: Any) -> str:
-    """Deterministic JSON: sorted keys, compact separators, ASCII-only."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    """Deterministic JSON: sorted keys, compact separators, ASCII-only, no
+    ``$comment`` keys. Comments never reach the conductor or the sheet hash."""
+    return json.dumps(strip_comments(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def sheet_hash(sheet: dict) -> str:
@@ -251,6 +261,12 @@ def env_monitor(sheet: dict, env: str) -> dict | None:
         "principal": (block.get("principal") or "").strip(),
         "url": (block.get("url") or "").strip().rstrip("/"),
     }
+
+
+def env_public_read(sheet: dict, env: str) -> bool:
+    """``environments.<env>.public_read``: anonymous callers may read the
+    orchestra. Missing is ``False``."""
+    return env_block(sheet, env).get("public_read") is True
 
 
 def declared_subnet(spec: dict | None) -> tuple[str, str]:
@@ -1099,6 +1115,8 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
             continue
         if not isinstance(block.get("network"), str):
             errors.append(f"{path}.network is required")
+        if "public_read" in block and not isinstance(block["public_read"], bool):
+            errors.append(f"{path}.public_read must be true or false")
         if "cycles" in block and isinstance(block["cycles"], dict):
             _validate_cycles_block(block["cycles"], f"{path}.cycles", errors)
         if "monitor" in block:

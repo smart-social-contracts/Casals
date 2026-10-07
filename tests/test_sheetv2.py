@@ -657,3 +657,24 @@ def test_unknown_commander_permission_fails_validate():
     assert sv2.validate(sheet, "local") == []
     sheet["conductor"]["commanders"][0]["permissions"] = "canister.*"
     assert sv2.validate(sheet, "local") == []
+
+
+def test_comments_do_not_change_the_hash_and_are_not_stored():
+    plain = _load_corpus("minimal")
+    noted = copy.deepcopy(plain)
+    noted["$comment"] = "internal note"
+    noted["conductor"]["$comment_owner"] = "who runs this"
+    assert sv2.sheet_hash(noted) == sv2.sheet_hash(plain)
+    assert "$comment" not in sv2.canonical_json(noted)
+    assert sv2.strip_comments([{"$comment": "x", "a": 1}]) == [{"a": 1}]
+
+
+def test_public_read_must_be_a_boolean():
+    sheet = _load_corpus("minimal")
+    env = next(iter(sheet["environments"]))
+    assert sv2.env_public_read(sheet, env) is False
+    sheet["environments"][env]["public_read"] = True
+    assert sv2.validate(sheet, env) == []
+    assert sv2.env_public_read(sheet, env) is True
+    sheet["environments"][env]["public_read"] = "yes"
+    assert any("public_read must be true or false" in e for e in sv2.validate(sheet, env))

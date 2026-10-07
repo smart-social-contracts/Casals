@@ -7,6 +7,7 @@ import json
 from basilisk import Principal
 from basilisk.canisters.management import management_canister
 
+from access_code import is_published_code
 from audit import _append_event
 from commanders import persist_commanders
 from config_call import call_text_method_gen, config_text_arg
@@ -35,7 +36,7 @@ from orchestration_bridge import (
 )
 import wasm_store
 from pool import _pool_mark_in_use
-from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, WASM_NAMESPACE, placement_for, registry_path
+from sheetv2 import SYNTHETIC_SECTION_CONDUCTOR, WASM_NAMESPACE, env_block, placement_for, registry_path
 from subnets import assert_subnet_allowed
 from wasm_types import memory_keep_for_wasm, wasm_type_of_wasm
 
@@ -251,6 +252,10 @@ def _execute_item(item: dict, sheet: dict, env: str = ""):
         desired = (item.get("desired") or {}).get("commanders") or []
         sec_name = (target.get("section") or "").strip()
         stand_name = (target.get("stand") or "").strip()
+        if (env_block(sheet, env).get("network") or "").strip().lower() != "local":
+            if any(is_published_code((e or {}).get("principal")) for e in desired):
+                raise Exception("set_commanders: an access code published in the Casals repository "
+                                "is refused on this network")
         ent = _ensure_stand(sec_name, stand_name or None)
         persist_commanders(ent, desired)
         return

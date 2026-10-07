@@ -27,8 +27,11 @@ _PAID = [
     ("list_backend_controllers", ("{}",), "_fetch_canister_controllers"),
     ("list_subnets", (), "_fetch_cmc_creatable_subnets"),
     ("refresh_fx", (), "_refresh_fx_gen"),
+    ("get_cycles", (), "_treasury_watch_begin_gen"),
+    ("refresh_canisters", ('{"canisters": ["demo"]}',), "_fetch_canister_status_result_gen"),
 ]
-_NOT_MONITOR = [row for row in _PAID if row[0] not in ("refresh_treasury", "refresh_fx")]
+_MONITOR_ALLOWED = ("refresh_treasury", "refresh_fx", "get_cycles", "refresh_canisters")
+_NOT_MONITOR = [row for row in _PAID if row[0] not in _MONITOR_ALLOWED]
 
 
 class _P:
@@ -172,6 +175,14 @@ def test_paid_updates_reject_anonymous_before_calling_out(main, monkeypatch, met
     assert "anonymous" in body["error"]
 
 
+@pytest.mark.parametrize("method,args,outbound", [r for r in _PAID if r[0] in ("get_cycles", "refresh_canisters")])
+def test_cycle_scans_reject_a_signed_in_stranger(main, monkeypatch, method, args, outbound):
+    _FakeIC.who = "stranger-principal"
+    monkeypatch.setattr(main, outbound, _explode)
+    body = _body(_returned(getattr(main, method)(*args)))
+    assert "not a commander" in body["error"]
+
+
 @pytest.mark.parametrize("method,args,outbound", _NOT_MONITOR)
 def test_monitor_cannot_call_other_paid_updates(main, monkeypatch, method, args, outbound):
     s = main._settings()
@@ -273,11 +284,22 @@ def test_browse_relays_registered_row_and_own_canisters(main, monkeypatch):
         assert seen[-1] == (cid, "__browse__")
 
 
-def test_browse_commander_may_relay(main, monkeypatch):
-    from models import Section
+def test_browse_is_limited_to_the_callers_stands_and_sections(main, monkeypatch):
+    from models import Canister, Section, Stand
 
-    Section(name="product")
-    monkeypatch.setattr(main, "is_commander", lambda entity, principal: principal == ALICE)
+    def put(section, stand, name, cid):
+        sec = Section[section] or Section(name=section)
+        dk = Stand[stand] or Stand(name=stand)
+        dk.section = sec
+        row = Canister(name=name)
+        row.canister_id = cid
+        row.stand = dk
+
+    put("product", "shop", "shop-backend", "ccccc-cc")
+    put("other", "blog", "blog-backend", "ddddd-dd")
+    commands = {"product"}
+    monkeypatch.setattr(main, "is_commander",
+                        lambda entity, principal: principal == ALICE and entity.name in commands)
     seen = []
 
     def fake(cid, method, arg):
@@ -287,9 +309,22 @@ def test_browse_commander_may_relay(main, monkeypatch):
         return "{}"
 
     monkeypatch.setattr(main, "_canister_call", fake)
-    body = json.loads(_returned(main.canister_browse(json.dumps({"canister_id": SELF}))))
-    assert body["ok"] is True, body
-    assert seen == [SELF]
+
+    def browse(cid):
+        return json.loads(_returned(main.canister_browse(json.dumps({"canister_id": cid}))))
+
+    assert browse("ccccc-cc")["ok"] is True
+    for cid in ("ddddd-dd", SELF):
+        body = browse(cid)
+        assert body["ok"] is False and "unauthorized" in body["error"], cid
+    assert seen == ["ccccc-cc"]
+
+    commands = {"blog"}
+    assert browse("ddddd-dd")["ok"] is True, "a stand commander browses that stand"
+
+    commands = {main.SYNTHETIC_SECTION_CONDUCTOR}
+    Section(name=main.SYNTHETIC_SECTION_CONDUCTOR)
+    assert browse(SELF)["ok"] is True, "an orchestra commander browses everything"
 
 
 def test_exec_still_relays_an_unregistered_canister_for_a_controller(main, monkeypatch):

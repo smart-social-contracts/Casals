@@ -144,6 +144,10 @@ class Canister(Entity, TimestampedMixin):
     ic_controllers = String(max_length=1024, default="")
     # Commander-assigned labels (JSON array of strings), separate from wasm_type tags.
     user_tags_json = String(max_length=512, default="")
+    # Optional Basilisk endpoints the installed code exposes (JSON array, e.g.
+    # ["shell", "browse"]), read from its Candid after every install. Empty =>
+    # never checked.
+    features_json = String(max_length=128, default="")
     # Teardown order for stand destruction: lower values are destroyed first;
     # ties break on canister name. Set per sheet canister (default 50).
     teardown_priority = Integer(default=50)
@@ -280,6 +284,10 @@ class Settings(Entity):
     # 0 = only Casals controllers may add sections/stands; 1 = anyone with II
     # may (deployer can flip this for experimentation / dev / demo).
     open_access = Integer(default=0)
+    # 1 = anyone, anonymous included, may read the orchestra (tree, sheet,
+    # events, cycles). Set from the sheet's `environments.<env>.public_read`
+    # on every `set_sheet`. 0 = controllers, the monitor and commanders only.
+    public_read = Integer(default=0)
     # The WASM store: a certified-assets canister (`casals-store`) holding every
     # artifact Casals installs, addressed by key `/<namespace>/<path>`
     # (see wasm_store.py). Bound by `bind_conductor` from the sheet.

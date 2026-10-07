@@ -35,6 +35,10 @@ class _FakeIC:
         return _P(SELF)
 
     @staticmethod
+    def is_controller(_principal):
+        return True
+
+    @staticmethod
     def time():
         return 0
 

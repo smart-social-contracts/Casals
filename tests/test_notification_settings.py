@@ -136,8 +136,19 @@ def test_commanders_change_only_the_settings_their_permissions_cover(main, monke
         "controller": False, "general": False, "cycles": True, "monitor": False, "notifications": False,
     }
     monkeypatch.setattr(main, "_is_controller", lambda: True)
+    monkeypatch.setattr(main, "_stored_network", lambda: "local")
     assert _call(main.set_settings, {"open_access": True})["ok"]
     assert all(_call(main.get_my_settings)["editable_settings"].values())
+
+
+def test_open_access_is_refused_off_a_local_network(main, monkeypatch):
+    monkeypatch.setattr(main, "_is_controller", lambda: True)
+    for network in ("ic", ""):
+        monkeypatch.setattr(main, "_stored_network", lambda network=network: network)
+        res = _call(main.set_settings, {"open_access": True})
+        assert res["ok"] is False and "local network" in res["error"]
+        assert not main._settings().open_access
+        assert _call(main.set_settings, {"open_access": False})["ok"], "turning it off is always allowed"
 
 
 _ADDRESS_FIELDS = (
@@ -157,6 +168,9 @@ def _seed_addresses(main):
     s.alert_emails = "ops@example.test"
     s.monitor_enabled = 1
     s.monitor_principal = MONITOR
+    # Address hiding is checked on a public orchestra, where anyone reads
+    # the settings; a private one refuses them outright (below).
+    s.public_read = 1
 
 
 def _queries(main):
@@ -212,3 +226,23 @@ def test_public_queries_hide_notification_addresses(main, monkeypatch):
     _FakeIC.who = "notify-commander"
     monkeypatch.setattr(main, "_conductor_commander_can", lambda perm: perm == "notification.manage")
     _assert_addresses_clear(_queries(main))
+
+
+def test_private_orchestra_gives_outsiders_name_and_version_only(main, monkeypatch):
+    monkeypatch.setattr(main, "treasury_deposit_fields", lambda: {})
+    _seed_addresses(main)
+    main._settings().public_read = 0
+    monkeypatch.setattr(_FakeIC, "canister_balance128", staticmethod(lambda: 0), raising=False)
+
+    for who in (main.ANONYMOUS, "stranger"):
+        _FakeIC.who = who
+        meta = json.loads(main.casals_metadata())
+        assert set(meta) == {"version", "orchestra_name", "public_read", "canister_type"}
+        assert meta["public_read"] is False
+        refused = json.loads(main.get_settings())
+        assert refused["ok"] is False and "unauthorized" in refused["error"]
+        status = json.loads(main.get_status())
+        assert status["public_read"] is False
+
+    _FakeIC.who = MONITOR
+    assert "monitor_principal" in json.loads(main.get_settings())

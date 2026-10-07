@@ -28,6 +28,7 @@ from sheetv2 import (
     ResolveContext,
     env_block,
     env_monitor,
+    env_public_read,
     find_canister,
     iter_canisters,
     materialize,
@@ -50,7 +51,7 @@ def _now_ns() -> int:
 
 
 def _resolve_ctx(env: str, sheet: dict) -> ResolveContext:
-    doc_env, _, _ = load_sheet_doc()
+    _, doc_env, _ = load_sheet_doc()
     use_env = env or doc_env or "local"
     return ResolveContext(
         deployer=sheet_deployer(),
@@ -76,8 +77,22 @@ def set_sheet_impl(args: dict) -> dict:
     # Pre-bound rows have no stand yet: home them where the sheet declares them.
     ensure_core_layout()
     monitor_changed = apply_sheet_monitor(env_monitor(sheet, env))
-    _append_event("sheet_set", "", {"env": env, "sheet_hash": sh, "monitor_changed": monitor_changed})
-    return {"sheet_hash": sh, "env": env, "warnings": [], "monitor_changed": monitor_changed}
+    public_read = apply_sheet_public_read(env_public_read(sheet, env))
+    _append_event("sheet_set", "", {"env": env, "sheet_hash": sh, "monitor_changed": monitor_changed,
+                                    "public_read": public_read})
+    return {"sheet_hash": sh, "env": env, "warnings": [], "monitor_changed": monitor_changed,
+            "public_read": public_read}
+
+
+def apply_sheet_public_read(public_read: bool) -> bool:
+    """Make ``Settings.public_read`` what the sheet declares. Every
+    ``set_sheet`` applies it; there is no other way to change it."""
+    s = _settings()
+    want = 1 if public_read else 0
+    if int(s.public_read or 0) != want:
+        s.public_read = want
+        _append_event("settings_changed", "", {"public_read": bool(want), "source": "sheet"})
+    return bool(want)
 
 
 def apply_sheet_monitor(monitor: dict | None) -> bool:

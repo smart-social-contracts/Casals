@@ -72,6 +72,16 @@ PUBLISHED_ACCESS_CODE_CHECKSUMS = frozenset({
 })
 
 
+def is_published_code(value) -> bool:
+    """True for the checksum of an access code this repository publishes."""
+    if not is_code_checksum(value):
+        return False
+    try:
+        return normalize_code_checksum(value) in PUBLISHED_ACCESS_CODE_CHECKSUMS
+    except ValueError:
+        return False
+
+
 def checksums_equal(a: str, b: str) -> bool:
     """Constant-time comparison of two checksum strings."""
     a_b = (a or "").encode("utf-8")

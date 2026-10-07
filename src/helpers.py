@@ -15,7 +15,8 @@ from services import BasiliskIntrospectionService
 
 # ── Application constants ─────────────────────────────────────────────────
 
-VERSION = "0.1.0"
+# Matches version.txt (scripts/check_versions.py, run in CI).
+VERSION = "0.6.0"
 # The anonymous principal — used to detect unauthenticated callers.
 ANONYMOUS = "2vxsx-fae"
 

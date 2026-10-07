@@ -46,7 +46,7 @@ from auth import (
     _parse_permissions,
     reject_unknown_permissions,
 )
-from access_code import code_checksum, is_code_checksum, normalize_code_checksum
+from access_code import code_checksum, is_code_checksum, is_published_code, normalize_code_checksum
 from commanders import (
     add_commander,
     apply_commanders_from_spec,
@@ -57,6 +57,7 @@ from commanders import (
     entity_has_permission,
     has_entry,
     is_commander,
+    is_reserved_method,
     legacy_commander_principal,
     lifecycle_access,
     list_commanders,
@@ -742,9 +743,9 @@ def _require_operator(*, allow_monitor: bool = False) -> None:
 
     Anonymous is rejected before any further work (and therefore before an
     inter-canister call). The enabled monitor principal is accepted only
-    when ``allow_monitor`` is set: ``refresh_treasury`` and ``refresh_fx``,
-    which the off-chain monitor already calls. It is not a pass for the
-    other paid reads.
+    when ``allow_monitor`` is set: ``refresh_treasury``, ``refresh_fx``,
+    ``get_cycles`` and ``refresh_canisters``, which the off-chain monitor
+    calls. It is not a pass for the other paid reads.
     """
     if _caller() == ANONYMOUS:
         raise Exception("unauthorized: anonymous caller")
@@ -930,6 +931,110 @@ def _caller_may_read_notification_addresses() -> bool:
     )
 
 
+# ── Reads ────────────────────────────────────────────────────────────────────
+#
+# With ``public_read`` off (the default; the sheet's
+# ``environments.<env>.public_read`` turns it on) the orchestra's queries
+# answer controllers, the enabled monitor and commanders only. Section and
+# stand commanders see their own part of the tree, events and cycles.
+
+def _public_read() -> bool:
+    return bool(int(getattr(_settings(), "public_read", 0) or 0))
+
+
+def _reader_scope():
+    """``None`` when the caller may read the whole orchestra, else
+    ``(sections, stands)``: the names of what they command. Raises for a
+    caller who may read nothing."""
+    if _public_read() or _is_controller() or _is_monitor_caller():
+        return None
+    caller = _caller()
+    if caller == ANONYMOUS:
+        raise Exception("unauthorized: sign in to read this orchestra")
+    list(Section.instances())
+    list(Stand.instances())
+    sections = set()
+    for sec in Section.instances():
+        if is_commander(sec, caller):
+            if sec.name == SYNTHETIC_SECTION_CONDUCTOR:
+                return None
+            sections.add(sec.name)
+    stands = {dk.name for dk in Stand.instances() if is_commander(dk, caller)}
+    if not sections and not stands:
+        raise Exception("unauthorized: caller is not a commander of this orchestra")
+    return (frozenset(sections), frozenset(stands))
+
+
+def _require_reader() -> None:
+    _reader_scope()
+
+
+def _scoped_canister_ids(scope) -> set:
+    """Canister ids on the sections and stands of a scoped reader."""
+    sections, stands = scope
+    out = set()
+    for c in iter_instances(Canister):
+        dk = c.stand
+        sec = dk.section if dk else None
+        if c.canister_id and ((sec is not None and sec.name in sections) or (dk is not None and dk.name in stands)):
+            out.add(c.canister_id)
+    return out
+
+
+def _redact_code_checksums(value):
+    """Every ``sha256:`` access-code checksum replaced, at any depth. A
+    checksum lets anyone test guesses offline; only commander assigners
+    need to see one."""
+    if isinstance(value, dict):
+        return {k: _redact_code_checksums(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_code_checksums(v) for v in value]
+    if is_code_checksum(value):
+        return "sha256:hidden"
+    return value
+
+
+def _hide_unclaimed_slots(section_views: list) -> None:
+    """Drop unclaimed ``sha256:`` slots from the tree for callers who cannot
+    assign commanders in that section."""
+    if _can_assign_commanders():
+        return
+    caller = _caller()
+    for view in section_views:
+        sec = Section[view["name"]]
+        if sec is not None and entity_has_permission(sec, caller, "commander.assign"):
+            continue
+        view["commanders"] = [c for c in view.get("commanders") or [] if not c.get("unclaimed")]
+        for stand in view.get("stands") or []:
+            stand["commanders"] = [c for c in stand.get("commanders") or [] if not c.get("unclaimed")]
+
+
+def _stored_network() -> str:
+    """The stored sheet's ``environments.<env>.network`` (``""`` with no sheet)."""
+    sheet, env, _sh = load_sheet_doc()
+    block = ((sheet or {}).get("environments") or {}).get(env or "local")
+    return ((block or {}).get("network") or "").strip().lower() if isinstance(block, dict) else ""
+
+
+def _refuse_published_codes(principals) -> None:
+    """Off a local network, a commander slot never takes the checksum of an
+    access code this repository publishes: anyone can redeem it."""
+    if not any(is_published_code(p) for p in principals):
+        return
+    if _stored_network() != "local":
+        raise Exception("this access code is published in the Casals repository; "
+                        "it is only allowed on a local network")
+
+
+def _spec_commander_principals(spec: dict) -> list:
+    """Every principal a create_section / create_stand spec names."""
+    out = []
+    for item in spec.get("commanders") or []:
+        out.append(item.get("principal") if isinstance(item, dict) else item)
+    out.append(spec.get("commander_principal"))
+    return [p for p in out if isinstance(p, str)]
+
+
 def _require_can_add_in_section(sec, permission: str) -> None:
     """Authorize a structural add (stand / canister registration) scoped to a
     section. Allowed for: Casals controllers; open-access authenticated callers;
@@ -1030,15 +1135,28 @@ def get_status() -> text:
         "cycle_samples_max_id": CycleSample.max_id(),
         "orchestra_name": orchestra_name,
         "orchestra_description": orchestra_description,
+        "public_read": _public_read(),
     })
 
 
 @query
 def casals_metadata() -> text:
+    """Platform settings. A caller who may not read the orchestra gets only
+    its name, version and ``public_read``."""
     s = _settings()
     orchestra_name, orchestra_description = _orchestra_identity()
+    try:
+        _require_reader()
+    except Exception:
+        return json.dumps({
+            "version": VERSION,
+            "orchestra_name": orchestra_name,
+            "public_read": False,
+            "canister_type": "orchestrator",
+        })
     body = {
         "version": VERSION,
+        "public_read": _public_read(),
         "open_access": bool(s.open_access),
         "wasm_store_canister_id": s.wasm_store_canister_id,
         "casals_frontend_canister_id": s.casals_frontend_canister_id,
@@ -1096,17 +1214,32 @@ def icrc10_supported_standards() -> text:
 
 @query
 def get_tree() -> text:
+    """Sections, stands and canisters. A section or stand commander sees only
+    what they command (``scoped: true``)."""
+    try:
+        scope = _reader_scope()
+    except Exception as e:
+        return _err(str(e))
     list(Section.instances())
     list(Stand.instances())
     list(Canister.instances())
-    sections = [_section_view(s) for s in Section.instances()]
+    sections = []
+    for s in Section.instances():
+        view = _section_view(s)
+        if scope is not None and s.name not in scope[0]:
+            view["stands"] = [d for d in view["stands"] if d["name"] in scope[1]]
+            if not view["stands"]:
+                continue
+        sections.append(view)
+    _hide_unclaimed_slots(sections)
     sections.sort(key=lambda x: (not is_core_section_name(x["name"]), x["name"]))
     return json.dumps({
         "sections": sections,
         # Invariant: every canister lives on a stand. Anything listed here is
         # a row `ensure_core_layout` could not home (no sheet declares it).
-        "orphans": [_canister_view(s) for s in orphan_canisters()],
+        "orphans": [_canister_view(s) for s in orphan_canisters()] if scope is None else [],
         "principal_aliases": _principal_aliases_map(),
+        "scoped": scope is not None,
     })
 
 
@@ -1128,6 +1261,10 @@ def _require_not_core_section(sec, action: str) -> None:
 
 @query
 def list_sections() -> text:
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     list(Section.instances())
     out = [
         {
@@ -1146,6 +1283,10 @@ def list_sections() -> text:
 @query
 def list_authorized_wasms(args: text) -> text:
     """Args (JSON, optional): {"section": str}. Empty/absent => all."""
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
@@ -1197,23 +1338,35 @@ def list_authorized_wasms(args: text) -> text:
 
 @query
 def get_settings() -> text:
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     return casals_metadata()
+
+
+_EVENTS_TAKE_MAX = 2000
 
 
 @query
 def get_events(args: text) -> text:
-    """Args (JSON, optional): {"canister_id": str, "btype": str, "take": int}."""
+    """Args (JSON, optional): {"canister_id": str, "btype": str, "take": int}.
+    A section or stand commander gets only events about their canisters."""
+    try:
+        scope = _reader_scope()
+    except Exception as e:
+        return _err(str(e))
     try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
         params = {}
     cid = (params.get("canister_id") or "").strip()
     btype = (params.get("btype") or "").strip()
-    take = max(1, int(params.get("take", 100)))
+    take = max(1, min(int(params.get("take", 100)), _EVENTS_TAKE_MAX))
     total = OrchestrationEvent.count()
     # Load only the tail we need, then optionally filter by canister / event type.
     # When filtering, over-fetch by a factor so we have enough after the filter.
-    filtered = bool(cid or btype)
+    filtered = bool(cid or btype or scope is not None)
     fetch = take if not filtered else min(total, take * 10)
     max_oid = OrchestrationEvent.max_id() if total else 0
     start_id = max(1, max_oid - fetch + 1)
@@ -1222,6 +1375,9 @@ def get_events(args: text) -> text:
         evs = [e for e in evs if e.canister_id == cid]
     if btype:
         evs = [e for e in evs if e.btype == btype]
+    if scope is not None:
+        mine = _scoped_canister_ids(scope)
+        evs = [e for e in evs if e.canister_id in mine]
     # Deduplicate by idx — keep the last-written entry for each idx value to
     # defend against corrupted data left by earlier bugs where _last_event()
     # could return None and reset the counter to 0.
@@ -1231,6 +1387,7 @@ def get_events(args: text) -> text:
     evs = list(seen_idx.values())
     evs.sort(key=lambda e: e.idx, reverse=True)
     evs = evs[:take]
+    show = (lambda p: p) if _can_assign_commanders() else _redact_code_checksums
     return json.dumps([
         {
             "idx": e.idx,
@@ -1239,7 +1396,7 @@ def get_events(args: text) -> text:
             "timestamp_secs": int(e.timestamp_secs or 0),
             "canister_id": e.canister_id,
             "caller": e.caller,
-            "payload": json.loads(e.payload_json or "{}"),
+            "payload": show(json.loads(e.payload_json or "{}")),
             "self_hash": e.self_hash,
             "parent_hash": e.parent_hash,
         }
@@ -1251,6 +1408,10 @@ def get_events(args: text) -> text:
 def get_canister_deployment(args: text) -> text:
     """Args (JSON): {"canister_id": str}. Latest install/upgrade/reinstall."""
     try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
+    try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
         params = {}
@@ -1260,11 +1421,21 @@ def get_canister_deployment(args: text) -> text:
     return json.dumps(find_canister_deployment(cid))
 
 
+def _sheet_reply(build) -> str:
+    """A sheet-wide read: refused to outsiders before ``build()`` runs, and
+    access-code checksums hidden from callers who cannot assign commanders."""
+    _require_reader()
+    body = build()
+    if not _can_assign_commanders():
+        body = _redact_code_checksums(body)
+    return _ok(**body)
+
+
 @query
 def get_sheet() -> text:
     """Return the stored v2 sheet (§5.5)."""
     try:
-        return _ok(**get_sheet_impl())
+        return _sheet_reply(get_sheet_impl)
     except Exception as e:
         return _err(str(e))
 
@@ -1342,6 +1513,10 @@ def set_section_arrangement(args: text) -> text:
 @query
 def list_pool() -> text:
     """Return every canister Casals has ever created and its pool status."""
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     list(PooledCanister.instances())
     out = [
         {"canister_id": p.canister_id, "status": p.status, "canister_name": p.canister_name,
@@ -1478,7 +1653,7 @@ def apply(args: text) -> Async[text]:
 def export_sheet() -> text:
     """The sheet this conductor was built from, with its name → id bindings (§5.5)."""
     try:
-        return _ok(**export_sheet_impl())
+        return _sheet_reply(export_sheet_impl)
     except Exception as e:
         return _err(str(e))
 
@@ -1488,14 +1663,13 @@ def get_plan(args: text) -> text:
     """Return a stored plan by hash (§5.5); without a hash, the most recent
     plan (`plan: null` when none was ever computed)."""
     try:
+        _require_reader()
         params = json.loads(args) if args else {}
         ph = (params.get("plan_hash") or "").strip()
-        if not ph:
-            return _ok(plan=get_plan_record(latest_plan_hash()))
-        plan = get_plan_record(ph)
-        if not plan:
+        plan = get_plan_record(ph or latest_plan_hash())
+        if ph and not plan:
             return _err("plan not found")
-        return _ok(plan=plan)
+        return _sheet_reply(lambda: {"plan": plan})
     except Exception as e:
         return _err(str(e))
 
@@ -1504,7 +1678,7 @@ def get_plan(args: text) -> text:
 def last_apply() -> text:
     """Return the last apply result (§5.5)."""
     try:
-        return _ok(apply=load_apply_result())
+        return _sheet_reply(lambda: {"apply": load_apply_result()})
     except Exception as e:
         return _err(str(e))
 
@@ -1513,7 +1687,7 @@ def last_apply() -> text:
 def get_bindings() -> text:
     """Return name → canister id bindings (§5.5)."""
     try:
-        return _ok(**get_bindings_impl())
+        return _sheet_reply(get_bindings_impl)
     except Exception as e:
         return _err(str(e))
 
@@ -1717,6 +1891,9 @@ def set_settings(args: text) -> text:
         _require_settings_fields(params)
         s = _settings()
         if "open_access" in params:
+            if params["open_access"] and _stored_network() != "local":
+                return _err("open_access lets any signed-in principal create stands; "
+                            "it is only allowed on a local network")
             s.open_access = 1 if params["open_access"] else 0
         if "wasm_store_canister_id" in params:
             s.wasm_store_canister_id = (params["wasm_store_canister_id"] or "").strip()
@@ -1832,6 +2009,7 @@ def create_section(args: text) -> text:
         if Section[name] is not None:
             return _err(f"section '{name}' already exists")
         reject_spec_permissions(params)
+        _refuse_published_codes(_spec_commander_principals(params))
         sec = Section(name=name)
         sec.description = (params.get("description") or "")[:512]
         apply_commanders_from_spec(sec, params)
@@ -1909,6 +2087,7 @@ def create_stand(args: text) -> text:
             return _ok(name=name, members=merged, created=False)
         _require_can_add_in_section(sec, "stand.create")
         _require_bounded_initial_commanders(sec, params)
+        _refuse_published_codes(_spec_commander_principals(params))
         dk = Stand(name=name)
         dk.section = sec
         dk.description = (params.get("description") or "")[:512]
@@ -2287,6 +2466,7 @@ def set_commander(args: text) -> text:
             return _err("commander_principal is required")
         if is_code_checksum(commander):
             commander = normalize_code_checksum(commander)
+            _refuse_published_codes([commander])
         perms = params.get("permissions", None)
         if perms is not None:
             reject_unknown_permissions(perms)
@@ -2497,12 +2677,10 @@ def _canonicalize_calls(raw, allowed: list) -> list:
 
 
 def _require_can_edit_calls(entity, section, target: str) -> None:
-    """Same reach as ``set_permissions``. A commander with ``commander.assign``
-    may edit their own call list; other entries stay under bounded delegation
-    without changing the permission grant."""
+    """Same reach as ``set_permissions``, bounded delegation included: nobody
+    but a controller edits their own call list, which would let a commander
+    widen what they may run."""
     if _is_controller():
-        return
-    if (target or "").strip() == _caller():
         return
     current = permissions_for(entity, target) if has_entry(entity, target) else None
     _require_bounded_delegation(entity, section, target, current)
@@ -2512,8 +2690,8 @@ def _require_can_edit_calls(entity, section, target: str) -> None:
 def set_canister_calls(args: text) -> text:
     """Replace one commander's canister-call whitelist.
 
-    Authorization matches ``set_permissions``. A commander holding
-    ``commander.assign`` may edit their own list. Args (JSON):
+    Authorization matches ``set_permissions``: never the caller's own list,
+    and no ``__``-prefixed method. Args (JSON):
     {"section"|"stand": str, "commander_principal": str,
      "calls": [{"canister": str, "method": str}]}.
     ``canister`` is a name or id in that scope. The stored value is the id.
@@ -2608,6 +2786,8 @@ def call_canister(args: text) -> Async[text]:
             return _err("arg must be a string")
         if len(arg) > _CALL_ARG_MAX:
             return _err(f"arg exceeds {_CALL_ARG_MAX} characters")
+        if is_reserved_method(method):
+            return _err("unauthorized: __ methods are not callable here; shell and browse have their own endpoints")
         grants = runnable_calls(
             caller, _call_scopes(), _orchestra_canisters(),
             orchestra_section=SYNTHETIC_SECTION_CONDUCTOR,
@@ -2635,6 +2815,20 @@ def call_canister(args: text) -> Async[text]:
         return _err(str(e))
 
 
+_CLAIM_MAX_FAILURES = 5
+_CLAIM_WINDOW_SECS = 3600
+_CLAIM_TRACKED_MAX = 2000
+# Wrong-code timestamps per caller. Heap only: an upgrade resets it.
+_claim_failures: dict = {}
+
+
+def _record_claim_failure(caller: str, now: int, recent: list) -> None:
+    if len(_claim_failures) >= _CLAIM_TRACKED_MAX:
+        for p in [p for p, ts in _claim_failures.items() if not ts or now - max(ts) >= _CLAIM_WINDOW_SECS]:
+            del _claim_failures[p]
+    _claim_failures[caller] = [*recent, now]
+
+
 @update
 def claim_commander(args: text) -> text:
     """Redeem an access code: the caller becomes the commander of every
@@ -2647,6 +2841,7 @@ def claim_commander(args: text) -> text:
     so a later sheet apply recognises the claim).
 
     Args (JSON): {"code": str}. Returns {ok, claimed: [{scope, name, permissions}]}.
+    A caller gets ``_CLAIM_MAX_FAILURES`` wrong codes per ``_CLAIM_WINDOW_SECS``.
     """
     try:
         caller = _caller()
@@ -2656,6 +2851,10 @@ def claim_commander(args: text) -> text:
         code = (params.get("code") or "").strip()
         if not code:
             return _err("code is required")
+        now = _now_secs()
+        recent = [t for t in _claim_failures.get(caller, []) if now - t < _CLAIM_WINDOW_SECS]
+        if len(recent) >= _CLAIM_MAX_FAILURES:
+            return _err("too many wrong access codes; try again later")
         checksum = code_checksum(code)
         claimed = []
         list(Section.instances())
@@ -2672,7 +2871,9 @@ def claim_commander(args: text) -> text:
                 continue
             claimed.append({"scope": "stand", "name": stand.name, "permissions": _parse_permissions(perms)})
         if not claimed:
+            _record_claim_failure(caller, now, recent)
             return _err("invalid or already used access code")
+        _claim_failures.pop(caller, None)
         _append_event("commander_claimed", "", {
             "commander": caller,
             "code_checksum": checksum,
@@ -2693,6 +2894,10 @@ def list_permissions() -> text:
 @query
 def list_principal_aliases() -> text:
     """Return all persisted principal aliases (friendly display names)."""
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     list(PrincipalAlias.instances())
     return json.dumps({"aliases": _list_principal_aliases_view()})
 
@@ -3113,6 +3318,7 @@ def store_bundle(args: text) -> Async[text]:
 def list_upload_grants() -> text:
     """Open Commit grants on the store: [{principal, expires_at, granted_by, key_prefix}]."""
     try:
+        _require_reader()
         list(StoreUploadGrant.instances())
         return json.dumps([_store_uploads.grant_view(g) for g in StoreUploadGrant.instances()])
     except Exception as e:
@@ -3877,6 +4083,10 @@ def deploy_content(args: text) -> Async[text]:
 def content_deploys(_args: text) -> text:
     """Progress of every content deploy this conductor has run since its last
     upgrade (``deploy_content``), newest first."""
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     rows = sorted(_content_deploys.values(), key=lambda r: -int(r.get("updated_at") or 0))
     return _ok(deploys=rows)
 
@@ -4114,15 +4324,31 @@ def _resolve_relay_canister(params: dict) -> tuple:
     return None, ""
 
 
+def _may_browse(st) -> bool:
+    if _is_controller():
+        return True
+    caller = _caller()
+    list(Section.instances())
+    orchestra = Section[SYNTHETIC_SECTION_CONDUCTOR]
+    if orchestra is not None and is_commander(orchestra, caller):
+        return True
+    dk = st.stand if st is not None else None
+    if dk is None:
+        return False
+    return is_commander(dk, caller) or (dk.section is not None and is_commander(dk.section, caller))
+
+
 @update
 def canister_browse(args: text) -> Async[text]:
     """Read-only introspection of a Basilisk canister's stable data.
 
     Relays to the canister's `__browse__` query (only present when the canister
     was built with `__basilisk_features__` including "browse"). Callers must be
-    a controller or an authenticated commander. The relay target must be a
-    registered Canister or one of this conductor's own canisters (backend,
-    frontend, wasm store). Anonymous is rejected before any relay.
+    a controller, an orchestra commander, or a commander of the target's
+    stand or section. The relay target must be a registered Canister or one
+    of this conductor's own canisters (backend, frontend, wasm store), which
+    only controllers and orchestra commanders may browse. Anonymous is
+    rejected before any relay.
 
     Args (JSON): {"canister": "<name>", "canister_id": "<id>", "query": {<browse query>}}
       Either canister name or canister_id is required. query defaults to
@@ -4135,6 +4361,8 @@ def canister_browse(args: text) -> Async[text]:
         if not _browse_canister_known(st, cid):
             target = params.get("canister") or params.get("canister_id") or ""
             return _err(f"unknown canister '{target}'")
+        if not _may_browse(st):
+            return _err("unauthorized: caller does not command this canister's stand or section")
         q = params.get("query") or {"action": "schema"}
         reply = yield from _canister_call(cid, "__browse__", json.dumps(q))
         try:
@@ -4181,9 +4409,14 @@ def get_cycles() -> Async[text]:
     Reads each canister's balance from the management canister (an update, hence
     not a query) and reports the conductor's own treasury. Returns:
     {treasury:{...}, totals:{...}, canisters:[{section,stand,name,...,status}]}.
+
+    One management call per canister, paid by the conductor: controllers,
+    commanders and the enabled monitor only.
     """
     stage = "init"
     try:
+        stage = "auth"
+        _require_operator(allow_monitor=True)
         stage = "warm_instances"
         iter_instances(Section)
         iter_instances(Stand)
@@ -4352,7 +4585,14 @@ def get_cycles_cached() -> text:
     """Return the last stored get_cycles snapshot (instant query, may be stale).
     Reads from stable memory (CyclesSnapshot entity) so it survives upgrades.
     Falls back to the in-memory volatile cache (_cycles_cache) if the entity
-    is not yet populated. Returns {} if nothing is stored yet."""
+    is not yet populated. Returns {} if nothing is stored yet.
+
+    A section or stand commander gets the treasury block and their own
+    canisters only."""
+    try:
+        scope = _reader_scope()
+    except Exception as e:
+        return _err(str(e))
     raw = ""
     try:
         snap = CyclesSnapshot["singleton"]
@@ -4363,11 +4603,14 @@ def get_cycles_cached() -> text:
     if not raw:
         raw = _cycles_mod._cycles_cache or ""
     if not raw:
-        return json.dumps(_build_cycles_stub_report())
-    try:
-        data = json.loads(raw)
+        data = _build_cycles_stub_report()
+    else:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
         if not isinstance(data, dict):
-            return raw
+            return raw if scope is None else _err("cycles snapshot unreadable")
         treasury = data.setdefault("treasury", {})
         if isinstance(treasury, dict):
             for k, v in treasury_deposit_fields().items():
@@ -4376,9 +4619,17 @@ def get_cycles_cached() -> text:
         data.setdefault("canisters", [])
         data.setdefault("totals", {"canisters": 0, "ok": 0, "low": 0, "critical": 0, "frozen": 0, "error": 0})
         data.setdefault("pool", {"total": 0, "free": 0, "in_use": 0, "canisters": []})
-        return json.dumps(data)
-    except Exception:
-        return raw
+    if scope is not None:
+        mine = _scoped_canister_ids(scope)
+        data["canisters"] = [c for c in data.get("canisters") or [] if c.get("canister_id") in mine]
+        if data.get("snapshot_incomplete"):
+            data["totals"] = {"canisters": len(data["canisters"]), "ok": 0, "low": 0,
+                              "critical": 0, "frozen": 0, "error": 0}
+        else:
+            data["totals"] = _recompute_cycle_totals(data["canisters"])
+        data["pool"] = {"total": 0, "free": 0, "in_use": 0, "canisters": []}
+        data["scoped"] = True
+    return json.dumps(data)
 
 
 def _recompute_cycle_totals(canisters_out):
@@ -4543,8 +4794,10 @@ def refresh_canisters(args: text) -> Async[text]:
     balance is always refreshed; unlisted canister rows are left as in the
     last snapshot. Response includes ``partial_refresh: true`` and
     ``refreshed_canisters`` so the UI can warn that other rows may be stale.
+    Controllers, commanders and the enabled monitor only.
     """
     try:
+        _require_operator(allow_monitor=True)
         params = json.loads(args) if args else {}
         names = params.get("canisters")
         if not isinstance(names, list) or not names:
@@ -4681,6 +4934,10 @@ def get_cycle_history(args: text) -> text:
     burn over a window = Δdeposited − Δcycles).
     """
     try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
+    try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
         params = {}
@@ -4748,6 +5005,10 @@ def get_treasury_flow(args: text) -> text:
     Returns one page of matching flow events plus ``has_more`` / ``before_id``.
     The frontend stitches pages and aggregates into buckets (see api.ts).
     """
+    try:
+        _require_reader()
+    except Exception as e:
+        return _err(str(e))
     try:
         params = json.loads(args) if args else {}
     except (json.JSONDecodeError, ValueError):
