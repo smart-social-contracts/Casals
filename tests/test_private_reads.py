@@ -159,6 +159,13 @@ def test_controllers_and_the_monitor_read_everything(main, monkeypatch):
     _FakeIC.who = "monitor-principal"
     assert _q(main.get_tree)["scoped"] is False
     assert len(_q(main.get_events, "{}")) == 4
+    # Every query casals-monitor makes (backend/app/casals.py).
+    meta = _q(main.casals_metadata)
+    assert meta["monitor_principal"] == "monitor-principal" and "notification_email_entries" in meta
+    for fn, args in ((main.get_cycles_cached, ()), (main.get_treasury_flow, ("{}",)), (main.list_pool, ()),
+                     (main.get_settings, ()), (main.get_cycle_history, ("{}",))):
+        res = _q(fn, *args)
+        assert not (isinstance(res, dict) and "unauthorized" in str(res.get("error", ""))), (fn.__name__, res)
 
     _FakeIC.who = "controller-principal"
     monkeypatch.setattr(main, "_is_controller", lambda: True)
