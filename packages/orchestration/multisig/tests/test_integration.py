@@ -183,6 +183,11 @@ def _ping_action(target: str) -> str:
 
 def _controllers(canister_id: str) -> set[str]:
     out = icp(["canister", "status", canister_id, "-n", "local"]).stdout
+    # icp >= 1.5 prints one "controller: <principal>" line each; older
+    # versions list them comma-separated on the "Controllers:" line.
+    each = re.findall(r"^\s*controller:\s*(\S+)\s*$", out, flags=re.M)
+    if each:
+        return set(each)
     line = next(row for row in out.splitlines() if "Controllers:" in row)
     return {p.strip() for p in line.split("Controllers:", 1)[1].split(",") if p.strip()}
 
