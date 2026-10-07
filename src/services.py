@@ -147,7 +147,8 @@ class AssetCanisterService(Service):
 # "browse"]` exposes two extra methods. Casals (the canister's controller)
 # relays calls to them so the dashboard can inspect / drive a canister
 # without the operator being a direct controller of that canister:
-#   __browse__(query)  read-only data introspection — public @query
+#   __browse__(query)  read-only data introspection — @query, controller-only
+#                      since Basilisk 0.16 (public before)
 #   __shell__(code)    runs Python in the canister  — controller-only @update
 # The on-chain method names are the dunders themselves; the runtime maps a
 # Service method to the wire name by its __name__, so the names must match.
