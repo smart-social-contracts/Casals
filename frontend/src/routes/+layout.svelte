@@ -4,7 +4,8 @@
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied, claimAccessCode } from '$lib/auth';
-  import { backendCanisterId, casalsMetadata, getTree, initLocalNetworkHints } from '$lib/api';
+  import { backendCanisterId, casalsMetadata, getStatus, getTree, initLocalNetworkHints } from '$lib/api';
+  import { readGate } from '$lib/readGate';
   import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
@@ -23,6 +24,13 @@
   // an `apply` that adds one shows up without a reload.
   let hasMultisig = $state(false);
   let navSections = $derived(visibleNavSections(NAV_SECTIONS, { multisig: hasMultisig }));
+
+  let publicRead = $state<boolean | null>(null);
+  let statusFailed = $state(false);
+  let authReady = $state(false);
+  let gate = $derived(
+    readGate({ publicRead, statusFailed, authReady, authenticated: $isAuthenticated, path: currentPath }),
+  );
 
   async function refreshFacilities() {
     try {
@@ -56,6 +64,7 @@
 
   $effect(() => {
     void currentPath;
+    void $isAuthenticated;
     void refreshFacilities();
   });
 
@@ -69,7 +78,18 @@
   });
 
   onMount(() => {
-    void initAuth(backendCanisterId());
+    void initAuth(backendCanisterId())
+      .catch(() => {})
+      .finally(() => {
+        authReady = true;
+      });
+    void getStatus()
+      .then((s) => {
+        publicRead = s.public_read !== false;
+      })
+      .catch(() => {
+        statusFailed = true;
+      });
     void initLocalNetworkHints();
     void casalsMetadata()
       .then((md) => {
@@ -235,7 +255,19 @@
 
     <div class="flex-1 flex flex-col min-w-0">
       <main class="flex-1 w-full px-4 sm:px-6 py-6 sm:py-8">
-        {@render children?.()}
+        {#if gate === 'open'}
+          {@render children?.()}
+        {:else if gate === 'sign-in'}
+          <div class="card max-w-md mx-auto mt-12 p-8 text-center space-y-4">
+            <h1 class="text-lg font-semibold text-primary-900">This orchestra is private</h1>
+            <p class="text-sm text-primary-500">
+              Its commanders and controllers can see it after signing in with Internet Identity.
+            </p>
+            <button class="btn-primary" onclick={handleLogin}>Login with Internet Identity</button>
+          </div>
+        {:else}
+          <p class="text-sm text-primary-400 text-center mt-12">Loading…</p>
+        {/if}
       </main>
 
       <BuildFooter />

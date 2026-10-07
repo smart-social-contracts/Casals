@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "postbuild": "node scripts/write-version-file.js",
+    "postbuild": "node scripts/write-version-file.js && node scripts/write-csp-hashes.js",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --threshold error"
   },

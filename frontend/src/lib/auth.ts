@@ -68,12 +68,19 @@ export async function claimAccessCode(code: string): Promise<ClaimedSlot[]> {
 const II_URL = 'https://identity.ic0.app';
 
 /** Internet Identity delegation lifetime (nanoseconds). */
-const SESSION_MAX_TTL_NS = BigInt(7 * 24 * 60 * 60 * 1_000_000_000); // 1 week
+const SESSION_MAX_TTL_NS = BigInt(8 * 60 * 60 * 1_000_000_000); // 8 hours
 
-/** AuthClient idle manager logs out after 10m by default; disable so TTL governs session length. */
+/** A session with no input for this long is logged out. */
+const SESSION_IDLE_MS = 30 * 60 * 1000;
+
 const AUTH_CLIENT_OPTIONS = {
-  idleOptions: { disableIdle: true },
-} as const;
+  idleOptions: {
+    idleTimeout: SESSION_IDLE_MS,
+    onIdle: () => {
+      void logout();
+    },
+  },
+};
 
 async function _getAuthClient(): Promise<AuthClient> {
   if (!_authClient) _authClient = await AuthClient.create(AUTH_CLIENT_OPTIONS);

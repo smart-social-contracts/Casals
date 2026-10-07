@@ -25,6 +25,9 @@ const config = {
       strict: false,
     }),
     version: { name: appVersion() },
+    // Inline scripts run by hash only. The asset canister's header policy
+    // (static/.ic-assets.json5) gets the same hashes at postbuild.
+    csp: { mode: 'hash', directives: { 'script-src': ['self'] } },
   },
 };
 

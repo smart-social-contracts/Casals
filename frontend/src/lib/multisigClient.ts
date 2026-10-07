@@ -2,6 +2,8 @@ import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
+import { get } from 'svelte/store';
+import { identity as sessionIdentity } from './auth';
 import { DEPLOY_CONTENT_METHOD, deployBundleArgJson } from './contentDeploy';
 import { actionSummary } from './multisigProposalView';
 import { icHost, isLocalHost } from './ic-host';
@@ -172,7 +174,9 @@ function mapProposal(p: {
 }
 
 async function agent(identity?: Identity | null): Promise<HttpAgent> {
-  const a = createHttpAgent({ host: icHost(), identity: identity ?? undefined });
+  // Proposals and events are readable by signers and controllers only (unless
+  // the multisig sets public_read), so reads sign with the session identity.
+  const a = createHttpAgent({ host: icHost(), identity: identity ?? get(sessionIdentity) ?? undefined });
   if (isLocalHost()) await a.fetchRootKey().catch(() => {});
   return a;
 }

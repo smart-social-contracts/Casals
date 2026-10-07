@@ -5,6 +5,7 @@ import { get } from 'svelte/store';
 import { identity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
+import { safeLinkUrl } from './safeUrl';
 import type { EditableSettings } from './settingsAccess';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,9 @@ export interface Canister {
   snapshot_id: string;
   subnet?: string;
   controllers?: string[];
+  /** Optional Basilisk endpoints (`shell`, `browse`) read from the canister's
+   * Candid at install; null when the conductor never checked. */
+  features?: string[] | null;
 }
 
 export interface CommanderGrant {
@@ -112,6 +116,8 @@ export interface Status {
   events: number;
   orchestra_name?: string;
   orchestra_description?: string;
+  /** When false, only commanders and controllers can read the orchestra. */
+  public_read?: boolean;
 }
 
 export interface Metadata {
@@ -592,23 +598,32 @@ function _makeActorWithAgent(agent: HttpAgent): any {
   return Actor.createActor(idlFactory, { agent, canisterId });
 }
 
+let _signedActor: { id: Identity; actor: Promise<any> } | null = null;
+
 async function _actorAs(id: Identity): Promise<any> {
+  if (_signedActor?.id === id) return _signedActor.actor;
   // Authenticated calls need their own agent with the user identity.
   // We must also fetch (and await) the root key into this agent on local
   // networks — sharing the shared-agent's key promise is not enough because
   // each HttpAgent instance manages its own root key buffer.
-  const agent = createHttpAgent({ identity: id, host: icHost() });
-  if (IS_LOCAL) await agent.fetchRootKey();
-  return _makeActorWithAgent(agent);
+  const actor = (async () => {
+    const agent = createHttpAgent({ identity: id, host: icHost() });
+    if (IS_LOCAL) await agent.fetchRootKey();
+    return _makeActorWithAgent(agent);
+  })();
+  _signedActor = { id, actor };
+  actor.catch(() => {
+    if (_signedActor?.actor === actor) _signedActor = null;
+  });
+  return actor;
 }
 
+/** Reads sign with the session identity when there is one: the conductor
+ * answers anonymous callers only when its sheet sets `public_read`. */
 async function _actor(authenticated = false): Promise<any> {
-  if (authenticated) {
-    const id = get(identity);
-    if (!id) throw new Error('Not authenticated');
-    return _actorAs(id);
-  }
-  // Anonymous reads share the single agent whose root key is already fetched.
+  const id = get(identity);
+  if (id) return _actorAs(id);
+  if (authenticated) throw new Error('Not authenticated');
   const agent = await _readyAgent();
   return _makeActorWithAgent(agent);
 }
@@ -1818,7 +1833,7 @@ export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRe
     import('@dfinity/ic-management'),
     import('@dfinity/principal'),
   ]);
-  const agent = createHttpAgent({ host: icHost() });
+  const agent = createHttpAgent({ host: icHost(), identity: get(identity) ?? undefined });
   if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
   const mgmt = ICManagementCanister.create({ agent });
   const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));
@@ -1993,11 +2008,11 @@ export function candidUiUrl(canisterId: string): string {
   if (!canisterId) return '#';
   if (IS_LOCAL) {
     const ui = _candidUiCanisterId();
+    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
     if (!ui) {
       // Fallback until deploy injects PUBLIC_CANISTER_ID:candid_ui (see Makefile).
-      return `${icHost()}/?canisterId=${canisterId}`;
+      return `http://localhost:${port}/?canisterId=${canisterId}`;
     }
-    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
     return `http://${ui}.localhost:${port}/?id=${canisterId}`;
   }
   return `https://${MAINNET_CANDID_UI}.icp0.io/?id=${canisterId}`;
@@ -2032,6 +2047,7 @@ export function canisterLink(canister: {
       ? candidUiUrl(canister.canister_id)
       : canisterUrl(canister.canister_id);
   }
-  if (canister.url) return canister.url;
+  const own = safeLinkUrl(canister.url);
+  if (own) return own;
   return canister.kind === 'backend' ? candidUiUrl(canister.canister_id) : canisterUrl(canister.canister_id);
 }

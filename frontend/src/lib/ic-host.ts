@@ -6,10 +6,9 @@ export function isLocalHost(): boolean {
   );
 }
 
-/** IC HTTP boundary/gateway URL. icp-cli's local network uses the page port
- * (typically 8000); older dfx setups used 4943. */
+/** IC HTTP boundary/gateway URL. A local gateway answers the API on every
+ * canister host, so the page's own origin keeps the CSP at `connect-src 'self'`. */
 export function icHost(): string {
   if (!isLocalHost()) return 'https://icp-api.io';
-  const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
-  return `http://localhost:${port}`;
+  return window.location.origin;
 }

@@ -52,3 +52,23 @@ def test_properties_later_rules_win_per_header():
 def test_no_rule_means_no_properties():
     props = ic_assets.properties_for("/x.bin", ic_assets.rules_from('[{"match": "*.js", "headers": {"A": "b"}}]'))
     assert props["headers"] is None and not ic_assets.any_properties(props)
+
+
+def _shipped_ui_policy() -> dict:
+    path = os.path.join(os.path.dirname(__file__), "..", "frontend", "static", ".ic-assets.json5")
+    with open(path, encoding="utf-8") as f:
+        rules = ic_assets.rules_from(f.read())
+    return {key: ic_assets.properties_for(key, rules)["headers"] for key in ("/index.html", "/version")}
+
+
+def test_shipped_ui_policy_has_no_inline_scripts_or_local_origins():
+    headers = _shipped_ui_policy()
+    csp = headers["/index.html"]["Content-Security-Policy"]
+    script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert "'unsafe-inline'" not in script_src
+    assert "localhost" not in csp and "127.0.0.1" not in csp
+    assert "clipboard-read=()" in headers["/index.html"]["Permissions-Policy"]
+
+
+def test_shipped_ui_version_file_is_not_cross_origin():
+    assert "Access-Control-Allow-Origin" not in _shipped_ui_policy()["/version"]

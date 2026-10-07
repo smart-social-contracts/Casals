@@ -58,6 +58,21 @@ export function hasBasiliskFeatures(wasmType: WasmType): boolean {
   return t === 'basilisk' || t === 'baton';
 }
 
+/** Which optional Basilisk endpoints a canister has. The conductor records
+ * them from the installed Candid; canisters installed before it did (null)
+ * fall back to the wasm type. */
+export function canisterFeatures(canister: {
+  features?: string[] | null;
+  wasm_type?: string;
+  wasm_key?: string;
+}): { browse: boolean; shell: boolean } {
+  if (Array.isArray(canister.features)) {
+    return { browse: canister.features.includes('browse'), shell: canister.features.includes('shell') };
+  }
+  const legacy = hasBasiliskFeatures(resolveWasmType(canister));
+  return { browse: legacy, shell: legacy };
+}
+
 export function wasmTypeBadgeClass(tag: string): string {
   const key = tag.toLowerCase();
   if (key === 'frontend' || key === 'assets') return 'badge-frontend';

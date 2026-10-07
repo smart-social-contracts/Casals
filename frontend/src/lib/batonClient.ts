@@ -2,6 +2,8 @@ import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
+import { get } from 'svelte/store';
+import { identity as sessionIdentity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
 import { isBatonTerminal } from './batonPipelineLog';
 
@@ -53,6 +55,11 @@ export interface BatonConfig {
   /** The casals-store store Baton pulls WASMs from. */
   wasm_store_canister_id?: string;
   upgrade_approval_policy?: BatonUpgradeApprovalPolicy;
+  version?: string;
+  /** Days before a pending action expires; 0 turns expiry off. */
+  action_expiry_days?: number;
+  /** When false, only commanders and controllers can read the baton. */
+  public_read?: boolean;
 }
 
 export interface BatonCommander {
@@ -94,8 +101,18 @@ function parseJsonText<T>(raw: unknown): T {
   return JSON.parse(asText(raw)) as T;
 }
 
+/** Baton 1.6.0 answers reads from non-commanders with `{ok: false, error}`. */
+function parseRead<T>(raw: unknown): T {
+  const data = parseJsonText<unknown>(raw);
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const refusal = data as { ok?: unknown; error?: unknown };
+    if (refusal.ok === false) throw new Error(String(refusal.error || 'the baton refused the read'));
+  }
+  return data as T;
+}
+
 async function agent(identity?: Identity | null): Promise<HttpAgent> {
-  const a = createHttpAgent({ host: icHost(), identity: identity ?? undefined });
+  const a = createHttpAgent({ host: icHost(), identity: identity ?? get(sessionIdentity) ?? undefined });
   if (isLocalHost()) await a.fetchRootKey().catch(() => {});
   return a;
 }
@@ -110,22 +127,22 @@ async function batonActor(canisterId: string, identity?: Identity | null) {
 
 export async function batonGetConfig(canisterId: string): Promise<BatonConfig> {
   const a = await batonActor(canisterId);
-  return parseJsonText(await a.get_config());
+  return parseRead(await a.get_config());
 }
 
 export async function batonListCommanders(canisterId: string): Promise<BatonCommander[]> {
   const a = await batonActor(canisterId);
-  return parseJsonText(await a.list_commanders());
+  return parseRead(await a.list_commanders());
 }
 
 export async function batonListManaged(canisterId: string): Promise<string[]> {
   const a = await batonActor(canisterId);
-  return parseJsonText(await a.list_managed_canisters());
+  return parseRead(await a.list_managed_canisters());
 }
 
 export async function batonListActions(canisterId: string): Promise<BatonActionRecord[]> {
   const a = await batonActor(canisterId);
-  return parseJsonText(await a.list_actions());
+  return parseRead(await a.list_actions());
 }
 
 export async function batonGetAction(canisterId: string, actionId: string): Promise<BatonActionRecord | null> {
@@ -241,7 +258,7 @@ export async function batonRunPipeline(
 export async function batonGetCommanderPolicy(canisterId: string): Promise<unknown | null> {
   const a = await batonActor(canisterId);
   const raw = await a.get_commander_policy();
-  return parseJsonText(raw);
+  return parseRead(raw);
 }
 
 export async function batonSetConfig(

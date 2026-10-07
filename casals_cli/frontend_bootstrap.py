@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
+import urllib.parse
 
 from sheetv2 import CONDUCTOR_NAMES
 
@@ -70,6 +72,33 @@ def ensure_asset_build(key: str, project_root: str, progress=None) -> str:
     return os.path.abspath(dist_path)
 
 
+LOCAL_ORIGINS = ("http://localhost:*", "http://127.0.0.1:*", "http://*.localhost:*")
+_CSP_HEADER = re.compile(r'("Content-Security-Policy"\s*:\s*")([^"]*)(")')
+
+
+def with_local_origins(policy_text: str) -> str:
+    """The `.ic-assets.json5` text with the local replica's origins added to
+    connect-src and img-src. The shipped policy has none; only a deploy to a
+    local network gets them."""
+    def widen(csp: str) -> str:
+        out = []
+        for directive in (d.strip() for d in csp.split(";")):
+            if not directive:
+                continue
+            parts = directive.split()
+            if parts[0] in ("connect-src", "img-src"):
+                parts += [o for o in LOCAL_ORIGINS if o not in parts]
+            out.append(" ".join(parts))
+        return "; ".join(out) + ";"
+
+    return _CSP_HEADER.sub(lambda m: m.group(1) + widen(m.group(2)) + m.group(3), policy_text)
+
+
+def _is_local_network(network_url: str) -> bool:
+    host = urllib.parse.urlparse(network_url or "").hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
 def write_icp_project(
     project_dir: str, casals_dist: str, env: str, network_url: str, conductor_ids: dict[str, str]
 ) -> None:
@@ -90,6 +119,12 @@ def write_icp_project(
         dest = os.path.join(project_dir, f"{icp_name}_dist")
         shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(target, dest)
+        policy = os.path.join(dest, ".ic-assets.json5")
+        if _is_local_network(network_url) and os.path.isfile(policy):
+            with open(policy, encoding="utf-8") as f:
+                text = f.read()
+            with open(policy, "w", encoding="utf-8") as f:
+                f.write(with_local_origins(text))
     root_key = "mainnet" if env in ("ic", "production") or "icp0.io" in (network_url or "") else "fetch"
     settings = ""
     canisters = ""

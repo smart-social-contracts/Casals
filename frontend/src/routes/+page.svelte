@@ -58,7 +58,7 @@
     OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
     CanisterCycles, CanisterDeployment, IcRunStatus, Sheet,
   } from '$lib/api';
-  import { isAuthenticated, isController, principal } from '$lib/auth';
+  import { canDo, isAuthenticated, isController, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
   import FormModal from '$lib/components/FormModal.svelte';
@@ -72,7 +72,7 @@
   import CanisterControllersBadge from '$lib/components/CanisterControllersBadge.svelte';
   import { warmSubnetGeoCache } from '$lib/subnetGeo';
   import { governanceConsoleUrl } from '$lib/orchestrationNav';
-  import { resolveWasmType, hasBasiliskFeatures } from '$lib/canisterTypes';
+  import { resolveWasmType, canisterFeatures } from '$lib/canisterTypes';
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import {
@@ -128,6 +128,7 @@
   let canisterDetailsErr = $state<Record<string, string>>({});
 
   // Basilisk introspection (only for canisters built with __basilisk_features__).
+  const canShell = canDo('canister.shell');
   let browseData = $state<Record<string, unknown>>({});
   let browseErr = $state<Record<string, string>>({});
   let browseBusy = $state<Record<string, boolean>>({});
@@ -1530,7 +1531,7 @@
           {/if}
         </div>
 
-        {#if hasBasiliskFeatures(resolveWasmType(canister))}
+        {#if canisterFeatures(canister).browse && $isAuthenticated}
           <div>
             <div class="flex items-center justify-between mb-1.5">
               <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Inspect (Basilisk)</div>
@@ -1546,29 +1547,29 @@
               <div class="text-xs text-primary-400">Read-only view of the canister's stable data. Click “Browse data”.</div>
             {/if}
           </div>
+        {/if}
 
-          {#if $isAuthenticated}
-            <div>
-              <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Python console (Basilisk)</div>
-              <textarea
-                class="input font-mono text-[11px] w-full min-h-[64px] resize-y"
-                placeholder={'print(1 + 1)\nimport sys; print(sys.version)'}
-                bind:value={consoleCode[canister.canister_id]}
-                onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(canister); } }}
-              ></textarea>
-              <div class="flex items-center justify-between mt-1.5">
-                <span class="text-[11px] text-primary-400">Runs server-side via <span class="font-mono">__shell__</span>. ⌘/Ctrl+Enter to run.</span>
-                <button class="btn-secondary btn-sm" disabled={consoleBusy[canister.canister_id]} onclick={() => runExec(canister)}>
-                  {consoleBusy[canister.canister_id] ? 'Running…' : 'Run'}
-                </button>
-              </div>
-              {#if consoleErr[canister.canister_id]}
-                <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[canister.canister_id]}</div>
-              {:else if consoleOut[canister.canister_id] !== undefined}
-                <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[canister.canister_id] || '(no output)'}</pre>
-              {/if}
+        {#if canisterFeatures(canister).shell && $canShell === true}
+          <div>
+            <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Python console (Basilisk)</div>
+            <textarea
+              class="input font-mono text-[11px] w-full min-h-[64px] resize-y"
+              placeholder={'print(1 + 1)\nimport sys; print(sys.version)'}
+              bind:value={consoleCode[canister.canister_id]}
+              onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(canister); } }}
+            ></textarea>
+            <div class="flex items-center justify-between mt-1.5">
+              <span class="text-[11px] text-primary-400">Runs server-side via <span class="font-mono">__shell__</span>. ⌘/Ctrl+Enter to run.</span>
+              <button class="btn-secondary btn-sm" disabled={consoleBusy[canister.canister_id]} onclick={() => runExec(canister)}>
+                {consoleBusy[canister.canister_id] ? 'Running…' : 'Run'}
+              </button>
             </div>
-          {/if}
+            {#if consoleErr[canister.canister_id]}
+              <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[canister.canister_id]}</div>
+            {:else if consoleOut[canister.canister_id] !== undefined}
+              <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[canister.canister_id] || '(no output)'}</pre>
+            {/if}
+          </div>
         {/if}
       {/if}
     </div>

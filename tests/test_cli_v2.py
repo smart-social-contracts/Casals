@@ -1538,3 +1538,37 @@ class TestMultisigPublicRead:
         assert sync_public_read(ic, "ms-id", ic.deployer, False) == "proposed"
         proposal = next(a[0] for op, a, _ in ic.calls if op == "icp" and "propose" in a[0])
         assert 'method = "set_public_read"; arg_json = "false"' in proposal[-1]
+
+
+class TestLocalAssetPolicy:
+    POLICY = (
+        '[\n  // comment kept\n  { "match": "**/*", "headers": { "Content-Security-Policy": '
+        "\"default-src 'self'; script-src 'self'; connect-src 'self' https://icp-api.io; img-src 'self' data:;\" } },\n]"
+    )
+
+    def test_local_origins_go_into_connect_and_img_src_only(self):
+        from casals_cli.frontend_bootstrap import with_local_origins
+
+        out = with_local_origins(self.POLICY)
+        assert "// comment kept" in out
+        assert "connect-src 'self' https://icp-api.io http://localhost:* http://127.0.0.1:* http://*.localhost:*;" in out
+        assert "img-src 'self' data: http://localhost:* http://127.0.0.1:* http://*.localhost:*;" in out
+        assert "script-src 'self';" in out
+        assert with_local_origins(out) == out
+
+    @pytest.mark.parametrize("url,local", [
+        ("http://127.0.0.1:8000", True),
+        ("http://localhost:4943", True),
+        ("https://icp-api.io", False),
+    ])
+    def test_only_a_local_deploy_widens_the_policy(self, tmp_path, url, local):
+        from casals_cli.frontend_bootstrap import write_icp_project
+
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / ".ic-assets.json5").write_text(self.POLICY)
+        (dist / "index.html").write_text("<html></html>")
+        write_icp_project(str(tmp_path / "proj"), str(dist), "local" if local else "staging", url, {})
+        deployed = (tmp_path / "proj" / "casals_frontend_dist" / ".ic-assets.json5").read_text()
+        assert ("http://localhost:*" in deployed) is local
+        assert (dist / ".ic-assets.json5").read_text() == self.POLICY

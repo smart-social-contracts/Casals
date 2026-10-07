@@ -35,6 +35,7 @@
   import SubnetWhitelistPanel from '$lib/components/SubnetWhitelistPanel.svelte';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
+  import { safeLinkUrl } from '$lib/safeUrl';
   import { formatCommitDatetime, shortSha } from '$lib/buildIdentity';
 
   let copied = $state(false);
@@ -879,7 +880,11 @@
                 {/if}
                 {#if hostedInfo?.terms_url}
                   <dt class="text-primary-500">Terms</dt>
-                  <dd><a class="text-emerald-700 underline" href={hostedInfo.terms_url} target="_blank" rel="noreferrer">{hostedInfo.terms_url}</a></dd>
+                  {#if safeLinkUrl(hostedInfo.terms_url)}
+                    <dd><a class="text-emerald-700 underline" href={safeLinkUrl(hostedInfo.terms_url)} target="_blank" rel="noopener noreferrer">{hostedInfo.terms_url}</a></dd>
+                  {:else}
+                    <dd class="text-primary-900 break-all">{hostedInfo.terms_url}</dd>
+                  {/if}
                 {/if}
               </dl>
               {#if canMonitor && serviceLookupNeeded(hostedBase, monitorServiceUrl)}

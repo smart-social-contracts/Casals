@@ -8,8 +8,7 @@
     "ignore": false,
     "headers": {
       "Content-Type": "application/json",
-      "Cache-Control": "no-cache, must-revalidate",
-      "Access-Control-Allow-Origin": "*"
+      "Cache-Control": "no-cache, must-revalidate"
     }
   },
   {
@@ -17,7 +16,10 @@
     "security_policy": "standard",
     "headers": {
       "Cache-Control": "public, max-age=0, must-revalidate",
-      "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* http://*.localhost:* https://icp0.io https://*.icp0.io https://icp-api.io https://ic-api.internetcomputer.org https://*.ic0.app https://identity.ic0.app https://service.ic-casals.tech https://service.staging.ic-casals.tech; img-src 'self' data: http://*.localhost:* https://*.icp0.io https://*.ic0.app; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src https://identity.ic0.app https://*.ic0.app; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;"
+      // postbuild (scripts/write-csp-hashes.js) adds the inline-script hashes
+      // to script-src. `casals up` on a local network adds the localhost
+      // origins to connect-src and img-src.
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'; worker-src 'self' blob:; connect-src 'self' https://icp0.io https://*.icp0.io https://icp-api.io https://ic-api.internetcomputer.org https://*.ic0.app https://identity.ic0.app https://service.ic-casals.tech https://service.staging.ic-casals.tech; img-src 'self' data: https://*.icp0.io https://*.ic0.app; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src https://identity.ic0.app https://*.ic0.app; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests;"
     },
     "allow_raw_access": false
   },
@@ -30,7 +32,7 @@
   {
     "match": "**/*",
     "headers": {
-      "Permissions-Policy": "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(self), clipboard-write=(self), gamepad=(), speaker-selection=(), conversion-measurement=(), focus-without-user-activation=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), sync-script=(), trust-token-redemption=(), window-placement=(), vertical-scroll=()"
+      "Permissions-Policy": "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), clipboard-write=(self), gamepad=(), speaker-selection=(), conversion-measurement=(), focus-without-user-activation=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), sync-script=(), trust-token-redemption=(), window-placement=(), vertical-scroll=()"
     }
   },
   {
