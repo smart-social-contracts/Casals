@@ -10,7 +10,8 @@ build: build-baton build-multisig
 build-baton:
 	cd $(BATON_DIR) && \
 		CANISTER_CANDID_PATH=./baton.did \
-		python3 -m basilisk baton src/main.py
+		python3 -m basilisk baton src/main.py && \
+		python3 $(CASALS_ROOT)/scripts/fix_asset_permission_did.py baton.did
 
 build-multisig:
 	cd $(MULTISIG_DIR) && icp build multisig 2>/dev/null || true

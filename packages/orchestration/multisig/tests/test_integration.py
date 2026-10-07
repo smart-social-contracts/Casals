@@ -175,8 +175,10 @@ def _fresh_multisig(signers: list[str], threshold: int) -> str:
 
 
 def _ping_action(target: str) -> str:
+    # CallCanister sends one text argument and accepts any text reply; Basilisk
+    # refuses extra arguments, so the method must take exactly one text.
     return (f'variant {{ CallCanister = record {{ canister = principal "{target}"; '
-            f'method = "list_commanders"; arg_json = "" }} }}')
+            f'method = "get_action"; arg_json = "ping" }} }}')
 
 
 def _controllers(canister_id: str) -> set[str]:
@@ -217,7 +219,7 @@ class TestMultisigHardening:
         outs = [p.communicate(timeout=300)[0] for p in procs]
         assert sum("not pending" in o for o in outs) == 1, outs
         assert _status(ms, pid) == "executed"
-        events = icp(["canister", "call", ms, "list_events", "--query", "-n", "local"]).stdout
+        events = icp(["canister", "call", ms, "list_events", "()", "--query", "-n", "local"]).stdout
         assert events.count(f'detail = "proposal {pid}"') == 1, events
 
     def test_a_removed_signers_approval_stops_counting(self, multisig_env):
@@ -236,12 +238,12 @@ class TestMultisigHardening:
         _propose(ms, _ping_action(multisig_env["baton_id"]))
         ensure_identity("orch-msig-outsider")
         with pytest.raises(RuntimeError, match="unauthorized"):
-            icp(["canister", "call", ms, "list_proposals", "--query", "--identity", "orch-msig-outsider", "-n", "local"])
+            icp(["canister", "call", ms, "list_proposals", "()", "--query", "--identity", "orch-msig-outsider", "-n", "local"])
         refused = call(ms, "set_public_read", "true", identity="orch-msig-outsider")
         assert refused.get("ok") is False, refused
         assert call(ms, "set_public_read", "true").get("ok") is True
         try:
-            out = icp(["canister", "call", ms, "list_proposals", "--query", "--identity", "orch-msig-outsider", "-n", "local"]).stdout
+            out = icp(["canister", "call", ms, "list_proposals", "()", "--query", "--identity", "orch-msig-outsider", "-n", "local"]).stdout
             assert "CallCanister" in out
         finally:
             assert call(ms, "set_public_read", "false").get("ok") is True

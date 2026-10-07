@@ -138,6 +138,18 @@ def _status_name(status_val) -> str:
     return str(status_val)
 
 
+def action_expired(record: dict[str, Any], expiry_days: int, now: int) -> bool:
+    """A PENDING or APPROVED action older than ``expiry_days`` (0: never).
+    Actions already past PRE_FLIGHT run to the end: stopping one midway
+    would strand its canisters."""
+    if expiry_days <= 0:
+        return False
+    if record.get("status") not in (STATUS_PENDING, STATUS_APPROVED):
+        return False
+    proposed_at = int(record.get("proposed_at") or 0)
+    return now - proposed_at > expiry_days * 86_400 * 1_000_000_000
+
+
 def accelerant_eligible(record: dict[str, Any], accelerant_days: int, now: int) -> bool:
     if record.get("approval_path"):
         return False
@@ -222,8 +234,11 @@ def phase_snapshot_gen(record: dict[str, Any]) -> Async[tuple[bool, str]]:
 
 
 def check_test_trap(config_store, phase: str, upgrade_index: int) -> None:
-    """Integration-test hook: trap mid-pipeline when config test_trap matches."""
-    raw = config_store.get("test_trap") if config_store else None
+    """Integration-test hook: trap mid-pipeline when config test_trap matches.
+    Inert unless the baton was installed with ``test_hooks = opt true``."""
+    if not config_store or config_store.get("test_hooks") != "1":
+        return
+    raw = config_store.get("test_trap")
     if not raw:
         return
     try:

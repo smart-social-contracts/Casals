@@ -13,12 +13,13 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 sys.path.insert(0, SRC)
 
 from auth import AuthError, has_capability, is_top_commander, require_capability, require_top_commander
-from config import DEFAULT_ACCELERANT_DAYS, DEFAULT_BAKE_WINDOW_SECONDS
+from config import DEFAULT_ACCELERANT_DAYS, DEFAULT_ACTION_EXPIRY_DAYS, DEFAULT_BAKE_WINDOW_SECONDS
 from models import (
     CAP_PROPOSE,
     CAP_SUBMIT_APPROVAL,
     STATUS_APPROVED,
     STATUS_COMPLETE,
+    STATUS_EXPIRED,
     STATUS_PENDING,
     STATUS_PRE_FLIGHT,
     STATUS_REJECTED_PREFLIGHT,
@@ -34,6 +35,8 @@ from models import (
 from pipeline import (
     accelerant_eligible,
     action_bake_window_seconds,
+    action_expired,
+    check_test_trap,
     resume_status_for_execute,
     validate_payload_targets,
     validate_payload_bake_window,
@@ -191,6 +194,80 @@ class TestAccelerant:
         rec["approval_path"] = "governance"
         now = rec["proposed_at"] + 999 * 86_400 * 1_000_000_000
         assert not accelerant_eligible(rec, DEFAULT_ACCELERANT_DAYS, now)
+
+
+class TestActionExpiry:
+    DAY = 86_400 * 1_000_000_000
+
+    @pytest.mark.parametrize("status", [STATUS_PENDING, STATUS_APPROVED])
+    def test_waiting_actions_expire(self, status):
+        rec = {**_sample_action(), "status": status}
+        assert not action_expired(rec, DEFAULT_ACTION_EXPIRY_DAYS, rec["proposed_at"] + 30 * self.DAY)
+        assert action_expired(rec, DEFAULT_ACTION_EXPIRY_DAYS, rec["proposed_at"] + 30 * self.DAY + 1)
+
+    def test_started_actions_never_expire(self):
+        rec = {**_sample_action(), "status": STATUS_UPGRADING}
+        assert not action_expired(rec, DEFAULT_ACTION_EXPIRY_DAYS, rec["proposed_at"] + 999 * self.DAY)
+
+    def test_zero_turns_expiry_off(self):
+        rec = {**_sample_action(), "status": STATUS_PENDING}
+        assert not action_expired(rec, 0, rec["proposed_at"] + 999 * self.DAY)
+
+    def test_expired_is_terminal(self):
+        assert is_terminal(STATUS_EXPIRED)
+
+
+class TestTestHooks:
+    def _trapped(self, monkeypatch, cfg):
+        import pipeline
+
+        traps = []
+        monkeypatch.setattr(pipeline, "ic", type("IC", (), {"trap": staticmethod(traps.append)}))
+        check_test_trap(cfg, STATUS_UPGRADING, 0)
+        return traps
+
+    def test_trap_inert_without_test_hooks(self, monkeypatch):
+        trap = json.dumps({"phase": STATUS_UPGRADING, "after_index": 0, "message": "boom"})
+        assert self._trapped(monkeypatch, FakeMap({"test_trap": trap})) == []
+
+    def test_trap_fires_with_test_hooks(self, monkeypatch):
+        trap = json.dumps({"phase": STATUS_UPGRADING, "after_index": 0, "message": "boom"})
+        assert self._trapped(monkeypatch, FakeMap({"test_trap": trap, "test_hooks": "1"})) == ["boom"]
+
+
+class TestBatonSourceShape:
+    """Rules enforced in main.py, which imports the canister runtime."""
+
+    SRC_MAIN = open(os.path.join(SRC, "main.py")).read()
+
+    def test_reads_are_gated(self):
+        for name in ("get_commander_policy", "list_commanders", "list_managed_canisters",
+                     "get_config", "get_action", "list_actions"):
+            body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
+            assert "_reader_refusal()" in body, name
+
+    def test_action_ids_are_never_reused(self):
+        assert self.SRC_MAIN.count("_new_action_id(params)") == 2
+        assert "action_id already used" in self.SRC_MAIN
+
+    def test_cycle_reads_are_managed_only(self):
+        body = self.SRC_MAIN.split("def read_cycle_balance(", 1)[1].split("\n@", 1)[0]
+        assert "_managed.contains_key(cid)" in body
+
+    def test_test_trap_needs_install_flag(self):
+        body = self.SRC_MAIN.split("def set_test_trap(", 1)[1].split("\n@", 1)[0]
+        assert '_config.get("test_hooks") != "1"' in body
+        assert "test_hooks: Opt[bool]" in self.SRC_MAIN
+
+    def test_overrides_are_checked_when_filed(self):
+        for name in ("propose_managed_upgrade", "propose_asset_provision"):
+            body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
+            assert 'effective_approval_policy({"payload": payload}, _config)' in body, name
+
+    def test_expiry_on_approve_and_execute(self):
+        for name in ("submit_approval", "submit_multisig_accelerant", "_execute_action_gen"):
+            body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0].split("\n@", 1)[0]
+            assert "_expire_if_stale(record)" in body, name
 
 
 class TestAuth:

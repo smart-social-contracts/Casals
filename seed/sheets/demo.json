@@ -87,8 +87,8 @@
       },
       {
         "family": "orchestration-baton",
-        "version": "1.3.0",
-        "source": "local:seed/templates/orchestration-baton@1.3.0.wasm.gz"
+        "version": "1.6.0",
+        "source": "local:seed/templates/orchestration-baton@1.6.0.wasm.gz"
       },
       {
         "family": "hello-world-motoko",
@@ -161,7 +161,7 @@
               "name": "motoko-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.3.0",
+              "wasm": "orchestration-baton@1.6.0",
               "install_arg": {
                 "top_commander": "$self"
               },
@@ -227,7 +227,7 @@
               "name": "rust-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.3.0",
+              "wasm": "orchestration-baton@1.6.0",
               "install_arg": {
                 "top_commander": "$self"
               },
@@ -293,7 +293,7 @@
               "name": "python-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@1.3.0",
+              "wasm": "orchestration-baton@1.6.0",
               "install_arg": {
                 "top_commander": "$self"
               },

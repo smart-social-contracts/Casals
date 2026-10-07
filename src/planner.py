@@ -29,6 +29,7 @@ from sheetv2 import (
     canonical_json,
     declared_subnet,
     env_block,
+    env_public_read,
     sheet_hash,
     subnet_selection_active,
     wasm_ref,
@@ -68,6 +69,7 @@ PHASE = {
 _BATON_TERMINAL = frozenset({
     "REJECTED", "REJECTED_PREFLIGHT", "FAILED_STOP", "FAILED_SNAPSHOT",
     "REVERTED_PARTIAL_FAILURE", "REVERTED_FAILED_VERIFY", "COMPLETE", "FAILED_PROVISION",
+    "EXPIRED",
 })
 
 
@@ -539,15 +541,21 @@ class _PlanContext:
              for c in bat_live.get("commanders") or [] if isinstance(c, dict) and c.get("principal")),
             key=lambda c: c["principal"],
         )
+        live_config = bat_live.get("config") or {}
         desired_threshold = int(baton_spec.get("threshold") or 1)
-        live_threshold = int(((bat_live.get("config") or {}).get("upgrade_approval_policy") or {}).get("threshold") or 0)
-        if desired_cmd != live_cmd or desired_threshold != live_threshold:
+        live_threshold = int((live_config.get("upgrade_approval_policy") or {}).get("threshold") or 0)
+        current = {"commanders": live_cmd, "threshold": live_threshold}
+        desired = {"commanders": desired_cmd, "threshold": desired_threshold}
+        # Batons before 1.6.0 have no public_read; their state is always public.
+        if "public_read" in live_config:
+            current["public_read"] = bool(live_config.get("public_read"))
+            desired["public_read"] = env_public_read(self.sheet, self.env)
+        if current != desired:
             self.add(
                 "configure_baton",
                 {"name": baton_name, "canister_id": bid, "section": sname, "stand": dname},
                 f"configure baton {baton_name}",
-                current={"commanders": live_cmd, "threshold": live_threshold},
-                desired={"commanders": desired_cmd, "threshold": desired_threshold},
+                current=current, desired=desired,
                 section_order=si, stand_order=sj,
             )
         if baton_hand_off_mode(baton_spec):

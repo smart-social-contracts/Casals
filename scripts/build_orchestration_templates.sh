@@ -29,7 +29,7 @@ embed_candid() { # <wasm-path> <did-path>
 emit() { # <name> <wasm-path>
   local name="$1" wasm="$2"
   local out="$OUT_DIR/$name.wasm.gz"
-  gzip -9 -c "$wasm" > "$out"
+  gzip -9 -n -c "$wasm" > "$out"
   local sha; sha="$(sha256sum "$wasm" | cut -d' ' -f1)"
   printf '  %-28s raw=%8d  gz=%8d  sha256=%s\n' \
     "$name" "$(stat -c%s "$wasm")" "$(stat -c%s "$out")" "$sha"
@@ -38,9 +38,10 @@ emit() { # <name> <wasm-path>
 echo "==> Baton orchestrator"
 ( cd "$BATON_DIR" && \
   CANISTER_CANDID_PATH=./baton.did python3 -m basilisk baton src/main.py >/dev/null )
+python3 "$REPO_ROOT/scripts/fix_asset_permission_did.py" "$BATON_DIR/baton.did"
 BATON_WASM="$BATON_DIR/.basilisk/baton/baton.wasm"
 embed_candid "$BATON_WASM" "$BATON_DIR/baton.did"
-emit "orchestration-baton@1.5.1" "$BATON_WASM"
+emit "orchestration-baton@1.6.0" "$BATON_WASM"
 
 echo "==> Multisig"
 ( cd "$MULTISIG_DIR" && mops install >/dev/null 2>&1 && \

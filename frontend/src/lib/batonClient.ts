@@ -191,11 +191,7 @@ export async function batonExecuteAction(
 ): Promise<BatonUpdateResult> {
   const a = await batonActor(canisterId, identity);
   const res = parseUpdate(await a.execute_action(actionId));
-  const terminal = new Set([
-    'COMPLETE', 'REJECTED', 'REJECTED_PREFLIGHT', 'FAILED_STOP',
-    'FAILED_SNAPSHOT', 'REVERTED_PARTIAL_FAILURE', 'REVERTED_FAILED_VERIFY',
-  ]);
-  res.done = res.status ? terminal.has(res.status) : false;
+  res.done = isBatonTerminal(res.status);
   return res;
 }
 

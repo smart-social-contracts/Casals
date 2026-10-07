@@ -107,7 +107,12 @@ def _baton_status_gen(baton_st):
         ("list_actions", "actions"),
     ):
         raw = yield from _baton_query(bid, method)
-        out[key] = _parse_baton_json_reply(raw)
+        data = _parse_baton_json_reply(raw)
+        # A private baton refuses reads from anyone but its commanders and controllers.
+        if isinstance(data, dict) and data.get("ok") is False:
+            out["error"] = data.get("error") or f"baton refused {method}"
+            data = {} if key == "config" else []
+        out[key] = data
 
     casals_id = ic.id().to_str()
     commanders = out.get("commanders") or []
@@ -159,12 +164,16 @@ def _multisig_configure_gen(canister_id: str, signers: list, threshold: int, exp
         Principal.from_str(canister_id), "configure", ic.candid_encode(arg), 0,
     )
     reply = ic.candid_decode(unwrap_call_result(res))
-    if isinstance(reply, dict) and reply.get("err"):
-        raise Exception(reply["err"])
+    if isinstance(reply, dict):
+        if reply.get("err"):
+            raise Exception(f"multisig configure refused: {reply['err']}")
+    elif "variant{err=" in "".join(str(reply).split()):
+        raise Exception(f"multisig configure refused: {str(reply)[:300]}")
 
 
-def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove=()):
-    """Generator: register commanders and the upgrade approval policy on a Baton.
+def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove=(), public_read=None):
+    """Generator: register commanders, the upgrade approval policy, and (when
+    not None) ``public_read`` on a Baton.
 
     Casals must be the Baton's top commander (i.e. the Baton was created with
     ``install_arg.top_commander`` pointing at this canister) — ``add_commander``
@@ -225,11 +234,18 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
         _parse_baton_reply(reply)
         policy_set = approval_policy
 
+    if public_read is not None:
+        reply = yield from _call_text_method(baton_id, "set_config", json.dumps({
+            "public_read": bool(public_read),
+        }))
+        _parse_baton_reply(reply)
+
     _append_event("baton_configured", baton_id, {
         "baton": baton_st.name,
         "commanders": added,
         "removed": removed,
         "approval_policy": policy_set,
+        "public_read": public_read,
     })
     return {
         "baton": baton_st.name,
@@ -237,6 +253,7 @@ def _configure_baton_gen(baton_st, commanders=None, approval_policy=None, remove
         "commanders": added,
         "removed": removed,
         "approval_policy": policy_set,
+        "public_read": public_read,
     }
 
 

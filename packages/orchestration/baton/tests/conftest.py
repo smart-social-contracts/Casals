@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 import pytest
 
@@ -235,10 +236,11 @@ def create_detached() -> str:
     return m.group(1)
 
 
-def install_baton(top_commander: str) -> str:
+def install_baton(top_commander: str, test_hooks: bool = True) -> str:
     wasm = build_baton()
     cid = create_detached()
-    init_arg = f'(record {{ top_commander = principal "{top_commander}" }})'
+    hooks = "; test_hooks = opt true" if test_hooks else ""
+    init_arg = f'(record {{ top_commander = principal "{top_commander}"{hooks} }})'
     icp(["canister", "install", cid, "--wasm", wasm, "--mode", "install", "--args", init_arg, "-n", "local", "-y"])
     return cid
 
@@ -249,9 +251,8 @@ def install_multisig(signers: list[str], threshold: int = 1) -> str:
     icp(["canister", "install", cid, "--wasm", wasm, "--mode", "install", "-n", "local", "-y"])
     signer_vec = "; ".join(f'principal "{s}"' for s in signers)
     res = call(cid, "configure", f"(vec {{ {signer_vec} }} : vec principal, {threshold} : nat, 604800 : nat)")
-    if isinstance(res, dict) and res.get("ok") is not True:
-        if "ok" not in str(res).lower():
-            raise AssertionError(f"configure failed: {res}")
+    if (isinstance(res, dict) and "err" in res) or "variant{err=" in "".join(str(res).split()):
+        raise AssertionError(f"configure failed: {res}")
     return cid
 
 
@@ -383,7 +384,7 @@ def propose_upgrade(baton_id, canisters_hashes_targets, registry_env=None, smoke
         if smoke_test is not None:
             target["smoke_test"] = smoke_test
         targets.append(target)
-    action_id = "upgrade-" + affected[0][:8]
+    action_id = f"upgrade-{affected[0][:8]}-{uuid.uuid4().hex[:8]}"
     ok(call(baton_id, "propose_managed_upgrade", json.dumps({
         "action_id": action_id,
         "affected_canisters": affected,

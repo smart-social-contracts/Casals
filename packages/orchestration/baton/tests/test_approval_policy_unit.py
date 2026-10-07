@@ -13,6 +13,7 @@ sys.path.insert(0, SRC)
 from approval_policy import (
     append_approval,
     approval_progress,
+    effective_approval_policy,
     is_approval_eligible,
     normalize_approval_policy,
     parse_approval_policy,
@@ -204,3 +205,68 @@ class TestWeightedQuorum:
         append_approval(rec, "a")
         append_approval(rec, "b")
         assert quorum_met(rec, self.POLICY)
+
+
+class TestOverridesOnlyTighten:
+    """A proposal's own approval_policy may raise the bar, never lower it."""
+
+    BASE = {"threshold": 2, "eligible": ["a", "b", "c"], "required": ["a"]}
+
+    def _effective(self, override, base=None):
+        cfg = FakeMap({"upgrade_approval_policy": __import__("json").dumps(base or self.BASE)})
+        rec = _pending_action()
+        if override is not None:
+            rec["payload"]["approval_policy"] = override
+        return effective_approval_policy(rec, cfg)
+
+    def test_no_override_uses_the_configured_policy(self):
+        assert self._effective(None) == self.BASE
+
+    def test_stricter_override_applies(self):
+        stricter = {"threshold": 3, "eligible": ["a", "b", "c"], "required": ["a", "b"]}
+        assert self._effective(stricter) == stricter
+
+    @pytest.mark.parametrize("override, reason", [
+        ({"threshold": 1, "eligible": ["a", "b", "c"], "required": ["a"]}, "threshold"),
+        ({"threshold": 2, "eligible": ["a", "b", "z"], "required": ["a"]}, "subset"),
+        ({"threshold": 2, "eligible": [], "required": ["a"]}, "subset"),
+        ({"threshold": 2, "eligible": ["a", "b", "c"], "required": []}, "dropped"),
+    ])
+    def test_laxer_override_is_refused(self, override, reason):
+        with pytest.raises(AuthError, match=reason):
+            self._effective(override)
+
+    def test_any_eligible_list_narrows_an_open_policy(self):
+        open_base = {"threshold": 1, "eligible": [], "required": []}
+        assert self._effective({"threshold": 1, "eligible": ["a"], "required": []}, open_base)["eligible"] == ["a"]
+
+
+class TestOnlyCurrentApproversCount:
+    """Weights are read when the quorum is checked: an approver removed,
+    stripped of submit_approval, or outside the eligible list counts 0."""
+
+    POLICY = {"threshold": 2, "eligible": [], "required": []}
+
+    def test_removed_commander_weighs_zero(self):
+        store = _weighted(("multisig", 2))
+        rec = _pending_action()
+        append_approval(rec, "multisig")
+        assert quorum_met(rec, self.POLICY, store)
+        del store._data["multisig"]
+        assert not quorum_met(rec, self.POLICY, store)
+        assert approval_progress(rec, self.POLICY, store)["approval_weight"] == 0
+
+    def test_demoted_commander_weighs_zero(self):
+        store = _weighted(("multisig", 2))
+        store["multisig"] = __import__("json").dumps(new_commander("multisig", ["read_cycle_balance"], 2))
+        rec = _pending_action()
+        append_approval(rec, "multisig")
+        assert not quorum_met(rec, self.POLICY, store)
+
+    def test_approver_outside_eligible_weighs_zero(self):
+        store = _weighted(("multisig", 2), ("casals", 1))
+        policy = {"threshold": 2, "eligible": ["casals"], "required": []}
+        rec = _pending_action()
+        append_approval(rec, "multisig")
+        assert approval_progress(rec, policy, store)["approval_weight"] == 0
+        assert not quorum_met(rec, policy, store)

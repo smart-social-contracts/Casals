@@ -57,7 +57,7 @@ jobs:
       - name: Stage orchestration template WASMs
         run: |
           # Versions the GaaS sheet installs. Committed artifacts under seed/templates/.
-          cp seed/templates/orchestration-baton@1.5.1.wasm.gz ./orchestration-baton@1.5.1.wasm.gz
+          cp seed/templates/orchestration-baton@1.6.0.wasm.gz ./orchestration-baton@1.6.0.wasm.gz
           cp seed/templates/orchestration-multisig@1.7.0.wasm.gz ./orchestration-multisig@1.7.0.wasm.gz
           # The store canister, and the asset-canister module realm frontends install
           # as certified-assets@1.0.0 (same bytes as hello-world-frontend.wasm.gz).
@@ -84,7 +84,7 @@ jobs:
                    casals_frontend.tar.gz casals_frontend.manifest.json \
                    certified-assets@0.3.0.wasm.gz \
                    certified-assets@1.0.0.wasm.gz \
-                   orchestration-baton@1.5.1.wasm.gz orchestration-multisig@1.7.0.wasm.gz; do
+                   orchestration-baton@1.6.0.wasm.gz orchestration-multisig@1.7.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
           python3 - << 'PY' >> checksums.txt
@@ -94,7 +94,7 @@ jobs:
               "casals_backend.wasm.gz",
               "certified-assets@0.3.0.wasm.gz",
               "certified-assets@1.0.0.wasm.gz",
-              "orchestration-baton@1.5.1.wasm.gz",
+              "orchestration-baton@1.6.0.wasm.gz",
               "orchestration-multisig@1.7.0.wasm.gz",
           ):
               data = gzip.decompress(pathlib.Path(name).read_bytes())
@@ -123,6 +123,6 @@ jobs:
             casals_frontend.manifest.json
             certified-assets@0.3.0.wasm.gz
             certified-assets@1.0.0.wasm.gz
-            orchestration-baton@1.5.1.wasm.gz
+            orchestration-baton@1.6.0.wasm.gz
             orchestration-multisig@1.7.0.wasm.gz
             checksums.txt

@@ -44,10 +44,19 @@ jobs:
           python3 -m basilisk --version || true
           pytest --version
 
+      # Without an identity icp signs as the anonymous principal, which the
+      # multisig refuses as a signer.
+      - name: Create the test identity
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          icp identity new local-dev --storage plaintext || true
+
       # conftest.py in baton/tests/ starts the local replica, builds Baton,
       # Multisig, and managed-canister fixture WASMs, then drives propose →
       # execute upgrade flows. Multisig tests reuse the same helpers.
       - name: Run orchestration integration tests
+        env:
+          CASALS_TEST_IDENTITY: local-dev
         run: |
           export PATH="$(npm config get prefix)/bin:$PATH"
           make -C packages/orchestration test-integration

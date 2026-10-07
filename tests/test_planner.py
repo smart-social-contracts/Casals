@@ -259,6 +259,36 @@ def test_lockout_conductor_commanders():
     assert any("lock-out" in e for e in exc.value.errors)
 
 
+def test_baton_terminal_statuses_mirror_the_baton():
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(__file__), "..", "packages", "orchestration", "baton", "src", "models.py")
+    spec = importlib.util.spec_from_file_location("baton_models", path)
+    models = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(models)
+    from planner import _BATON_TERMINAL
+
+    assert _BATON_TERMINAL == models.TERMINAL_STATUSES
+
+
+def test_baton_public_read_follows_the_sheet():
+    """A baton that reports public_read (1.6.0+) is configured to the env's
+    public_read; an older baton without the key is left alone."""
+    resolved, env, bindings = _resolved("baton-stand")
+    live = _converged_live(resolved, bindings)
+    (bname, bat), = live["batons"].items()
+    bat["config"]["public_read"] = False
+    assert build_plan(resolved, env, live, self_id=SELF)["items"] == []
+
+    resolved.setdefault("environments", {}).setdefault(env, {})["public_read"] = True
+    items = build_plan(resolved, env, live, self_id=SELF)["items"]
+    assert [(it["kind"], it["target"]["name"], it["current"]["public_read"], it["desired"]["public_read"])
+            for it in items] == [("configure_baton", bname, False, True)]
+
+    del bat["config"]["public_read"]
+    assert build_plan(resolved, env, live, self_id=SELF)["items"] == []
+
+
 def test_baton_handback_is_not_destructive():
     """Casals dropping exactly itself from a baton's controllers is the sheet's
     rule (no $self on batons), so a stand build may apply it unattended.

@@ -12,6 +12,7 @@ import uuid
 from basilisk import (
     Async,
     Duration,
+    Opt,
     Principal,
     Record,
     StableBTreeMap,
@@ -41,7 +42,9 @@ from approval_policy import (
     quorum_met,
 )
 from config import (
+    BATON_VERSION,
     DEFAULT_ACCELERANT_DAYS,
+    DEFAULT_ACTION_EXPIRY_DAYS,
     DEFAULT_BAKE_WINDOW_SECONDS,
     DEFAULT_INSTALL_CYCLES_BUFFER,
 )
@@ -56,6 +59,7 @@ from models import (
     CAP_SUBMIT_APPROVAL,
     STATUS_APPROVED,
     STATUS_COMPLETE,
+    STATUS_EXPIRED,
     STATUS_FAILED_PROVISION,
     STATUS_FAILED_SNAPSHOT,
     STATUS_FAILED_STOP,
@@ -72,12 +76,14 @@ from models import (
     STATUS_STOPPING,
     STATUS_UPGRADING,
     STATUS_VERIFYING,
+    append_phase_log,
     decode_record,
     encode_record,
     is_non_terminal,
     is_terminal,
     new_action_record,
     new_commander,
+    phase_entry,
 )
 from policy import (
     apply_add_commander,
@@ -87,10 +93,12 @@ from policy import (
 )
 from assets import (
     asset_provision_step_gen,
+    pin_manifests_gen,
     validate_asset_payload,
 )
 from pipeline import (
     accelerant_eligible,
+    action_expired,
     check_test_trap,
     delete_snapshots_gen,
     finalize_hook_log,
@@ -169,12 +177,50 @@ def _load_action(action_id: str) -> dict | None:
     return decode_record(raw)
 
 
+def _expire_if_stale(record: dict) -> bool:
+    """Mark a PENDING/APPROVED action older than action_expiry_days EXPIRED."""
+    days = _cfg_int("action_expiry_days", DEFAULT_ACTION_EXPIRY_DAYS)
+    if not action_expired(record, days, _now()):
+        return False
+    record["status"] = STATUS_EXPIRED
+    append_phase_log(record, phase_entry("EXPIRY", _now(), "expired", f"not started within {days} days"))
+    _save_action(record)
+    return True
+
+
 def _active_action_id() -> str | None:
     for aid in _actions.keys():
         rec = _load_action(aid)
-        if rec and is_non_terminal(rec.get("status", "")):
+        if rec and is_non_terminal(rec.get("status", "")) and not _expire_if_stale(rec):
             return aid
     return None
+
+
+def _new_action_id(params: dict) -> str:
+    action_id = str(params.get("action_id") or "").strip() or str(uuid.uuid4())
+    if len(action_id) > 128:
+        raise ValueError("action_id is longer than 128 characters")
+    if _actions.contains_key(action_id):
+        raise ValueError(f"action_id already used: {action_id}")
+    return action_id
+
+
+def _public_read() -> bool:
+    return _config.get("public_read") == "1"
+
+
+def _reader_refusal() -> text | None:
+    """With public_read off (the default) the baton's state — commanders,
+    managed canisters, config, actions — is readable only by its commanders,
+    the top commander and its controllers."""
+    if _public_read():
+        return None
+    caller = _caller()
+    if caller == (_config.get("top_commander") or "") or _commanders.contains_key(caller):
+        return None
+    if ic.is_controller(ic.caller()):
+        return None
+    return _err("unauthorized: this baton is readable by its commanders and controllers only")
 
 
 def _persist_config_defaults() -> None:
@@ -182,6 +228,8 @@ def _persist_config_defaults() -> None:
         _config.insert("bake_window_seconds", str(DEFAULT_BAKE_WINDOW_SECONDS))
     if _config.get("accelerant_days") is None:
         _config.insert("accelerant_days", str(DEFAULT_ACCELERANT_DAYS))
+    if _config.get("action_expiry_days") is None:
+        _config.insert("action_expiry_days", str(DEFAULT_ACTION_EXPIRY_DAYS))
     if _config.get("install_cycles_buffer") is None:
         _config.insert("install_cycles_buffer", str(DEFAULT_INSTALL_CYCLES_BUFFER))
     if _config.get("upgrade_approval_policy") is None:
@@ -189,6 +237,8 @@ def _persist_config_defaults() -> None:
             "upgrade_approval_policy",
             json.dumps(DEFAULT_UPGRADE_APPROVAL_POLICY, separators=(",", ":")),
         )
+    if _config.get("test_hooks") != "1" and _config.contains_key("test_trap"):
+        _config.remove("test_trap")
 
 
 def _arm_resume_timer(action_id: str, delay_secs: int = 0) -> None:
@@ -232,6 +282,9 @@ def _execute_action_gen(action_id: str) -> Async[text]:
     record = _load_action(action_id)
     if record is None:
         return _err(f"unknown action: {action_id}")
+
+    if _expire_if_stale(record):
+        return _err(f"action {action_id} expired before it started")
 
     if record.get("status") in (STATUS_PENDING,):
         return _err("action not approved")
@@ -425,14 +478,19 @@ def _scan_and_resume() -> None:
 
 class InitArgs(Record):
     top_commander: Principal
+    # Integration tests only: enables set_test_trap. Fixed at install.
+    test_hooks: Opt[bool]
 
 
 @init
 def init_(args: InitArgs) -> void:
     top = args["top_commander"].to_str() if isinstance(args, dict) else args.top_commander.to_str()
+    hooks = args.get("test_hooks") if isinstance(args, dict) else getattr(args, "test_hooks", None)
     _config.insert("top_commander", top)
+    if hooks is True:
+        _config.insert("test_hooks", "1")
     _persist_config_defaults()
-    _log.info(f"baton initialized; top_commander={top}")
+    _log.info(f"baton initialized; top_commander={top}{' (test hooks on)' if hooks is True else ''}")
 
 
 @post_upgrade
@@ -463,6 +521,9 @@ def set_commander_policy(policy_json: text) -> text:
 
 @query
 def get_commander_policy() -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     raw = _config.get("commander_policy")
     if raw is None:
         return json.dumps(None)
@@ -491,9 +552,12 @@ def add_commander_via_policy(args: text) -> text:
 
 @update
 def set_test_trap(args: text) -> text:
-    """Top commander only — integration-test hook. JSON: {phase, after_index, message?} or null."""
+    """Top commander only — integration-test hook. JSON: {phase, after_index, message?} or null.
+    Refused unless the baton was installed with ``test_hooks = opt true``."""
     try:
         require_top_commander(_caller(), _config)
+        if _config.get("test_hooks") != "1":
+            return _err("test hooks are off (install the baton with test_hooks = opt true)")
         if args.strip() in ("", "null"):
             if _config.contains_key("test_trap"):
                 _config.remove("test_trap")
@@ -552,6 +616,9 @@ def remove_commander(principal: text) -> text:
 
 @query
 def list_commanders() -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     out = []
     for key in _commanders.keys():
         raw = _commanders.get(key)
@@ -589,22 +656,33 @@ def remove_managed_canister(canister_id: text) -> text:
 
 @query
 def list_managed_canisters() -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     return json.dumps(sorted(_managed.keys()))
 
 
 @update
 def set_config(args: text) -> text:
-    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, install_cycles_buffer?,
-    wasm_store_canister_id?, upgrade_approval_policy?}.
+    """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, action_expiry_days?,
+    install_cycles_buffer?, wasm_store_canister_id?, upgrade_approval_policy?, public_read?}.
 
     ``wasm_store_canister_id`` is Casals' `casals-store` certified-assets store,
-    the source of every WASM / bundle Baton installs."""
+    the source of every WASM / bundle Baton installs. ``public_read`` (bool)
+    lets anyone read the baton's state."""
     try:
         require_top_commander(_caller(), _config)
         params = json.loads(args)
-        for key in ("bake_window_seconds", "accelerant_days", "install_cycles_buffer"):
+        for key in ("bake_window_seconds", "accelerant_days", "action_expiry_days", "install_cycles_buffer"):
             if key in params:
-                _config.insert(key, str(int(params[key])))
+                value = int(params[key])
+                if value < 0:
+                    return _err(f"{key} must be non-negative")
+                _config.insert(key, str(value))
+        if "public_read" in params:
+            if not isinstance(params["public_read"], bool):
+                return _err("public_read must be true or false")
+            _config.insert("public_read", "1" if params["public_read"] else "0")
         if "upgrade_approval_policy" in params:
             policy = parse_approval_policy(params["upgrade_approval_policy"])
             _config.insert(
@@ -626,18 +704,25 @@ def set_config(args: text) -> text:
 
 @query
 def get_config() -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     policy_raw = _config.get("upgrade_approval_policy")
     try:
         approval_policy = parse_approval_policy(policy_raw)
     except AuthError:
         approval_policy = dict(DEFAULT_UPGRADE_APPROVAL_POLICY)
     return json.dumps({
+        "version": BATON_VERSION,
         "top_commander": _config.get("top_commander"),
         "bake_window_seconds": _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS),
         "accelerant_days": _cfg_int("accelerant_days", DEFAULT_ACCELERANT_DAYS),
+        "action_expiry_days": _cfg_int("action_expiry_days", DEFAULT_ACTION_EXPIRY_DAYS),
         "install_cycles_buffer": _cfg_int("install_cycles_buffer", DEFAULT_INSTALL_CYCLES_BUFFER),
         "wasm_store_canister_id": _config.get("wasm_store_canister_id"),
         "upgrade_approval_policy": approval_policy,
+        "public_read": _public_read(),
+        "test_hooks": _config.get("test_hooks") == "1",
     })
 
 
@@ -655,8 +740,9 @@ def propose_managed_upgrade(args: text) -> text:
         payload = params["payload"]
         validate_targets_in_managed(affected, _managed)
         validate_payload_targets(payload, affected)
+        effective_approval_policy({"payload": payload}, _config)
 
-        action_id = params.get("action_id") or str(uuid.uuid4())
+        action_id = _new_action_id(params)
         record = new_action_record(
             action_id=action_id,
             proposed_by=caller,
@@ -673,12 +759,14 @@ def propose_managed_upgrade(args: text) -> text:
 
 
 @update
-def propose_asset_provision(args: text) -> text:
+def propose_asset_provision(args: text) -> Async[text]:
     """Requires propose:managed_upgrade. JSON: {affected_canisters, payload}.
 
-    payload.targets: [{canister_id, bundle_namespace, extra_files?, grant_commit?}].
-    Approval flows through the same policy as managed upgrades (per-payload
-    approval_policy override or the configured upgrade_approval_policy).
+    payload.targets: [{canister_id, bundle_namespace, manifest?, extra_files?, grant_commit?}].
+    A target without ``manifest`` ({path: sha256}) gets the store's current
+    hashes for its bundle; execution ships exactly those files. Approval flows
+    through the same policy as managed upgrades (the configured
+    upgrade_approval_policy, or a stricter per-payload approval_policy).
     """
     try:
         caller = _caller()
@@ -691,8 +779,12 @@ def propose_asset_provision(args: text) -> text:
         payload = params["payload"]
         validate_targets_in_managed(affected, _managed)
         validate_asset_payload(payload, affected)
+        effective_approval_policy({"payload": payload}, _config)
+        action_id = _new_action_id(params)
+        yield from pin_manifests_gen(_config, payload)
+        if _active_action_id() or _actions.contains_key(action_id):
+            return _err("another action was filed meanwhile")
 
-        action_id = params.get("action_id") or str(uuid.uuid4())
         record = new_action_record(
             action_id=action_id,
             proposed_by=caller,
@@ -721,6 +813,8 @@ def submit_approval(action_id: text) -> text:
         record = _load_action(aid)
         if record is None:
             return _err("unknown action")
+        if _expire_if_stale(record):
+            return _err(f"action {aid} expired before it was approved")
         if record.get("status") != STATUS_PENDING:
             return _err(f"action not pending: {record.get('status')}")
         policy = effective_approval_policy(record, _config)
@@ -749,6 +843,8 @@ def submit_multisig_accelerant(action_id: text) -> text:
         record = _load_action(action_id.strip())
         if record is None:
             return _err("unknown action")
+        if _expire_if_stale(record):
+            return _err(f"action {action_id.strip()} expired before it was approved")
         days = _cfg_int("accelerant_days", DEFAULT_ACCELERANT_DAYS)
         if not accelerant_eligible(record, days, _now()):
             return _err("accelerant conditions not met")
@@ -812,6 +908,9 @@ def skip_bake_and_complete(action_id: text) -> Async[text]:
 
 @query
 def get_action(action_id: text) -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     record = _load_action(action_id.strip())
     if record is None:
         return _err("unknown action")
@@ -820,6 +919,9 @@ def get_action(action_id: text) -> text:
 
 @query
 def list_actions() -> text:
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
     out = []
     for key in sorted(_actions.keys()):
         raw = _actions.get(key)
@@ -868,6 +970,8 @@ def read_cycle_balance(canister_id: text) -> Async[text]:
     if not has_capability(caller, CAP_READ_CYCLE_BALANCE, _commanders, _config):
         return _err("missing capability: read_cycle_balance")
     cid = canister_id.strip()
+    if not _managed.contains_key(cid):
+        return _err(f"canister not managed: {cid}")
     st_res = yield management_canister.canister_status({"canister_id": _principal(cid)})
     st = _unwrap(st_res)
     return _ok(**_status_fields_from_management(st, cid))

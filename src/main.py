@@ -3136,17 +3136,21 @@ def _create_canister_impl_gen(params: dict) -> Async[str]:
     init_arg = (_resolve_install_arg(install_arg_spec, w) if install_arg_spec is not None
                 else _install_arg_for(w))
 
-    st = yield from _provision_canister(dk, name, kind, w, init_arg)
-
     init = params.get("init") or {}
     ms_init = init.get("multisig") if isinstance(init, dict) else None
-    if ms_init:
+
+    def _configure_multisig(cid):
         yield from _multisig_configure_gen(
-            st.canister_id,
+            cid,
             ms_init.get("signers") or [],
             ms_init.get("threshold") or 1,
             ms_init.get("expiry_secs") or 604800,
         )
+
+    st = yield from _provision_canister(dk, name, kind, w, init_arg,
+                                        before_handoff=_configure_multisig if ms_init else None)
+
+    if ms_init:
         _append_event("multisig_configured", st.canister_id,
                       {"name": name, "threshold": int(ms_init.get("threshold") or 1)})
 

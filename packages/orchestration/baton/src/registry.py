@@ -308,7 +308,8 @@ def _store_list_gen(config_store, namespace: str) -> Async[list]:
         start += len(entries)
 
 
-def _store_pull_gen(config_store, namespace: str, path: str) -> Async[bytes]:
+def _store_pull_gen(config_store, namespace: str, path: str) -> Async[tuple[bytes, str]]:
+    """(content, sha256 hex the store reports for it)."""
     store = AssetStoreService(Principal.from_str(store_canister_id(config_store)))
     key = store_key(namespace, path)
     got = _unwrap((yield store.get({"key": key, "accept_encodings": ["identity"]})))
@@ -326,7 +327,7 @@ def _store_pull_gen(config_store, namespace: str, path: str) -> Async[bytes]:
             break
         buf += data
         index += 1
-    return buf
+    return buf, sha_hex
 
 
 def list_registry_files_gen(config_store, namespace: str) -> Async[list]:
@@ -336,6 +337,12 @@ def list_registry_files_gen(config_store, namespace: str) -> Async[list]:
 
 def pull_registry_file_gen(config_store, namespace: str, path: str) -> Async[bytes]:
     """Download a full file from the store into memory."""
+    content, _ = yield from pull_registry_file_hashed_gen(config_store, namespace, path)
+    return content
+
+
+def pull_registry_file_hashed_gen(config_store, namespace: str, path: str) -> Async[tuple[bytes, str]]:
+    """Download a full file: (content, sha256 hex the store reports, or "")."""
     namespace = (namespace or "").strip()
     path = (path or "").strip().lstrip("/")
     return (yield from _store_pull_gen(config_store, namespace, path))

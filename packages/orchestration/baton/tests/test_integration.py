@@ -555,3 +555,174 @@ class TestUpgradeApprovalPolicy:
         finally:
             _reject_pending_action(baton_id, action_id, approver_b.name)
             _restore_upgrade_approval_policy(baton_id)
+
+
+class TestBatonV160Hardening:
+    """Baton 1.6.0: private reads, unique action ids, managed-only cycle
+    reads, install-time test hooks, and approval overrides that only tighten."""
+
+    READS = [("list_commanders", None), ("list_managed_canisters", None), ("get_config", None),
+             ("list_actions", None), ("get_commander_policy", None), ("get_action", "nope")]
+
+    def test_state_is_private_until_public_read(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        ensure_identity("baton-outsider")
+        try:
+            for method, arg in self.READS:
+                res = call(baton_id, method, arg, identity="baton-outsider")
+                assert isinstance(res, dict) and res.get("ok") is False, (method, res)
+                assert "unauthorized" in res.get("error", ""), (method, res)
+            assert isinstance(call(baton_id, "list_commanders"), list)
+            ok(call(baton_id, "set_config", json.dumps({"public_read": True})))
+            assert call(baton_id, "get_config", identity="baton-outsider")["public_read"] is True
+            assert isinstance(call(baton_id, "list_actions", identity="baton-outsider"), list)
+        finally:
+            ok(call(baton_id, "set_config", json.dumps({"public_read": False})))
+        assert call(baton_id, "list_actions", identity="baton-outsider").get("ok") is False
+
+    def test_public_read_must_be_a_boolean(self, baton_env):
+        res = call(baton_env["baton_id"], "set_config", json.dumps({"public_read": "yes"}))
+        assert res.get("ok") is False and "true or false" in res.get("error", ""), res
+
+    def test_an_action_id_is_never_reused(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver, = _register_approval_commanders(baton_id, "baton-reuse-approver")
+        cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+        post = wasm_file_hash(baton_env["v2_wasm"])
+        _propose_managed_upgrade_manual(baton_id, "reuse-me", cid, pre, post, baton_env)
+        _reject_pending_action(baton_id, "reuse-me", approver.name)
+        res = call(baton_id, "propose_managed_upgrade", json.dumps({
+            "action_id": "reuse-me",
+            "affected_canisters": [cid],
+            "payload": {"targets": [{
+                "canister_id": cid, "expected_module_hash": pre, "wasm_hash": post,
+                "registry_namespace": baton_env["namespace"], "registry_path": baton_env["v2_path"],
+            }]},
+        }))
+        assert res.get("ok") is False and "already used" in res.get("error", ""), res
+        assert _get_action_record(baton_id, "reuse-me")["status"] == "REJECTED"
+
+    def test_cycle_reads_are_limited_to_managed_canisters(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        stranger = create_detached()
+        res = call(baton_id, "read_cycle_balance", stranger)
+        assert res.get("ok") is False and "not managed" in res.get("error", ""), res
+        cid, _ = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+        assert ok(call(baton_id, "read_cycle_balance", cid))["canister_id"] == cid
+
+    def test_test_trap_needs_the_install_flag(self, replica, deploy_principal):
+        baton_id = install_baton(deploy_principal, test_hooks=False)
+        assert call(baton_id, "get_config")["test_hooks"] is False
+        res = call(baton_id, "set_test_trap", json.dumps({"phase": "UPGRADING", "after_index": 0}))
+        assert res.get("ok") is False and "test hooks are off" in res.get("error", ""), res
+
+    def test_a_laxer_approval_override_is_refused(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-strict-a", "baton-strict-b",
+        )
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {
+                "threshold": 2, "eligible": [approver_a.principal, approver_b.principal], "required": [],
+            },
+        })))
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            res = call(baton_id, "propose_managed_upgrade", json.dumps({
+                "affected_canisters": [cid],
+                "payload": {
+                    "targets": [{
+                        "canister_id": cid, "expected_module_hash": pre, "wasm_hash": post,
+                        "registry_namespace": baton_env["namespace"], "registry_path": baton_env["v2_path"],
+                    }],
+                    "approval_policy": {"threshold": 1, "eligible": [approver_a.principal], "required": []},
+                },
+            }))
+            assert res.get("ok") is False and "weaker than the configured policy" in res.get("error", ""), res
+        finally:
+            _restore_upgrade_approval_policy(baton_id)
+
+    def test_a_removed_commander_no_longer_counts(self, baton_env):
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        approver_a, approver_b = _register_approval_commanders(
+            baton_id, "baton-gone-a", "baton-gone-b",
+        )
+        ok(call(baton_id, "set_config", json.dumps({
+            "upgrade_approval_policy": {"threshold": 2, "eligible": [], "required": []},
+        })))
+        action_id = f"removed-approver-{time.time_ns()}"
+        try:
+            cid, pre = setup_managed_canister(baton_id, baton_env["v1_wasm"])
+            post = wasm_file_hash(baton_env["v2_wasm"])
+            _propose_managed_upgrade_manual(baton_id, action_id, cid, pre, post, baton_env)
+            assert call(baton_id, "submit_approval", action_id, identity=approver_a.name)["approval_weight"] == 1
+            ok(call(baton_id, "remove_commander", approver_a.principal))
+            res = call(baton_id, "submit_approval", action_id, identity=approver_b.name)
+            assert res.get("status") == "PENDING" and res.get("approval_weight") == 1, res
+        finally:
+            _reject_pending_action(baton_id, action_id, approver_b.name)
+            _restore_upgrade_approval_policy(baton_id)
+
+
+_ASSET_TERMINAL = ("COMPLETE", "FAILED_PROVISION", "REJECTED", "EXPIRED")
+
+
+def _wait_terminal(baton_id, action_id, timeout=120):
+    deadline = time.time() + timeout
+    action = _get_action_record(baton_id, action_id)
+    while action.get("status") not in _ASSET_TERMINAL and time.time() < deadline:
+        time.sleep(2)
+        action = _get_action_record(baton_id, action_id)
+    return action
+
+
+class TestAssetProvisionManifest:
+    """propose_asset_provision pins {path: sha256}; execution ships exactly
+    those bytes and hands the hash to the target's store."""
+
+    def _bundle(self, baton_env, tmp_path, body):
+        from conftest import install_wasm_store, upload_store_file
+
+        baton_id = baton_env["baton_id"]
+        _finish_orphaned_actions(baton_id)
+        target = install_wasm_store()
+        icp(["canister", "settings", "update", target, "--add-controller", baton_id, "-n", "local", "-f"])
+        ok(call(baton_id, "add_managed_canister", target))
+        ns = f"site-{time.time_ns()}"
+        index = tmp_path / "index.html"
+        index.write_bytes(body)
+        upload_store_file(baton_env["registry_id"], ns, "index.html", str(index))
+        res = ok(call(baton_id, "propose_asset_provision", json.dumps({
+            "affected_canisters": [target],
+            "payload": {"targets": [{"canister_id": target, "bundle_namespace": ns}]},
+        })))
+        return baton_id, target, ns, index, res["action_id"]
+
+    def test_the_pinned_bundle_ships(self, baton_env, tmp_path):
+        import hashlib
+
+        body = b"<html>pinned v1</html>"
+        baton_id, target, _ns, _index, aid = self._bundle(baton_env, tmp_path, body)
+        manifest = _get_action_record(baton_id, aid)["payload"]["targets"][0]["manifest"]
+        assert manifest == {"index.html": hashlib.sha256(body).hexdigest()}
+        ok(call(baton_id, "submit_approval", aid))
+        action = _wait_terminal(baton_id, aid)
+        assert action["status"] == "COMPLETE", action
+        got = icp(["canister", "call", target, "get",
+                   '(record { key = "/index.html"; accept_encodings = vec { "identity" } })',
+                   "--query", "-n", "local"]).stdout
+        assert "pinned v1" in got, got
+
+    def test_a_file_changed_after_the_proposal_fails(self, baton_env, tmp_path):
+        from conftest import upload_store_file
+
+        baton_id, _target, ns, index, aid = self._bundle(baton_env, tmp_path, b"<html>approved</html>")
+        index.write_bytes(b"<html>swapped</html>")
+        upload_store_file(baton_env["registry_id"], ns, "index.html", str(index))
+        ok(call(baton_id, "submit_approval", aid))
+        action = _wait_terminal(baton_id, aid)
+        assert action["status"] == "FAILED_PROVISION", action

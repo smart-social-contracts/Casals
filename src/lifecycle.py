@@ -1358,13 +1358,16 @@ def _allocate_canister(subnet: str = "", subnet_type: str = "", *, reuse_pool: b
 
 # ── Canister provision / retire ───────────────────────────────────────────────
 
-def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
+def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None, before_handoff=None):
     """Generator: allocate a canister (reuse or create), install ``w``, verify
     the module hash, and create+return the Canister record.
     On failure the canister is returned to the pool and the exception
     propagates.
 
     ``init_arg`` overrides the default from ``_install_arg_for(w)`` when set.
+    ``before_handoff(canister_id)`` is a generator run while Casals is still a
+    controller: a multisig drops Casals at hand-off and only lets a controller
+    configure it.
 
     Name reservation: the Canister record is written to stable memory with
     status CREATED *before* the first yield so that concurrent calls for the
@@ -1436,6 +1439,8 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None):
     # Realm canisters keep Casals until the sheet's baton hand-off;
     # baton/multisig drop Casals here.
     try:
+        if before_handoff is not None:
+            yield from before_handoff(cid)
         controllers = _resolve_provision_controllers(dk, w, canister_id=cid)
         if controllers:
             # Assign the id first so _persist_ic_controllers can find this row

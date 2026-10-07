@@ -1242,6 +1242,44 @@ def test_resolve_provision_controllers_baton_and_multisig_exclude_casals(monkeyp
     assert casals not in msig
 
 
+@pytest.mark.parametrize("decoded,refused", [
+    ('(variant { err = "only a controller may configure the multisig" })', True),
+    ({"err": "already configured"}, True),
+    ("(variant { ok })", False),
+    ({"ok": None}, False),
+])
+def test_multisig_configure_raises_when_the_multisig_refuses(monkeypatch, decoded, refused):
+    import orchestration_bridge as ob
+
+    monkeypatch.setattr(ob, "ic", types.SimpleNamespace(
+        call_raw=lambda *a: "call", candid_encode=lambda s: b"", candid_decode=lambda b: decoded,
+    ))
+    monkeypatch.setattr(ob, "Principal", types.SimpleNamespace(from_str=lambda s: s))
+    monkeypatch.setattr(ob, "unwrap_call_result", lambda r: b"")
+    gen = ob._multisig_configure_gen("msig-cid", ["signer-a"], 1, 604800)
+    next(gen)
+    if refused:
+        with pytest.raises(Exception, match="multisig configure refused"):
+            gen.send("reply")
+    else:
+        with pytest.raises(StopIteration):
+            gen.send("reply")
+
+
+def test_create_canister_configures_the_multisig_before_handing_it_off():
+    """A multisig drops Casals at hand-off and lets only a controller configure it."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    lc = (src / "lifecycle.py").read_text()
+    body = lc[lc.index("def _provision_canister("):lc.index("def _assign_pool_canister(")]
+    assert body.index("yield from before_handoff(cid)") < body.index("yield from _add_controllers(cid, controllers)")
+    main = (src / "main.py").read_text()
+    impl = main[main.index("def _create_canister_impl_gen("):main.index("def create_canister(")]
+    assert "before_handoff=_configure_multisig if ms_init else None" in impl
+    assert impl.index("_provision_canister(") > impl.index("def _configure_multisig(")
+
+
 def test_batch_destroy_is_one_proposal_executed_as_multisig():
     """Approved destroy is one proposal with N ids; IC calls run as the multisig."""
     from pathlib import Path
@@ -1943,7 +1981,7 @@ def _drive_create_canister_impl(params, monkeypatch, *, existing=None):
     monkeypatch.setattr(main, "_resolve_authorized_wasm", lambda key, section: mock_wasm)
     monkeypatch.setattr(main, "_install_arg_for", lambda w: b"")
 
-    def fake_provision(dk, name, kind, w, init_arg=None):
+    def fake_provision(dk, name, kind, w, init_arg=None, before_handoff=None):
         if False:
             yield
         st = MagicMock()

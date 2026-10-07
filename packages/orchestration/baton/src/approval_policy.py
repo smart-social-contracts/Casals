@@ -82,13 +82,38 @@ def normalize_approval_policy(data: dict[str, Any]) -> dict[str, Any]:
     return {"threshold": threshold, "eligible": eligible, "required": required}
 
 
+def weaker_policy_reason(policy: dict[str, Any], base: dict[str, Any]) -> str | None:
+    """Why ``policy`` is laxer than ``base``, or None when it is at least as
+    strict: no lower threshold, eligible approvers a subset, no required
+    approver dropped."""
+    if int(policy["threshold"]) < int(base["threshold"]):
+        return f"threshold {policy['threshold']} is below the configured {base['threshold']}"
+    base_eligible = {_norm_principal(p) for p in base.get("eligible") or []}
+    if base_eligible:
+        eligible = {_norm_principal(p) for p in policy.get("eligible") or []}
+        if not eligible or not eligible <= base_eligible:
+            return "eligible approvers must be a subset of the configured ones"
+    required = {_norm_principal(p) for p in policy.get("required") or []}
+    dropped = [p for p in base.get("required") or [] if _norm_principal(p) not in required]
+    if dropped:
+        return f"required approvers dropped: {', '.join(dropped)}"
+    return None
+
+
 def effective_approval_policy(record: dict[str, Any], config_store) -> dict[str, Any]:
+    """The configured policy, or the proposal's own ``approval_policy`` when that
+    is at least as strict. A laxer override raises: a proposer must not lower
+    the bar its own proposal has to clear."""
+    base = parse_approval_policy(config_store.get("upgrade_approval_policy"))
     payload = record.get("payload") or {}
     override = payload.get("approval_policy")
-    if override is not None:
-        return parse_approval_policy(override)
-    raw = config_store.get("upgrade_approval_policy")
-    return parse_approval_policy(raw)
+    if override is None:
+        return base
+    policy = parse_approval_policy(override)
+    reason = weaker_policy_reason(policy, base)
+    if reason:
+        raise AuthError(f"approval_policy override is weaker than the configured policy: {reason}")
+    return policy
 
 
 def action_approvals(record: dict[str, Any]) -> list[str]:
@@ -101,6 +126,14 @@ def action_approvals(record: dict[str, Any]) -> list[str]:
 def has_recorded_approval(record: dict[str, Any], caller: str) -> bool:
     key = _norm_principal(caller)
     return any(_norm_principal(p) == key for p in action_approvals(record))
+
+
+def _in_eligible(principal: str, policy: dict[str, Any]) -> bool:
+    eligible = policy.get("eligible") or []
+    if not eligible:
+        return True
+    key = _norm_principal(principal)
+    return any(_norm_principal(p) == key for p in eligible)
 
 
 def is_approval_eligible(
@@ -116,11 +149,7 @@ def is_approval_eligible(
     cmd = get_commander(caller, commanders_store)
     if cmd is None or CAP_SUBMIT_APPROVAL not in set(cmd.get("capabilities") or []):
         return False
-    eligible = policy.get("eligible") or []
-    if not eligible:
-        return True
-    key = _norm_principal(caller)
-    return any(_norm_principal(p) == key for p in eligible)
+    return _in_eligible(caller, policy)
 
 
 def required_approvers_met(record: dict[str, Any], policy: dict[str, Any]) -> bool:
@@ -131,17 +160,28 @@ def required_approvers_met(record: dict[str, Any], policy: dict[str, Any]) -> bo
     return all(_norm_principal(p) in approved for p in required)
 
 
-def approval_weight(record: dict[str, Any], commanders_store=None) -> int:
-    """Sum of the approvers' weights (a principal no longer registered weighs 1)."""
+def approval_weight(record: dict[str, Any], commanders_store=None, policy: dict[str, Any] | None = None) -> int:
+    """Sum of the approvers' weights, counted as they stand now: an approver
+    who is no longer a commander holding ``submit_approval`` (or no longer in
+    the policy's eligible list) weighs 0. Without a store every approval
+    weighs 1."""
     total = 0
     for p in action_approvals(record):
-        total += commander_weight(get_commander(p, commanders_store)) if commanders_store is not None else 1
+        if commanders_store is None:
+            total += 1
+            continue
+        cmd = get_commander(p, commanders_store)
+        if cmd is None or CAP_SUBMIT_APPROVAL not in set(cmd.get("capabilities") or []):
+            continue
+        if policy is not None and not _in_eligible(p, policy):
+            continue
+        total += commander_weight(cmd)
     return total
 
 
 def quorum_met(record: dict[str, Any], policy: dict[str, Any], commanders_store=None) -> bool:
     threshold = int(policy.get("threshold") or 1)
-    if approval_weight(record, commanders_store) < threshold:
+    if approval_weight(record, commanders_store, policy) < threshold:
         return False
     return required_approvers_met(record, policy)
 
@@ -164,7 +204,7 @@ def approval_progress(record: dict[str, Any], policy: dict[str, Any], commanders
         "threshold": threshold,
         "approvals": approvals,
         "approval_count": len(approvals),
-        "approval_weight": approval_weight(record, commanders_store),
+        "approval_weight": approval_weight(record, commanders_store, policy),
         "eligible": policy.get("eligible") or [],
         "required": required,
         "missing_required": missing_required,

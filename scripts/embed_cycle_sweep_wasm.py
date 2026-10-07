@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Regenerate src/cycle_sweep_wasm.py from templates/cycles-sweep-rust build output."""
+"""Regenerate src/cycle_sweep_wasm.py from templates/cycles-sweep-rust build output.
+
+Build first: ``cargo build --target wasm32-unknown-unknown --release --locked``
+in templates/cycles-sweep-rust. The module is run through ``ic-wasm shrink``
+(required) before embedding.
+"""
 import base64
 import hashlib
 import pathlib
+import shutil
+import subprocess
+import tempfile
 import textwrap
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -11,8 +19,13 @@ OUT = REPO / "src/cycle_sweep_wasm.py"
 
 if not WASM.is_file():
     raise SystemExit(f"missing {WASM} — build templates/cycles-sweep-rust first")
+if not shutil.which("ic-wasm"):
+    raise SystemExit("ic-wasm not found (npm install -g @icp-sdk/ic-wasm)")
 
-wasm = WASM.read_bytes()
+with tempfile.TemporaryDirectory() as tmp:
+    shrunk = pathlib.Path(tmp) / "sweep.wasm"
+    subprocess.run(["ic-wasm", str(WASM), "-o", str(shrunk), "shrink"], check=True)
+    wasm = shrunk.read_bytes()
 h = hashlib.sha256(wasm).hexdigest()
 b64 = base64.b64encode(wasm).decode()
 lines = textwrap.wrap(b64, 96)
@@ -20,8 +33,8 @@ quoted = "\n".join(f'    "{line}"' for line in lines)
 OUT.write_text(
     f'''"""Embedded cycles-sweep helper wasm (templates/cycles-sweep-rust).
 
-Rebuild: ``make build-templates`` or ``cargo build`` in templates/cycles-sweep-rust,
-then run ``python3 scripts/embed_cycle_sweep_wasm.py``.
+Rebuild: ``cargo build --target wasm32-unknown-unknown --release --locked`` in
+templates/cycles-sweep-rust, then run ``python3 scripts/embed_cycle_sweep_wasm.py``.
 """
 
 import base64
