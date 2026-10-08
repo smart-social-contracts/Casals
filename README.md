@@ -14,6 +14,8 @@ Casals lets a project **create, upgrade, roll back, and retire its canisters** u
 
 > **Live demo** — https://demo.ic-casals.tech
 
+> **Updates** — [@ic_casals](https://x.com/ic_casals) on X
+
 > **Design rationale** — [docs/philosophy](https://github.com/smart-social-contracts/Casals/blob/main/docs/philosophy/README.md) (why orchestra / sections / stands / conductor / baton)
 
 ---
