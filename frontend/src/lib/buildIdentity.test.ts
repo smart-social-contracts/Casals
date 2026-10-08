@@ -14,7 +14,7 @@ test('shortSha keeps a 7-char checksum and trims a full SHA', () => {
   assert.equal(shortSha(''), '');
 });
 
-test('formatCommitDatetime matches Realms GOS UTC style', () => {
+test('formatCommitDatetime renders UTC as YYYY-MM-DD HH:MM:SS UTC', () => {
   assert.equal(formatCommitDatetime('2026-08-27 23:10:00'), '2026-08-27 23:10:00 UTC');
   assert.equal(formatCommitDatetime('2026-08-27T23:10:00Z'), '2026-08-27 23:10:00 UTC');
   assert.equal(formatCommitDatetime('2026-08-27T23:10:00.000Z'), '2026-08-27 23:10:00 UTC');
@@ -44,7 +44,7 @@ test('footerCopy is name + semver + short SHA + commit timestamp', () => {
   );
 });
 
-test('isLocalDeployment matches Realms localhost check', () => {
+test('isLocalDeployment recognises localhost hosts', () => {
   assert.equal(isLocalDeployment('localhost'), true);
   assert.equal(isLocalDeployment('casals_frontend.local.localhost'), true);
   assert.equal(isLocalDeployment('igz53-6qaaa-aaaao-bbapa-cai.icp0.io'), false);

@@ -425,7 +425,7 @@ def stand_member(stand: dict, role: str) -> dict | None:
 
 def stand_members(stand: dict, role: str) -> list[dict]:
     """Every canister in ``stand`` playing ``role``, numbered ones included
-    (`-quarter` matches `alpha-quarter-1`, `alpha-quarter-2`)."""
+    (`-worker` matches `alpha-worker-1`, `alpha-worker-2`)."""
     role = (role or "").strip().lower()
     if not role:
         return []
@@ -1654,7 +1654,7 @@ def glob_match(name: str, pattern: str) -> bool:
 
 
 def template_member_match(template_name: str, member: str, stand_name: str) -> dict | None:
-    """Does `member` (given as `{stand}-token`, `e2e-token`, `{stand}-quarter-3`, …)
+    """Does `member` (given as `{stand}-token`, `e2e-token`, `{stand}-worker-3`, …)
     name the template canister `template_name`? Returns the substitutions
     (`{"n": "3"}` for numbered members) or None."""
     pattern = template_name.replace("{stand}", stand_name)

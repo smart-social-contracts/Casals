@@ -91,7 +91,7 @@ def _use_assets(monkeypatch, files, chunk=MIB):
 
 def test_store_key_maps_namespace_and_path_onto_one_key():
     assert store_key("wasm", "hello@1.0.0.wasm.gz") == "/wasm/hello@1.0.0.wasm.gz"
-    assert store_key("frontend/realm/main", "/_app/x.js") == "/frontend/realm/main/_app/x.js"
+    assert store_key("frontend/tenant/main", "/_app/x.js") == "/frontend/tenant/main/_app/x.js"
     assert store_namespace_prefix("wasm") == "/wasm/"
     assert store_namespace_prefix("") == "/"
 

@@ -432,7 +432,7 @@ class TestUpSequencing:
         ic = RecordingIc(env="local")
         ic.deployer = DEPLOYER
         # budget + three create deposits + headroom (exactly budget_tc is the
-        # GaaS-prod trap the preflight now catches)
+        # production trap the preflight now catches)
         ic.cycles["__deployer__"] = 110_000_000_000_000
         ic.converged = False
         # the wasm store, with Commit still held by whoever bootstrapped it
@@ -662,7 +662,7 @@ class TestFundCheck:
     }
 
     def test_fresh_deploy_counts_the_create_deposits(self):
-        """GaaS prod, 2026-09-19: 7.44 TC passed a budget of 7, then three
+        """A production run, 2026-09-19: 7.44 TC passed a budget of 7, then three
         `icp canister create` deposits (2 TC each) left 1.44 TC and the
         conductor top-up failed. The preflight must count the deposits."""
         from casals_cli.up import check_funds, funding_needed
@@ -679,7 +679,7 @@ class TestFundCheck:
         check_funds(ic, self._SHEET, "production", "dep", None)
 
     def test_resume_with_funded_conductor_needs_nothing(self):
-        """Realms prod resume #3: the conductor already held the budget, yet
+        """A production resume: the conductor already held the budget, yet
         `up` refused because the deployer (7.44 TC) was under budget_tc (20)."""
         from casals_cli.bindings import Bindings
         from casals_cli.up import check_funds, funding_needed
@@ -688,7 +688,7 @@ class TestFundCheck:
         ic.cycles["__deployer__"] = 7_440_000_000_000
         ic.module_hashes["be"] = "hash"
         ic.queries[("be", "get_status")] = {"cycles": 20_000_000_000_000}
-        b = Bindings(sheet_name="realms", env="production", network_url="https://icp0.io", deployer="dep",
+        b = Bindings(sheet_name="app", env="production", network_url="https://icp0.io", deployer="dep",
                      conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-store": "ws"}, backend_id="be")
         sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 20}}})
         need = funding_needed(ic, sheet, "production", b)
@@ -718,7 +718,7 @@ class TestFundCheck:
         assert not [c for c in ic.calls if c[0] == "top_up"]
 
     def test_resume_pours_what_the_deployer_can_spare(self):
-        """GaaS prod resume: treasury 3.26 TC under the 5 TC floor, deployer
+        """Another production resume: treasury 3.26 TC under the 5 TC floor, deployer
         0.90 TC, no creates left — the run must go on, not demand +10 TC."""
         from casals_cli.bindings import Bindings
         from casals_cli.up import check_funds, fund_conductor
@@ -727,7 +727,7 @@ class TestFundCheck:
         ic.cycles["__deployer__"] = 900_000_000_000
         ic.module_hashes["be"] = "hash"
         ic.queries[("be", "get_status")] = {"cycles": 3_260_000_000_000}
-        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep",
+        b = Bindings(sheet_name="platform", env="production", network_url="https://icp0.io", deployer="dep",
                      conductor={"casals-backend": "be", "casals-frontend": "fe", "casals-store": "ws"}, backend_id="be")
         sheet = dict(self._SHEET, environments={"production": {"cycles": {"budget_tc": 14}}})
         need = check_funds(ic, sheet, "production", "dep", b)   # warns, does not raise
@@ -1197,7 +1197,7 @@ class TestAdoptLiveConductor:
         from casals_cli.bindings import Bindings
         from casals_cli.up import _adopt_live_conductor
 
-        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
+        b = Bindings(sheet_name="platform", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
         _adopt_live_conductor(self._ic(), b, "backend-live")
         assert b.conductor == {
             "casals-backend": "backend-live",
@@ -1210,7 +1210,7 @@ class TestAdoptLiveConductor:
         from casals_cli.bindings import Bindings
         from casals_cli.up import _adopt_live_conductor
 
-        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={"casals-frontend": "frontend-mine"}, backend_id="backend-live")
+        b = Bindings(sheet_name="platform", env="production", network_url="https://icp0.io", deployer="dep", conductor={"casals-frontend": "frontend-mine"}, backend_id="backend-live")
         _adopt_live_conductor(self._ic(), b, "backend-live")
         assert b.conductor["casals-frontend"] == "frontend-mine"
         assert b.conductor["casals-backend"] == "backend-live"
@@ -1220,7 +1220,7 @@ class TestAdoptLiveConductor:
         from casals_cli.up import _adopt_live_conductor
 
         ic = RecordingIc(env="production")  # no module hash: created, never installed
-        b = Bindings(sheet_name="gaas", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
+        b = Bindings(sheet_name="platform", env="production", network_url="https://icp0.io", deployer="dep", conductor={}, backend_id="backend-live")
         _adopt_live_conductor(ic, b, "backend-live")
         assert b.conductor == {}
 
@@ -1435,7 +1435,7 @@ class TestConvergeGuards:
         assert plan["items"] == []
 
     def test_handing_the_conductor_over_ends_as_converged(self):
-        """Realms prod: after set_controllers casals-backend → [multisig] the
+        """Production: after set_controllers casals-backend → [multisig] the
         next plan was refused (`caller is not a commander`) and `up` exited 1
         on a finished orchestra."""
         from casals_cli.up import converge

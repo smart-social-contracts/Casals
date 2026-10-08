@@ -49,7 +49,7 @@ def code_checksum(code: str) -> str:
 #   casals_cli/examples/minimal.json and tests/e2e/orchestras/*/casals.json —
 #     casals, casals-auditor, casals-dev, casals-lifecycle, casals-motoko,
 #     casals-operator, casals-owner, casals-platform, casals-python,
-#     casals-realms, casals-release, casals-rust, casals-sre, casals-steward
+#     casals-release, casals-rust, casals-sre, casals-steward, casals-tenants
 #   tests/e2e/run_e2e.py, tests/test_access_code.py,
 #   tests/e2e/orchestras/governed/casals.json — CASALS-E2E-ACCESS-CODE
 PUBLISHED_ACCESS_CODE_CHECKSUMS = frozenset({
@@ -64,11 +64,11 @@ PUBLISHED_ACCESS_CODE_CHECKSUMS = frozenset({
     "sha256:2338c757727ad87f8527f871f9dd28af850bf97fb4f496ab94f45913496cd126",
     "sha256:d36cff64938b358015571bc697b8eb14d311d3be486c3ef7ca57244e795151a6",
     "sha256:1fff220f03f8e6ae51e75fc583fb2948a9447fe2b42b0984e89fe835a5f6a884",
-    "sha256:d6606c861e0311482adeac5d701f162d3d7365d612eada47ca9007ebc9d2f27b",
     "sha256:de2e8fcf679a855ba862c7264278e2c118c5839da20e09f44ce3766acb3f6323",
     "sha256:aaf1b5ae00d2d256e6cf53f77f6807ba608c99defed0a05a7dffb846c5a63947",
     "sha256:837a16075a6d801bd8c1065191b64086e2ca7cc6f06049cdde9b120ae7b1b818",
     "sha256:65fa65e8d3e12282657a11e515874c26e11858802bd9512e2d7c5eef88c5f409",
+    "sha256:e4bb52e0557e265f94b54e2a28df1b3fb5b843b056178d85b0cb1121d00666d6",
 })
 
 

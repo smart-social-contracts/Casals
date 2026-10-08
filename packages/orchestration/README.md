@@ -28,7 +28,7 @@ The Baton never upgrades itself; the multisig does (`UpgradeCanister`, or `Upgra
 
 | Path | Who | Mechanism |
 |------|-----|-----------|
-| **Product teardown** | A product canister listed in `delegated_destroy_principals` (e.g. the GaaS `realm_installer`) | Casals `destroy_stand` (drains to treasury first; fail closed). Not a raw stop+delete. |
+| **Product teardown** | A product canister listed in `delegated_destroy_principals` (e.g. an installer canister) | Casals `destroy_stand` (drains to treasury first; fail closed). Not a raw stop+delete. |
 | **Casals Cycles ops** | Multisig signers | Propose `DestroyCanisters` (N ids + Casals treasury, one proposal) → threshold auto-executes → drain to the conductor **before** delete as `aaaaa-aa`. If drain fails, do not delete. |
 
 Execute failures land as proposal status `#failed` (audit `execute_failed`); human `reject` stays `#rejected`.

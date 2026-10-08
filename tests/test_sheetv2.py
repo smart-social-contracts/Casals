@@ -268,11 +268,11 @@ _PUBLISHED_ACCESS_CODES = (
     "casals-owner",
     "casals-platform",
     "casals-python",
-    "casals-realms",
     "casals-release",
     "casals-rust",
     "casals-sre",
     "casals-steward",
+    "casals-tenants",
 )
 
 
@@ -442,16 +442,16 @@ def test_domains_materialize_ic_domains_file():
     """`domains` hosts become the frontend's `/.well-known/ic-domains`; wildcards
     and empty hosts (an environment without a domain) are skipped."""
     sheet = _load_corpus("minimal")
-    sheet["environments"]["local"]["portal_host"] = "gos.example"
+    sheet["environments"]["local"]["portal_host"] = "app.example"
     sheet["domains"] = [
         {"host": "$env.portal_host", "canister": "casals-frontend"},
-        {"host": "*.gos.example", "canister": "casals-frontend"},
+        {"host": "*.app.example", "canister": "casals-frontend"},
         {"host": "", "canister": "casals-frontend"},
-        {"host": "api.gos.example", "canister": "hello-backend"},
+        {"host": "api.app.example", "canister": "hello-backend"},
     ]
     assert sv2.validate(sheet, "local") == []
     resolved = sv2.resolve(sheet, "local", _ctx(sheet))
-    assert resolved["conductor"]["frontend"]["files"][sv2.IC_DOMAINS_FILE] == "gos.example\n"
+    assert resolved["conductor"]["frontend"]["files"][sv2.IC_DOMAINS_FILE] == "app.example\n"
     assert "files" not in resolved["sections"][0]["stands"][0]["canisters"][0]  # not a frontend
     sheet["environments"]["local"]["portal_host"] = ""
     resolved = sv2.resolve(sheet, "local", _ctx(sheet))
@@ -527,34 +527,34 @@ def test_environments_and_env_block():
 # ── numbered optional template members (auto-scaling) ────────────────────────
 
 _TEMPLATE = {
-    "name_pattern": "realm-*",
+    "name_pattern": "tenant-*",
     "canisters": [
         {"name": "{stand}-backend", "kind": "backend"},
         {"name": "{stand}-token", "optional": True},
-        {"name": "{stand}-quarter-{n}", "optional": True, "install_arg": "(record { index = {n} : nat })"},
+        {"name": "{stand}-worker-{n}", "optional": True, "install_arg": "(record { index = {n} : nat })"},
     ],
-    "baton": {"manages": ["backend", "quarter"], "hand_off": True},
+    "baton": {"manages": ["backend", "worker"], "hand_off": True},
 }
 
 
 def test_template_members_numbered_and_optional():
     spec = sv2.instantiate_template_stand(
-        _TEMPLATE, "realm-a", ["{stand}-token", "realm-a-quarter-3", "{stand}-quarter-1", "{stand}-quarter-3"])
+        _TEMPLATE, "tenant-a", ["{stand}-token", "tenant-a-worker-3", "{stand}-worker-1", "{stand}-worker-3"])
     names = [c["name"] for c in spec["canisters"]]
-    assert names == ["realm-a-backend", "realm-a-token", "realm-a-quarter-1", "realm-a-quarter-3"]
+    assert names == ["tenant-a-backend", "tenant-a-token", "tenant-a-worker-1", "tenant-a-worker-3"]
     assert spec["canisters"][-1]["install_arg"] == "(record { index = 3 : nat })"
     assert "optional" not in spec["canisters"][1]
 
 
 def test_unknown_members_rejected():
-    assert sv2.unknown_members(_TEMPLATE, "realm-a", ["realm-a-quarter-x", "{stand}-nft", "realm-a-token"]) == [
-        "realm-a-quarter-x", "{stand}-nft"]
+    assert sv2.unknown_members(_TEMPLATE, "tenant-a", ["tenant-a-worker-x", "{stand}-nft", "tenant-a-token"]) == [
+        "tenant-a-worker-x", "{stand}-nft"]
 
 
 def test_stand_members_includes_numbered_roles():
-    spec = sv2.instantiate_template_stand(_TEMPLATE, "realm-a", ["{stand}-quarter-1", "{stand}-quarter-2"])
-    assert [c["name"] for c in sv2.stand_members(spec, "quarter")] == ["realm-a-quarter-1", "realm-a-quarter-2"]
-    assert [c["name"] for c in sv2.stand_members(spec, "backend")] == ["realm-a-backend"]
+    spec = sv2.instantiate_template_stand(_TEMPLATE, "tenant-a", ["{stand}-worker-1", "{stand}-worker-2"])
+    assert [c["name"] for c in sv2.stand_members(spec, "worker")] == ["tenant-a-worker-1", "tenant-a-worker-2"]
+    assert [c["name"] for c in sv2.stand_members(spec, "backend")] == ["tenant-a-backend"]
 
 
 def test_section_subnet_resolves_principal_alias():
@@ -611,24 +611,24 @@ def test_arrangement_is_a_sections_optional_new_stand_configuration():
     section = sheet["sections"][1]
     assert sv2.validate(sheet, "local") == []
     assert sv2.section_arrangement(section)["name_pattern"]
-    minted = sv2.materialize(sheet, {"realm-x": {"section": section["name"], "members": []}})
+    minted = sv2.materialize(sheet, {"tenant-x": {"section": section["name"], "members": []}})
     names = [st["name"] for st in minted["sections"][1]["stands"]]
-    assert "realm-x" in names
+    assert "tenant-x" in names
 
 
 def test_replace_section_arrangement_keeps_the_rest_of_the_sheet():
     sheet = _load_corpus("dynamic-stands")
     original = sheet["sections"][1]["arrangements"]
-    updated = sv2.replace_section_arrangement(sheet, "Realms", {
-        "stand_template": {**original["stand_template"], "name_pattern": "realm-*"},
+    updated = sv2.replace_section_arrangement(sheet, "Tenants", {
+        "stand_template": {**original["stand_template"], "name_pattern": "tenant-*"},
     })
     assert updated["sections"][0] == sheet["sections"][0]
-    assert updated["sections"][1]["arrangements"]["stand_template"]["name_pattern"] == "realm-*"
+    assert updated["sections"][1]["arrangements"]["stand_template"]["name_pattern"] == "tenant-*"
     assert sv2.validate(updated, "local") == []
-    removed = sv2.replace_section_arrangement(updated, "Realms", None)
+    removed = sv2.replace_section_arrangement(updated, "Tenants", None)
     assert "arrangements" not in removed["sections"][1]
     with pytest.raises(ValueError, match="stand_template"):
-        sv2.replace_section_arrangement(sheet, "Realms", {"name": "nope"})
+        sv2.replace_section_arrangement(sheet, "Tenants", {"name": "nope"})
 
 
 def test_a_top_level_stand_template_is_rejected():

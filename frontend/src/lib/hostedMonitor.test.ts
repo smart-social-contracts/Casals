@@ -28,14 +28,14 @@ describe('hosted monitor URL helpers', () => {
     assert.equal(monitorBaseFromInstanceUrl(url), 'https://service.ic-casals.tech');
     assert.equal(instanceIdFromInstanceUrl(url), CID);
     assert.equal(monitorBaseFromInstanceUrl('https://example.org/other'), '');
-    assert.equal(instanceIdFromInstanceUrl('https://service.ic-casals.tech/v1/realms-staging'), 'realms-staging');
+    assert.equal(instanceIdFromInstanceUrl('https://service.ic-casals.tech/v1/acme-staging'), 'acme-staging');
   });
 
   it('builds and recognises the hosted url for this conductor', () => {
     assert.equal(instanceUrlFor('https://service.ic-casals.tech/', CID), `https://service.ic-casals.tech/v1/${CID}`);
     assert.equal(instanceUrlFor('', CID), '');
     assert.equal(isHostedUrlFor(`https://service.ic-casals.tech/v1/${CID}/`, 'https://service.ic-casals.tech', CID), true);
-    assert.equal(isHostedUrlFor('https://service.ic-casals.tech/v1/realms-staging', 'https://service.ic-casals.tech', CID), false);
+    assert.equal(isHostedUrlFor('https://service.ic-casals.tech/v1/acme-staging', 'https://service.ic-casals.tech', CID), false);
   });
 
   it('asks for a /v1/service lookup only when the base changes', () => {
@@ -43,7 +43,7 @@ describe('hosted monitor URL helpers', () => {
     assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', prod), false);
     assert.equal(serviceLookupNeeded(' https://service.ic-casals.tech/ ', prod), false);
     assert.equal(serviceLookupNeeded(`https://service.ic-casals.tech/v1/${CID}`, prod), false);
-    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', 'https://service.ic-casals.tech/v1/realms-staging'), false);
+    assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', 'https://service.ic-casals.tech/v1/acme-staging'), false);
     assert.equal(serviceLookupNeeded('https://service.staging.ic-casals.tech', prod), true);
     assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', ''), true);
     assert.equal(serviceLookupNeeded('https://service.ic-casals.tech', 'https://example.org/other'), true);

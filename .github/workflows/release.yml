@@ -33,7 +33,7 @@ jobs:
 
       - name: Stamp /version placeholders
         run: |
-          # GET /version (gos-as-a-service#39). Unstamped checkouts omit
+          # GET /version build provenance. Unstamped checkouts omit
           # sha / built_at / version honestly; this step bakes them in
           # before the WASM is compiled so query time never invents them.
           COMMIT="$(git rev-parse --short HEAD)"
@@ -51,7 +51,7 @@ jobs:
           python -m basilisk casals_backend src/main.py
           python3 scripts/fix_asset_permission_did.py casals_backend.did
           gzip -kf .basilisk/casals_backend/casals_backend.wasm
-          # gaas new fetches casals_backend.wasm.gz (known.py). Keep the
+          # Consumers fetch casals_backend.wasm.gz. Keep the
           # casals_conductor.* aliases for anyone still using that name.
           cp .basilisk/casals_backend/casals_backend.wasm.gz ./casals_backend.wasm.gz
           cp .basilisk/casals_backend/casals_backend.wasm.gz ./casals_conductor.wasm.gz
@@ -59,7 +59,7 @@ jobs:
 
       - name: Stage orchestration template WASMs
         run: |
-          # Versions the GaaS sheet installs. Committed artifacts under seed/templates/.
+          # Template versions consumer sheets install. Committed artifacts under seed/templates/.
           cp seed/templates/orchestration-baton@1.6.0.wasm.gz ./orchestration-baton@1.6.0.wasm.gz
           cp seed/templates/orchestration-multisig@1.7.0.wasm.gz ./orchestration-multisig@1.7.0.wasm.gz
           # The store canister, and the asset-canister module stand frontends install

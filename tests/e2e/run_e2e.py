@@ -73,7 +73,7 @@ def _absolutize_local_sources(sheet: dict, sheet_dir: str) -> None:
     """The CLI resolves a relative `local:` source against the sheet's own
     directory, then the Casals checkout. Scenarios write edited copies of the
     sheet under $CASALS_HOME, so a product sheet's `local:.basilisk/...` or
-    `local:../realms/...` would stop resolving there: pin those to the original
+    `local:../<product>/...` would stop resolving there: pin those to the original
     sheet's directory up front (Casals-relative paths are left as they are)."""
     registry = sheet.get("registry") or {}
     for entry in [*(registry.get("wasms") or []), *(registry.get("bundles") or [])]:
@@ -228,7 +228,7 @@ def runtime_stand(o: Orchestra) -> None:
     installer): `create_stand` records it and the conductor builds it on its own
     stand-build timer — nobody runs `up`; the test waits for `built` like a
     product would. Then the stand grows: `create_stand` on the existing stand
-    adds a numbered optional member (`{stand}-quarter-2`) — the auto-scaling
+    adds a numbered optional member (`{stand}-worker-2`) — the auto-scaling
     path — and the conductor builds that too."""
     sections = [s for s in o.sheet["sections"] if isinstance(_section_arrangement(s), dict)]
     if not sections:

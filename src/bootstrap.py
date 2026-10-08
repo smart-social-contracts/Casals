@@ -248,7 +248,7 @@ def ensure_core_layout() -> dict:
 
     # 0. the retired file-registry pair. The casals-store store holds Casals'
     #    artifacts now, but a product may keep a file registry of its own with
-    #    live data in it (GaaS: realm branding, extension packages): when the
+    #    live data in it (branding, extension packages): when the
     #    sheet declares a section canister under the same name, the row is
     #    re-homed on that stand — same canister id, state untouched, later
     #    reconciled like any other member. Otherwise it goes back to the pool

@@ -1,8 +1,7 @@
 """GET /version — build provenance over the IC HTTP interface.
 
-Contract: gos-as-a-service#39 — every platform canister serves build
-provenance at /version for the "estado de los entornos" command.
-Values are stamped at build/release time (release.yml sed on the
+Contract: every platform canister serves build provenance at /version,
+so an operator can see what each environment runs. Values are stamped at build/release time (release.yml sed on the
 placeholders below). A field still holding its placeholder (local/dev
 builds) is omitted honestly — never invented at query time.
 

@@ -49,22 +49,22 @@ test('parseWasmFilename understands the catalog naming and common variants', () 
   assert.deepEqual(parseWasmFilename('release-1.0.0-rc.1.wasm.gz'), {
     family: 'release', version: '1.0.0-rc.1', gz: true,
   });
-  assert.deepEqual(parseWasmFilename('realm_backend-v0.6.0.wasm.gz'), {
-    family: 'realm-backend', version: '0.6.0', gz: true,
+  assert.deepEqual(parseWasmFilename('tenant_backend-v0.6.0.wasm.gz'), {
+    family: 'tenant-backend', version: '0.6.0', gz: true,
   });
-  assert.deepEqual(parseWasmFilename('realm-backend-v0.6.0.wasm.gz'), {
-    family: 'realm-backend', version: '0.6.0', gz: true,
+  assert.deepEqual(parseWasmFilename('tenant-backend-v0.6.0.wasm.gz'), {
+    family: 'tenant-backend', version: '0.6.0', gz: true,
   });
 });
 
 test('a bundle filename is a frontend namespace', () => {
-  assert.deepEqual(parseBundleFilename('realm-frontend-v0.6.0.tar.gz'), {
-    family: 'realm-frontend', version: '0.6.0',
+  assert.deepEqual(parseBundleFilename('tenant-frontend-v0.6.0.tar.gz'), {
+    family: 'tenant-frontend', version: '0.6.0',
   });
-  assert.equal(bundleNamespace('realm-frontend', '0.6.0'), 'frontend/realm-frontend/0.6.0');
-  assert.equal(bundleNamespace('realm_frontend', ''), 'frontend/realm-frontend/main');
-  assert.deepEqual(parseBundleFilename('realm_frontend.tar.gz'), {
-    family: 'realm-frontend', version: '',
+  assert.equal(bundleNamespace('tenant-frontend', '0.6.0'), 'frontend/tenant-frontend/0.6.0');
+  assert.equal(bundleNamespace('tenant_frontend', ''), 'frontend/tenant-frontend/main');
+  assert.deepEqual(parseBundleFilename('tenant_frontend.tar.gz'), {
+    family: 'tenant-frontend', version: '',
   });
 });
 

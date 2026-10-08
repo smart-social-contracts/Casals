@@ -30,7 +30,7 @@ def test_star_does_not_grant_calls():
         "stand": "",
         "commanders": [{"principal": CALLER, "permissions": "*"}],
     }]
-    canisters = [{"name": "realm-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "realm-registry"}]
+    canisters = [{"name": "tenant-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "tenant-registry"}]
     assert cmd.runnable_calls(CALLER, scopes, canisters, orchestra_section="Casals") == []
 
 
@@ -41,14 +41,14 @@ def test_orchestra_grant_matches_id_or_name():
         "commanders": [{
             "principal": CALLER,
             "permissions": "canister.call",
-            "calls": [{"canister": "realm-registry-backend", "method": "issue_voucher"}],
+            "calls": [{"canister": "tenant-registry-backend", "method": "issue_voucher"}],
         }],
     }]
-    canisters = [{"name": "realm-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "realm-registry"}]
+    canisters = [{"name": "tenant-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "tenant-registry"}]
     got = cmd.runnable_calls(CALLER, scopes, canisters, orchestra_section="Casals")
     assert got == [{
         "canister_id": REGISTRY,
-        "canister_name": "realm-registry-backend",
+        "canister_name": "tenant-registry-backend",
         "method": "issue_voucher",
         "section": "Casals",
         "stand": "",
@@ -65,7 +65,7 @@ def test_stand_grant_does_not_cover_another_stand():
             "calls": [{"canister": REGISTRY, "method": "issue_voucher"}],
         }],
     }]
-    canisters = [{"name": "realm-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "realm-registry"}]
+    canisters = [{"name": "tenant-registry-backend", "canister_id": REGISTRY, "section": "Deployments", "stand": "tenant-registry"}]
     assert cmd.runnable_calls(CALLER, scopes, canisters, orchestra_section="Casals") == []
 
 

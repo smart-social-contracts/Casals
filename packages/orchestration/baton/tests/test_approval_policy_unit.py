@@ -168,13 +168,13 @@ def _weighted(*entries):
 
 
 class TestWeightedQuorum:
-    """The orchestra policy: multisig weight 2, Casals 1, realm capital 1, threshold 2 —
-    the multisig passes alone; Casals and the capital only together; neither alone."""
+    """The orchestra policy: multisig weight 2, Casals 1, tenant backend 1, threshold 2 —
+    the multisig passes alone; Casals and the backend only together; neither alone."""
 
     POLICY = {"threshold": 2, "eligible": [], "required": []}
 
     def _store(self):
-        return _weighted(("multisig", 2), ("casals", 1), ("capital", 1))
+        return _weighted(("multisig", 2), ("casals", 1), ("backend", 1))
 
     def test_multisig_alone(self):
         rec = _pending_action()
@@ -187,10 +187,10 @@ class TestWeightedQuorum:
         append_approval(rec, "casals")
         assert not quorum_met(rec, self.POLICY, self._store())
 
-    def test_casals_plus_capital(self):
+    def test_casals_plus_backend(self):
         rec = _pending_action()
         append_approval(rec, "casals")
-        append_approval(rec, "capital")
+        append_approval(rec, "backend")
         assert quorum_met(rec, self.POLICY, self._store())
 
     def test_legacy_records_weigh_one(self):

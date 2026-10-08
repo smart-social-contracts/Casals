@@ -240,7 +240,7 @@ from sheet_storage import (
 from live_state import _asset_encodings_gen
 from planner import desired_assets
 
-# IC HTTP gateway types (GET /version — gos-as-a-service#39).
+# IC HTTP gateway types (GET /version build provenance).
 # Incoming Header is a Candid tuple, not the outgoing HttpHeader record.
 Header = Tuple[str, str]
 
@@ -2031,7 +2031,7 @@ def create_stand(args: text) -> text:
     """Args (JSON): {section?, name, description?, members?, commander_principal?}.
 
     `members` names the `optional: true` template canisters this stand gets
-    (`{stand}-token`, `{stand}-quarter-3`, …). Calling it again for an existing
+    (`{stand}-token`, `{stand}-worker-3`, …). Calling it again for an existing
     stand adds members (idempotent union; `section` may then be omitted) — that
     is how a stand grows at runtime. Authorized for Casals controllers, open-access callers, conductor
     commanders, the section's commander holding `stand.create`, or — for an

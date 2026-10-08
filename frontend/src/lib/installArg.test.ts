@@ -14,7 +14,7 @@ const sheet = {
             {
               name: 'token-backend',
               wasm_key: 'token-backend@0.1.0',
-              install_arg: '(record { name = "Realms Token"; symbol = "RLM" })',
+              install_arg: '(record { name = "Tenant Token"; symbol = "TNT" })',
             },
           ],
         },
@@ -26,7 +26,7 @@ const sheet = {
 test('sheetInstallArgFor returns the canister Candid text', () => {
   assert.equal(
     sheetInstallArgFor(sheet, 'token-backend'),
-    '(record { name = "Realms Token"; symbol = "RLM" })',
+    '(record { name = "Tenant Token"; symbol = "TNT" })',
   );
   assert.equal(sheetInstallArgFor(sheet, 'missing'), '');
   assert.equal(sheetInstallArgFor(null, 'token-backend'), '');

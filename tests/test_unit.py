@@ -205,7 +205,7 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
     manual = 750_000_000_000
     snapshot = [
         {
-            "name": "agora-backend",
+            "name": "atlas-backend",
             "canister_id": "aaaaa-aa",
             "min_cycles": old_default,
             "min_cycles_override": 0,
@@ -230,9 +230,9 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
     live = {
         "aaaaa-aa": {
             "canister_id": "aaaaa-aa",
-            "name": "agora-backend",
-            "section": "realms",
-            "stand": "agora",
+            "name": "atlas-backend",
+            "section": "tenants",
+            "stand": "atlas",
             "kind": "backend",
             "min_cycles": new_default,
             "topup_cycles": 1_000_000_000_000,
@@ -242,8 +242,8 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
         "bbbbb-bb": {
             "canister_id": "bbbbb-bb",
             "name": "special-backend",
-            "section": "realms",
-            "stand": "agora",
+            "section": "tenants",
+            "stand": "atlas",
             "kind": "backend",
             "min_cycles": manual,
             "topup_cycles": 1_000_000_000_000,
@@ -252,9 +252,9 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
         },
         "ccccc-cc": {
             "canister_id": "ccccc-cc",
-            "name": "agora-quarter-1",
-            "section": "realms",
-            "stand": "agora",
+            "name": "atlas-worker-1",
+            "section": "tenants",
+            "stand": "atlas",
             "kind": "backend",
             "min_cycles": new_default,
             "topup_cycles": 1_000_000_000_000,
@@ -264,9 +264,9 @@ def test_patch_snapshot_canister_policies_updates_default_inheritors():
     }
     merged = cycles_mod.patch_snapshot_canister_policies(snapshot, live)
     by_name = {r["name"]: r for r in merged}
-    assert by_name["agora-backend"]["min_cycles"] == new_default
+    assert by_name["atlas-backend"]["min_cycles"] == new_default
     assert by_name["special-backend"]["min_cycles"] == manual
-    assert by_name["agora-quarter-1"]["min_cycles"] == new_default
+    assert by_name["atlas-worker-1"]["min_cycles"] == new_default
     assert len(merged) == 3
 
 
@@ -1127,8 +1127,8 @@ def test_sheet_files_content_type():
     assert ct("/robots") == "text/plain"
 
 
-def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
-    """Realm canisters keep Casals until hand_to_baton; installer caller is added."""
+def test_resolve_provision_controllers_keeps_casals_on_tenant(monkeypatch):
+    """Tenant canisters keep Casals until hand_to_baton; installer caller is added."""
     casals = "qthgp-casals-conductor"
     mid = "multisig-aaaaa-aa"
     extra = "extra-deployer"
@@ -1155,7 +1155,7 @@ def test_resolve_provision_controllers_keeps_casals_on_realm(monkeypatch):
 
 
 def test_resolve_provision_controllers_skips_user_caller(monkeypatch):
-    """Self-authenticating callers (deployer) are not auto-added to realm controllers."""
+    """Self-authenticating callers (deployer) are not auto-added to tenant controllers."""
     casals = "qthgp-casals-conductor"
     mid = "multisig-aaaaa-aa"
     deployer = "ah6ac-cc73l-bb2zc-ni7bh-jov4q-roeyj-6k2ob-mkg5j-pequi-vuaa6-2ae"
@@ -1906,9 +1906,9 @@ def test_fetch_canister_status_ic0542_non_multisig_still_error(monkeypatch):
     monkeypatch.setattr(cycles_mod, "_fetch_multisig_cycles_balance_gen", fake_multisig_gen)
 
     class St:
-        canister_id = "realm-backend"
+        canister_id = "tenant-backend"
         wasm_type = "motoko"
-        wasm_key = "realm-backend"
+        wasm_key = "tenant-backend"
         stand = None
 
     status, err = _drive_fetch_result_gen(St(), [_StatusDeniedResult(), None])

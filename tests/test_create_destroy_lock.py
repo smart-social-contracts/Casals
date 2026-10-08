@@ -2,7 +2,7 @@
 
 Product lock (#36 / create-path restore; #32 destroy path unchanged):
 
-- Newly provisioned **realm** canisters keep Casals as an IC controller
+- Newly provisioned **tenant** canisters keep Casals as an IC controller
   (multisig may be a co-controller) until the sheet's baton hand-off.
 - Baton and multisig canisters do **not** keep Casals after provision
   (multisig is self-controlled; baton is ``[multisig] + extras``).
@@ -228,7 +228,7 @@ def _assert_multisig_self_controlled(
     )
 
 
-def _assert_realm_provision_controllers(
+def _assert_tenant_provision_controllers(
     cid: str, *, multisig_id: str, casals_id: str, name: str, tree_row: dict
 ):
     controllers = canister_controllers(tree_row=tree_row)
@@ -401,11 +401,11 @@ class TestCreateDestroyLock:
         )
 
     def test_02_managed_create_keeps_casals(self, lock_env):
-        """Realm canisters keep Casals after provision until hand_to_baton."""
+        """Tenant canisters keep Casals after provision until hand_to_baton."""
         tree = call_canister("get_tree")
         for item in lock_env["managed"]:
             row = _tree_canister(tree, item["name"])
-            _assert_realm_provision_controllers(
+            _assert_tenant_provision_controllers(
                 item["canister_id"],
                 multisig_id=lock_env["multisig_id"],
                 casals_id=lock_env["casals_id"],
@@ -414,7 +414,7 @@ class TestCreateDestroyLock:
             )
 
     def test_03_casals_remains_controller_until_hand_to_baton(self, lock_env):
-        """Casals can still act on realm canisters; do not destroy here.
+        """Casals can still act on tenant canisters; do not destroy here.
 
         Destroy as Casals would succeed (Casals is still a controller) and
         would consume lock-a before test_04. The approved ops destroy is

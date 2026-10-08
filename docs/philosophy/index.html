@@ -1215,7 +1215,7 @@
                         <div class="commanders-dots">
                           <span class="commander c1" title="ops"></span>
                           <span class="commander c2" title="platform"></span>
-                          <span class="commander c3" title="realms"></span>
+                          <span class="commander c3" title="tenants"></span>
                         </div>
                         <div class="commanders-label">scoped permissions</div>
                       </div>
@@ -1445,25 +1445,25 @@
             <div class="page-step active">
               <section class="arch-box examples-slide wide-slide">
                 <header class="box-header">
-                  <h2>Running today: gos.earth</h2>
-                  <p>Many governance operating systems on one shared machine — conducted by Casals.</p>
+                  <h2>Example: a hosting platform</h2>
+                  <p>Many tenant applications on one shared machine — conducted by Casals.</p>
                 </header>
                 <div class="today-split">
                   <div class="today-text">
                     <div class="today-block">
-                      <div class="today-h">GOS — Governance Operating System</div>
-                      <p>The operating system of a society, rewritten as software: who belongs, who decides, what the treasury may spend, which rules execute without asking anyone. One <strong>realm</strong> is one such system, on its own canisters.</p>
+                      <div class="today-h">A tenant</div>
+                      <p>One customer's application: a backend, a frontend, perhaps a token, on its own canisters. The tenant decides what its application does.</p>
                     </div>
                     <div class="today-block">
-                      <div class="today-h">GOS-as-a-Service — gos.earth</div>
-                      <p>The control plane that hosts many of them side by side. A community deploys a GOS; gos.earth registers it as a realm, provisions the canisters, keeps them funded and current. The community remains sovereign over its own system.</p>
+                      <div class="today-h">The platform</div>
+                      <p>The control plane that hosts many tenants side by side. A customer signs up; the platform provisions the canisters, keeps them funded and current. Each tenant remains sovereign over its own application.</p>
                     </div>
                     <div class="today-block">
                       <div class="today-h">How it uses Casals</div>
                       <ul class="bullets-hollow">
-                        <li>The registry accepts a deploy; the <strong>installer</strong> asks the <strong>Casals conductor</strong>.</li>
-                        <li>The conductor creates the realm as a new <strong>stand</strong> in Deployments, streams the GOS build from <strong>casals-store</strong> and funds it from the treasury.</li>
-                        <li>A new GOS release rolls out realm by realm; each realm's <strong>baton</strong> (Casals and the realm itself) must agree before the upgrade lands.</li>
+                        <li>The registry accepts a sign-up; the <strong>installer</strong> asks the <strong>Casals conductor</strong>.</li>
+                        <li>The conductor creates the tenant as a new <strong>stand</strong> in Deployments, streams the application build from <strong>casals-store</strong> and funds it from the treasury.</li>
+                        <li>A new release rolls out tenant by tenant; each tenant's <strong>baton</strong> (Casals and the tenant itself) must agree before the upgrade lands.</li>
                       </ul>
                     </div>
                   </div>
@@ -1472,31 +1472,31 @@
                     <div class="arrow-down">↓</div>
                     <div class="casals-row">
                       <div class="casals-box"><div class="casals-box-name">casals-backend</div><div class="casals-box-note">conductor · treasury</div></div>
-                      <div class="casals-box casals-store"><div class="casals-box-name">casals-store</div><div class="casals-box-note">GOS builds</div></div>
+                      <div class="casals-box casals-store"><div class="casals-box-name">casals-store</div><div class="casals-box-note">application builds</div></div>
                     </div>
                     <div class="arrow-down">↓<span class="arrow-label">controls</span></div>
                     <div class="orchestra">
-                      <div class="orch-label">gos.earth orchestra</div>
+                      <div class="orch-label">platform orchestra</div>
                       <div class="sections">
                         <div class="section">
                           <div class="sec-label">Infra</div>
                           <div class="stand">
                             <div class="stand-label">installer</div>
-                            <div class="cans"><span class="can">realm-installer</span></div>
+                            <div class="cans"><span class="can">installer</span></div>
                           </div>
                           <div class="stand">
-                            <div class="stand-label">realm-registry</div>
+                            <div class="stand-label">registry</div>
                             <div class="cans"><span class="can">backend</span><span class="can">frontend</span></div>
                           </div>
                         </div>
                         <div class="section">
                           <div class="sec-label">Deployments</div>
                           <div class="stand">
-                            <div class="stand-label">realm <em>alice</em></div>
+                            <div class="stand-label">tenant <em>alice</em></div>
                             <div class="cans"><span class="can baton">baton</span><span class="can">backend</span><span class="can">frontend</span><span class="can">token</span></div>
                           </div>
                           <div class="stand">
-                            <div class="stand-label">realm <em>bob</em></div>
+                            <div class="stand-label">tenant <em>bob</em></div>
                             <div class="cans"><span class="can baton">baton</span><span class="can">backend</span><span class="can">frontend</span><span class="can">token</span></div>
                           </div>
                           <div class="stand stand-more">

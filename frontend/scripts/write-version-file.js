@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * postbuild: write dist/version — the GET /version asset (gos-as-a-service#39).
+ * postbuild: write dist/version — the GET /version asset.
  *
  * Runs after `vite build` (dist/ is emptied at build start, so this must run
  * after). The file has no extension on purpose: the asset canister serves it

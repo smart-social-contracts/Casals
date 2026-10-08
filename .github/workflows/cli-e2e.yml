@@ -4,8 +4,8 @@
 # every orchestra under tests/e2e/orchestras/ runs the scenario matrix
 # (fresh, idempotent, content_change, runtime_stand, baton_upgrade,
 # retire_and_pool, access_code, export_roundtrip), grading each with
-# `casals oracle`. The two product sheets (gaas, realms) run in their repos'
-# own workflows because they need the product artifacts built first.
+# `casals oracle`. Product sheets run in their own repos' workflows,
+# because they need the product artifacts built first.
 
 name: Orchestra corpus e2e
 

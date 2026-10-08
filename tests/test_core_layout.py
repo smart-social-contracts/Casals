@@ -119,7 +119,7 @@ def test_migrates_legacy_layout_and_is_idempotent(db, monkeypatch):
 
 
 def test_legacy_registry_row_is_kept_when_the_sheet_declares_it_as_a_product(db, monkeypatch):
-    """GaaS keeps a file registry of its own (branding, extension packages):
+    """A product may keep a file registry of its own (branding, extension packages):
     once the migrated sheet declares `Infra/file-registry/file-registry`, the
     conductor's old `file-registry` row moves there — same canister, no pool."""
     import bootstrap
@@ -320,30 +320,30 @@ def test_mark_built_stands_needs_every_member_bound_and_nothing_planned(db):
     import sheet_api
     from models import Section, Stand
 
-    sec = Section(name="Realms")
-    st = Stand(name="realm-x")
+    sec = Section(name="Tenants")
+    st = Stand(name="tenant-x")
     st.section = sec
-    resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [
-        {"name": "realm-x-baton"}, {"name": "realm-x-backend"}]}]}]}
+    resolved = {"sections": [{"name": "Tenants", "stands": [{"name": "tenant-x", "canisters": [
+        {"name": "tenant-x-baton"}, {"name": "tenant-x-backend"}]}]}]}
     empty = {"items": [], "pending": [], "deferred": []}
     # a member not yet created
-    assert sheet_api.mark_built_stands(dict(empty), resolved, {"realm-x-baton": "aaaaa-aa"}, now_s=7) == []
-    bound = {"realm-x-baton": "aaaaa-aa", "realm-x-backend": "bbbbb-bb"}
+    assert sheet_api.mark_built_stands(dict(empty), resolved, {"tenant-x-baton": "aaaaa-aa"}, now_s=7) == []
+    bound = {"tenant-x-baton": "aaaaa-aa", "tenant-x-backend": "bbbbb-bb"}
     # something still planned for the stand
-    plan = dict(empty, items=[{"kind": "hand_off", "target": {"name": "realm-x-baton", "stand": "realm-x"}}])
+    plan = dict(empty, items=[{"kind": "hand_off", "target": {"name": "tenant-x-baton", "stand": "tenant-x"}}])
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
-    plan = dict(empty, deferred=[{"target": "realm-x-backend", "field": "controllers"}])
+    plan = dict(empty, deferred=[{"target": "tenant-x-backend", "field": "controllers"}])
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
-    plan = dict(empty, pending=[{"target": "realm-x-backend", "stand": "realm-x", "baton": "realm-x-baton"}])
+    plan = dict(empty, pending=[{"target": "tenant-x-backend", "stand": "tenant-x", "baton": "tenant-x-baton"}])
     assert sheet_api.mark_built_stands(plan, resolved, bound, now_s=7) == []
     # a single-stand plan for another stand decides nothing about this one
-    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, only_stand="realm-y") == []
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, only_stand="tenant-y") == []
     # converged: built, once
-    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7) == ["realm-x"]
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7) == ["tenant-x"]
     list(Stand.instances())
-    assert Stand["realm-x"].built_at == 7
+    assert Stand["tenant-x"].built_at == 7
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=9) == []
-    assert Stand["realm-x"].built_at == 7
+    assert Stand["tenant-x"].built_at == 7
 
 
 def test_mark_built_stands_skips_a_stand_grown_while_the_plan_was_in_flight(db):
@@ -354,28 +354,28 @@ def test_mark_built_stands_skips_a_stand_grown_while_the_plan_was_in_flight(db):
     import sheet_api
     from models import Section, Stand
 
-    sec = Section(name="Realms")
-    st = Stand(name="realm-x")
+    sec = Section(name="Tenants")
+    st = Stand(name="tenant-x")
     st.section = sec
-    resolved = {"sections": [{"name": "Realms", "stands": [{"name": "realm-x", "canisters": [{"name": "realm-x-baton"}]}]}]}
+    resolved = {"sections": [{"name": "Tenants", "stands": [{"name": "tenant-x", "canisters": [{"name": "tenant-x-baton"}]}]}]}
     empty = {"items": [], "pending": [], "deferred": []}
-    bound = {"realm-x-baton": "aaaaa-aa"}
-    before = {"realm-x": {"section": "Realms", "members": [], "built": False}}
-    st.members_json = '["{stand}-quarter-2"]'  # grown during the plan
+    bound = {"tenant-x-baton": "aaaaa-aa"}
+    before = {"tenant-x": {"section": "Tenants", "members": [], "built": False}}
+    st.members_json = '["{stand}-worker-2"]'  # grown during the plan
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=before) == []
     # a stand minted during the plan is not in the snapshot at all
     assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot={}) == []
     # unchanged members: marked
-    same = {"realm-x": {"section": "Realms", "members": ["{stand}-quarter-2"], "built": False}}
-    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=same) == ["realm-x"]
+    same = {"tenant-x": {"section": "Tenants", "members": ["{stand}-worker-2"], "built": False}}
+    assert sheet_api.mark_built_stands(dict(empty), resolved, bound, now_s=7, snapshot=same) == ["tenant-x"]
 
 
-_QUARTER_TEMPLATE = {
-    "name_pattern": "realm-*",
+_WORKER_TEMPLATE = {
+    "name_pattern": "tenant-*",
     "created_by": "aaaaa-aa",
     "canisters": [
         {"name": "{stand}-baton"},
-        {"name": "{stand}-quarter-{n}", "optional": True},
+        {"name": "{stand}-worker-{n}", "optional": True},
     ],
 }
 
@@ -388,7 +388,7 @@ def _grow_stand(monkeypatch, *, name, built_at, build_error, members, call_membe
     import main
     from models import Section, Stand
 
-    sec = Section(name="Realms")
+    sec = Section(name="Tenants")
     st = Stand(name=name)
     st.section = sec
     st.built_at = built_at
@@ -399,7 +399,7 @@ def _grow_stand(monkeypatch, *, name, built_at, build_error, members, call_membe
         main,
         "load_sheet_doc",
         lambda: (
-            {"sections": [{"name": "Realms", "arrangements": {"stand_template": _QUARTER_TEMPLATE}}]},
+            {"sections": [{"name": "Tenants", "arrangements": {"stand_template": _WORKER_TEMPLATE}}]},
             "local",
             "h",
         ),
@@ -409,7 +409,7 @@ def _grow_stand(monkeypatch, *, name, built_at, build_error, members, call_membe
     main._stand_build_rounds.clear()
     main._stand_build_timer["id"] = None
     monkeypatch.setattr(main.ic, "set_timer", lambda _d, cb: timers.append(cb) or len(timers), raising=False)
-    args = {"section": "Realms", "name": name}
+    args = {"section": "Tenants", "name": name}
     if call_members is not None:
         args["members"] = call_members
     res = json.loads(main.create_stand(json.dumps(args)))
@@ -418,28 +418,28 @@ def _grow_stand(monkeypatch, *, name, built_at, build_error, members, call_membe
 
 def test_growing_a_built_stand_reopens_the_build(db, monkeypatch):
     """A stand already marked built still re-arms when `create_stand` names a
-    member that has no Canister row (dynamic-stands / realm-e2e growth)."""
+    member that has no Canister row (dynamic-stands / tenant-e2e growth)."""
     import main
     from models import Canister, Stand
 
     res, timers, _st = _grow_stand(
         monkeypatch,
-        name="realm-e2e",
+        name="tenant-e2e",
         built_at=42,
         build_error="",
-        members=["{stand}-quarter-1"],
-        call_members=["{stand}-quarter-2"],
+        members=["{stand}-worker-1"],
+        call_members=["{stand}-worker-2"],
     )
     assert res["ok"] is True and res["created"] is False, res
-    assert res["members"] == ["{stand}-quarter-1", "{stand}-quarter-2"]
+    assert res["members"] == ["{stand}-worker-1", "{stand}-worker-2"]
     list(Stand.instances())
-    st = Stand["realm-e2e"]
+    st = Stand["tenant-e2e"]
     assert st.built_at == 0
     assert st.build_error == ""
-    assert main._stand_build_queue == ["realm-e2e"]
+    assert main._stand_build_queue == ["tenant-e2e"]
     assert len(timers) == 1
     list(Canister.instances())
-    assert Canister["realm-e2e-quarter-2"] is None
+    assert Canister["tenant-e2e-worker-2"] is None
 
 
 def test_rekick_clears_a_build_error_on_an_unbuilt_stand(db, monkeypatch):
@@ -448,23 +448,23 @@ def test_rekick_clears_a_build_error_on_an_unbuilt_stand(db, monkeypatch):
     import main
     from models import Canister, Stand
 
-    have = Canister(name="realm-e2e-quarter-1")
+    have = Canister(name="tenant-e2e-worker-1")
     have.canister_id = "aaaaa-aa"
     res, timers, _st = _grow_stand(
         monkeypatch,
-        name="realm-e2e",
+        name="tenant-e2e",
         built_at=0,
         build_error="a build round changed nothing",
-        members=["{stand}-quarter-1"],
-        call_members=["{stand}-quarter-1"],
+        members=["{stand}-worker-1"],
+        call_members=["{stand}-worker-1"],
     )
     assert res["ok"] is True and res["created"] is False, res
-    assert res["members"] == ["{stand}-quarter-1"]
+    assert res["members"] == ["{stand}-worker-1"]
     list(Stand.instances())
-    st = Stand["realm-e2e"]
+    st = Stand["tenant-e2e"]
     assert st.built_at == 0
     assert st.build_error == ""
-    assert main._stand_build_queue == ["realm-e2e"]
+    assert main._stand_build_queue == ["tenant-e2e"]
     assert len(timers) == 1
     list(Canister.instances())
-    assert Canister["realm-e2e-quarter-1"] is have
+    assert Canister["tenant-e2e-worker-1"] is have

@@ -26,7 +26,7 @@ def _payload(n: int = 1) -> dict:
     for i in range(n):
         targets.append({
             "canister_id": f"aaaaa-a{i:02d}",
-            "bundle_namespace": f"realm-frontend/1.0.{i}",
+            "bundle_namespace": f"tenant-frontend/1.0.{i}",
         })
     return {"targets": targets}
 

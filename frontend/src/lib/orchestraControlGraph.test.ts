@@ -26,8 +26,8 @@ import {
 const CASALS = 'casals-backend-principal';
 const MULTISIG = 'multisig-principal';
 const BATON = 'baton-principal';
-const REALM_BE = 'realm-backend-principal';
-const REALM_FE = 'realm-frontend-principal';
+const TENANT_BE = 'tenant-backend-principal';
+const TENANT_FE = 'tenant-frontend-principal';
 const INSTALLER = 'installer-principal';
 
 function fixtureTree(): Tree {
@@ -76,13 +76,13 @@ function fixtureTree(): Tree {
         commanders: [{ principal: INSTALLER, all_permissions: true }],
         stands: [
           {
-            name: 'testrealm7',
+            name: 'testtenant7',
             description: '',
-            commander_principal: REALM_BE,
-            commanders: [{ principal: REALM_BE, all_permissions: true }],
+            commander_principal: TENANT_BE,
+            commanders: [{ principal: TENANT_BE, all_permissions: true }],
             canisters: [
               {
-                name: 'testrealm7-baton',
+                name: 'testtenant7-baton',
                 canister_id: BATON,
                 kind: 'backend',
                 wasm_key: 'orchestration-baton',
@@ -93,10 +93,10 @@ function fixtureTree(): Tree {
                 controllers: [MULTISIG, CASALS, BATON],
               },
               {
-                name: 'testrealm7-backend',
-                canister_id: REALM_BE,
+                name: 'testtenant7-backend',
+                canister_id: TENANT_BE,
                 kind: 'backend',
-                wasm_key: 'realm-backend',
+                wasm_key: 'tenant-backend',
                 wasm_hash: '',
                 status: 'installed',
                 url: '',
@@ -104,10 +104,10 @@ function fixtureTree(): Tree {
                 controllers: [MULTISIG, CASALS, BATON],
               },
               {
-                name: 'testrealm7-frontend',
-                canister_id: REALM_FE,
+                name: 'testtenant7-frontend',
+                canister_id: TENANT_FE,
                 kind: 'frontend',
-                wasm_key: 'realm-assets',
+                wasm_key: 'tenant-assets',
                 wasm_hash: '',
                 status: 'installed',
                 url: '',
@@ -128,13 +128,13 @@ test('buildControlGraph emits IC controller and commander edges', () => {
     casalsBackendId: CASALS,
   });
 
-  assert.ok(graph.edges.some((e) => e.type === 'ic_controller' && e.to === `canister:${REALM_BE}`));
+  assert.ok(graph.edges.some((e) => e.type === 'ic_controller' && e.to === `canister:${TENANT_BE}`));
   assert.ok(
     graph.edges.some(
       (e) =>
         e.type === 'casals_commander' &&
         e.from === `principal:${INSTALLER}` &&
-        e.to === `canister:${REALM_BE}`,
+        e.to === `canister:${TENANT_BE}`,
     ),
   );
 });
@@ -182,9 +182,9 @@ test('inferManagedCanistersFromTree reads baton id from cached controllers', () 
   const tree = fixtureTree();
   const inferred = inferManagedCanistersFromTree(tree, BATON, {
     section: 'Deployments',
-    stand: 'testrealm7',
+    stand: 'testtenant7',
   });
-  assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
+  assert.deepEqual(inferred.sort(), [TENANT_BE, TENANT_FE].sort());
 });
 
 test('inferManagedCanistersFromStand links same-stand peers without controller cache', () => {
@@ -198,9 +198,9 @@ test('inferManagedCanistersFromStand links same-stand peers without controller c
   }
   const inferred = inferManagedCanistersFromStand(tree, BATON, {
     section: 'Deployments',
-    stand: 'testrealm7',
+    stand: 'testtenant7',
   });
-  assert.deepEqual(inferred.sort(), [REALM_BE, REALM_FE].sort());
+  assert.deepEqual(inferred.sort(), [TENANT_BE, TENANT_FE].sort());
 });
 
 test('buildControlGraph infers baton_manages from stand topology without controller cache', () => {
@@ -214,25 +214,25 @@ test('buildControlGraph infers baton_manages from stand topology without control
   }
   const graph = buildControlGraph(
     tree,
-    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
+    [{ name: 'testtenant7-baton', canister_id: BATON, section: 'Deployments', stand: 'testtenant7' }],
     { casalsBackendId: CASALS },
   );
-  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_BE}`));
-  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_FE}`));
+  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${TENANT_BE}`));
+  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${TENANT_FE}`));
 });
 
 test('buildControlGraph adds baton edges from cached controllers', () => {
   const graph = buildControlGraph(
     fixtureTree(),
-    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
+    [{ name: 'testtenant7-baton', canister_id: BATON, section: 'Deployments', stand: 'testtenant7' }],
     { casalsBackendId: CASALS },
   );
 
   assert.ok(graph.edges.some((e) => e.type === 'baton_top_commander' && e.to === `canister:${BATON}`));
-  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${REALM_BE}`));
+  assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${TENANT_BE}`));
   assert.ok(
     graph.edges.some(
-      (e) => e.type === 'ic_controller' && e.from === `canister:${BATON}` && e.to === `canister:${REALM_BE}`,
+      (e) => e.type === 'ic_controller' && e.from === `canister:${BATON}` && e.to === `canister:${TENANT_BE}`,
     ),
   );
 });
@@ -253,7 +253,7 @@ test('buildControlGraph respects layer toggles', () => {
 test('filterControlGraphByEdgeTypes can hide a single edge type', () => {
   const full = buildControlGraph(
     fixtureTree(),
-    [{ name: 'testrealm7-baton', canister_id: BATON, section: 'Deployments', stand: 'testrealm7' }],
+    [{ name: 'testtenant7-baton', canister_id: BATON, section: 'Deployments', stand: 'testtenant7' }],
     { casalsBackendId: CASALS },
   );
   const graph = filterControlGraphByEdgeTypes(full, {
@@ -270,7 +270,7 @@ test('layoutControlGraph assigns positions by rank', () => {
   const graph = buildControlGraph(fixtureTree(), [], { casalsBackendId: CASALS });
   const positions = layoutControlGraph(graph, 900);
   const multisig = positions.get(`canister:${MULTISIG}`);
-  const frontend = positions.get(`canister:${REALM_FE}`);
+  const frontend = positions.get(`canister:${TENANT_FE}`);
   assert.ok(multisig && frontend);
   assert.ok(multisig.y < frontend.y);
 });
@@ -319,7 +319,7 @@ test('filterControlGraph hides canisters in a disabled section', () => {
     hiddenCanisters: new Set(),
     hiddenPrincipals: new Set(),
   });
-  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_BE));
+  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === TENANT_BE));
   assert.ok(filtered.nodes.some((n) => n.canister?.canister_id === CASALS));
 });
 
@@ -328,10 +328,10 @@ test('filterControlGraph hides a single canister', () => {
   const filtered = filterControlGraph(full, {
     hiddenSections: new Set(),
     hiddenStands: new Set(),
-    hiddenCanisters: new Set([REALM_FE]),
+    hiddenCanisters: new Set([TENANT_FE]),
     hiddenPrincipals: new Set(),
   });
-  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === REALM_FE));
+  assert.ok(!filtered.nodes.some((n) => n.canister?.canister_id === TENANT_FE));
 });
 
 test('filterControlGraph hides a principal node', () => {
@@ -352,10 +352,10 @@ test('a saved view round-trips visibility, edge layers, zoom, and positions', ()
     zoom: 1.4,
     edgeTypes: { ...DEFAULT_CONTROL_EDGE_TYPE_VISIBILITY, ic_controller: false },
     hiddenSections: new Set(['Casals']),
-    hiddenStands: new Set(['Deployments|testrealm7']),
-    hiddenCanisters: new Set([REALM_FE]),
+    hiddenStands: new Set(['Deployments|testtenant7']),
+    hiddenCanisters: new Set([TENANT_FE]),
     hiddenPrincipals: new Set([INSTALLER]),
-    positions: { [`canister:${REALM_BE}`]: { x: 120, y: 340 } },
+    positions: { [`canister:${TENANT_BE}`]: { x: 120, y: 340 } },
   });
 
   const parsed = parseControlGraphView(JSON.stringify(view));
@@ -363,9 +363,9 @@ test('a saved view round-trips visibility, edge layers, zoom, and positions', ()
   assert.equal(parsed.zoom, 1.4);
   assert.equal(parsed.edgeTypes.ic_controller, false);
   assert.equal(parsed.edgeTypes.baton_manages, true);
-  assert.deepEqual(parsed.hidden.canisters, [REALM_FE]);
+  assert.deepEqual(parsed.hidden.canisters, [TENANT_FE]);
   assert.deepEqual(parsed.hidden.principals, [INSTALLER]);
-  assert.deepEqual(parsed.positions[`canister:${REALM_BE}`], { x: 120, y: 340 });
+  assert.deepEqual(parsed.positions[`canister:${TENANT_BE}`], { x: 120, y: 340 });
 });
 
 test('parseControlGraphView drops malformed entries instead of throwing', () => {
@@ -393,5 +393,5 @@ test('clampControlGraphZoom keeps zoom inside the supported range', () => {
 });
 
 test('standVisibilityKey joins section and stand', () => {
-  assert.equal(standVisibilityKey('Deployments', 'testrealm7'), 'Deployments|testrealm7');
+  assert.equal(standVisibilityKey('Deployments', 'testtenant7'), 'Deployments|testtenant7');
 });

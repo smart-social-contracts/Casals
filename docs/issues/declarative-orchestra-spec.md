@@ -11,7 +11,7 @@
 >
 > **Original status:** Draft v0
 > **Issue:** TBD
-> **Repo:** smart-social-contracts/Casals (+ consumers: gos-as-a-service, realms)
+> **Repo:** smart-social-contracts/Casals (+ its consumer products)
 > **Companion:** `orchestra-control-graph-spec.md` (the same three control planes, as a *view*; this document is the *input* side)
 
 `casals.json` is the **only** source of truth for an environment. It carries every
@@ -32,15 +32,15 @@ Today an environment is defined in at least six places that do not agree:
 | Where | What it decides today | Failure it caused |
 |---|---|---|
 | `casals.json` (sheet) | canisters, wasm keys, install args | cannot express control → "the file that defines the orchestra defines half of it" |
-| `environments/<env>.json` (gaas, realms) | principals, multisig signers, domain, DNS, flags, canister ids | drifts from the sheet; ids stale after teardown |
-| `gaas/phases.py::platform_controller_expectations` | IC controllers for the GaaS platform | overwrites what Casals set |
-| `realms/casals_governance.py` | IC controllers for the Realms product | a second copy of the same table |
+| `environments/<env>.json` (both product CLIs) | principals, multisig signers, domain, DNS, flags, canister ids | drifts from the sheet; ids stale after teardown |
+| `platform/phases.py::platform_controller_expectations` | IC controllers for the hosting platform | overwrites what Casals set |
+| `app/casals_governance.py` | IC controllers for the app product | a second copy of the same table |
 | `Casals/src/lifecycle.py::_resolve_provision_controllers` | IC controllers Casals sets at mint | third copy; disagrees with both CLIs |
 | `casals-config/arrangements/*.json` | post-install configuration calls | generated files with hard-coded canister ids |
 
 `deploy_sheet` reconciles the *whole* orchestra by default and reuses retired
 canisters for new mints. On 2026-09-14 a governance-only sheet fragment stopped
-the Realms production stack and reinstalled `marketplace_backend` as the
+the app's production stack and reinstalled `marketplace_backend` as the
 multisig. The guards added afterwards (`retire_missing`, `adopted`) are patches
 on a model that never declared ownership or destruction in the first place.
 
@@ -72,7 +72,7 @@ populated orchestra" bug.
    code) or `adopted` (someone else does; Casals reconciles control only).
 7. **Local first.** Everything in this spec must be demonstrable end to end on
    a local replica before any cycle is spent on the IC (§10).
-8. **The CLIs are thin.** `gaas new` and `realms seed` become
+8. **The CLIs are thin.** `platform new` and `app seed` become
    `casals up <sheet> -e <env>` plus product-specific catalog content. They
    carry no topology or control tables.
 9. **No backward compatibility.** Casals has no users besides us and is not in
@@ -81,12 +81,12 @@ populated orchestra" bug.
    deprecated. Stable-memory migrations of existing conductors are not
    required: prod conductors are rebuilt from their exported v2 sheet.
 11. **Agnostic.** Casals core (canister, CLI, oracle, harness) knows nothing
-    about GaaS, Realms, installers, marketplaces or realms. Every
+    about any product, its installers, marketplaces or tenants. Every
     product-specific behaviour must be expressible with the generic sheet
     primitives (`config` calls, `health` checks, `stand_template`, `adopted`
     canisters, `registry.publish`). If a product needs something the sheet
     cannot say, the sheet grows a *generic* field; Casals never grows a
-    product branch. CI greps the Casals repo for `realm`, `gaas`,
+    product branch. CI greps the Casals repo for product names,
     `marketplace`, `installer` outside `tests/e2e/orchestras/` and docs.
 12. **Less code.** Simplicity and cleanness over completeness of edge
     handling. One way to do each thing; no compatibility shims, no
@@ -102,23 +102,23 @@ populated orchestra" bug.
 
 ## 3. What "from zero" must cover
 
-Everything `gaas new` and `realms seed` do today, mapped to where it lives in v2:
+Everything `platform new` and `app seed` do today, mapped to where it lives in v2:
 
-| Today's phase (gaas / realms) | v2 |
+| Today's phase (platform / app) | v2 |
 |---|---|
 | `validate` (descriptor, identity, cycles) | `casals up` validates the sheet + funds |
 | `create_canisters`, `install_backends` (Casals itself + file registry) | **bootstrap** (§7) from `conductor` block |
 | `configure_backends` | `conductor.config` + per-canister `config` |
 | `seed_file_registry` (wasms, extension catalog, branding) | `registry` block (§4.5) |
-| `seed_conductor` (deploy_sheet, batons, installer, realm-registry) | `sections` |
+| `seed_conductor` (deploy_sheet, batons, installer, tenant-registry) | `sections` |
 | `multisig_mint`, `configure_multisig` | `governance` block |
 | `install_frontends` | `managed` canisters of `kind: frontend` |
 | `domain_wiring` | `domains` block |
 | `grant_commanders` | `commanders` on sections / stands |
 | `controller_topology`, `verify_controller_topology` | `controllers` on every canister + `plan`/`verify` |
 | `smoke_checks` | `health` on canisters (§4.4) |
-| realms `env_deploy` (product canisters via dfx) | either `managed` (Casals installs from the registry) or `adopted` with `health` |
-| realms `catalog_publish` | `registry.publish` |
+| app `env_deploy` (product canisters via dfx) | either `managed` (Casals installs from the registry) or `adopted` with `health` |
+| app `catalog_publish` | `registry.publish` |
 | arrangements (`apply_arrangement`) | per-canister `config` |
 | `environments/<env>.json` | `environments` block inside the sheet |
 
@@ -131,7 +131,7 @@ Everything `gaas new` and `realms seed` do today, mapped to where it lives in v2
 ```jsonc
 {
   "version": 2,
-  "name": "realms-product",
+  "name": "app-product",
   "description": "…",
 
   "environments": { … },   // §4.2 — the only per-environment values
@@ -154,8 +154,8 @@ test is under `environments.<env>` and referenced with `$env.<key>`.
 "environments": {
   "production": {
     "network": "ic",
-    "domain": "realmsgos.org",
-    "dns": { "provider": "cloudflare", "zone": "realmsgos.org", "token_env": "CLOUDFLARE_API_TOKEN", "ttl": 60 },
+    "domain": "app.example.org",
+    "dns": { "provider": "cloudflare", "zone": "app.example.org", "token_env": "CLOUDFLARE_API_TOKEN", "ttl": 60 },
     "flags": { "test_mode": false, "ii_bypass": false, "demo_data": false },
     "principals": {
       "operator":   "rd4en-…gqe",   // prod YubiKey
@@ -185,7 +185,7 @@ Anywhere a principal is expected:
 | Placeholder | Resolves to |
 |---|---|
 | `$self` | the Casals backend (conductor) |
-| `$this` | the canister's own id — only inside a canister block; a realm backend lists it among its `controllers` to keep the key it needs to leave (rewrite its controllers, secede). Alone it is a lock-out and rejected |
+| `$this` | the canister's own id — only inside a canister block; a tenant backend lists it among its `controllers` to keep the key it needs to leave (rewrite its controllers, secede). Alone it is a lock-out and rejected |
 | `$multisig` | `governance.multisig` canister |
 | `$canister:<name>` | any canister in the sheet, by name (already supported in install args) |
 | `$stand.<role>` | the stand member named `<name>-<role>` (`$stand.backend`, `$stand.baton`, `$stand.token`); for `backend`/`frontend` the `kind` also matches |
@@ -208,7 +208,7 @@ Raw principals in `sections` are a validation error; they belong in
   "name": "marketplace",
   "mode": "managed",                       // managed | adopted
   "kind": "backend",                       // backend | frontend
-  "wasm": "realms-marketplace@1.8.2",      // family@version from registry; bare family = latest authorized
+  "wasm": "app-marketplace@1.8.2",      // family@version from registry; bare family = latest authorized
   "install_arg": "(record { … })",         // candid text (or {"top_commander": …} for batons); placeholders allowed; absent = `()`
                                            // install waits (deferred) until every placeholder in it is bound
   "upgrade": "upgrade",                    // upgrade | reinstall  (reinstall requires allow_destructive)
@@ -262,7 +262,7 @@ block only says how it is run:
   "commanders": [                          // who may approve a managed upgrade, and with what weight
     { "principal": "$multisig", "weight": 2 },   // the orchestra multisig passes alone
     "$self",                                     // Casals: weight 1 (a bare principal weighs 1)
-    "$stand.backend"                             // the realm capital: weight 1 — Casals + capital = 2
+    "$stand.backend"                             // the tenant backend: weight 1 — Casals + backend = 2
   ],
   "threshold": 2,                          // approvals are summed by weight against this
   "manages": "*",                          // members the baton controls: roles, or "*" = every member but itself
@@ -282,7 +282,7 @@ stand unattended; ordered after the `hand_off`, and only once the code is in.
 The multisig keeps its say through the baton it controls). Managed members must not list
 `$self` (validation). A sheet may list `$deployer`; the demo orchestra does, on every canister. A frontend may still declare `content`/`files`:
 Casals writes them while it is a controller, then leaves; later asset syncs use the
-Commit permission that write granted. A realm keeps `$this` among its controllers so it can leave.
+Commit permission that write granted. A tenant keeps `$this` among its controllers so it can leave.
 
 From then on a code change on a sole-managed member is not an install but a
 proposal: the plan emits `upgrade_via_baton` (Casals `propose_managed_upgrade`s
@@ -293,14 +293,14 @@ commander has no bypass — Casals votes only with the weight it was given); at
 the weighted threshold the baton runs its pipeline on its own timers
 (pre-flight → stop → snapshot → install → start → verify → finalize, rolling
 back on failure) and the next plan sees the new hash. A member whose live
-controllers include neither Casals nor the baton has **departed** (a realm that
+controllers include neither Casals nor the baton has **departed** (a tenant that
 used its `$this` key to secede): the plan lists it under `departed` and plans
 nothing for it.
 
 `mode: adopted` canisters: Casals never calls `install_code` on them, never
 compares module hash for reinstall, and reconciles only `controllers`,
 `commanders`, `config`, `health`, `cycles`. Their code is someone else's
-(realms CLI via dfx, or the operator). A hash change on an adopted canister is
+(the product CLI via dfx, or the operator). A hash change on an adopted canister is
 *information* in the plan, not an action. Their ids are the one fact Casals
 cannot derive, so the sheet declares them per environment:
 `environments.<env>.bindings: {"<canister name>": "<canister id>"}` (only
@@ -314,8 +314,8 @@ adopted canisters may appear there; `set_sheet` binds them).
     { "family": "orchestration-multisig", "version": "1.4.0",
       "source": "https://github.com/smart-social-contracts/Casals/releases/download/…/orchestration-multisig@1.4.0.wasm.gz",
       "sha256": "…", "wasm_type": "multisig" },
-    { "family": "realm-backend", "version": "main",
-      "source": "release:smart-social-contracts/realms-gos@main:realm_backend.wasm.gz", "sha256": "…" }
+    { "family": "tenant-backend", "version": "main",
+      "source": "release:example-org/app@main:tenant_backend.wasm.gz", "sha256": "…" }
   ],
   "publish": [                              // asset bundles: frontend builds, catalogs, branding (docs/BUNDLES.md)
     { "path": "frontend/marketplace-assets/1.0.0", "source": "local:marketplace-1.0.0.tgz", "sha256": "<bundle hash>" }
@@ -324,7 +324,7 @@ adopted canisters may appear there; `set_sheet` binds them).
 ```
 
 Replaces `seed/templates.json`, `add_authorized_wasm` calls in the CLIs, and
-the realms `catalog_publish` phase. Reconciled by sha256: present with the same
+the app's `catalog_publish` phase. Reconciled by sha256: present with the same
 hash → no-op.
 
 A `publish` entry is a **bundle** (`docs/BUNDLES.md`): its `source` — a
@@ -371,7 +371,7 @@ new desired state and yields `upgrade_code` items).
   "file_registry":          { "wasm": "file-registry@…", "controllers": ["$self"] },
   "file_registry_frontend": { "wasm": "file-registry-frontend@…", "controllers": ["$self"] },
   "commanders": [ { "principal": "$principal:casals_ii", "permissions": "*" } ],
-  "settings": { "extra_controller_principals": [], "orchestra_name": "realms-production" }
+  "settings": { "extra_controller_principals": [], "orchestra_name": "app-production" }
 }
 ```
 
@@ -641,7 +641,7 @@ conductor with no commander other than `$self`.
 ## 7. Bootstrap (`casals up`)
 
 The only code outside the canister. Lives in the Casals repo (`casals_cli.py`),
-used unchanged by gaas and realms.
+used unchanged by both products.
 
 ```
 casals up casals.json -e production [--identity prod-identity] [--yes]
@@ -702,9 +702,9 @@ these two commands.
 marked `retire: true` first, or `--all --confirm-destructive`), sweeping cycles
 to the deployer.
 
-`gaas new` = `casals up gos-as-a-service/casals.json -e <env>` + nothing.
-`realms seed` = build product wasms → write their sha256 into the sheet →
-`casals up realms/casals.json -e <env>`.
+`platform new` = `casals up platform/casals.json -e <env>` + nothing.
+`app seed` = build product wasms → write their sha256 into the sheet →
+`casals up app/casals.json -e <env>`.
 
 ---
 
@@ -712,7 +712,7 @@ to the deployer.
 
 1. Implement `export_sheet()` first. Run it against both prod conductors; the
    output, hand-checked against the controller sets verified on 2026-09-14,
-   becomes `gos-as-a-service/casals.json` and `realms/casals.json` v2.
+   becomes `platform/casals.json` and `app/casals.json` v2.
 2. `plan()` against the exported sheets must be empty. Any item is either a
    bug in `plan` or real drift; both are wanted.
 3. Delete: `environments/*.json`, `platform_controller_expectations`,
@@ -726,7 +726,7 @@ to the deployer.
 
 ## 9. Acceptance criteria
 
-- [x] `casals up realms/casals.json -e local` and `casals up gos-as-a-service/casals.json -e local` build both environments from an empty replica, in one command each, with no other input. *(e2e `fresh` + `idempotent` on both product sheets, 2026-09-15; a realm is then born through the portal path with `gos-as-a-service/tests/e2e/deploy_realm.py`)*
+- [x] `casals up app/casals.json -e local` and `casals up platform/casals.json -e local` build both environments from an empty replica, in one command each, with no other input. *(e2e `fresh` + `idempotent` on both product sheets, 2026-09-15; a tenant is then born through the portal path with `platform/tests/e2e/deploy_tenant.py`)*
 - [ ] Immediately re-running `casals up` makes **zero** management-canister calls (asserted from the replica log / call counter).
 - [x] `casals plan -e local` is empty after `up`; after `dfx canister update-settings --add-controller <x>` on any canister it shows exactly one `set_controllers` item; `apply` heals it; `plan` is empty again. *(corpus: `drift_controller`, `drift_stopped`, `stale_plan`)*
 - [x] Removing a canister from the sheet produces an `unmanaged` entry and **no** item; adding `retire: true` produces one `retire` item marked destructive; `apply` without `confirm_destructive` is rejected. *(corpus: `retire_and_pool`; unmanaged: unit test)*
@@ -743,8 +743,8 @@ to the deployer.
 ## 10. Local-first development
 
 Everything above is developed and accepted on a local replica (`icp network
-start -e local` or PocketIC in tests). `gaas new` already runs end to end on a
-local replica in CI (`gaas-e2e.yml`), so the harness exists.
+start -e local` or PocketIC in tests). `platform new` already runs end to end on a
+local replica in CI (`platform-e2e.yml`), so the harness exists.
 
 What the replica covers faithfully: canister create/install/upgrade/reinstall,
 stop/start, `update_settings`, chunked wasm upload, snapshots, controllers,
@@ -807,7 +807,7 @@ pass/fail table per sheet field per canister.
 `tests/e2e/orchestras/<name>/casals.json`, simple → complex. Orchestras 1–7
 live in the Casals repo and use only generic hello-world / orchestration
 wasms (§2.11). Orchestras 8 and 9 are the real `casals.json` of the
-`gos-as-a-service` and `realms` repos and run **in those repos' CI**, using
+`platform` and `app` product repos and run **in those repos' CI**, using
 the same harness Casals ships (`casals e2e <sheet> …`, `casals oracle`). The
 Casals repo never references either product; the products depend on Casals,
 not the other way round. The laptop table (§11.4) can still run all nine
@@ -821,9 +821,9 @@ because `make e2e` accepts extra sheet paths.
 | 4 | `adopted` | a canister installed by the test via dfx, then adopted; `config` + `controllers` reconciled, module never touched; hash change → information only |
 | 5 | `demo` | `seed/sheets/demo.json` as v2: three stands, three batons, shared multisig |
 | 6 | `retire-and-pool` | `retire: true`, pool behaviour, `reuse_pool` |
-| 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5); template baton `[$multisig]`, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]` |
-| 8 | `gaas` | `gos-as-a-service/casals.json` (`-e local`) |
-| 9 | `realmsgos` | `realms/casals.json` (`-e local`), product wasms built once and cached |
+| 7 | `dynamic-stands` | a section with a `stand_template` and an installer-like canister creating stands at runtime (§11.5); template baton `[$multisig]`, `manages: "*"`, `hand_off: "sole"`, tenant members `[$stand.baton, $this]` |
+| 8 | `platform` | `platform/casals.json` (`-e local`) |
+| 9 | `app` | `app/casals.json` (`-e local`), product wasms built once and cached |
 
 ### 11.3 Scenario matrix
 
@@ -847,15 +847,15 @@ the oracle passes on its end state.
 | **export round-trip** | `export_sheet()` → `set_sheet` → `plan` | empty |
 | **content change** | orchestras with `registry.publish` (3): `casals bundle` packs a second build (index.html marker + one new file) into a `.tgz`, a sheet copy pins it under a new namespace → `up`; back to the declared sheet | the frontend serves the marker and the new file; after the way back the new file is gone (deleted, not left behind); oracle passes both ways |
 | **manual stand** | orchestras with `registry.publish` (3): sheet copy marks the frontend's stand `sync: manual` and pins a third build → `up`; `up --stand <name>`; back | plain `up`: no items, `plan.manual` has the `sync_assets`, the frontend still serves the old build, its bundle is not published; targeted `up` converges and serves the build; `plan` clean |
-| **manual template section** | orchestra 7 (Realms is `sync: manual`), inside `runtime_stand`: after the mint converged, add a foreign controller to the realm baton | `get_tree` says `built`; plain `plan` has no item for the stand and a `set_controllers` under `manual`; two reconcile ticks later the foreign controller is still there; `up --stand realm-e2e` heals it; `plan` clean |
-| **baton upgrade** | orchestras with `hand_off: "sole"` (3, 7): sheet copy bumps a sole-managed backend to `hello-world-rust@1.0.1` → `up`; the multisig approves on the baton (`CallCanister submit_approval`, weight 2); poll `get_action`; `up` again; then back to the declared sheet the same way. On orchestra 7 the realm stand is under a `sync: manual` section: a plain `up` first, then every `up` carries `--stand realm-e2e` | before: controllers are exactly `{baton(, itself)}`, the baton's `{multisig}`; on orchestra 7 the plain `up` files nothing and shows `upgrade_via_baton` under `manual`; the targeted `up` leaves no items, one `pending` entry with Casals' vote only, hash unchanged; after approval the action reaches `COMPLETE` on the baton's own timers, plan empty, hash new; oracle passes (`baton.sole`, weighted `baton.commanders`) |
+| **manual template section** | orchestra 7 (Tenants is `sync: manual`), inside `runtime_stand`: after the mint converged, add a foreign controller to the tenant baton | `get_tree` says `built`; plain `plan` has no item for the stand and a `set_controllers` under `manual`; two reconcile ticks later the foreign controller is still there; `up --stand tenant-e2e` heals it; `plan` clean |
+| **baton upgrade** | orchestras with `hand_off: "sole"` (3, 7): sheet copy bumps a sole-managed backend to `hello-world-rust@1.0.1` → `up`; the multisig approves on the baton (`CallCanister submit_approval`, weight 2); poll `get_action`; `up` again; then back to the declared sheet the same way. On orchestra 7 the tenant stand is under a `sync: manual` section: a plain `up` first, then every `up` carries `--stand tenant-e2e` | before: controllers are exactly `{baton(, itself)}`, the baton's `{multisig}`; on orchestra 7 the plain `up` files nothing and shows `upgrade_via_baton` under `manual`; the targeted `up` leaves no items, one `pending` entry with Casals' vote only, hash unchanged; after approval the action reaches `COMPLETE` on the baton's own timers, plan empty, hash new; oracle passes (`baton.sole`, weighted `baton.commanders`) |
 | **destroy** | `casals destroy --all --confirm-destructive` | replica has no orchestra canisters; deployer balance ≥ before − fees |
 
 ### 11.4 Running it from a laptop
 
 ```
 make e2e                       # corpus 1–7 (~15 min), replica torn down after
-make e2e ORCHESTRA=gaas KEEP=1 # one orchestra, replica left running
+make e2e ORCHESTRA=platform KEEP=1 # one orchestra, replica left running
 make e2e-verify                # oracle against the running replica
 ```
 
@@ -867,8 +867,8 @@ The run ends with a table, one row per test, in this shape:
 Test #1  minimal           conductor + one managed backend            PASS  Casals frontend: http://<id>.localhost:8000/
 Test #2  governed          multisig, proposal-only apply, commanders  PASS  Casals frontend: http://<id>.localhost:8000/
 …
-Test #8  gaas              Governance-as-a-Service platform           PASS  Casals frontend: http://<id>.localhost:8000/
-Test #9  realmsgos         Realms GOS product                         PASS  Casals frontend: http://<id>.localhost:8000/
+Test #8  platform          multi-tenant hosting platform              PASS  Casals frontend: http://<id>.localhost:8000/
+Test #9  app               product with its own wasms                 PASS  Casals frontend: http://<id>.localhost:8000/
 ```
 
 plus, per test, the `casals show -e local --conductor <id>` command line and
@@ -881,20 +881,20 @@ Plan/Drift panel) and the `casals` CLI (`plan`, `verify`, `oracle`,
 `make e2e-verify` again. Nothing in the harness is hidden from those two
 surfaces: if the oracle can see it, the UI and the CLI show it.
 
-CI: corpus 1–7 on every PR; 8 and 9 nightly and on demand (the realms product
+CI: corpus 1–7 on every PR; 8 and 9 nightly and on demand (the app product
 build is the slow part). The two production sheets must pass **fresh +
 idempotent + partial sheet + export round-trip** before anything in §8 touches
 the IC.
 
 ### 11.5 Design gap surfaced by the corpus: runtime-created stands
 
-GaaS mints realm stands at runtime through the installer (`create_stand`).
+The platform mints tenant stands at runtime through the installer (`create_stand`).
 Those are neither in the sheet nor drift. v2 adds to a section:
 
 ```jsonc
 "stand_template": {
-  "name_pattern": "realm-*",
-  "created_by": "$canister:realm-installer",
+  "name_pattern": "tenant-*",
+  "created_by": "$canister:tenant-installer",
   "canisters": [ … same shape as a stand, with `baton` … ],
   "controllers": …, "commanders": …
 }
@@ -920,19 +920,19 @@ is substituted in every string of the template (names, `install_arg`,
   writes and topology code are deleted, not adapted: the template declares
   them (`files`, controllers, baton, token install arg).
 - Template canisters may be `"optional": true`; `create_stand.members` names
-  the optional ones a stand gets (a realm without a token has no
+  the optional ones a stand gets (a tenant without a token has no
   `{stand}-token`). Omitted → required members only.
-- Product repos build their own artifacts (`make build` in gaas / realms);
+- Product repos build their own artifacts (`make build` in each product repo);
   sheets reference them as `local:` (with `sha256` on production) or
   `release:`. `build:` stays reserved for the conductor's own wasms.
 
-**STATUS (2026-09-15):** `gos-as-a-service/casals.json` and
-`realms/casals.json` are v2 sheets; both converge from an empty replica with
-`casals up <sheet> --yes`, pass `casals oracle`, and are idempotent. gaas
-mints a realm stand (baton + realm backend + realm frontend + optional token)
+**STATUS (2026-09-15):** `platform/casals.json` and
+`app/casals.json` are v2 sheets; both converge from an empty replica with
+`casals up <sheet> --yes`, pass `casals oracle`, and are idempotent. the platform
+mints a tenant stand (baton + tenant backend + tenant frontend + optional token)
 from its `Deployments` template via `create_stand`. Product frontends read
 `/canister_ids.js` (written by Casals from `files`) so one dist serves every
-environment; the portal's build-time `__GAAS_ENV__` / `.ic-assets.json5`
+environment; the portal's build-time `__PLATFORM_ENV__` / `.ic-assets.json5`
 cookie injection is no longer needed for canister discovery. Casals core
 changes this needed were all generic: `converged_when.contains`, `${…}`
 placeholders, `{stand}` in every template string, roles by name suffix,
@@ -940,7 +940,7 @@ optional members, batched chunk-store uploads (100-entry limit), paged asset
 listing, a proper Candid text unescape. Still open in the product repos:
 delete the installer's v1 Casals calls (`create_canister`,
 `orchestration_release_stand`, `set_commander`, `upgrade_to`,
-`destroy_stand`), and slim `gaas` / `realms` CLIs to `casals up` — see §13.
+`destroy_stand`), and slim the `platform` / `app` CLIs to `casals up` — see §13.
 
 **STATUS (2026-09-15, later):** auto-scaling and asset-canister policy landed
 (§11.6, §11.7). Casals: numbered optional template members (`{n}`),
@@ -948,19 +948,19 @@ delete the installer's v1 Casals calls (`create_canister`,
 `stand_members` for `baton.manages`, `.ic-assets.json5` applied through
 `commit_batch`/`SetAssetProperties` (a bare `set_asset_properties` leaves the
 icp-cli asset canister's certification tree stale → HTTP 503), oracle checks
-served headers. Products: the realm backend's scaling driver now does
-`create_stand` → `get_bindings` → `bootstrap_as_quarter` (no `create_canister`,
-no `hand_to_baton`, no `backend_wasm_key`); the gaas template has
-`{stand}-quarter-{n}` with `$stand.backend` as a controller and as stand
+served headers. Products: the tenant backend's scaling driver now does
+`create_stand` → `get_bindings` → `bootstrap_as_worker` (no `create_canister`,
+no `hand_to_baton`, no `backend_wasm_key`); the platform template has
+`{stand}-worker-{n}` with `$stand.backend` as a controller and as stand
 commander holding `stand.create`. Corpus: `dynamic-stands` grows a stand by
 one numbered member; `baton-stand` ships a policy file.
 
-**STATUS (2026-09-15, evening) — M7 closed except the CLIs.** The realm
+**STATUS (2026-09-15, evening) — M7 closed except the CLIs.** The tenant
 installer's Casals contract is now exactly the decision above
 (`create_stand` → poll `get_tree`; −968/+196 lines, `stand_readiness.py` is
 the only new code). Verified end to end on local with
-`gos-as-a-service/tests/e2e/deploy_realm.py`: a portal-style
-`request_deployment` for a new realm is built by the conductor's timer
+`platform/tests/e2e/deploy_tenant.py`: a portal-style
+`request_deployment` for a new tenant is built by the conductor's timer
 (~5 min on the VM), bootstrapped, registered, and served with the
 template-written `/canister_ids.js`; re-deploying the same name completes in
 one second. Two things found on the way and fixed in core: the canister's
@@ -968,12 +968,12 @@ one second. Two things found on the way and fixed in core: the canister's
 6, so `converged_when.equals` against a bare principal never converged
 (planner compares text first, decodes only real JSON); the installer's cycles
 preflight took a cold `get_cycles_cached` (no snapshot yet) for "0 cycles".
-Remaining under M7: delete the `gaas`/`realms` deploy CLIs in favour of
+Remaining under M7: delete the `platform`/`app` deploy CLIs in favour of
 `casals up` (scope decision pending with the owner).
 
 ### 11.6 Stands that grow at runtime (auto-scaling)
 
-A realm adds `quarter` backends as it fills up. In v2 a stand's shape still
+A tenant adds `worker` backends as it fills up. In v2 a stand's shape still
 comes from the template — the template just allows **numbered optional
 members**, and a stand asks for them with the call it was born with:
 
@@ -982,8 +982,8 @@ members**, and a stand asks for them with the call it was born with:
   "canisters": [
     { "name": "{stand}-backend", … },
     { "name": "{stand}-token",       "optional": true, … },
-    { "name": "{stand}-quarter-{n}", "optional": true, "wasm": "quarter-backend@…",
-      "install_arg": "(record { realm = principal \"$stand.backend\"; index = {n} : nat })" }
+    { "name": "{stand}-worker-{n}",  "optional": true, "wasm": "worker-backend@…",
+      "install_arg": "(record { tenant = principal \"$stand.backend\"; index = {n} : nat })" }
   ],
   "commanders": [ { "principal": "$stand.backend", "permissions": "stand.create" } ]
 }
@@ -993,12 +993,12 @@ members**, and a stand asks for them with the call it was born with:
   canister. It is only allowed in `optional` members.
 - `create_stand({section, name, members})` on an **existing** stand adds
   members (idempotent union; `created: false`). `members` name template
-  canisters — `{stand}-quarter-3`, or already substituted `alpha-quarter-3`.
+  canisters — `{stand}-worker-3`, or already substituted `alpha-worker-3`.
   Anything that is not an optional template member is rejected.
 - Who may grow a stand: whoever may create one, plus the stand's own
   commanders holding `stand.create` — the template grants that to
-  `$stand.backend`, so the realm backend scales itself with one call and
-  then polls `get_bindings` for `<stand>-quarter-3`, the same protocol the
+  `$stand.backend`, so the tenant backend scales itself with one call and
+  then polls `get_bindings` for `<stand>-worker-3`, the same protocol the
   installer uses for the initial mint.
 - The conductor materialises the new member from the template on its next
   plan/apply; `plan`, `show`, the oracle and the frontend all see it as a
@@ -1025,9 +1025,9 @@ CLI:
   the CSP.
 
 Products ship `.ic-assets.json5` in their dist exactly as before; no sheet
-field, no product change. (The realm dist's `frame-ancestors` lists every
-portal origin statically — `gos.earth`, `*.gos.earth`, `*.localhost:*` — so
-the installer no longer patches the file per realm.)
+field, no product change. (A tenant dist's `frame-ancestors` lists every
+portal origin statically — `platform.example`, `*.platform.example`, `*.localhost:*` — so
+the installer no longer patches the file per tenant.)
 
 ### 11.8 The conductor converges on its own (`reconcile_interval_secs`)
 
@@ -1065,15 +1065,15 @@ deleting what it made dead, with the corpus green before and after.
 
 What is dead once v2 lands (§8 has the list): `environments/*.json` in both
 CLIs, the two CLI topology tables and the phase machinery around them
-(`gaas/phases.py` is ~2.4k lines, `realms` seed/governance ~1.5k), Casals'
+(`platform/phases.py` is ~2.4k lines, the app's seed/governance ~1.5k), Casals'
 `_resolve_provision_controllers`, `retire_missing`, `adopted`, `deploy_sheet`
 (one release later), `seed/templates.json` + `scripts/seed.py`,
 `casals-config/arrangements/*` and their generators, `default_sheet.py`.
 
 Two things are independent of v2 and can go now, safely:
 
-- Documentation that describes today's process. `realms` has ~590 markdown
-  files; this spec makes most runbooks about `gaas new`/`realms seed`
+- Documentation that describes today's process. The app repo has ~590 markdown
+  files; this spec makes most runbooks about `platform new`/`app seed`
   wrong. Delete rather than update: one `docs/OPERATIONS.md` per repo that
   points at the sheet and `casals up`, written *after* the corpus passes.
 - Dead surfaces in `Casals/src/main.py` (4.5k lines) that no test and no CLI
@@ -1092,8 +1092,8 @@ id outside Casals' runtime bindings is in test fixtures.
    allow "run every apply" calls?
 2. Should `export_sheet` also emit `environments.<env>.principals` by reverse
    lookup, or leave aliases to the operator?
-3. Where does the realms product build step live — a `build` hook in the sheet
-   (`"source": "build:./scripts/build.sh"`), or strictly outside (`realms seed`
+3. Where does the app product build step live — a `build` hook in the sheet
+   (`"source": "build:./scripts/build.sh"`), or strictly outside (`app seed`
    writes hashes into the sheet)? Recommended: outside; the sheet only ever
    holds hashes.
 4. Keep Casals' `default_sheet.py` (built-in demo on first boot) or require a
@@ -1101,7 +1101,7 @@ id outside Casals' runtime bindings is in test fixtures.
 5. Management-call counter for the **idempotent** scenario: a test-only build
    flag in Casals, or infer from the conductor audit log alone? Recommended:
    audit log + `icp` replica log; no test-only code paths in the canister.
-6. ~~Realm quarters~~ **Decided (2026-09-15): auto-scaling is a Casals
+6. ~~Tenant workers~~ **Decided (2026-09-15): auto-scaling is a Casals
    feature.** See §11.6.
 7. ~~Asset canister headers~~ **Decided (2026-09-15): Casals honours
    `.ic-assets.json5` exactly as dfx does.** See §11.7.
@@ -1113,5 +1113,5 @@ id outside Casals' runtime bindings is in test fixtures.
 - Baton/multisig protocol changes beyond the `ApplySheet` proposal type.
 - Frontend work other than rendering `plan` / `drift` / `unmanaged`
   (the control-graph view already covers the relationships).
-- Billing, marketplace, and realm-runtime configuration beyond what `config`
+- Billing, marketplace, and tenant-runtime configuration beyond what `config`
   calls express.

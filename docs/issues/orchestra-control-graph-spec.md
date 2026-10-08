@@ -28,11 +28,11 @@ It does **not** answer:
 - Who is an **IC controller** of this canister?
 - Who is the **Casals commander** for this section/stand?
 - Which **baton** governs managed upgrades, and is it also an IC co-controller?
-- What is the break-glass path (multisig → Casals → baton → realm canisters)?
+- What is the break-glass path (multisig → Casals → baton → tenant canisters)?
 
 Some hints exist today (`managed · {baton}` + optional `IC ctrl` on chips in `OrchestraDiagram.svelte`), but there are **no edges** and no distinction between controller vs commander vs baton policy.
 
-Realms/GaaS operators routinely debug incidents with questions like “can the realm backend self-upgrade?” vs “can multisig wipe this canister?” — the current diagram cannot answer those at a glance.
+Operators routinely debug incidents with questions like “can the tenant backend self-upgrade?” vs “can multisig wipe this canister?” — the current diagram cannot answer those at a glance.
 
 ---
 
@@ -60,23 +60,23 @@ Casals orchestras expose **three** authority layers relevant to this graph:
 | Layer | Meaning | Example |
 |---|---|---|
 | **IC controller** | Principal(s) on the IC management canister `controllers` list — can `install_code`, `update_settings`, stop/start, etc. | multisig, casals-backend, baton (after hand-off), CycleOps, deployer |
-| **Casals commander** | Principal delegated Casals permissions on a **section** or **stand** via `set_commander` | installer on `Deployments` section; realm backend as stand commander |
-| **Baton upgrade policy** | Baton `top_commander`, baton `commanders`, approval threshold for managed upgrades | casals-backend + realm-backend, 2-of-2 on `dominion-baton` |
+| **Casals commander** | Principal delegated Casals permissions on a **section** or **stand** via `set_commander` | installer on `Deployments` section; tenant backend as stand commander |
+| **Baton upgrade policy** | Baton `top_commander`, baton `commanders`, approval threshold for managed upgrades | casals-backend + tenant-backend, 2-of-2 on `tenant-baton` |
 
-**Invariant:** commander ≠ IC controller. A realm backend may be stand commander without being the only IC controller; a baton may be IC co-controller without being the Casals stand commander.
+**Invariant:** commander ≠ IC controller. A tenant backend may be stand commander without being the only IC controller; a baton may be IC co-controller without being the Casals stand commander.
 
-### Reference topology (Realms/GaaS)
+### Reference topology (multi-tenant product)
 
-Documented in Realms `casals-config/sheets/realms.json` and GaaS seed runbooks:
+A product that mints one stand per tenant from a `stand_template`:
 
 ```text
 [multisig] ──IC ctrl──► casals-backend, every baton, …
 [casals-backend] ──IC ctrl / provisions──► orchestra canisters
-[casals-backend] ──top_commander──► [realm-baton]
-[realm-baton] ──IC co-ctrl (after hand_to_baton)──► realm backend + frontend
-[realm-baton] ──commanders (2-of-2 policy)──► casals-backend + realm-backend
+[casals-backend] ──top_commander──► [tenant-baton]
+[tenant-baton] ──IC co-ctrl (after hand_to_baton)──► tenant backend + frontend
+[tenant-baton] ──commanders (2-of-2 policy)──► casals-backend + tenant-backend
 [installer] ──section commander──► Deployments (stand.create, …)
-[realm-backend] ──stand commander──► its stand (casals.upgrade_to path)
+[tenant-backend] ──stand commander──► its stand (casals.upgrade_to path)
 ```
 
 The graph is a **DAG**, not a single-root tree. Layout should tolerate multiple parents (e.g. a canister with multisig + Casals + baton + CycleOps as IC controllers).
@@ -162,7 +162,7 @@ Frontend already loads both on Orchestra home (`+page.svelte`: `tree`, `orchStat
 | `get_tree` includes `stand.commander_principal` edges to canisters in stand | Explicit stand→member commander visualization without inferring |
 | Batch `canister_status` for stale `ic_controllers` cache | Accurate after out-of-band controller changes |
 | `orchestration_status` returns `top_commander` per baton | Avoid per-baton query from UI |
-| Principal alias registry in Casals settings | Friendlier labels for GaaS deployer / II principals |
+| Principal alias registry in Casals settings | Friendlier labels for deployer / II principals |
 
 MVP may show a **stale cache warning** when `controllers` is empty but baton reports `baton_ic_control`.
 
@@ -217,7 +217,7 @@ Pick one consistent with Casals frontend bundle size:
 - [ ] Operator can switch to **Control graph** from Orchestra without losing Tree/Diagram behavior.
 - [ ] Graph shows **distinct edge styles** for IC controller vs Casals commander vs baton relationships.
 - [ ] Toggling edge layers updates the graph without a full page reload.
-- [ ] For a typical GaaS sheet realm (baton + backend + frontend), user can see: multisig/casals/baton IC edges, baton→managed edges, and stand commander on the realm backend stand.
+- [ ] For a typical tenant stand (baton + backend + frontend), user can see: multisig/casals/baton IC edges, baton→managed edges, and stand commander on the tenant backend stand.
 - [ ] Hover/tooltip explains each edge type in plain language (no raw permission keys).
 - [ ] Empty/partial data degrades gracefully (missing baton config, empty controllers cache) with inline warning, not a broken graph.
 - [ ] Works for orchestras with **multiple batons** (`orchestration_status.batons[]`).
@@ -227,10 +227,10 @@ Pick one consistent with Casals frontend bundle size:
 
 ## Test plan
 
-### Manual (GaaS / Realms test conductor)
+### Manual (test conductor)
 
-1. Open Orchestra → Control graph on a seeded GaaS instance (`testrealm7` stand).
-2. Confirm multisig → casals-backend → baton → realm canisters IC chain is visible when IC layer enabled.
+1. Open Orchestra → Control graph on a seeded test conductor (a `tenant7` stand).
+2. Confirm multisig → casals-backend → baton → tenant canisters IC chain is visible when IC layer enabled.
 3. Confirm `installer` appears as section commander on `Deployments` when commander layer enabled.
 4. Toggle layers off one at a time; edges disappear, nodes without edges may dim or hide per product choice.
 5. Compare one canister’s controllers against `dfx canister info <id>` (or `icp canister status`) — should match when cache fresh.
@@ -250,14 +250,13 @@ Pick one consistent with Casals frontend bundle size:
 1. **Sub-mode vs top-level tab:** `Diagram: Topology | Control` vs third `Control` tab alongside Tree/Diagram?
 2. **Live controller refresh:** on-by-default for Control graph load, or button “Refresh IC controllers”?
 3. **Show CycleOps / extra_controller_principals** with distinct styling vs generic principal blob?
-4. **Quarters:** when capital provisions quarter backends, inherited controllers — show inferred edge from capital backend or only cached `controllers`?
+4. **Worker canisters:** when a tenant backend provisions worker backends, inherited controllers — show inferred edge from the provisioning backend or only cached `controllers`?
 
 ---
 
 ## References
 
-- Realms sheet topology + baton comments: `realms/casals-config/sheets/realms.json`
-- Realms operator docs: `realms/AGENTS.md` (Quarter scaling and controllers)
+- Sheet topology with a stand template and batons: `tests/e2e/orchestras/dynamic-stands/casals.json`
 - Casals `get_tree` serialization: `src/views.py` (`controllers`, `commanders`)
 - Casals orchestration snapshot: `src/orchestration_bridge.py` (`_orchestration_status_all_gen`)
 - Existing diagram: `frontend/src/lib/components/OrchestraDiagram.svelte`

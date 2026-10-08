@@ -38,7 +38,7 @@ class TestStatusAndMetadata:
         assert "ICRC-120" in names and "ICRC-121" in names
 
     def test_http_request_upgrade_and_version(self, canister):
-        # gos-as-a-service#39 — GET /version over the IC HTTP interface.
+        # GET /version build provenance over the IC HTTP interface.
         http_arg = (
             '(record { method = "GET"; url = "/version"; '
             "headers = vec {}; body = blob \"\" })"
@@ -59,10 +59,10 @@ class TestStatusAndMetadata:
 
 class TestStructure:
     def test_create_section_and_list(self, canister):
-        _ok("create_section", {"name": "deployed-realms", "description": "realm instances"})
+        _ok("create_section", {"name": "deployed-tenants", "description": "tenant instances"})
         sections = call_canister("list_sections")
         names = [s["name"] for s in sections]
-        assert "deployed-realms" in names
+        assert "deployed-tenants" in names
 
     def test_duplicate_section_rejected(self, canister):
         _ok("create_section", {"name": "infra"})
@@ -72,10 +72,10 @@ class TestStructure:
 
     def test_create_stand_and_tree(self, canister):
         _ok("create_section", {"name": "sec-a"})
-        _ok("create_stand", {"section": "sec-a", "name": "agora", "commander_principal": "aaaaa-aa"})
+        _ok("create_stand", {"section": "sec-a", "name": "atlas", "commander_principal": "aaaaa-aa"})
         tree = call_canister("get_tree")
         sec = next(s for s in tree["sections"] if s["name"] == "sec-a")
-        stand = next(d for d in sec["stands"] if d["name"] == "agora")
+        stand = next(d for d in sec["stands"] if d["name"] == "atlas")
         assert stand["commander_principal"] == "aaaaa-aa"
 
     def test_create_stand_unknown_section(self, canister):

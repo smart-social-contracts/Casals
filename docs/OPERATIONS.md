@@ -21,8 +21,7 @@ runbook.
 - An identity known to `icp`: `local-dev` for the local replica; on the IC, the
   YubiKey-backed deployer identity of the environment.
 - For a product's own sheet, the artifacts it lists as `local:` must be built
-  first, with that product's build steps (for GaaS, the build steps of
-  `gos-as-a-service/.github/workflows/gaas-e2e.yml`).
+  first, with that product's own build steps.
 
 ## Local replica
 
@@ -163,7 +162,7 @@ it); with a session identity those lines no longer mean a touch.
 | invite an operator whose principal you don't know yet | `casals code new` → put the `sha256:` checksum in `environments.<env>.principals`, reference it from a `commanders` block, `up`; hand them the code |
 | build the conductor's own release files (no network) | `scripts/release.sh [--version V]` → `release/casals-backend@V.wasm.gz` (module hash in `RELEASE.txt`; upload on *Files*, then *Platform committee → Upgrade canister*) and `release/casals-frontend@V.tgz` (the UI bundle, `casals bundle` format). `V` defaults to the git short sha |
 | ship a new wasm | build (or bump the `wasm` version in the sheet), then `casals -e <env> upgrade sheet.json --wasm <family>[@<version>]`: uploads the build to the store when missing, authorizes it, and runs `upgrade_to` on every canister that runs the family (`--stand`/`--section` to narrow). Rows print `upgraded` / `skipped` (already at that hash) / `failed`. The Orchestra page's per-canister *Upgrade* does the same for one canister |
-| upgrade a member its baton controls (`hand_off: "sole"`) | same `casals upgrade --wasm`: Casals files the proposal on the baton and votes; the row is `pending` with the `action_id` (`deferred` while the baton is running another action — a baton takes one at a time; run again once it finishes). The other baton commanders (the orchestra multisig alone, or the realm capital with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers |
+| upgrade a member its baton controls (`hand_off: "sole"`) | same `casals upgrade --wasm`: Casals files the proposal on the baton and votes; the row is `pending` with the `action_id` (`deferred` while the baton is running another action — a baton takes one at a time; run again once it finishes). The other baton commanders (the orchestra multisig alone, or the stand's backend with Casals) call `submit_approval` on the baton; it runs the pipeline on its own timers |
 | checksum an artifact a sheet installs | put its sha256 on the `registry.wasms` / `registry.bundles` row (`sha256sum` for a wasm, `casals bundle --verify <dist\|tgz>` for a bundle). Optional; when present, `up` / `upgrade` refuse a source that resolves to anything else, in every environment. Leave it off a `build:` target or a bundle that changes with every deploy |
 | ship a new frontend build | build `dist/` (or `casals bundle dist/ -o app-1.2.0.tgz`, `docs/BUNDLES.md`) and have the `registry.bundles` row's `source` point at it, then `casals -e <env> upgrade sheet.json --content <namespace>`: the bundle is uploaded when missing and every frontend whose `content` is that namespace serves exactly what the store holds (`sync_content`, repeated until no file remains). From the browser instead: `/files` → *Upload bundle*, then Orchestra → select the frontend → *Deploy frontend bundle* (`deploy_content`: the conductor runs the rounds itself and the modal shows progress), or *Platform committee → Propose → Deploy frontend bundle* when the release should be approved by the signers. The Casals UI itself is `frontend/casals-ui/main` (`conductor.frontend.content`) |
 | move the treasury to another orchestra | `casals -e production treasury-send sheet.json --to <conductor id> --all` (controller/multisig; see *Retiring an orchestra*) |
@@ -237,8 +236,8 @@ environment (the original deploy ran elsewhere, or with the old tooling):
 `up` asks the live conductor for its canister ids and upgrades those in
 place — only the store is new. On the conductor's side the retired
 file-registry pair is re-homed if the sheet still declares a canister under
-that name in a section (GaaS keeps its registry, with its data, as a product
-canister) and pooled otherwise. `plan` before `up` shows exactly that.
+that name in a section (a product may keep its registry, with its data, as a
+product canister) and pooled otherwise. `plan` before `up` shows exactly that.
 
 ### Retiring an orchestra without burning its cycles
 
@@ -262,7 +261,7 @@ treasury without deleting the old conductor: `casals treasury-send --to
 ### Stands created at runtime
 
 Products mint stands from a section's `stand_template` with `create_stand`
-(for example, the GaaS installer mints one for every realm it hosts).
+(for example, a hosting platform's installer canister mints one per tenant).
 `create_stand` builds the stand it minted on its own: a one-shot
 timer plans only that stand and applies until every member is bound, then the
 stand shows `built` in `get_tree` / `casals tree`. A round that fails leaves

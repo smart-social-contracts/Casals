@@ -6,8 +6,8 @@ rollback / stop / start) in a structured hierarchy: **Section → Stand →
 Canister** (a Canister is one deployed canister). Approval is delegated — each
 Section or Stand registers a *commander* principal (the project's own governance
 canister) whose decisions Casals executes. Casals never embeds voting logic.
-Consumer projects (e.g. [Realms GOS](https://github.com/smart-social-contracts/realms-gos))
-deploy their own conductor instances and supply sheets from their own repos.
+Consumer projects deploy their own conductor instances and supply sheets from
+their own repos.
 
 ## Declarative model
 
@@ -369,8 +369,8 @@ and is homed on the `Casals/conductor` stand like the rest of the conductor.
   the pre-store one (post_upgrade runs before `casals up` sets the migrated
   sheet) they are left alone; once the migrated sheet is stored, a row whose
   name the sheet declares as a *section* canister is re-homed on that stand
-  under the same canister id (GaaS keeps its `file-registry` as a product
-  canister: realm branding, extension packages live in it), and any other
+  under the same canister id (a product may keep its `file-registry` as a
+  product canister, with its own data in it), and any other
   legacy row is pooled so a stand can reuse the canister.
 - **`sha256` is a checksum, nothing more.** A `registry.wasms` /
   `registry.bundles` row may declare one; when it does, a source that resolves
@@ -640,7 +640,7 @@ also grants **the paired backend** (the backend canister in the same stand)
 the frontend is provisioned before a backend exists in that stand, the grant is
 skipped and Casals emits `assets_backend_unresolved`. Creating or registering
 the backend later re-runs the grant (`_maybe_grant_commit_after_backend`).
-Operators / the GaaS installer can also call `grant_stand_backend_commit`
+Operators, or a product's installer canister, can also call `grant_stand_backend_commit`
 `{"canister": "<frontend name or id>"}` to repair a missing grant without
 re-uploading the bundle. This lets the backend write assets to its own frontend
 after a reinstall (which wipes the asset canister and its permissions) — e.g. a

@@ -11,10 +11,10 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 | `adopted` | adopted backend: Casals takes control and config only, never code |
 | `demo` | three stands, three batons, shared multisig |
 | `retire-and-pool` | retire: true, pool behaviour, reuse_pool |
-| `dynamic-stands` | stand_template with runtime-created stands via installer; governed (conductor under `$multisig`, operator as conductor commander); template baton controlled by the multisig only, `manages: "*"`, `hand_off: "sole"`, realm members `[$stand.baton, $this]`; `create_stand` builds the minted stand on its own one-shot timer (#52) |
+| `dynamic-stands` | stand_template with runtime-created stands via installer; governed (conductor under `$multisig`, operator as conductor commander); template baton controlled by the multisig only, `manages: "*"`, `hand_off: "sole"`, tenant members `[$stand.baton, $this]`; `create_stand` builds the minted stand on its own one-shot timer (#52) |
 
-Production sheets (`gos-as-a-service/casals.json`, `realms/casals.json`) are
-referenced by path in the e2e runner, not copied here.
+Product sheets from other repositories are passed to the e2e runner by path,
+not copied here.
 
 ## Running
 

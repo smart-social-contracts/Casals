@@ -42,7 +42,7 @@ placeholder can read (`$env.website_host`, `$env.flags.x`).
 | `monitor` | `{"principal": …, "url": …}`: the off-chain cycle monitor. `url` is the service base, without `/v1/…`. |
 | `cycles` | `{"budget_tc": …}`: what `casals up` refills the conductor treasury to (see `cycles` below). |
 | `bindings` | Canister name → id, for `adopted` canisters only. |
-| `dns` | `{"provider": "none" \| "cloudflare", "zone", "token_env", "ttl"}`. Read by product CLIs (`realms domains`); `casals up` reports domains as unverifiable. |
+| `dns` | `{"provider": "none" \| "cloudflare", "zone", "token_env", "ttl"}`. Read by product CLIs; `casals up` reports domains as unverifiable. |
 
 On any network other than `local`, a `sha256:` slot whose checksum belongs to a
 code published in this repository is refused.
@@ -116,7 +116,7 @@ section's subnet, else the section's type, else the conductor's own subnet.
 A local replica has one subnet, so placement is ignored there.
 
 A member's *role* is its name suffix: `motoko-baton` is the stand's `baton`,
-`alpha-quarter-2` is a numbered `quarter`. For `backend` and `frontend` the
+`alpha-worker-2` is a numbered `worker`. For `backend` and `frontend` the
 `kind` also counts.
 
 ### `baton` (stand policy)

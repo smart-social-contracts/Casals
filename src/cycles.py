@@ -849,7 +849,7 @@ def patch_snapshot_canister_policies(canisters_out, live_policies):
     entity keep their effective policy (via ``_policy_for`` upstream);
     inheriting canisters pick up a changed Settings default. Rows present in
     ``live_policies`` but missing from the snapshot are appended (e.g.
-    auto-provisioned quarters). Existing balance fields are preserved; status
+    auto-provisioned workers). Existing balance fields are preserved; status
     labels are recomputed when balance + freezing are available.
     """
     by_id = {c["canister_id"]: dict(c) for c in (canisters_out or []) if c.get("canister_id")}
@@ -919,7 +919,7 @@ def refresh_cycles_snapshot_settings() -> None:
     Recomputes ``min_cycles`` / ``topup_cycles`` from live Canister entities
     so inheriting canisters pick up a new default while manually overridden
     canisters keep their effective policy. Also adds canisters missing from
-    the snapshot (e.g. quarters provisioned after the last full ``get_cycles``).
+    the snapshot (e.g. workers provisioned after the last full ``get_cycles``).
     """
     global _cycles_cache
     try:

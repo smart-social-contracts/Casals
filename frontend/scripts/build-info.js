@@ -1,8 +1,8 @@
 /**
- * Build provenance for GET /version (gos-as-a-service#39).
+ * Build provenance for GET /version.
  *
- * Every platform canister serves the same /version contract so the
- * "estado de los entornos" command can poll fast HTTP GETs. The values are
+ * Every platform canister serves the same /version contract so an
+ * environment-status check can poll fast HTTP GETs. The values are
  * stamped at build time from the repo checkout — never guessed at query
  * time. When a value is unknown at build time (no git, no release tag),
  * the field is omitted honestly.

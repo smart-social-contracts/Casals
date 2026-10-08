@@ -1,4 +1,4 @@
-"""GET /version contract tests (gos-as-a-service#39).
+"""GET /version contract tests (build provenance).
 
 The Casals conductor serves build provenance at /version over the IC
 HTTP interface (http_request + http_request_update). Values are stamped
