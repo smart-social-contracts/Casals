@@ -271,6 +271,11 @@ Casals is in early development (alpha). It may contain bugs, breaking changes, a
 - No guarantee of correctness, availability, or security
 - APIs and behavior may change without notice
 
+## Security
+
+Report vulnerabilities privately, not in a public issue — see
+[SECURITY.md](https://github.com/smart-social-contracts/Casals/blob/main/SECURITY.md).
+
 ## License
 
 MIT — see [LICENSE](https://github.com/smart-social-contracts/Casals/blob/main/LICENSE).
