@@ -20,9 +20,9 @@ runbook.
   in this repo (the CLI is `python -m casals_cli.main`; `casals` below means that).
 - An identity known to `icp`: `local-dev` for the local replica; on the IC, the
   YubiKey-backed deployer identity of the environment.
-- For product sheets (`../gos-as-a-service/casals.json`, `../realms-gos/casals.json`)
-  the product artifacts the sheet lists as `local:` must be built first; the
-  recipes are the build steps of `gos-as-a-service/.github/workflows/gaas-e2e.yml`.
+- For a product's own sheet, the artifacts it lists as `local:` must be built
+  first, with that product's build steps (for GaaS, the build steps of
+  `gos-as-a-service/.github/workflows/gaas-e2e.yml`).
 
 ## Local replica
 
@@ -55,16 +55,16 @@ artifacts) and again from PyPI once a release is published
 
 One laptop can run several replicas at once. icp binds one gateway per project
 directory; Casals defaults to the implicit `local` network on `:8000`. To give
-a run its own gateway (a corpus beside `local_up`, two `local_up`s, …):
+a run its own gateway (a corpus beside a product's sheet, two corpora, …):
 
 ```sh
 # corpus on a free port; does not touch :8000
 CASALS_HOME=~/casals-home-corpus CASALS_REPLICA_PORT=auto KEEP=1 \
   python3 tests/e2e/run_e2e.py minimal
 
-# product orchestra on another free port
-CASALS_HOME=~/casals-home-b \
-  ../realms-gos/scripts/local_up.sh --gaas --replica-port=auto
+# a product's sheet on another free port
+CASALS_HOME=~/casals-home-b CASALS_REPLICA_PORT=auto KEEP=1 \
+  python3 tests/e2e/run_e2e.py path/to/product/casals.json
 ```
 
 `CASALS_REPLICA=1` is the same as `CASALS_REPLICA_PORT=auto`. Bindings stay
@@ -262,16 +262,16 @@ treasury without deleting the old conductor: `casals treasury-send --to
 ### Stands created at runtime
 
 Products mint stands from a section's `stand_template` with `create_stand`
-(the GaaS installer does this for every realm; a realm backend does it to add
-a quarter). `create_stand` builds the stand it minted on its own: a one-shot
+(for example, the GaaS installer mints one for every realm it hosts).
+`create_stand` builds the stand it minted on its own: a one-shot
 timer plans only that stand and applies until every member is bound, then the
 stand shows `built` in `get_tree` / `casals tree`. A round that fails leaves
 its message in the stand's `build_error` (visible in the tree); calling
 `create_stand` on the stand again clears it and retries. `plan`/`show`/`oracle`
 treat built stands like any declared canister. A later template change (new
-realm wasm, new bundle) reaches the existing realms with
-`casals upgrade --wasm` / `--content` (narrow with `--section Realms` or
-`--stand realm-x`).
+wasm, new bundle) reaches the existing stands with
+`casals upgrade --wasm` / `--content` (narrow with `--section <name>` or
+`--stand <name>`).
 
 ## Off-chain cycle monitor
 
@@ -303,7 +303,7 @@ Each signed-in user can save a **Notification email** under Settings → Your se
 ```sh
 python tests/e2e/run_e2e.py                       # the corpus: 7 orchestras, 8 scenarios
 KEEP=1 python tests/e2e/run_e2e.py minimal        # one orchestra, left running to browse
-SCENARIOS=fresh,idempotent python tests/e2e/run_e2e.py ../realms-gos/casals.json
+SCENARIOS=fresh,idempotent python tests/e2e/run_e2e.py path/to/casals.json
 make unit                                         # unit tests, no replica
 ```
 

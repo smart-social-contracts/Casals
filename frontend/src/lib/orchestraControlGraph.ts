@@ -109,7 +109,7 @@ export function inferManagedCanistersFromTree(
   return out;
 }
 
-/** Same-stand realm canisters when the controller cache is empty (sheet topology). */
+/** Same-stand member canisters when the controller cache is empty (sheet topology). */
 export function inferManagedCanistersFromStand(
   tree: Tree,
   batonCanisterId: string,
@@ -176,7 +176,7 @@ export const CONTROL_EDGE_META: Record<
   baton_manages: {
     label: 'Baton client',
     tooltip:
-      'Realm canister registered as a baton client — routine upgrades are routed through baton policy, not ad-hoc IC installs.',
+      'Stand member registered as a baton client — routine upgrades are routed through baton policy, not ad-hoc IC installs.',
     stroke: '#fb923c',
     dash: '8 4',
     width: 1.5,
@@ -211,7 +211,7 @@ function computeCanisterRank(c: Canister): number {
 /**
  * IC controller lists are symmetric co-control — a lower tier (e.g. casals-backend)
  * may appear on multisig's controllers. For the governance graph, only show downhill
- * edges along multisig → casals → baton → realm canisters.
+ * edges along multisig → casals → baton → stand members.
  */
 export function isUphillOrchestraIcEdge(
   from: Pick<ControlNode, 'kind' | 'rank'>,

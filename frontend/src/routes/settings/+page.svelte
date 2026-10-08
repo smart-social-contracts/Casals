@@ -788,7 +788,7 @@
                 id="orchestraName"
                 type="text"
                 class="input"
-                placeholder="e.g. realmsgos-shared-infra"
+                placeholder="e.g. my-app-production"
                 bind:value={orchestraName}
                 disabled={!canGeneral}
               />

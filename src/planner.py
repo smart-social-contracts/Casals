@@ -327,7 +327,7 @@ class _PlanContext:
 
         A runtime stand build must not re-authorize the rest of the registry.
         ``casals-backend`` is the conductor itself; its day-one checksum is not
-        a precondition for minting a realm.
+        a precondition for building a runtime stand.
         """
         keys = set()
         for _section, stand, _name, spec in iter_canisters(self.sheet):

@@ -122,7 +122,7 @@ class Canister(Entity, TimestampedMixin):
     wasm_hash = String(max_length=128, default="")  # verified module hash (hex)
     status = String(max_length=32, default=CanisterStatus.REGISTERED)
     # True for canisters Casals did not create (register_canister): their code
-    # is installed by someone else (e.g. the realms CLI via dfx), so deploy_sheet
+    # is installed by someone else (e.g. a product's own deploy tooling), so deploy_sheet
     # must never reinstall them on a hash mismatch, whatever ``status`` says.
     # Casals-created canisters (CREATED -> INSTALLED) stay False. Sticky: it
     # survives adoption (REGISTERED -> INSTALLED) and stop/start.

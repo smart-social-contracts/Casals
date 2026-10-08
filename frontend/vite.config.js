@@ -16,9 +16,8 @@ function utcStamp(date) {
   return date.toISOString().replace('T', ' ').substring(0, 19);
 }
 
-// Same bake as Realms GOS (`src/realm_frontend/vite.config.js`) and the
-// Registry (`src/realm_registry_frontend/vite.config.js`): version.txt +
-// `git rev-parse --short HEAD`. `__BUILD_TIME__` is the committer clock (UTC).
+// Build identity: version.txt + `git rev-parse --short HEAD`.
+// `__BUILD_TIME__` is the committer clock (UTC).
 // `__BUILD_DEPLOYED__` is the wall clock of this build — when the artifact
 // was produced to ship — so the footer can show both.
 function getBuildTimeValues() {
@@ -60,7 +59,7 @@ function getBuildTimeValues() {
       }
     }
   } catch {
-    // keep wall-clock UTC fallback (Realms local-dev default)
+    // keep the wall-clock UTC fallback
   }
 
   return { version, commitHash, buildTime, deployedAt };

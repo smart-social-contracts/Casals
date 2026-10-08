@@ -58,7 +58,7 @@ _PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
 # what it manages (Casals stays a controller); "sole" = the baton is the
 # controller — Casals installs, writes content/files while it still controls
 # the canister, then hands over and leaves (the sheet must not list $self on
-# managed members; a realm may list $this to keep its exit key; a sheet may
+# managed members; a member may list $this to keep its exit key; a sheet may
 # also list $deployer, as this demo orchestra does).
 HAND_OFF_SOLE = "sole"
 
@@ -847,7 +847,7 @@ _ASSET_PERMISSIONS = {"Commit", "Prepare", "ManagePermissions"}
 def _validate_asset_grants(value: Any, path: str, errors: list[str]) -> None:
     """Permissions Casals grants on this canister while it still controls it.
 
-    Used so a realm backend holds certified-assets ``Commit`` before sole
+    Used so a stand's backend holds certified-assets ``Commit`` before sole
     hand-off. The installer only checks that list; being an IC controller
     does not satisfy it.
     """

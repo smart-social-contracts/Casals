@@ -62,7 +62,7 @@ jobs:
           # Versions the GaaS sheet installs. Committed artifacts under seed/templates/.
           cp seed/templates/orchestration-baton@1.6.0.wasm.gz ./orchestration-baton@1.6.0.wasm.gz
           cp seed/templates/orchestration-multisig@1.7.0.wasm.gz ./orchestration-multisig@1.7.0.wasm.gz
-          # The store canister, and the asset-canister module realm frontends install
+          # The store canister, and the asset-canister module stand frontends install
           # as certified-assets@1.0.0 (same bytes as hello-world-frontend.wasm.gz).
           cp seed/templates/certified-assets@0.3.0.wasm.gz ./certified-assets@0.3.0.wasm.gz
           cp seed/templates/hello-world-frontend.wasm.gz ./certified-assets@1.0.0.wasm.gz

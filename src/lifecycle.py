@@ -660,7 +660,7 @@ def _grant_frontend_grants(canister_id: str, grants):
 def _grant_asset_permissions(asset, canister_id: str, grants):
     """Grant sheet ``grants`` on an asset canister Casals still controls.
 
-    ``$stand.backend`` is the realm backend, not the baton. The installer
+    ``$stand.backend`` is the stand's backend, not the baton. The installer
     checks ``list_permitted`` for ``Commit`` and does not treat an IC
     controller as holding that permission.
     """
@@ -1107,11 +1107,11 @@ def _provision_wasm_identity(w=None, canister_id: str = ""):
 def _resolve_provision_controllers(dk, w=None, canister_id: str = ""):
     """IC controller set after Casals finishes provisioning a canister.
 
-    Realm canisters (backend, frontend, other stand members) keep Casals as a
+    Stand members (backend, frontend, any other member) keep Casals as a
     controller until the sheet's baton hand-off tightens the set to
     ``[baton] + extras``. The governance multisig is a co-controller when
     present, plus ``extra_controller_principals``. When the caller is a
-    canister (e.g. the realm installer invoking ``create_stand``), that caller
+    canister (e.g. a product's installer invoking ``create_stand``), that caller
     is also added so bootstrap steps such as ``enter_setup`` can run before
     handoff.
 
@@ -1282,7 +1282,7 @@ def _create_time_controllers() -> list:
     """Create-time controller list.
 
     Casals must be present so install/provision can run; the governance
-    multisig is included when known. After provision, realm canisters keep
+    multisig is included when known. After provision, stand members keep
     Casals until the sheet's baton hand-off; baton/multisig drop it.
     """
     self_id = ic.id().to_str()
@@ -1436,7 +1436,7 @@ def _provision_canister(dk, name: str, kind: str, w, init_arg: bytes = None, bef
     yield from _maybe_provision_assets(cid, w, dk)
 
     # Apply the provision controller set last (after install + assets).
-    # Realm canisters keep Casals until the sheet's baton hand-off;
+    # Stand members keep Casals until the sheet's baton hand-off;
     # baton/multisig drop Casals here.
     try:
         if before_handoff is not None:

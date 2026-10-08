@@ -119,7 +119,7 @@ export function parseWasmFilename(name: string): { family: string; version: stri
 }
 
 /**
- * `realm-frontend-v0.6.0.tar.gz` → the store namespace a frontend serves.
+ * `app-frontend-v0.6.0.tar.gz` → the store namespace a frontend serves.
  * Same stem rules as a wasm. The version segment is `main` when the name has none.
  */
 export function parseBundleFilename(name: string): { family: string; version: string } {

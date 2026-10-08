@@ -1,4 +1,4 @@
-/** Display helpers for the Vite-baked build identity (Realms GOS / Registry pattern). */
+/** Display helpers for the Vite-baked build identity. */
 
 export function shortSha(hash: string): string {
   const value = (hash || '').trim();
@@ -6,7 +6,7 @@ export function shortSha(hash: string): string {
   return value.length > 7 ? value.slice(0, 7) : value;
 }
 
-/** `YYYY-MM-DD HH:MM:SS UTC` — same style as Realms GOS (`2026-08-27 23:10:00 UTC`). */
+/** `YYYY-MM-DD HH:MM:SS UTC`, e.g. `2026-08-27 23:10:00 UTC`. */
 export function formatCommitDatetime(raw: string): string {
   const value = (raw || '').trim();
   if (!value || value === 'COMMIT_DATETIME_PLACEHOLDER') return '';

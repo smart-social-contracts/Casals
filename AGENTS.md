@@ -477,8 +477,8 @@ or `"*"` (every member but the baton). `hand_off`:
 - `true` — co-control: Casals stays a controller and upgrades members directly.
 - `"sole"` — Casals installs a member, writes its `content`/`files` while it
   still controls the canister, then hands its controllers back to
-  `[$stand.baton]` (plus `$this` when the member controls itself, as realm
-  backends do so they can secede). The provisioning controllers (Casals, the
+  `[$stand.baton]` (plus `$this` when the member controls itself, so it can
+  leave the orchestra on its own). The provisioning controllers (Casals, the
   multisig, the stand's `created_by` canister) leave non-destructively, so the
   stand-build timer finishes a runtime-minted stand by itself; the baton's own
   timers drive its pipeline (`_arm_resume_timer`: the callback must be the

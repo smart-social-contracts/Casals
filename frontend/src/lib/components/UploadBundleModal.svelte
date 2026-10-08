@@ -216,7 +216,7 @@
           bind:value={namespace}
           onchange={recompare}
           disabled={busy || phase === 'uploaded' || phase === 'done'}
-          placeholder="frontend/realm-frontend/0.6.0"
+          placeholder="frontend/my-app/1.0.0"
         />
         <p class="text-xs text-primary-500 mt-1">
           A file named <span class="font-mono">family-v1.2.3.tar.gz</span> fills this as
