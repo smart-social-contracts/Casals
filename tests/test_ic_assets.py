@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -72,3 +74,29 @@ def test_shipped_ui_policy_has_no_inline_scripts_or_local_origins():
 
 def test_shipped_ui_version_file_is_not_cross_origin():
     assert "Access-Control-Allow-Origin" not in _shipped_ui_policy()["/version"]
+
+
+def test_shipped_ui_ii_app_metadata():
+    """Internet Identity reads the document and its logo cross-origin and drops
+    the whole document if one field breaks its limits."""
+    static = os.path.join(os.path.dirname(__file__), "..", "frontend", "static")
+    with open(os.path.join(static, ".ic-assets.json5"), encoding="utf-8") as f:
+        rules = ic_assets.rules_from(f.read())
+    assert any(r.get("match") == ".well-known" and r.get("ignore") is False for r in rules)
+    doc_headers = ic_assets.properties_for("/.well-known/ii-app-metadata", rules)["headers"]
+    assert doc_headers["Content-Type"] == "application/json"
+    assert doc_headers["Access-Control-Allow-Origin"] == "*"
+    assert ic_assets.properties_for("/logo.png", rules)["headers"]["Access-Control-Allow-Origin"] == "*"
+
+    with open(os.path.join(static, ".well-known", "ii-app-metadata"), "rb") as f:
+        raw = f.read()
+    assert len(raw) <= 8 * 1024
+    doc = json.loads(raw)
+    assert 1 <= len(doc["name"]) <= 40
+    assert 1 <= len(doc["description"]) <= 120
+    assert doc["logo"].startswith("/") and not doc["logo"].startswith("//")
+    with open(os.path.join(static, doc["logo"].lstrip("/")), "rb") as f:
+        png = f.read()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) <= 1024 * 1024
+    width, height = struct.unpack(">II", png[16:24])
+    assert max(width, height) <= 4096
