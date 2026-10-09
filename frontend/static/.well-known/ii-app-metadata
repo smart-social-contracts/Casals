@@ -1,5 +1,5 @@
 {
   "name": "Casals",
-  "description": "General-purpose canister lifecycle orchestrator for the Internet Computer",
+  "description": "The canister lifecycle orchestrator for the Internet Computer",
   "logo": "/logo.png"
 }
