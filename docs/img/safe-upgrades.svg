@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="-10 -10 260 130" width="520" height="260" role="img" aria-label="A group upgrade runs snapshot, install, verify; one run verifies v1.3, the next fails at install and rolls back to v1.2">
+  <style>
+    svg { color: #3a3a3a; fill: #fff; stroke: currentColor; stroke-width: 1; stroke-linecap: square; stroke-linejoin: miter; }
+    * { transform-box: fill-box; transform-origin: 50% 50%; }
+    text { fill: #8a8a8a; stroke: none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 6.5px; letter-spacing: .06em; text-transform: uppercase; text-anchor: middle; }
+    .art-key { fill: #3a3a3a; }
+    .bg { fill: #fff; stroke: #e5e5e5; }
+    .art-rule { fill: none; stroke-opacity: .16; }
+    .art-frame { fill: none; stroke-opacity: .28; stroke-dasharray: 2 3; }
+    .sf-progress { stroke-width: 1.6; transform-origin: 0 50%; animation: sf-progress 10s linear infinite; }
+    .sf-node.n0 { animation: sf-n0 10s infinite; }
+    .sf-node.n1 { animation: sf-n1 10s infinite; }
+    .sf-node.n2 { animation: sf-n2 10s infinite; }
+    .sf-node.n3 { animation: sf-n3 10s infinite; }
+    .sf-ghost { fill: none; stroke-dasharray: 2 2; opacity: 0; animation: sf-ghost 10s infinite; }
+    .sf-scan { fill: none; opacity: 0; animation: sf-scan 10s infinite; }
+    .sf-ok, .sf-fail { opacity: 0; }
+    .sf-ok { animation: sf-ok 10s infinite; }
+    .sf-fail { animation: sf-fail 10s infinite; }
+    @keyframes sf-progress {
+      0%, 4% { opacity: 1; transform: scaleX(0); }
+      14% { transform: scaleX(.333); }
+      28% { transform: scaleX(.667); }
+      40%, 46% { opacity: 1; transform: scaleX(1); }
+      49% { opacity: 0; transform: scaleX(1); }
+      50% { opacity: 0; transform: scaleX(0); }
+      52% { opacity: 1; transform: scaleX(0); }
+      62% { transform: scaleX(.333); }
+      72% { transform: scaleX(.5); }
+      86%, 100% { transform: scaleX(0); }
+    }
+    @keyframes sf-n0 { 0%, 3% { fill: #fff; } 4%, 48% { fill: currentColor; } 49%, 51% { fill: #fff; } 52%, 86% { fill: currentColor; } 87%, 100% { fill: #fff; } }
+    @keyframes sf-n1 { 0%, 13% { fill: #fff; } 14%, 48% { fill: currentColor; } 49%, 61% { fill: #fff; } 62%, 78% { fill: currentColor; } 79%, 100% { fill: #fff; } }
+    @keyframes sf-n2 { 0%, 27% { fill: #fff; } 28%, 48% { fill: currentColor; } 49%, 100% { fill: #fff; } }
+    @keyframes sf-n3 { 0%, 39% { fill: #fff; } 40%, 48% { fill: currentColor; } 49%, 100% { fill: #fff; } }
+    @keyframes sf-ghost { 0%, 4% { opacity: 0; } 10%, 44% { opacity: .5; } 49%, 52% { opacity: 0; } 58%, 92% { opacity: .5; } 98%, 100% { opacity: 0; } }
+    @keyframes sf-scan {
+      0%, 13% { opacity: 0; transform: none; }
+      15% { opacity: .6; transform: none; }
+      28% { opacity: .6; transform: translateY(-20px); }
+      30%, 61% { opacity: 0; transform: translateY(-20px); }
+      62% { opacity: 0; transform: none; }
+      64% { opacity: .6; transform: none; }
+      72% { opacity: .6; transform: translateY(-10px); }
+      74%, 100% { opacity: 0; transform: translateY(-10px); }
+    }
+    @keyframes sf-ok { 0%, 40% { opacity: 0; } 42%, 47% { opacity: 1; } 49%, 100% { opacity: 0; } }
+    @keyframes sf-fail { 0%, 84% { opacity: 0; } 87%, 95% { opacity: 1; } 98%, 100% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .sf-ok { opacity: 1; } }
+  </style>
+  <defs>
+    <symbol id="art-can" viewBox="0 0 30 36" overflow="visible">
+      <path d="M2 8V28A13 5 0 0 0 28 28V8" />
+      <ellipse cx="15" cy="8" rx="13" ry="5" />
+      <path d="M2 11.5A13 5 0 0 0 28 11.5" fill="none" opacity=".5" />
+      <ellipse cx="15" cy="8" rx="6" ry="2.3" fill="none" opacity=".5" />
+    </symbol>
+  </defs>
+  <rect class="bg" x="-9.5" y="-9.5" width="259" height="129" rx="8" />
+
+  <line class="art-rule" x1="24" y1="12" x2="216" y2="12" />
+  <line class="sf-progress" x1="24" y1="12" x2="216" y2="12" />
+  <circle class="sf-node n0" cx="24" cy="12" r="3" />
+  <circle class="sf-node n1" cx="88" cy="12" r="3" />
+  <circle class="sf-node n2" cx="152" cy="12" r="3" />
+  <circle class="sf-node n3" cx="216" cy="12" r="3" />
+  <text x="24" y="26">snapshot</text>
+  <text x="88" y="26">install</text>
+  <text x="152" y="26">verify</text>
+  <text x="216" y="26">done</text>
+  <rect class="art-frame" x="40" y="34" width="160" height="56" />
+  <use class="sf-ghost" href="#art-can" xlink:href="#art-can" x="67" y="39" width="30" height="36" />
+  <use class="sf-ghost" href="#art-can" xlink:href="#art-can" x="111" y="39" width="30" height="36" />
+  <use class="sf-ghost" href="#art-can" xlink:href="#art-can" x="155" y="39" width="30" height="36" />
+  <use href="#art-can" xlink:href="#art-can" x="62" y="44" width="30" height="36" />
+  <use href="#art-can" xlink:href="#art-can" x="106" y="44" width="30" height="36" />
+  <use href="#art-can" xlink:href="#art-can" x="150" y="44" width="30" height="36" />
+  <ellipse class="sf-scan" cx="77" cy="72" rx="15.5" ry="5.5" />
+  <ellipse class="sf-scan" cx="121" cy="72" rx="15.5" ry="5.5" />
+  <ellipse class="sf-scan" cx="165" cy="72" rx="15.5" ry="5.5" />
+  <text class="art-key sf-ok" x="120" y="103">verified &#183; v1.3</text>
+  <text class="art-key sf-fail" x="120" y="103">install failed &#183; rolled back to v1.2</text>
+</svg>

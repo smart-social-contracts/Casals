@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="-10 -10 260 130" width="520" height="260" role="img" aria-label="Three tenants, each with a baton: alice and carol approve v2, bob declines and stays on v1">
+  <style>
+    svg { color: #3a3a3a; fill: #fff; stroke: currentColor; stroke-width: 1; stroke-linecap: square; stroke-linejoin: miter; }
+    * { transform-box: fill-box; transform-origin: 50% 50%; }
+    text { fill: #8a8a8a; stroke: none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 6.5px; letter-spacing: .06em; text-transform: uppercase; text-anchor: middle; }
+    .art-key { fill: #3a3a3a; }
+    .bg { fill: #fff; stroke: #e5e5e5; }
+    .art-rule { fill: none; stroke-opacity: .16; }
+    .t-tag { fill: none; stroke-opacity: .35; }
+    .t-show-1, .t-show-2, .t-show-3 { opacity: 0; }
+    .t-show-1 { animation: t-show-1 10s infinite; }
+    .t-show-2 { animation: t-show-2 10s infinite; }
+    .t-show-3 { animation: t-show-3 10s infinite; }
+    .t-hide-1 { animation: t-hide-1 10s infinite; }
+    .t-hide-2 { animation: t-hide-2 10s infinite; }
+    .t-hide-3 { animation: t-hide-3 10s infinite; }
+    @keyframes t-show-1 { 0%, 14% { opacity: 0; } 18%, 90% { opacity: 1; } 96%, 100% { opacity: 0; } }
+    @keyframes t-hide-1 { 0%, 14% { opacity: 1; } 18%, 90% { opacity: 0; } 96%, 100% { opacity: 1; } }
+    @keyframes t-show-2 { 0%, 38% { opacity: 0; } 42%, 90% { opacity: 1; } 96%, 100% { opacity: 0; } }
+    @keyframes t-hide-2 { 0%, 38% { opacity: 1; } 42%, 90% { opacity: 0; } 96%, 100% { opacity: 1; } }
+    @keyframes t-show-3 { 0%, 62% { opacity: 0; } 66%, 90% { opacity: 1; } 96%, 100% { opacity: 0; } }
+    @keyframes t-hide-3 { 0%, 62% { opacity: 1; } 66%, 90% { opacity: 0; } 96%, 100% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <symbol id="art-can" viewBox="0 0 30 36" overflow="visible">
+      <path d="M2 8V28A13 5 0 0 0 28 28V8" />
+      <ellipse cx="15" cy="8" rx="13" ry="5" />
+      <path d="M2 11.5A13 5 0 0 0 28 11.5" fill="none" opacity=".5" />
+      <ellipse cx="15" cy="8" rx="6" ry="2.3" fill="none" opacity=".5" />
+    </symbol>
+    <symbol id="art-baton" viewBox="0 0 30 36" overflow="visible">
+      <path d="M2 8V28A13 5 0 0 0 28 28V8" />
+      <ellipse cx="15" cy="8" rx="13" ry="5" fill="currentColor" />
+      <path d="M2 11.5A13 5 0 0 0 28 11.5" fill="none" opacity=".5" />
+      <ellipse cx="15" cy="8" rx="6" ry="2.3" fill="none" stroke="#fff" />
+    </symbol>
+  </defs>
+  <rect class="bg" x="-9.5" y="-9.5" width="259" height="129" rx="8" />
+
+  <text x="98" y="12">tenant</text>
+  <text x="146" y="12">version</text>
+  <text x="203" y="12">baton</text>
+  <line class="art-rule" x1="6" y1="18" x2="234" y2="18" />
+
+  <use href="#art-baton" xlink:href="#art-baton" x="8" y="22" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="32" y="22" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="56" y="22" width="20" height="24" />
+  <text class="art-key" x="98" y="37">alice</text>
+  <text class="t-hide-1" x="146" y="37">v1</text>
+  <text class="art-key t-show-1" x="146" y="37">v2</text>
+  <rect class="t-tag" x="176" y="28" width="54" height="13" />
+  <text class="t-hide-1" x="203" y="37">pending</text>
+  <text class="art-key t-show-1" x="203" y="37">approved</text>
+  <line class="art-rule" x1="6" y1="50" x2="234" y2="50" />
+
+  <use href="#art-baton" xlink:href="#art-baton" x="8" y="54" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="32" y="54" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="56" y="54" width="20" height="24" />
+  <text class="art-key" x="98" y="69">bob</text>
+  <text x="146" y="69">v1</text>
+  <rect class="t-tag" x="176" y="60" width="54" height="13" />
+  <text class="t-hide-2" x="203" y="69">pending</text>
+  <text class="art-key t-show-2" x="203" y="69">declined</text>
+  <line class="art-rule" x1="6" y1="82" x2="234" y2="82" />
+
+  <use href="#art-baton" xlink:href="#art-baton" x="8" y="86" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="32" y="86" width="20" height="24" />
+  <use href="#art-can" xlink:href="#art-can" x="56" y="86" width="20" height="24" />
+  <text class="art-key" x="98" y="101">carol</text>
+  <text class="t-hide-3" x="146" y="101">v1</text>
+  <text class="art-key t-show-3" x="146" y="101">v2</text>
+  <rect class="t-tag" x="176" y="92" width="54" height="13" />
+  <text class="t-hide-3" x="203" y="101">pending</text>
+  <text class="art-key t-show-3" x="203" y="101">approved</text>
+</svg>
