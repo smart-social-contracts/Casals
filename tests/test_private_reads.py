@@ -17,7 +17,7 @@ ALICE = "alice-principal"
 BOB = "bob-principal"
 STRANGER = "stranger-principal"
 ANON = "2vxsx-fae"
-PUBLISHED = "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+PUBLISHED = "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
 PRIVATE_SLOT = "sha256:" + "ab" * 32
 
 

@@ -50,7 +50,7 @@ KEEP = os.environ.get("KEEP") == "1"
 ORDER = ["minimal", "governed", "baton-stand", "adopted", "demo", "retire-and-pool", "dynamic-stands"]
 # governed/casals.json declares `invited_operator` as the sha256 checksum of this code.
 ACCESS_CODE_ALIAS = "invited_operator"
-ACCESS_CODE = "CASALS-E2E-ACCESS-CODE"
+ACCESS_CODE = "casals"
 CLAIMER_IDENTITY = os.environ.get("CASALS_E2E_CLAIMER", "casals-e2e-claimer")
 
 
@@ -603,7 +603,9 @@ def access_code(o: Orchestra) -> None:
     if claim("anonymous", ACCESS_CODE).get("ok") is not False:
         raise Fail("an anonymous caller redeemed the code")
     res = claim(CLAIMER_IDENTITY, ACCESS_CODE)
-    if not res.get("ok") or [c["name"] for c in res.get("claimed") or []] != [stand]:
+    # Every slot in the sheet shares this code, so the claim also takes the
+    # orchestra and section slots.
+    if not res.get("ok") or stand not in [c["name"] for c in res.get("claimed") or []]:
         raise Fail(f"claim failed: {res}")
 
     after = stand_commanders()

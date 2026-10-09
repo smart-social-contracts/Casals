@@ -14,10 +14,10 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slots (`casals code new`): admin=casals (everything), lifecycle_operator=casals-lifecycle (create, retire/delete, start/stop and top up canisters across the Lifecycle section), stand_owner=casals-owner (rename or delete the Retiring stand)",
+        "$comment": "access-code slots (`casals code new`). Every slot uses the code casals, so one claim takes them all: admin (everything), lifecycle_operator (create, retire/delete, start/stop and top up canisters across the Lifecycle section), stand_owner (rename or delete the Retiring stand)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
-        "lifecycle_operator": "sha256:84675f7c094aff5946321fe9c5ec1764229091cfdbbd12f59fc64fb275d99fbd",
-        "stand_owner": "sha256:2338c757727ad87f8527f871f9dd28af850bf97fb4f496ab94f45913496cd126"
+        "lifecycle_operator": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "stand_owner": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
       },
       "cycles": {
         "min_balance_tc": 0.5,

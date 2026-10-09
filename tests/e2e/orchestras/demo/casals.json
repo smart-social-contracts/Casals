@@ -14,12 +14,12 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slots (`casals code new`): admin=casals (everything), release_manager=casals-release (deploys, snapshots and reverts on every Demo stand; upgrades still need each baton's approval), motoko_dev/rust_dev/python_dev=casals-motoko/casals-rust/casals-python (deploy, tag and rename within their own stand only)",
+        "$comment": "access-code slots (`casals code new`). Every slot uses the code casals, so one claim takes them all: admin (everything), release_manager (deploys, snapshots and reverts on every Demo stand; upgrades still need each baton's approval), motoko_dev/rust_dev/python_dev (deploy, tag and rename within their own stand only)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
-        "release_manager": "sha256:de2e8fcf679a855ba862c7264278e2c118c5839da20e09f44ce3766acb3f6323",
-        "motoko_dev": "sha256:ab18cfe86953fc7ee0f9c5197c081e764465a09d8b0361ffc80b708abb1058a6",
-        "rust_dev": "sha256:aaf1b5ae00d2d256e6cf53f77f6807ba608c99defed0a05a7dffb846c5a63947",
-        "python_dev": "sha256:1fff220f03f8e6ae51e75fc583fb2948a9447fe2b42b0984e89fe835a5f6a884"
+        "release_manager": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "motoko_dev": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "rust_dev": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "python_dev": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
       },
       "cycles": {
         "min_balance_tc": 0.5,

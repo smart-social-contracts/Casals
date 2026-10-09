@@ -23,7 +23,7 @@ from access_code import (  # noqa: E402
 )
 from planner import _normalize_commanders, build_plan  # noqa: E402
 
-CODE = "CASALS-E2E-ACCESS-CODE"
+CODE = "casals"
 SLOT = code_checksum(CODE)
 CLAIMER = "xcg25-ljzu2-nslis-nzo3c-grtk3-odp6s-gdkr6-f3nhs-aw6g6-rawt7-yae"
 OTHER = "aaaaa-aa"
@@ -39,9 +39,9 @@ def _entity(**kw):
 # ── access_code helpers ───────────────────────────────────────────────────────
 
 def test_code_checksum_is_sha256_of_trimmed_code():
-    assert SLOT == "sha256:de5b0cf9529d693d3f371967298ca3841b1b0cdf7a41d8102e45c8f3e5dce688"
+    assert SLOT == "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
     assert code_checksum(f"  {CODE}\n") == SLOT
-    assert code_checksum(CODE.lower()) != SLOT  # exact match: codes are case-sensitive
+    assert code_checksum(CODE.upper()) != SLOT  # exact match: codes are case-sensitive
 
 
 def test_normalize_code_checksum():

@@ -765,10 +765,21 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
             return resolve(principals[token[len("$principal:"):]])
         return token
 
-    conductor_commanders = [
+    def merged(entries):
+        """One entry per principal, grants unioned, as the conductor stores them."""
+        out: dict[str, dict] = {}
+        for e in entries:
+            prev = out.get(e["principal"])
+            if prev is None:
+                out[e["principal"]] = e
+            else:
+                prev["permissions"] = sorted(set(prev["permissions"]) | set(e["permissions"]))
+        return list(out.values())
+
+    conductor_commanders = merged([
         {"principal": resolve(c["principal"]), "permissions": granted(c.get("permissions", "*"))}
         for c in full_sheet["conductor"]["commanders"]
-    ]
+    ])
     signers = sorted({resolve(s) for s in full_sheet["governance"]["multisig"]["signers"]})
     # The Motoko stand mirrors the sheet too: it carries an unclaimed access-code
     # slot (`sha256:` principal) next to the operator.
@@ -776,11 +787,11 @@ def _governed_live(ic: RecordingIc, sheet: dict, bindings: dict[str, str]) -> No
     motoko = next(st for st in product["stands"] if st["name"] == "Motoko")
 
     def mirror(entries):
-        return [
+        return merged([
             {"principal": resolve(c["principal"]), "permissions": granted(c.get("permissions", "*")),
              "unclaimed": resolve(c["principal"]).startswith("sha256:")}
             for c in entries
-        ]
+        ])
 
     stand_commanders = mirror(motoko["commanders"])
     ic.queries[(bindings["casals-backend"], "get_tree")] = {

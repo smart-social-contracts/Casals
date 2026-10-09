@@ -9,10 +9,10 @@
       "flags": { "test_mode": true, "ii_bypass": true },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slots (`casals code new`); redeem the code on the Access Denied dialog: admin=casals (everything), app_operator=casals-operator (runs the App section), hello_dev=casals-dev (ships the Hello stand)",
+        "$comment": "access-code slots (`casals code new`); redeem the code on the Access Denied dialog. Every slot uses the code casals, so one claim takes them all: admin (everything), app_operator (runs the App section), hello_dev (ships the Hello stand)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
-        "app_operator": "sha256:e96e0fcf99e791d5293d86f3032c11de0bb8fc3f85c36db495d7a059caff8809",
-        "hello_dev": "sha256:399f110d3d5f533181d50a7c0dcf0e8518235123cbe9fd45e075c9e6cbd3f033"
+        "app_operator": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "hello_dev": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
       },
       "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
     }

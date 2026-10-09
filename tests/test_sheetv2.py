@@ -256,24 +256,7 @@ def test_production_deployer_allowed_when_listed():
 
 # Plaintexts named in access_code.PUBLISHED_ACCESS_CODE_CHECKSUMS. The
 # validation error must not repeat them.
-_PUBLISHED_ACCESS_CODES = (
-    "CASALS",
-    "CASALS-E2E-ACCESS-CODE",
-    "casals",
-    "casals-auditor",
-    "casals-dev",
-    "casals-lifecycle",
-    "casals-motoko",
-    "casals-operator",
-    "casals-owner",
-    "casals-platform",
-    "casals-python",
-    "casals-release",
-    "casals-rust",
-    "casals-sre",
-    "casals-steward",
-    "casals-tenants",
-)
+_PUBLISHED_ACCESS_CODES = ("casals",)
 
 
 def _assert_published_code_absent(errors: list[str]) -> None:
@@ -308,7 +291,7 @@ def test_published_admin_checksum_refused_on_production_network():
     assert sv2.validate(sheet, "production") == []
     assert sv2.validate(sheet, "staging") == []
 
-    published = "sha256:0ee72a3fff6256024f93326689d0ac6e371020c41cfa925c30e4dfa63b4d9980"
+    published = "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
     sheet["environments"]["production"]["principals"]["admin"] = published
     errors = sv2.validate(sheet, "production")
     assert errors and all("published in this repository" in e for e in errors)
@@ -362,7 +345,7 @@ def test_raw_published_commander_principal_refused_on_ic():
     assert sv2.validate(sheet, "production") == []
 
     sheet["conductor"]["commanders"].append({
-        "principal": "SHA256:" + code_checksum("casals-sre").split(":", 1)[1].upper(),
+        "principal": "SHA256:" + code_checksum("casals").split(":", 1)[1].upper(),
         "permissions": "canister.topup",
     })
     errors = sv2.validate(sheet, "production")

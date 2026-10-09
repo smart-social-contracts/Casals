@@ -10,10 +10,10 @@
       "principals": {
         "operator": "$deployer",
         "casals_ii": "7mx7e-iesva-6xdkj-yrrrb-bwfyl-qmwmm-unfhg-zi74g-q3oyl-lz42d-dqe",
-        "$comment": "access-code slots (`casals code new`): admin=casals (everything), platform_operator=casals-platform (deploys, runs and tops up the installer), tenants_operator=casals-tenants (creates, renames, deletes and keeps alive the stands the installer mints under Tenants)",
+        "$comment": "access-code slots (`casals code new`). Every slot uses the code casals, so one claim takes them all: admin (everything), platform_operator (deploys, runs and tops up the installer), tenants_operator (creates, renames, deletes and keeps alive the stands the installer mints under Tenants)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
-        "platform_operator": "sha256:d36cff64938b358015571bc697b8eb14d311d3be486c3ef7ca57244e795151a6",
-        "tenants_operator": "sha256:e4bb52e0557e265f94b54e2a28df1b3fb5b843b056178d85b0cb1121d00666d6"
+        "platform_operator": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "tenants_operator": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
       },
       "cycles": { "min_balance_tc": 0.5, "budget_tc": 100 }
     }

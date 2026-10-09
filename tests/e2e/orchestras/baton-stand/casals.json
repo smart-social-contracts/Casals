@@ -14,10 +14,10 @@
       },
       "principals": {
         "operator": "$deployer",
-        "$comment": "access-code slots (`casals code new`): admin=casals (everything), release_manager=casals-release (deploys, snapshots and reverts across Demo; upgrades still need the baton's approval), sre=casals-sre (start/stop and top up the Rust stand)",
+        "$comment": "access-code slots (`casals code new`). Every slot uses the code casals, so one claim takes them all: admin (everything), release_manager (deploys, snapshots and reverts across Demo; upgrades still need the baton's approval), sre (start/stop and top up the Rust stand)",
         "admin": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
-        "release_manager": "sha256:de2e8fcf679a855ba862c7264278e2c118c5839da20e09f44ce3766acb3f6323",
-        "sre": "sha256:837a16075a6d801bd8c1065191b64086e2ca7cc6f06049cdde9b120ae7b1b818"
+        "release_manager": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31",
+        "sre": "sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31"
       },
       "cycles": {
         "min_balance_tc": 0.5,

@@ -3,13 +3,13 @@ import { test } from 'node:test';
 import { codeChecksum, generateAccessCode, isCodeChecksum, shortChecksum } from './accessCode.ts';
 
 // Must match src/access_code.py (`code_checksum`) and governed/casals.json.
-const CODE = 'CASALS-E2E-ACCESS-CODE';
-const SLOT = 'sha256:de5b0cf9529d693d3f371967298ca3841b1b0cdf7a41d8102e45c8f3e5dce688';
+const CODE = 'casals';
+const SLOT = 'sha256:ccadbf8d475e57765abdd4150b80abaa1cf0467e2c79b2f7f4adebc53d9b0e31';
 
 test('codeChecksum matches the backend for the same code', async () => {
   assert.equal(await codeChecksum(CODE), SLOT);
   assert.equal(await codeChecksum(`  ${CODE}\n`), SLOT);
-  assert.notEqual(await codeChecksum(CODE.toLowerCase()), SLOT);
+  assert.notEqual(await codeChecksum(CODE.toUpperCase()), SLOT);
 });
 
 test('generateAccessCode yields distinct, readable codes', () => {
@@ -24,5 +24,5 @@ test('isCodeChecksum / shortChecksum', () => {
   assert.ok(isCodeChecksum(' SHA256:abc'));
   assert.ok(!isCodeChecksum('aaaaa-aa'));
   assert.ok(!isCodeChecksum(undefined));
-  assert.equal(shortChecksum(SLOT), 'sha256:de5b…e688');
+  assert.equal(shortChecksum(SLOT), 'sha256:ccad…0e31');
 });
