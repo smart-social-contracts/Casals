@@ -52,6 +52,29 @@ still works. CI runs it in
 artifacts) and again from PyPI once a release is published
 (`release-verify.yml`).
 
+The same three commands, from PyPI, in a container. Port 8001 leaves a replica
+already listening on `:8000` alone. `--network host` is what makes the printed
+`http://….localhost:8001/` address open in a browser on the host. `icp` needs
+`libdbus-1-3` in this image. `-i` without `-t` is required: the heredoc is
+stdin, and `docker run -it` rejects that. The replica stops when the container
+exits; add `sleep infinity` before `EOF` to leave the UI up.
+
+```sh
+docker run --rm -i --network host -e CASALS_REPLICA_PORT=8001 node:22-bookworm bash -s <<'EOF'
+set -euo pipefail
+apt-get update
+apt-get install -y python3 python3-venv ca-certificates curl libdbus-1-3
+npm install -g @icp-sdk/icp-cli@1.6.0
+python3 -m venv /opt/casals
+. /opt/casals/bin/activate
+pip install ic-casals
+mkdir -p /tmp/hello
+cd /tmp/hello
+casals init hello-world
+casals up hello-world --yes --local
+EOF
+```
+
 One laptop can run several replicas at once. icp binds one gateway per project
 directory; Casals defaults to the implicit `local` network on `:8000`. To give
 a run its own gateway (a corpus beside a product's sheet, two corpora, …):

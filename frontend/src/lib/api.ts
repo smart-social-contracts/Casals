@@ -819,8 +819,10 @@ export async function getSettings(): Promise<Metadata> {
   return _parseQuery<Metadata>(await (await _actor()).get_settings());
 }
 
-export async function getTree(): Promise<Tree> {
-  return _parseQuery<Tree>(await (await _actor()).get_tree());
+/** `as` reads with an identity that is not the session's yet (the login gate). */
+export async function getTree(as?: Identity): Promise<Tree> {
+  const actor = as ? await _actorAs(as) : await _actor();
+  return _parseQuery<Tree>(await actor.get_tree());
 }
 
 /** Canister ids currently linked in the orchestra tree. */
