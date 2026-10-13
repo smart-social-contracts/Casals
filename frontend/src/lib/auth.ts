@@ -109,7 +109,7 @@ async function _verifyLoginAccess(id: Identity, backendCanisterId?: string): Pro
   myPermissions.set(null);
 
   const [access, controller] = await Promise.all([
-    checkCommanderAccess(caller),
+    checkCommanderAccess(caller, id),
     backendCanisterId ? checkIsCanisterController(id, backendCanisterId) : Promise.resolve(false),
   ]);
   const commander = access.commander;

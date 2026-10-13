@@ -1,3 +1,4 @@
+import type { Identity } from '@dfinity/agent';
 import type { CommanderGrant, Section, Stand, Tree } from './api';
 import { getTree } from './api';
 import { isCodeChecksum } from './accessCode';
@@ -82,12 +83,14 @@ export interface CommanderAccess {
   permissions: Set<string> | '*';
 }
 
-/** Whether `principal` is a commander anywhere in the tree, and what it may do. */
-export async function checkCommanderAccess(principal: string): Promise<CommanderAccess> {
+/** Whether `principal` is a commander anywhere in the tree, and what it may do.
+ * A private orchestra refuses anonymous reads, so pass the identity being
+ * checked (`as`) when it is not the session's yet. */
+export async function checkCommanderAccess(principal: string, as?: Identity): Promise<CommanderAccess> {
   const caller = principal.trim();
   if (!caller) return { commander: false, permissions: new Set() };
   try {
-    const tree = await getTree();
+    const tree = await getTree(as);
     return {
       commander: commanderPrincipalsFromTree(tree).has(caller),
       permissions: callerPermissionsFromTree(tree, caller),
