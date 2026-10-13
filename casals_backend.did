@@ -135,6 +135,7 @@ service : {
   "get_plan" : (text) -> (text) query;
   "last_apply" : () -> (text) query;
   "get_bindings" : () -> (text) query;
+  "resolve" : (text) -> (text) query;
   "get_my_settings" : () -> (text) query;
   "set_my_settings" : (text) -> (text);
   "unsubscribe_notification_email" : (text) -> (text);

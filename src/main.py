@@ -237,6 +237,7 @@ from sheet_api import (
 from sheet_storage import (
     get_plan_record, latest_plan_hash, load_apply_result, load_sheet_doc, sheet_deployer, store_sheet_doc,
 )
+from resolve import canister_is_public, find_row, parse_query
 from live_state import _asset_encodings_gen
 from planner import desired_assets
 
@@ -1691,6 +1692,58 @@ def get_bindings() -> text:
     """Return name → canister id bindings (§5.5)."""
     try:
         return _sheet_reply(get_bindings_impl)
+    except Exception as e:
+        return _err(str(e))
+
+
+def _resolve_rows() -> list:
+    list(Stand.instances())
+    list(Section.instances())
+    rows = []
+    for c in iter_instances(Canister):
+        dk = c.stand
+        sec = dk.section if dk else None
+        rows.append({
+            "name": c.name or "",
+            "canister_id": (c.canister_id or "").strip(),
+            "section": sec.name if sec else "",
+            "stand": dk.name if dk else "",
+        })
+    return rows
+
+
+def _sees_whole_orchestra(caller: str, rows: list) -> bool:
+    """Controllers, conductor commanders, and the orchestra's own canisters."""
+    if any(r["canister_id"] == caller for r in rows):
+        return True
+    try:
+        return _reader_scope() is None
+    except Exception:
+        return False
+
+
+@query
+def resolve(args: text) -> text:
+    """Canister id by name or path. Args (JSON): {"name": str} or {"path": "section/stand/name"}.
+
+    The orchestra's canisters, its controllers and conductor commanders can
+    resolve any canister; anyone else only canisters marked ``public: true``
+    in the sheet. Unknown and hidden canisters give the same error.
+    """
+    try:
+        params = json.loads(args) if args else {}
+        if not isinstance(params, dict):
+            return _err("expected a JSON object")
+        section, stand, name = parse_query(params)
+        rows = _resolve_rows()
+        row = find_row(rows, section, stand, name)
+        if row is not None and not _sees_whole_orchestra(_caller(), rows):
+            sheet, _env, _sh = load_sheet_doc()
+            if not canister_is_public(sheet or {}, row["name"], row["section"], row["stand"]):
+                row = None
+        if row is None:
+            return _err(f"no resolvable canister '{name}'")
+        return _ok(**row)
     except Exception as e:
         return _err(str(e))
 

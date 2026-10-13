@@ -89,6 +89,7 @@ stand-template member.
 | `commanders` | Commanders of this canister (format below). |
 | `cycles` | Per-canister cycle policy. |
 | `optional` | Template members only: built when `create_stand` asks for it. Required for numbered (`{n}`) members. |
+| `public` | `true` lets any caller look up this canister's id with `resolve`. Without it, only the orchestra's canisters, its controllers and conductor commanders can. |
 
 Rules that span keys:
 

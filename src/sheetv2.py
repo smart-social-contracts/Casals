@@ -837,6 +837,8 @@ def _validate_canister(canister: dict, path: str, errors: list[str], *, in_secti
             errors.append(f"{path}: content/files need $self among controllers (Casals writes the assets)")
     if "optional" in canister and not isinstance(canister["optional"], bool):
         errors.append(f"{path}.optional must be a boolean")
+    if "public" in canister and not isinstance(canister["public"], bool):
+        errors.append(f"{path}.public must be a boolean")
     if "{n}" in (canister.get("name") or "") and not canister.get("optional"):
         errors.append(f"{path}.name: numbered members ({{n}}) must be optional")
 

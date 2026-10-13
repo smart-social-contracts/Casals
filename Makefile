@@ -57,7 +57,8 @@ UNIT_TESTS = \
 	tests/test_canister_calls.py \
 	tests/test_notification_settings.py \
 	tests/test_orchestra_tree_cache.py \
-	tests/test_sheet_monitor.py
+	tests/test_sheet_monitor.py \
+	tests/test_resolve.py
 
 unit:
 	pytest -q $(PYTEST_ARGS) $(UNIT_TESTS)
