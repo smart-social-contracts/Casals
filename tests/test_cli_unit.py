@@ -228,3 +228,62 @@ class TestOrchestraRefs:
 
         sheet = {"name": "x", "environments": {"staging": {"portal_url": "https://staging.example.org"}}}
         assert resolve_orchestra_refs(MagicMock(), sheet, "staging") is sheet
+
+
+class TestNewAccessCode:
+    """`"$new_access_code"` aliases: minted once by `up`, then read back from the conductor."""
+
+    URL = "https://icp-api.io"
+    BACKEND = "lcbqk-5qaaa-aaaai-ravda-cai"
+
+    def _sheet(self):
+        return {"name": "demo-sheet", "environments": {"demo": {"principals": {
+            "operator": "$deployer", "admin": "$new_access_code"}}}}
+
+    def _bind(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import Bindings
+
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        Bindings(sheet_name="demo-sheet", env="demo", network_url=self.URL, deployer="2vxsx-fae",
+                 conductor={"casals-backend": self.BACKEND}, backend_id=self.BACKEND).save()
+
+    def _ic(self, stored_admin=None):
+        ic = MagicMock(network_url=self.URL)
+        principals = {} if stored_admin is None else {"admin": stored_admin}
+        ic.query.return_value = {"ok": True, "sheet": {"environments": {"demo": {"principals": principals}}}}
+        return ic
+
+    def test_mints_without_a_conductor(self, tmp_path, monkeypatch):
+        from access_code import code_checksum
+        from casals_cli.bindings import resolve_new_access_codes
+
+        monkeypatch.setenv("CASALS_HOME", str(tmp_path))
+        sheet = self._sheet()
+        out, minted = resolve_new_access_codes(self._ic(), sheet, "demo", mint=True)
+        assert list(minted) == ["admin"]
+        assert out["environments"]["demo"]["principals"]["admin"] == code_checksum(minted["admin"])
+        assert out["environments"]["demo"]["principals"]["operator"] == "$deployer"
+        assert sheet["environments"]["demo"]["principals"]["admin"] == "$new_access_code"
+
+    def test_reuses_the_stored_checksum(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_new_access_codes
+
+        self._bind(tmp_path, monkeypatch)
+        stored = "sha256:" + "ab" * 32
+        out, minted = resolve_new_access_codes(self._ic(stored), self._sheet(), "demo", mint=True)
+        assert minted == {}
+        assert out["environments"]["demo"]["principals"]["admin"] == stored
+
+    def test_hidden_stored_checksum_is_an_error(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_new_access_codes
+
+        self._bind(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError, match="not a checksum this caller can read"):
+            resolve_new_access_codes(self._ic("sha256:hidden"), self._sheet(), "demo", mint=True)
+
+    def test_read_only_commands_do_not_mint(self, tmp_path, monkeypatch):
+        from casals_cli.bindings import resolve_new_access_codes
+
+        self._bind(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError, match="run casals up first"):
+            resolve_new_access_codes(self._ic(), self._sheet(), "demo")

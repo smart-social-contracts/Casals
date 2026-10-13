@@ -6,6 +6,7 @@ through the UI and the imperative CLI commands, not by re-applying the sheet."""
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 import os
@@ -15,7 +16,7 @@ from sheetv2 import (
     CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, env_monitor, env_public_read, sheet_hash, validate,
 )
 
-from casals_cli.bindings import Bindings, load_bindings, resolve_orchestra_refs
+from casals_cli.bindings import Bindings, load_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.conductor import bind_conductor, bootstrap_conductor
 from casals_cli.monitor import grant_monitor_access
 from casals_cli.multisig import ensure_control, set_controllers_via_multisig, sync_public_read
@@ -619,14 +620,30 @@ def run_up(
     project_root = project_root or os.getcwd()
     loaded = sheet if sheet is not None else load_json_file(sheet_path)
     sheet = resolve_orchestra_refs(ic, loaded, env)
+    sheet, minted = resolve_new_access_codes(ic, sheet, env, conductor_override=conductor_override, mint=True)
+    # Printed before the run so a failure after set_sheet cannot lose a stored code.
+    _print_access_codes(minted)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
     with logged_run(sheet_name, env, verbose=verbose):
-        return _execute_up(
+        result = _execute_up(
             ic, sheet, sheet_path, sheet_name, env,
             yes=yes, conductor_override=conductor_override, max_items=max_items,
             project_root=project_root, dry_run=dry_run, bootstrap=bootstrap,
             sync_monitor=sync_monitor,
         )
+    _print_access_codes(minted)
+    return result
+
+
+def _print_access_codes(minted: dict[str, str]) -> None:
+    """To the terminal only: the run log on disk must not hold a plaintext code."""
+    if not minted:
+        return
+    print("", file=sys.stderr)
+    print("New access codes (shown only in this run; claim them on the Access Denied dialog):", file=sys.stderr)
+    for alias, code in minted.items():
+        print(f"  {alias}: {code}", file=sys.stderr)
+    print("", file=sys.stderr, flush=True)
 
 
 def _execute_up(

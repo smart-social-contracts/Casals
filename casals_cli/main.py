@@ -8,7 +8,7 @@ import sys
 
 from casals_cli import __version__, commands, init, show, up, upgrade
 from casals_cli.catalog import resolve_sheet
-from casals_cli.bindings import live_bindings, resolve_orchestra_refs
+from casals_cli.bindings import live_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.ic import IcClient
 from casals_cli.oracle import format_oracle_table, run_oracle
 from casals_cli.util import emit_error, emit_json, load_json_file
@@ -282,6 +282,7 @@ def main(argv: list[str] | None = None) -> None:
         elif cmd == "oracle":
             _sheet_path, loaded = resolve_sheet(args.sheet)
             sheet = resolve_orchestra_refs(ic, loaded, args.env)
+            sheet, _ = resolve_new_access_codes(ic, sheet, args.env, conductor_override=args.conductor)
             _backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, args.conductor)
             report = run_oracle(sheet, args.env, bmap, ic)
             if args.json:

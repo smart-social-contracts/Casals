@@ -163,6 +163,69 @@ def resolve_orchestra_refs(ic, sheet: dict, env: str) -> dict:
     return {**sheet, "environments": {**envs, env: resolved}}
 
 
+NEW_ACCESS_CODE = "$new_access_code"
+
+
+def _stored_principals(ic, sheet_name: str, env: str, conductor_override: str | None) -> dict:
+    """``environments.<env>.principals`` of the sheet the conductor holds ({} when none)."""
+    local = load_bindings(sheet_name, env)
+    if local and local.network_url and local.network_url.rstrip("/") != ic.network_url.rstrip("/"):
+        local = None
+    backend = resolve_backend_id(local, conductor_override)
+    if not backend:
+        return {}
+    try:
+        res = ic.query(backend, "get_sheet")
+    except Exception:
+        return {}
+    if not (isinstance(res, dict) and res.get("ok")):
+        return {}
+    block = ((res.get("sheet") or {}).get("environments") or {}).get(env) or {}
+    principals = block.get("principals") if isinstance(block, dict) else None
+    return principals if isinstance(principals, dict) else {}
+
+
+def resolve_new_access_codes(ic, sheet: dict, env: str, *, conductor_override: str | None = None,
+                             mint: bool = False) -> tuple[dict, dict[str, str]]:
+    """Replace each ``"$new_access_code"`` alias under ``environments.<env>.principals``
+    with an access-code checksum. The conductor's stored checksum wins, so a re-run
+    keeps the slot; otherwise ``mint`` draws a fresh code. Returns the sheet and the
+    codes minted by this call (alias → plaintext), which nothing else ever stores."""
+    from access_code import code_checksum, normalize_code_checksum
+
+    envs = sheet.get("environments")
+    block = envs.get(env) if isinstance(envs, dict) else None
+    principals = block.get("principals") if isinstance(block, dict) else None
+    if not isinstance(principals, dict):
+        return sheet, {}
+    pending = [alias for alias, value in principals.items() if value == NEW_ACCESS_CODE]
+    if not pending:
+        return sheet, {}
+
+    from casals_cli.commands import generate_access_code
+
+    stored = _stored_principals(ic, str(sheet.get("name") or ""), env, conductor_override)
+    resolved = dict(principals)
+    minted: dict[str, str] = {}
+    for alias in pending:
+        where = f"environments.{env}.principals.{alias}"
+        if alias in stored:
+            try:
+                resolved[alias] = normalize_code_checksum(stored[alias])
+            except ValueError:
+                raise RuntimeError(
+                    f"{where}: the conductor holds {stored[alias]!r}, not a checksum this caller can read; "
+                    f"write the stored sha256: value in place of {NEW_ACCESS_CODE}"
+                ) from None
+            continue
+        if not mint:
+            raise RuntimeError(f"{where}: {NEW_ACCESS_CODE} has no code yet; run casals up first")
+        code = generate_access_code()
+        resolved[alias] = code_checksum(code)
+        minted[alias] = code
+    return {**sheet, "environments": {**envs, env: {**block, "principals": resolved}}}, minted
+
+
 def find_bindings_for_env(env: str, conductor: str | None = None) -> Bindings | None:
     """Locate a bindings file for ``env``, optionally matching ``conductor``."""
     if not os.path.isdir(bindings_dir()):

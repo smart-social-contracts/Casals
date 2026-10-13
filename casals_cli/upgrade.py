@@ -28,7 +28,7 @@ from typing import Any
 
 from sheetv2 import CONDUCTOR_NAMES, iter_canisters, materialize, registry_path, validate, wasm_ref
 
-from casals_cli.bindings import load_bindings, resolve_orchestra_refs
+from casals_cli.bindings import load_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import emit_error, load_json_file
 from casals_cli.wasm_store import ensure_commit
@@ -101,6 +101,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
                 stands: list[str], sections: list[str], conductor_override: str | None = None,
                 project_root: str, yes: bool = False, meter=None) -> dict:
     sheet = resolve_orchestra_refs(ic, load_json_file(sheet_path), env)
+    sheet, _ = resolve_new_access_codes(ic, sheet, env, conductor_override=conductor_override)
     errors = validate(sheet, env)
     if errors:
         raise RuntimeError("sheet validation failed:\n  " + "\n  ".join(errors))
