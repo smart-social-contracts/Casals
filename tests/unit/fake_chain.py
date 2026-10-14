@@ -49,8 +49,9 @@ def set_timer(secs, cb):
 def run_timers():
     import op
 
-    while state["timers"]:
-        op.run(state["timers"].pop(0)[1]())
+    while due := [t for t in state["timers"] if t[0] < 60]:
+        state["timers"].remove(due[0])
+        op.run(due[0][1]())
 
 
 def canister(cid, need_control=True):
@@ -124,6 +125,18 @@ def snapshot(cid, action, snap=""):
 def deposit(cid, cycles):
     state["balance"] -= cycles
     state["canisters"][cid]["cycles"] += cycles
+
+
+@gen
+def convert_icp():
+    minted, state["icp"] = state.get("icp", 0) * 100, 0
+    state["balance"] += minted
+    return minted
+
+
+@gen
+def subnets():
+    return ["sub-a", "sub-b"]
 
 
 @gen

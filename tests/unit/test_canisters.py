@@ -27,7 +27,7 @@ def test_create_installs_verifies_and_hands_settings():
     cid = created()
     c = state["canisters"][cid]
     assert (c["module_hash"], c["arg"], c["mode"]) == (Canister["api"].wasm_hash, "()", "install")
-    assert (c["controllers"], c["viewers"], c["logs"]) == (["conductor", cid, "msig"], ["mon"], True)
+    assert (c["controllers"], c["viewers"], c["logs"]) == (["conductor", cid, "msig"], ["conductor", "mon"], True)
     assert Canister["api"].status == "ready"
     assert "already exists" in call("canister_create", stand="d1", name="api", wasm="app@1")["error"]
 

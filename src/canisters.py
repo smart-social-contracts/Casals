@@ -31,7 +31,8 @@ def provision(c):
         c.canister_id = yield from chain.create([chain.self_id()], CREATE_CYCLES, subnet)
     yield from install(c, find(Wasm, c.wasm), "reinstall" if c.wasm_hash else "install")
     monitor = o.monitor.get("principal")
-    yield from chain.update_settings(c.canister_id, viewers=[monitor] if monitor else None, public_logs=True)
+    yield from chain.update_settings(c.canister_id, viewers=[chain.self_id()] + [monitor] * bool(monitor),
+                                     public_logs=True)
     c.status = "installed"
 
 

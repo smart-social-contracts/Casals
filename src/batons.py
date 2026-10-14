@@ -1,0 +1,53 @@
+import json
+
+import chain
+from auth import find
+from model import Canister, Stand, Wasm
+from op import op
+
+BATON = "orchestration-baton@"
+
+
+def baton_of(stand):
+    for c in stand.canisters:
+        if c.wasm.startswith(BATON):
+            return c
+    raise ValueError(f"stand '{stand.name}' has no baton")
+
+
+def members(args):
+    stand = find(Stand, args["stand"])
+    targets = [(find(Canister, t["canister"]), t) for t in args["targets"]]
+    if any(c.stand.name != stand.name for c, _ in targets):
+        raise ValueError(f"every target must be on stand '{stand.name}'")
+    return baton_of(stand), targets
+
+
+def propose(baton, method, payload):
+    ids = [t["canister_id"] for t in payload]
+    reply = json.loads((yield from chain.call_text(baton.canister_id, method, json.dumps(
+        {"affected_canisters": ids, "payload": {"targets": payload}}))))
+    if not reply.get("action_id"):
+        raise Exception(f"baton {baton.name}: {reply}")
+    action = str(reply["action_id"])
+    vote = yield from chain.call_text(baton.canister_id, "submit_approval", action)
+    return {"action_id": action, "baton": baton.name, "baton_id": baton.canister_id, "vote": vote[:200]}
+
+
+@op("canister.deploy", at="stand")
+def baton_propose_upgrade(principal, args):
+    baton, targets = members(args)
+    payload = []
+    for c, t in targets:
+        w = find(Wasm, t["wasm"])
+        namespace, path = w.path.strip("/").split("/", 1)
+        payload.append({"canister_id": c.canister_id, "registry_namespace": namespace, "registry_path": path,
+                        "wasm_hash": w.sha256, "upgrade_memory_keep": w.memory_keep == "true"})
+    return (yield from propose(baton, "propose_managed_upgrade", payload))
+
+
+@op("canister.deploy", at="stand")
+def baton_propose_content(principal, args):
+    baton, targets = members(args)
+    payload = [{"canister_id": c.canister_id, "bundle_namespace": t["namespace"]} for c, t in targets]
+    return (yield from propose(baton, "propose_asset_provision", payload))

@@ -1,11 +1,13 @@
 import hashlib
+import json
 
 import chain
-from auth import KEYS, Unauthorized, check_delegation, holds, keys, reader_scopes, readable, chain_of
-from model import Grant, rows
+from auth import KEYS, Unauthorized, chain_of, check_delegation, find, holds, keys, reader_scopes, readable
+from model import Canister, Grant, rows
 from op import op
 
 CLAIM_LIMIT, CLAIM_WINDOW = 5, 3600
+REPLY_MAX = 4096
 failures = {}
 
 
@@ -91,3 +93,22 @@ def grant_claim(principal, args):
         scopes.append(slot.scope)
         slot.delete()
     return {"claimed": scopes}
+
+
+@op("canister.call", at="canister")
+def call_canister(principal, args):
+    c, method = find(Canister, args["canister"]), args["method"]
+    if method.startswith("__"):
+        raise Unauthorized("__ methods cannot be called here")
+    wanted = {"canister_id": c.canister_id, "method": method}
+    if not chain.is_controller(principal) and wanted not in held_calls(principal, f"stand:{c.stand.name}"):
+        raise Unauthorized(f"no grant to call {method} on {c.name}")
+    reply = yield from chain.call_text(c.canister_id, method, args.get("arg", ""))
+    return {"canister_id": c.canister_id, "reply": reply[:REPLY_MAX], "truncated": len(reply) > REPLY_MAX}
+
+
+@op("canister.browse", at="canister")
+def canister_browse(principal, args):
+    c = find(Canister, args["canister"])
+    reply = yield from chain.call_text(c.canister_id, "__browse__", json.dumps(args.get("query", {"action": "schema"})))
+    return {"canister_id": c.canister_id, "result": json.loads(reply)}

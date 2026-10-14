@@ -4,6 +4,8 @@ from basilisk.canisters.management import management_canister as mgmt
 ANONYMOUS = "2vxsx-fae"
 MGMT = "aaaaa-aa"
 CMC = "rkp4c-7iaaa-aaaaa-aaaca-cai"
+LEDGER = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+ICP_FEE = 10_000
 ESCAPES = {"n": b"\n", "r": b"\r", "t": b"\t", '"': b'"', "\\": b"\\", "'": b"'"}
 
 
@@ -145,3 +147,40 @@ def snapshot(cid, action, snap=""):
 
 def deposit(cid, cycles):
     yield from call(MGMT, "deposit_cycles", f'(record {{ canister_id = principal "{cid}" }})', cycles)
+
+
+def number(reply, marker):
+    if marker not in reply:
+        raise Exception(reply[:300])
+    return int("".join(ch for ch in reply.split(marker, 1)[1].split(":")[0] if ch.isdigit()))
+
+
+def all_principals(text):
+    return [part.split('"', 1)[0] for part in text.split('principal "')[1:]]
+
+
+def account(owner, sub=b""):
+    return Principal.from_str(owner).to_account_id(int.from_bytes(sub, "big")).bytes
+
+
+def convert_icp():
+    me = Principal.from_str(self_id()).bytes
+    reply = yield from call(LEDGER, "account_balance", f"(record {{ account = blob {blob(account(self_id()))} }})")
+    e8s = number(reply, "e8s") - ICP_FEE
+    if e8s <= ICP_FEE:
+        return 0
+    to = account(CMC, bytes([len(me)]) + me + bytes(31 - len(me)))
+    reply = yield from call(LEDGER, "transfer", f"(record {{ memo = 1347768404 : nat64; amount = record {{ e8s = {e8s} "
+                            f": nat64 }}; fee = record {{ e8s = {ICP_FEE} : nat64 }}; from_subaccount = null; "
+                            f"to = blob {blob(to)}; created_at_time = null }})")
+    reply = yield from call(CMC, "notify_top_up", f'(record {{ block_index = {number(reply, "Ok")} : nat64; '
+                            f'canister_id = principal "{self_id()}" }})')
+    return number(reply, "Ok")
+
+
+def subnets():
+    found = all_principals((yield from call(CMC, "get_default_subnets")))
+    for entry in (yield from call(CMC, "get_principals_authorized_to_create_canisters_to_subnets")).split("record {")[1:]:
+        named = all_principals(entry)
+        found += named[1:] if named and named[0] == self_id() else []
+    return sorted(set(found))
