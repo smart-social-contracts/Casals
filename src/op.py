@@ -1,5 +1,5 @@
 import json
-from inspect import isgenerator
+from types import GeneratorType
 
 import chain
 from auth import authorize
@@ -23,7 +23,7 @@ def dispatch(name, arg):
         principal = chain.caller()
         authorize(principal, spec, args)
         out = spec["fn"](principal, args)
-        if isgenerator(out):
+        if isinstance(out, GeneratorType):
             out = yield from out
         out = out or {}
         if not spec["read"]:

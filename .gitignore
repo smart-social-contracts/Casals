@@ -19,3 +19,4 @@ frontend/static/local-network.json
 
 # scripts/release.sh output (upload from the UI)
 release/
+.coverage
