@@ -7,7 +7,7 @@ from cycle_sweep_wasm import sweep_wasm_bytes
 from model import Canister, Stand, Wasm, orchestra, rename, resolve
 from op import op
 
-CREATE_CYCLES = 1_000_000_000_000
+CREATE_CYCLES = 2_000_000_000_000
 SWEEP_RESERVE = 20_000_000_000
 SETTABLE = {"public", "files", "content", "install_arg", "config", "policy", "tags"}
 

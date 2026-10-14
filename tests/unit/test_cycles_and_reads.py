@@ -12,7 +12,7 @@ def funded():
     cid = created()
     state["canisters"][cid]["controllers"] = ["conductor"]
     o = orchestra()
-    o.reserve, o.policy = 10**13, {"min": 2 * 10**12, "topup": 5 * 10**11}
+    o.reserve, o.policy = 10**13, {"min": 3 * 10**12, "topup": 5 * 10**11}
     Canister["c1"].delete()
     Canister["c2"].delete()
     return cid
@@ -30,11 +30,11 @@ def test_refresh_converts_icp_and_stores_balances():
     cid = funded()
     state["icp"] = 5
     out = call("cycles_refresh")
-    assert out["converted"] == 500 and out["canisters"][0]["cycles"] == 10**12
+    assert out["converted"] == 500 and out["canisters"][0]["cycles"] == 2 * 10**12
     assert out["treasury"]["reserve"] == 10**13 and orchestra().balances_at
     grant("ann", "stand:d2", "canister.deploy")
     assert call("cycles_get", "ann")["canisters"] == []
-    assert state["canisters"][cid]["cycles"] == 10**12
+    assert state["canisters"][cid]["cycles"] == 2 * 10**12
 
 
 def test_top_up_by_commander_and_monitor():
@@ -44,7 +44,7 @@ def test_top_up_by_commander_and_monitor():
     orchestra().monitor = {"principal": "mon"}
     out = call("cycles_top_up", "mon", stand="d1", amount=10**15)
     assert out["topped_up"] == [{"canister": "api", "topped_up": 5 * 10**11}]
-    state["canisters"][cid]["cycles"] = 3 * 10**12
+    state["canisters"][cid]["cycles"] = 4 * 10**12
     assert call("cycles_top_up", "mon", canister="api")["topped_up"][0]["topped_up"] == 0
     assert "insufficient treasury" in call("cycles_top_up", canister="api", amount=10**15)["error"]
 

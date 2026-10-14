@@ -132,5 +132,5 @@ def test_destroy_sweeps_cycles_before_deleting():
     state["canisters"][cid]["controllers"] = ["conductor"]
     before = state["balance"]
     out = call("canister_destroy", canister="api")
-    assert out["swept"] == 10**12 - 20_000_000_000 and state["balance"] == before + out["swept"]
+    assert out["swept"] == 2 * 10**12 - 20_000_000_000 and state["balance"] == before + out["swept"]
     assert cid not in state["canisters"] and Canister["api"] is None
