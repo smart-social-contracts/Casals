@@ -9,7 +9,7 @@ TEMPLATE = {
         {"name": "{stand}-backend", "wasm": "app@1", "install_arg": '("$canister:c1")',
          "controllers": ["$self", "$this"]},
         {"name": "{stand}-frontend", "wasm": "app@1", "kind": "frontend", "install_arg": '("$stand.backend")',
-         "controllers": ["$stand.backend", "$multisig"]},
+         "files": {"/ids.js": "$stand.backend"}, "controllers": ["$stand.backend", "$multisig"]},
         {"name": "{stand}-worker-{n}", "wasm": "app@1", "optional": True},
     ],
     "commanders": [{"principal": "$stand.backend", "permissions": ["stand.create"]}],
@@ -32,6 +32,7 @@ def test_template_stand_builds_itself():
     assert backend.install_arg == '("c1-id")' and state["canisters"][front.canister_id]["arg"] == f'("{backend.canister_id}")'
     assert state["canisters"][backend.canister_id]["controllers"] == ["conductor", backend.canister_id]
     assert front.controllers == [backend.canister_id, "msig"]
+    assert state["canisters"][front.canister_id]["assets"] == {"/ids.js": backend.canister_id.encode()}
     assert Grant[f"stand:t1|{backend.canister_id}"].permissions == ["stand.create"]
     assert [e.type for e in rows(Event)][-1] == "stand_built"
 

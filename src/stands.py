@@ -1,6 +1,7 @@
 import chain
 from auth import find
 from canisters import destroy, hand_off, provision
+from content import sync
 from grants import rescope, upsert
 from model import Canister, Event, Grant, Section, Stand, rename, resolve, rows
 from op import op
@@ -43,6 +44,9 @@ def build(name):
     for c in stand.canisters:
         if c.status == "created":
             yield from provision(c)
+            return False
+    for c in stand.canisters:
+        if c.status == "installed" and (c.content or c.files) and (yield from sync(c)):
             return False
     for c in stand.canisters:
         if c.status == "installed":

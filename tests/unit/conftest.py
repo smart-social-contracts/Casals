@@ -24,11 +24,12 @@ for path in sorted(glob.glob(os.path.join(SRC, "*.py"))):
 
 @pytest.fixture(autouse=True)
 def fresh():
+    import content
     import grants
     import rounds
+    import wasms
 
     Database.get_instance().clear()
     fake_chain.reset()
-    grants.failures.clear()
-    rounds.queue.clear()
-    rounds.armed.clear()
+    for heap in (grants.failures, rounds.queue, rounds.armed, content.deploys, wasms.uploads):
+        heap.clear()

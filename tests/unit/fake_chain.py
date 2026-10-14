@@ -143,14 +143,28 @@ def call_text(cid, method, arg):
     return reply(arg) if callable(reply) else reply
 
 
-@gen
-def read(store_id, key):
-    return state["store"][key]
+def assets(cid):
+    return state["store"] if cid == "store" else canister(cid).setdefault("assets", {})
 
 
 @gen
-def files(store_id, prefix=""):
-    return {k: sha(v) for k, v in state["store"].items() if k.startswith(prefix)}
+def read(cid, key):
+    return assets(cid)[key]
+
+
+@gen
+def files(cid, prefix=""):
+    return {k: {"sha256": sha(v), "type": "application/octet-stream"} for k, v in assets(cid).items() if k.startswith(prefix)}
+
+
+@gen
+def put(cid, key, content, content_type):
+    assets(cid)[key] = content
+
+
+@gen
+def delete(cid, key):
+    del assets(cid)[key]
 
 
 @gen

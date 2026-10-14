@@ -59,12 +59,30 @@ class Chunk(Record):
     content: blob
 
 
+class StoreArg(Record):
+    key: text
+    content_type: text
+    content_encoding: text
+    content: blob
+    sha256: Opt[blob]
+
+
+class KeyArg(Record):
+    key: text
+
+
 class Assets(Service):
     @service_update
     def grant_permission(self, arg: GrantArg) -> void: ...
 
     @service_update
     def revoke_permission(self, arg: RevokeArg) -> void: ...
+
+    @service_update
+    def store(self, arg: StoreArg) -> void: ...
+
+    @service_update
+    def delete_asset(self, arg: KeyArg) -> void: ...
 
     @service_query
     def list(self, arg: ListArgs) -> Vec[Entry]: ...
@@ -87,10 +105,20 @@ def read(store_id, key):
     return b"".join(pieces)
 
 
-def files(store_id, prefix=""):
-    entries = chain.ok((yield Assets(Principal.from_str(store_id)).list({"start": None, "length": None})))
-    return {e["key"]: bytes(enc["sha256"]).hex() for e in entries if e["key"].startswith(prefix)
+def files(canister_id, prefix=""):
+    entries = chain.ok((yield Assets(Principal.from_str(canister_id)).list({"start": None, "length": None})))
+    return {e["key"]: {"sha256": bytes(enc["sha256"]).hex(), "type": e["content_type"]}
+            for e in entries if e["key"].startswith(prefix)
             for enc in e["encodings"] if enc["content_encoding"] == "identity" and enc["sha256"]}
+
+
+def put(canister_id, key, content, content_type):
+    arg = {"key": key, "content_type": content_type, "content_encoding": "identity", "content": content, "sha256": None}
+    chain.ok((yield Assets(Principal.from_str(canister_id)).store(arg)))
+
+
+def delete(canister_id, key):
+    chain.ok((yield Assets(Principal.from_str(canister_id)).delete_asset({"key": key})))
 
 
 def permit(store_id, principal, allow):
