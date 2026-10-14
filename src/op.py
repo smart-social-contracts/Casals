@@ -1,5 +1,4 @@
 import json
-from types import GeneratorType
 
 import chain
 from auth import authorize
@@ -7,6 +6,8 @@ from model import Event
 
 OPS = {}
 SECRET = {"code"}
+# Basilisk stubs the `types` module.
+GENERATOR = type((lambda: (yield))())
 
 
 def op(perm, at=None, read=False, monitor=False):
@@ -16,14 +17,15 @@ def op(perm, at=None, read=False, monitor=False):
     return wrap
 
 
-def dispatch(name, arg):
+def dispatch(fn, arg):
+    name = fn.__name__
     spec = OPS[name]
     try:
         args = json.loads(arg or "{}")
         principal = chain.caller()
         authorize(principal, spec, args)
         out = spec["fn"](principal, args)
-        if isinstance(out, GeneratorType):
+        if isinstance(out, GENERATOR):
             out = yield from out
         out = out or {}
         if not spec["read"]:

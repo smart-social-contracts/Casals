@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import urllib.parse
 
-from sheetv2 import CONDUCTOR_NAMES
+from casals_cli.sheetv2 import CONDUCTOR_NAMES
 
 from casals_cli.bindings import bindings_dir
 from casals_cli.multisig import ensure_control

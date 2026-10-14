@@ -1,32 +1,23 @@
 """casals upgrade — ship a new build to canisters that already exist.
 
-The sheet builds the orchestra once (`casals up`); after that a release is an
-operation, not a re-apply of the sheet. `casals upgrade` resolves the registry
-row's source (a declared `sha256` is a checksum on it: mismatch is an error),
-uploads the artifact to the store when it is missing, and moves the live
-canisters:
+The sheet builds the orchestra once (`casals up`); a release is an operation.
+`casals upgrade` uploads the registry row's artifact to the store, then:
 
-  --wasm <family>[@<version>]   upgrade every canister running that family —
-                                through `upgrade_to` when Casals controls it,
-                                through its stand's baton (`propose_upgrade`,
-                                reported as `pending`; `deferred` while the
-                                baton runs another action) when the baton does;
-  --content <namespace>         make every frontend whose sheet `content` is
-                                that namespace serve exactly that bundle
-                                (`sync_content`, repeated while files remain).
-
-Each conductor endpoint records what it shipped in the stored sheet (the
-canister's `wasm`, the registry row's sha256), so a later `casals up` / `plan`
-is a no-op; a controller additionally gets the whole file stored.
+  --wasm <family>[@<version>]   authorizes it and upgrades every canister
+                                running that family (`canister_upgrade`), or
+                                files a baton proposal when the baton controls it;
+  --content <namespace>         deploys the bundle to every frontend whose
+                                `content` is that namespace (`content_deploy`).
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES, iter_canisters, materialize, registry_path, validate, wasm_ref
+from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, validate, wasm_ref
 
 from casals_cli.bindings import load_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.registry import ensure_registry_uploads
@@ -44,29 +35,6 @@ def _ok(res: Any) -> bool:
 
 def _err_text(res: Any) -> str:
     return str((res or {}).get("error") or res) if isinstance(res, dict) else str(res)
-
-
-def _live_stands(tree: dict) -> dict[str, dict]:
-    """stand name → {section, members} from `get_tree`, the shape `materialize` wants."""
-    out = {}
-    for sec in tree.get("sections") or []:
-        for st in sec.get("stands") or []:
-            out[st["name"]] = {"section": sec.get("name"), "members": st.get("members") or [],
-                               "built": bool(st.get("built", True))}
-    return out
-
-
-def _tree_canisters(tree: dict) -> dict[str, dict]:
-    """canister name → its tree row plus `stand` and `section` names."""
-    out = {}
-    for sec in tree.get("sections") or []:
-        for st in sec.get("stands") or []:
-            for c in st.get("canisters") or []:
-                out[c["name"]] = {**c, "stand": st["name"], "section": sec.get("name"),
-                                  "baton": next((b["name"] for b in st.get("canisters") or []
-                                                 if (b.get("wasm_type") == "baton" or b["name"].endswith("-baton"))
-                                                 and b["name"] != c["name"]), "")}
-    return out
 
 
 def _in_selection(row: dict, stands: list[str], sections: list[str]) -> bool:
@@ -139,146 +107,69 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     _upload_rows(ic, sheet, sheet_path=sheet_path, project_root=project_root, store_id=store_id, deployer=deployer,
                  wasm_families={f for f, _v in wanted}, namespaces=set(contents), meter=meter)
 
-    tree = ic.query(backend_id, "get_tree")
-    if not isinstance(tree, dict) or "sections" not in tree:
-        raise RuntimeError(f"get_tree failed: {tree}")
-    canisters = _tree_canisters(tree)
-    declared = materialize(sheet, _live_stands(tree))
-    spec_of = {name: (sec, st, spec) for sec, st, name, spec in iter_canisters(declared)}
+    view = ic.query(backend_id, "orchestra_get", "{}")
+    if not _ok(view):
+        raise RuntimeError(f"orchestra_get failed: {view}")
+    canisters = {c["name"]: c for c in view["canisters"] if c.get("canister_id") and _in_selection(c, stands, sections)}
     rows: list[dict] = []
-    authorized: set[str] = set()
-
-    def authorize(family: str, version: str) -> tuple[str, str]:
-        """The conductor knows the uploaded build under its key; returns (key, sha256)."""
-        entry = registry_rows[family][version]
-        key = f"{family}@{version}" if version else family
-        sha = (entry.get("sha256") or "").strip().lower()
-        if key not in authorized:
-            res = ic.call_update(backend_id, "add_authorized_wasm", json.dumps({
-                "key": key, "registry_path": registry_path(family, version), "wasm_hash": sha,
-                **({"wasm_type": entry["wasm_type"]} if entry.get("wasm_type") else {}),
-            }))
-            if not _ok(res):
-                raise RuntimeError(f"add_authorized_wasm {key}: {_err_text(res)}")
-            authorized.add(key)
-            _progress(f"  {key} authorized (sha256 {sha[:12]}…)")
-        return key, sha
-
-    # 2. wasms: every canister running the family moves to the build its sheet
-    #    entry names (or the requested / newest version when the sheet has none)
     for family, version in wanted:
         newest = sorted(registry_rows[family], key=lambda v: [int(p) if p.isdigit() else p for p in v.split(".")])[-1]
-        targets = []
-        for name, row in canisters.items():
-            spec = (spec_of.get(name) or (None, None, {}))[2] or {}
-            fam_sheet, ver_sheet = wasm_ref(spec.get("wasm") or "")
-            fam_live = wasm_ref(row.get("wasm_key") or "")[0]
-            if family not in (fam_sheet, fam_live) or not row.get("canister_id"):
-                continue
-            if spec.get("mode") == "adopted" or not _in_selection(row, stands, sections):
-                continue
-            target_version = version or (ver_sheet if fam_sheet == family and ver_sheet in registry_rows[family] else newest)
-            targets.append((name, row, target_version))
+        target = version or newest
+        entry = registry_rows[family][target]
+        key, sha = f"{family}@{target}", (entry.get("sha256") or "").strip().lower()
+        res = ic.call_update(backend_id, "wasm_authorize", json.dumps({
+            "key": key, "path": store_key(WASM_NAMESPACE, registry_path(family, target)), "sha256": sha,
+            "type": entry.get("wasm_type", ""), "memory_keep": "true" if entry.get("memory_keep") else ""}))
+        if not _ok(res):
+            raise RuntimeError(f"wasm_authorize {key}: {_err_text(res)}")
+        targets = [c for c in canisters.values() if wasm_ref(c.get("wasm") or "")[0] == family]
         if not targets:
             rows.append({"wasm": family, "canister": "-", "result": "skipped", "detail": "no canister runs this family"})
-        for name, row, target_version in sorted(
-                targets, key=lambda t: (t[1].get("section") or "", t[1].get("stand") or "", t[0])):
-            key, sha = authorize(family, target_version)
-            source = (registry_rows[family][target_version].get("source") or "").strip()
-            cid = row["canister_id"]
-            live_hash = (ic.read_module_hash(cid) or "").lower()
-            if live_hash == sha:
-                rows.append({"wasm": key, "canister": name, "result": "skipped", "detail": "already at this hash"})
-                continue
-            controllers = ic.read_controllers(cid) or []
-            via_baton = bool(row.get("baton")) and backend_id not in controllers
-            if via_baton:
-                res = ic.call_update(backend_id, "propose_upgrade", json.dumps({"canister": name, "wasm_key": key, "source": source}),
-                                     timeout=900)
-                if _ok(res):
-                    rows.append({"wasm": key, "canister": name, "result": "pending",
-                                 "detail": f"baton {res.get('baton')} ({res.get('baton_id')}) action {res.get('action_id')}",
-                                 "action_id": res.get("action_id"), "baton_id": res.get("baton_id")})
-                elif "in progress" in _err_text(res).lower():
-                    # a baton runs one action at a time: file this one on the next run
-                    rows.append({"wasm": key, "canister": name, "result": "deferred",
-                                 "detail": f"baton {row.get('baton')} is busy ({_err_text(res)}); run again once it finishes"})
-                else:
-                    rows.append({"wasm": key, "canister": name, "result": "failed", "detail": _err_text(res)})
-            else:
-                res = ic.call_update(backend_id, "upgrade_to", json.dumps({"canister": name, "wasm_key": key, "source": source}),
-                                     timeout=1800)
-                if _ok(res):
-                    rows.append({"wasm": key, "canister": name, "result": "upgraded", "detail": sha[:12] + "…"})
-                else:
-                    rows.append({"wasm": key, "canister": name, "result": "failed", "detail": _err_text(res)})
-            _progress(f"  {rows[-1]['result']:9} {name}: {rows[-1]['detail']}")
-
-    # 3. content: every frontend the sheet points at the namespace serves that bundle
+        for c in sorted(targets, key=lambda t: (t["section"], t["stand"], t["name"])):
+            rows.append(_ship_wasm(ic, backend_id, c, key, sha))
+            _progress(f"  {rows[-1]['result']:9} {c['name']}: {rows[-1]['detail']}")
     for ns in contents:
-        targets = [(name, canisters[name]) for name, (_sec, _st, spec) in spec_of.items()
-                   if (spec.get("content") or "").strip() == ns and name in canisters
-                   and canisters[name].get("canister_id") and _in_selection(canisters[name], stands, sections)]
-        if not targets:
-            rows.append({"content": ns, "canister": "-", "result": "skipped", "detail": "no frontend declares this content"})
-        # The upload step left the store holding exactly this bundle; the conductor
-        # checks it still does before writing (a checksum, not a permission).
         store_hash = (bundles[ns].get("sha256") or "").strip().lower()
-        for name, _row in sorted(targets):
-            written = deleted = 0
-            result, detail = "synced", ""
-            sync_budget = int(meter.notes.get(ns, 0)) if meter is not None else 0
-            sync_used = 0
-            for _round in range(200):
-                if meter is not None:
-                    meter.set_label(f"sync {name} ({sync_used}/{sync_budget or '?'})")
-                res = ic.call_update(backend_id, "sync_content", json.dumps(
-                    {"canister": name, "namespace": ns, "source": (bundles[ns].get("source") or "").strip(),
-                     **({"bundle_sha256": store_hash} if store_hash else {})}), timeout=900)
-                if not _ok(res):
-                    result, detail = "failed", _err_text(res)
-                    break
-                step_w = int(res.get("written") or 0)
-                step_d = int(res.get("deleted") or 0)
-                written += step_w
-                deleted += step_d
-                remaining = int(res.get("remaining") or 0)
-                if meter is not None:
-                    step = step_w + step_d
-                    left = sync_budget - sync_used
-                    if step + remaining > left:
-                        extra = step + remaining - left
-                        meter.add(extra)
-                        sync_budget += extra
-                    if remaining == 0:
-                        meter.advance(max(0, sync_budget - sync_used), f"synced {name}")
-                        sync_used = sync_budget
-                    elif step:
-                        take = min(step, sync_budget - sync_used)
-                        sync_used += take
-                        meter.advance(take, f"sync {name} ({sync_used}/{sync_budget})")
-                if not remaining:
-                    detail = f"bundle {str(res.get('bundle_sha256'))[:12]}…, {written} file(s) written, {deleted} removed"
-                    break
-            else:
-                result, detail = "failed", "sync did not finish in 200 rounds"
-            rows.append({"content": ns, "canister": name, "result": result, "detail": detail})
-            _progress(f"  {result:9} {name}: {detail}")
-
-    # 4. The conductor recorded each release in its stored sheet (`upgrade_to`,
-    #    `propose_upgrade`, `sync_content` record what they shipped). A controller
-    #    also gets the whole file stored, so other edits travel with the release.
-    res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
-    stored = _ok(res)
-    if stored:
-        _progress(f"  stored sheet replaced by this file (hash {res.get('sheet_hash', '?')})")
-    else:
-        _progress("  stored sheet kept (only controllers replace it); the conductor recorded what was shipped")
+        targets = [c for c in canisters.values() if (c.get("content") or "") == ns]
+        if not targets:
+            rows.append({"content": ns, "canister": "-", "result": "skipped", "detail": "no frontend serves this content"})
+        for c in sorted(targets, key=lambda t: t["name"]):
+            rows.append(_ship_content(ic, backend_id, c["name"], ns, store_hash))
+            _progress(f"  {rows[-1]['result']:9} {c['name']}: {rows[-1]['detail']}")
 
     failed = [r for r in rows if r["result"] == "failed"]
     return {"ok": not failed, "sheet_name": sheet_name, "env": env, "backend_id": backend_id,
-            "rows": rows, "sheet_stored": stored,
+            "rows": rows,
             **({"error": f"{len(failed)} canister(s) failed"} if failed else {})}
+
+
+def _ship_wasm(ic, backend_id: str, c: dict, key: str, sha: str) -> dict:
+    row = {"wasm": key, "canister": c["name"]}
+    if (ic.read_module_hash(c["canister_id"]) or "").lower() == sha:
+        return {**row, "result": "skipped", "detail": "already at this hash"}
+    if backend_id in (ic.read_controllers(c["canister_id"]) or []):
+        res = ic.call_update(backend_id, "canister_upgrade", json.dumps({"canister": c["name"], "wasm": key}), timeout=1800)
+        return {**row, "result": "upgraded" if _ok(res) else "failed", "detail": sha[:12] + "…" if _ok(res) else _err_text(res)}
+    res = ic.call_update(backend_id, "baton_propose_upgrade", json.dumps(
+        {"stand": c["stand"], "targets": [{"canister": c["name"], "wasm": key}]}), timeout=900)
+    if not _ok(res):
+        busy = "in progress" in _err_text(res).lower()
+        return {**row, "result": "deferred" if busy else "failed", "detail": _err_text(res)}
+    return {**row, "result": "pending", "detail": f"baton {res['baton']} action {res['action_id']}",
+            "action_id": res["action_id"], "baton_id": res["baton_id"]}
+
+
+def _ship_content(ic, backend_id: str, name: str, ns: str, store_hash: str) -> dict:
+    row = {"content": ns, "canister": name}
+    res = ic.call_update(backend_id, "content_deploy", json.dumps(
+        {"canister": name, "namespace": ns, **({"bundle_sha256": store_hash} if store_hash else {})}), timeout=900)
+    while _ok(res) and res.get("status") == "running":
+        time.sleep(3)
+        status = ic.query(backend_id, "content_status", "{}")
+        res = {"ok": True, **next(d for d in status["deploys"] if d["canister"] == name)}
+    if not _ok(res) or res.get("status") == "failed":
+        return {**row, "result": "failed", "detail": res.get("error") or _err_text(res)}
+    return {**row, "result": "synced", "detail": f"bundle {store_hash[:12] or 'as stored'}"}
 
 
 def cmd_upgrade(ic, args, project_root: str) -> None:

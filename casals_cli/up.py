@@ -1,75 +1,50 @@
-"""casals up — build (or resume building) an orchestra from a v2 sheet.
+"""casals up — build an orchestra from a sheet, once.
 
-The sheet is applied once, on day one; after that the orchestra is operated
-through the UI and the imperative CLI commands, not by re-applying the sheet."""
+The CLI deploys the conductor, its UI and its store, uploads every wasm and
+bundle, then hands the normalized sheet to `orchestra_up` and waits while the
+conductor builds the stands. After that the orchestra is operated through the
+UI and the imperative commands; a second `up` on a built orchestra is a no-op."""
 
 from __future__ import annotations
 
 import json
-import sys
-import tempfile
-import time
 import os
+import sys
+import time
 from typing import Any
 
-from sheetv2 import (
-    CONDUCTOR_NAMES, MULTISIG_NAME, canonical_json, env_block, env_monitor, env_public_read, sheet_hash, validate,
-)
-
 from casals_cli.bindings import Bindings, load_bindings, resolve_new_access_codes, resolve_orchestra_refs
-from casals_cli.conductor import bind_conductor, bootstrap_conductor
-from casals_cli.monitor import grant_monitor_access
-from casals_cli.multisig import ensure_control, set_controllers_via_multisig, sync_public_read
-from casals_cli.registry import ensure_registry_uploads, resolve_source
+from casals_cli.conductor import bootstrap_conductor
+from casals_cli.normalize import normalize
+from casals_cli.registry import ensure_registry_uploads
 from casals_cli.runlog import detail, logged_run, summary
-from casals_cli.util import cycles_to_tc, emit_error, load_json_file, tc_to_cycles
+from casals_cli.sheetv2 import CONDUCTOR_NAMES, env_block, validate
+from casals_cli.util import cycles_to_tc, load_json_file, tc_to_cycles
 from casals_cli.wasm_store import ensure_commit
+
+STEPS = [("validate", "check the sheet"), ("fund", "check the deployer's cycles"),
+         ("conductor", "create the conductor, its UI and the store"), ("upload", "upload wasms and bundles"),
+         ("up", "hand the sheet to the conductor and wait while it builds the stands"),
+         ("hand-off", "give the conductor canisters their declared controllers and save bindings")]
+_T0 = {"start": time.monotonic()}
+_NOTE = "         "
+CREATE_DEPOSIT_TC = 2.0
+CREATE_FEE_TC = 0.5
+DEPLOYER_KEEP_TC = 0.1
+BUILD_TIMEOUT_S = 7200
 
 
 def _progress(msg: str) -> None:
-    """Detailed progress: the run log, and the terminal only with `--verbose`."""
     detail(msg)
 
 
-# The steps of `casals up`, in order. The long form is written to the run log
-# (and shown with `--verbose`). The terminal gets FRIENDLY, one line each,
-# with `[m/n]`. Steps 6–8 of the spec (plan, apply, converge) are one loop here.
-STEPS: list[tuple[str, str]] = [
-    ("validate",
-     "check the sheet against the v2 schema for this environment; nothing touches the replica until it passes"),
-    ("fund",
-     "read the deployer's cycles balance and require environments.<env>.cycles.budget_tc"),
-    ("conductor bootstrap",
-     "create or upgrade the conductor canisters the sheet declares (casals-backend, casals-frontend and the "
-     "casals-store store) and top the conductor up; slow on a fresh replica: a 7 MB Python wasm to install "
-     "for casals-backend"),
-    ("store upload",
-     "upload every wasm in registry.wasms (chunked batch uploads) and every published dist into the "
-     "casals-store store; entries whose sha256 already matches are skipped"),
-    ("set_sheet",
-     "bind the conductor canister ids and hand the sheet to casals-backend, which owns it from here on"),
-    ("plan/apply",
-     "the conductor diffs the sheet against the live replica and applies the difference in rounds "
-     "(create → install → configure → set_controllers); a create must land before its install can be planned, "
-     "so expect one round per rung; controller changes only the deployer may make are done by the CLI; "
-     "loops until the plan is empty"),
-    ("domains + bindings",
-     "DNS (skipped when dns.provider is none) and save the name → canister-id bindings under CASALS_HOME"),
-]
+def conductor_balance(ic, backend_id: str) -> int:
+    res = ic.query(backend_id, "cycles_get", "{}")
+    return int(((res or {}).get("treasury") or {}).get("balance") or 0) if isinstance(res, dict) else 0
 
-FRIENDLY = (
-    "Checking the sheet",
-    "Funding the deployer",
-    "Creating the conductor, the UI, and the store",
-    "Uploading artifacts",
-    "Handing the sheet to the conductor",
-    "Applying the sheet",
-    "Saving bindings",
-)
 
-_T0 = {"start": 0.0}
-_TOTAL = {"n": len(STEPS)}
-_NOTE = "         "
+def _summary_step(n: int, text: str) -> None:
+    summary(f"[{n}/{len(STEPS)}] {text}")
 
 
 def _elapsed() -> str:
@@ -88,96 +63,6 @@ def _note(text: str) -> None:
     summary(_NOTE + text)
 
 
-def _summary_step(n: int, text: str) -> None:
-    summary(f"[{n}/{_TOTAL['n']}] {text}")
-
-
-def frontend_url(network_url: str, canister_id: str, *, mainnet: bool) -> str:
-    """Address to open the Casals UI in a browser."""
-    if mainnet:
-        return f"https://{canister_id}.icp0.io/"
-    from casals_cli.replica import canister_http_url
-    return canister_http_url(canister_id, url=network_url)
-
-
-def _close_summary(ic, bindings: Bindings, *, dry_run: bool) -> None:
-    """The lines an operator acts on: how long it took, and where the UI is."""
-    summary("")
-    done = f"Done in {_elapsed()}."
-    if dry_run:
-        done += " Nothing was applied."
-    summary(done)
-    frontend = bindings.conductor.get(CONDUCTOR_NAMES["frontend"], "")
-    if frontend:
-        summary("")
-        summary("Open Casals")
-        summary("  " + frontend_url(ic.network_url, frontend, mainnet=ic._is_mainnet()))
-
-
-def _upload_note(rows: list) -> str:
-    """One line naming the wasms and the UI bundle that were stored."""
-    wasms = [r for r in rows if r.get("kind") == "wasm"]
-    names: list[str] = []
-    for row in wasms:
-        family = str(row.get("family") or "")
-        if family and family not in names:
-            names.append(family)
-    ui_files = [r for r in rows if r.get("kind") == "bundle" and r.get("action") != "deleted"]
-    bits: list[str] = []
-    if names:
-        total = sum(int(r.get("bytes") or 0) for r in wasms)
-        size = f" — {total / 1_048_576:.1f} MB" if total else ""
-        bits.append(", ".join(names) + size)
-    if ui_files:
-        bits.append(f"UI, {len(ui_files)} files")
-    return "; ".join(bits)
-
-
-def _print_step_list(sheet: dict, sheet_name: str, env: str, network_url: str, deployer: str, dry_run: bool) -> None:
-    from sheetv2 import canister_names, section_arrangement
-
-    _T0["start"] = time.monotonic()
-    _TOTAL["n"] = 5 if dry_run else len(STEPS)
-    sections = sheet.get("sections") or []
-    stands = sum(len(sec.get("stands") or []) for sec in sections)
-    templates = sum(1 for sec in sections if section_arrangement(sec))
-    wasms = len(((sheet.get("registry") or {}).get("wasms")) or [])
-    _progress(f"casals {'plan' if dry_run else 'up'}: {sheet_name} → {env} ({network_url}) as {deployer}")
-    _progress(
-        f"  sheet: {len(sections)} section(s), {stands} stand(s)"
-        + (f", {templates} stand template(s)" if templates else "")
-        + f", {len(canister_names(sheet))} canister(s), {wasms} wasm(s) in the registry"
-    )
-    last = _TOTAL["n"]
-    _progress(f"steps ({last} of {len(STEPS)}{', dry run stops after set_sheet and prints the plan' if dry_run else ''}):")
-    for i, (title, purpose) in enumerate(STEPS[:last], 1):
-        _progress(f"  step {i}/{len(STEPS)}: {title:20} — {purpose}")
-    _progress("")
-    where = "the local network" if env == "local" else f"the {env} network"
-    summary("")
-    summary(f"{'Planning' if dry_run else 'Installing'} {sheet_name} on {where} ({network_url})")
-    summary("")
-
-
-def _step(n: int) -> None:
-    title, purpose = STEPS[n - 1]
-    _progress(f"step {n}/{len(STEPS)}: {title}  [t+{_elapsed()}]")
-    _progress(f"  ({purpose})")
-
-
-# `icp canister create` deposits this much on every new canister unless told
-# otherwise (`--cycles`, default 2T); the IC keeps ~0.5 TC of it as the
-# creation fee. Bootstrap creates up to three conductor canisters from the
-# deployer *before* the conductor treasury is topped up, so the preflight has
-# to count those deposits on top of `budget_tc` — checking the balance against
-# `budget_tc` alone passes, then the top-up finds the wallet already spent.
-CREATE_DEPOSIT_TC = 2.0
-CREATE_FEE_TC = 0.5
-# Left on the deployer after a top-up so the rest of the run can still pay
-# its own message fees.
-DEPLOYER_KEEP_TC = 0.1
-
-
 def funding_needed(ic, sheet: dict, env: str, bindings=None) -> dict[str, Any]:
     """What this `up` will pull from the deployer: one create deposit per
     conductor canister that has no binding yet, plus the conductor top-up to
@@ -193,7 +78,7 @@ def funding_needed(ic, sheet: dict, env: str, bindings=None) -> dict[str, Any]:
     creates = [CONDUCTOR_NAMES[k] for k in declared if not bound.get(CONDUCTOR_NAMES[k])]
 
     if backend_id and ic.read_module_hash(backend_id):
-        have_tc = cycles_to_tc(int((ic.query(backend_id, "get_status") or {}).get("cycles") or 0))
+        have_tc = cycles_to_tc(conductor_balance(ic, backend_id))
     else:
         # Not there yet: after `create` it holds the deposit minus the fee.
         have_tc = CREATE_DEPOSIT_TC - CREATE_FEE_TC
@@ -270,27 +155,6 @@ def check_funds(ic, sheet: dict, env: str, deployer: str, bindings=None) -> dict
     raise RuntimeError(msg)
 
 
-def print_plan_table(plan: dict) -> None:
-    items = plan.get("items") or []
-    if not items:
-        _progress("plan: converged (no items)")
-    else:
-        _progress(f"plan hash={plan.get('hash')} items={len(items)}")
-        for item in items:
-            target = item.get("target") or {}
-            name = target.get("name") or "?"
-            kind = item.get("kind") or "?"
-            req = item.get("requires") or "self"
-            dest = "yes" if item.get("destructive") else "no"
-            _progress(f"  [{item.get('seq', '?')}] {kind:20} {name:30} requires={req} destructive={dest}")
-    # Upgrades Casals filed on a baton: not items (Casals has done its part), but
-    # the sheet is not live until the baton's commanders approve and it converges.
-    for p in plan.get("pending") or []:
-        votes = len(p.get("approvals") or [])
-        _progress(f"  pending  {p.get('target')}: baton {p.get('baton')} action {p.get('action_id')} "
-                  f"{p.get('status')} ({votes} vote(s) so far) — approve on the baton")
-
-
 def fund_conductor(ic, sheet: dict, env: str, backend_id: str, *, strict: bool = True) -> float:
     """The conductor pays for everything it creates. When its balance drops below
     `cycles.conductor_min_balance_tc`, refill it to `environments.<env>.cycles.budget_tc`.
@@ -299,7 +163,7 @@ def fund_conductor(ic, sheet: dict, env: str, backend_id: str, *, strict: bool =
     Returns the TC actually sent (0 when the conductor was already funded)."""
     budget = tc_to_cycles(float((env_block(sheet, env).get("cycles") or {}).get("budget_tc", 0) or 0))
     floor = tc_to_cycles(float((sheet.get("cycles") or {}).get("conductor_min_balance_tc", 0) or 0))
-    have = int((ic.query(backend_id, "get_status") or {}).get("cycles") or 0)
+    have = conductor_balance(ic, backend_id)
     if have >= floor or have >= budget:
         return 0.0
     want = budget - have
@@ -349,540 +213,126 @@ def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
 
 
 
-def registry_wasm_by_hash(sheet: dict, *, sheet_dir: str, project_root: str):
-    """``module_hash -> path`` over every ``registry.wasms`` source
-    (``local:``, ``release:``, ``https:``, ``build:``), so the CLI can install
-    a governed canister's declared module (issue #58). Lazy: each source is
-    resolved once, on first miss."""
-    cache: dict[str, str] = {}
-    pending = [
-        str(w.get("source") or "").strip()
-        for w in (sheet.get("registry") or {}).get("wasms") or []
-        if str(w.get("source") or "").strip()
-    ]
 
-    def lookup(module_hash: str) -> str | None:
-        want = (module_hash or "").lower()
-        if not want:
-            return None
-        while want not in cache and pending:
-            src = pending.pop(0)
-            try:
-                data, digest = resolve_source(src, sheet_dir=sheet_dir, project_root=project_root)
-            except (OSError, ValueError, RuntimeError):
-                continue
-            with tempfile.NamedTemporaryFile("wb", suffix=".wasm", delete=False) as f:
-                f.write(data)
-            cache[digest] = f.name
-        return cache.get(want)
-
-    return lookup
+def orchestra(ic, backend_id: str) -> dict:
+    res = ic.query(backend_id, "orchestra_get", "{}")
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"orchestra_get failed: {res}")
+    return res
 
 
-def deployer_can_finish_self_items(ic, items: list, deployer: str) -> list:
-    """``requires: self`` items the deployer can do without calling ``apply``.
-
-    After hand-off the conductor rejects ``apply`` from the deployer. A second
-    ``up`` has just added the deployer to the store so it can upload; the plan
-    then removes that temporary controller. The deployer is a controller of
-    that canister, so ``settings_update`` works and ``apply`` is not required.
-    Returns those items only when every ``requires: self`` item is one of them.
-    """
-    self_items = [i for i in items if (i.get("requires") or "self") == "self"]
-    if not self_items:
-        return []
-    direct = []
-    for item in self_items:
-        if item.get("kind") != "set_controllers":
-            return []
-        cid = (item.get("target") or {}).get("canister_id")
-        if not cid or deployer not in (ic.read_controllers(cid) or []):
-            return []
-        direct.append(item)
-    return direct
+def built(ic, backend_id: str) -> bool:
+    try:
+        return bool(backend_id and ic.read_module_hash(backend_id) and orchestra(ic, backend_id).get("built_at"))
+    except Exception:
+        return False
 
 
-def deployer_items(ic, plan: dict, deployer: str, multisig_id: str, wasm_by_hash=None) -> None:
-    """Items the conductor cannot apply itself because it is not a controller
-    (its own controllers, everything about the multisig): the CLI does them as
-    deployer while it is a controller, or through the multisig when the deployer
-    is a signer. ``upgrade_code`` needs the declared build on disk
-    (``wasm_by_hash``, from the sheet): the deployer is made a controller through
-    the multisig, installs, and the next plan round removes it again."""
-    for item in plan.get("items") or []:
-        kind = item.get("kind")
-        cid = (item.get("target") or {}).get("canister_id")
-        name = (item.get("target") or {}).get("name")
-        # requires=self is the conductor's job, except a set_controllers the
-        # deployer can perform directly (temporary store control after hand-off).
-        if (item.get("requires") or "self") == "self" and not (
-            kind == "set_controllers" and cid and deployer in (ic.read_controllers(cid) or [])
-        ):
-            continue
-        if kind == "set_controllers":
-            desired = (item.get("desired") or {}).get("controllers")
-            if not cid or not isinstance(desired, list):
-                continue
-            if deployer in (ic.read_controllers(cid) or []):
-                ic.settings_update(cid, set_controllers=desired)
-                _progress(f"  applied set_controllers → {name} (as deployer)")
-            elif multisig_id:
-                set_controllers_via_multisig(ic, multisig_id, deployer, cid, desired)
-                _progress(f"  applied set_controllers → {name} (multisig proposal)")
-        elif kind == "upgrade_code":
-            want = str((item.get("desired") or {}).get("module_hash") or "")
-            if not cid or not want:
-                continue
-            path = wasm_by_hash(want) if wasm_by_hash else None
-            if not path:
-                _progress(
-                    f"  cannot upgrade {name}: no registry.wasms source with sha256 {want[:12]}…"
-                    + ("" if wasm_by_hash else " (run `casals up <sheet>`, which knows the registry)")
-                )
-                continue
-            ensure_control(ic, cid, deployer, multisig_id)
-            ic.install_wasm(cid, path, mode="upgrade")
-            _progress(f"  applied upgrade_code → {name} (as deployer, via multisig control)")
+def wait_built(ic, backend_id: str) -> dict:
+    deadline = time.monotonic() + BUILD_TIMEOUT_S
+    while time.monotonic() < deadline:
+        view = orchestra(ic, backend_id)
+        failed = sorted({c["stand"] + ": " + c["build_error"] for c in view["canisters"] if c.get("build_error")})
+        if failed:
+            raise RuntimeError("the build stopped — " + "; ".join(failed) + " (fix it and run `casals up` again)")
+        if view.get("built_at"):
+            return view
+        waiting = sorted({c["name"] for c in view["canisters"] if c["status"] != "ready"})
+        _progress(f"  building… {len(waiting)} canister(s) to go: {', '.join(waiting[:6])}")
+        time.sleep(5)
+    raise RuntimeError(f"the conductor did not finish building within {BUILD_TIMEOUT_S // 60} min")
 
 
-def _adopt_live_conductor(ic, bindings, backend_id: str) -> None:
-    """`up --conductor <id>` on a machine without bindings for that orchestra
-    (an environment first deployed elsewhere, or with an older tool): learn the
-    conductor's canister ids from the conductor itself so the bootstrap upgrades
-    them in place instead of creating a second conductor next to the live one.
-    Ids the bindings already carry win; only gaps are filled."""
-    backend_id = (backend_id or "").strip()
-    if not backend_id or not ic.read_module_hash(backend_id):
-        return
-    live: dict[str, str] = {CONDUCTOR_NAMES["backend"]: backend_id}
-    meta = ic.query(backend_id, "casals_metadata")
-    if isinstance(meta, dict):
-        if meta.get("casals_frontend_canister_id"):
-            live[CONDUCTOR_NAMES["frontend"]] = str(meta["casals_frontend_canister_id"])
-        if meta.get("wasm_store_canister_id"):
-            live[CONDUCTOR_NAMES["store"]] = str(meta["wasm_store_canister_id"])
-    res = ic.query(backend_id, "get_bindings")
-    for name in (MULTISIG_NAME,):
-        cid = (((res or {}).get("bindings") or {}).get(name, "") if isinstance(res, dict) else "")
-        if cid:
-            live[name] = str(cid)
-    adopted = {k: v for k, v in live.items() if v and not bindings.conductor.get(k)}
-    if adopted:
-        bindings.conductor.update(adopted)
-        _progress("  adopting the live conductor: " + ", ".join(f"{k}={v}" for k, v in adopted.items()))
+def hand_off_conductor(ic, sheet: dict, bindings: Bindings, deployer: str, view: dict) -> list[str]:
+    """The conductor canisters were created by the deployer; give them their declared controllers."""
+    names = {"$deployer": deployer, "$self": bindings.casals_backend_id, "$multisig": view.get("multisig_id", "")}
+    changed = []
+    for key, name in CONDUCTOR_NAMES.items():
+        cid, block = bindings.conductor.get(name, ""), (sheet.get("conductor") or {}).get(key) or {}
+        wanted = sorted({names.get(c, c) for c in block.get("controllers") or [] if names.get(c, c)})
+        if cid and wanted and sorted(ic.read_controllers(cid) or []) != wanted:
+            ic.settings_update(cid, set_controllers=wanted)
+            changed.append(name)
+    return changed
 
 
-def multisig_id(ic, backend_id: str) -> str:
-    if not backend_id or not ic.read_module_hash(backend_id):
-        return ""  # created but never installed (an earlier `up` failed mid-way)
-    res = ic.query(backend_id, "get_bindings")
-    return ((res or {}).get("bindings") or {}).get(MULTISIG_NAME, "") if isinstance(res, dict) else ""
-
-
-# The conductor may be building a runtime stand (`create_stand`) while `up`
-# runs: its rounds move the world under ours, so a plan can come back stale
-# or the apply lock busy. Re-plan, but not forever.
-STALE_ROUNDS = 6
-
-
-def _is_unauthorized(res: Any) -> bool:
-    err = str((res or {}).get("error") or "").lower() if isinstance(res, dict) else ""
-    return "not a commander" in err or "unauthorized" in err
-
-
-def converge(ic, backend_id: str, deployer: str, multisig_id: str, *, yes: bool, max_items: int,
-             wasm_by_hash=None) -> dict:
-    """plan → apply until the plan is empty. Returns the (empty) final plan.
-    Each round the conductor applies what it can, then the deployer does the
-    controller changes only it can; a round that changes nothing is an error.
-    The deployer's last act may be handing the conductor to the multisig: the
-    plan after that is refused (`caller is not a commander`), which counts as
-    converged from where the deployer stands (``handed_off`` in the result)."""
-    last_hash = None
-    round_no = 0
-    handed_off = False
-    stale_in_a_row = 0
-    while True:
-        round_no += 1
-        _progress(f"  round {round_no}: planning  [t+{_elapsed()}]")
-        plan_res = ic.call_update(backend_id, "plan", "{}")
-        if not (isinstance(plan_res, dict) and plan_res.get("ok")):
-            if handed_off and _is_unauthorized(plan_res):
-                _progress("  the conductor now answers to the multisig only; the deployer cannot plan any more — "
-                          "nothing else was pending, converged")
-                return {"hash": last_hash, "items": [], "handed_off": True, "_rounds": round_no}
-            raise RuntimeError(f"plan failed: {plan_res}")
-        plan = plan_res.get("plan") or {}
-        items = plan.get("items") or []
-        print_plan_table(plan)
-        if not items:
-            plan["_rounds"] = round_no
-            return plan
-        if plan.get("hash") == last_hash:
-            emit_error("orchestra not converged: a plan/apply round changed nothing", plan=plan)
-        last_hash = plan.get("hash")
-        if any(i.get("destructive") for i in items) and not yes:
-            raise RuntimeError("plan has destructive items; pass --yes to continue")
-        if any((i.get("requires") or "self") == "self" for i in items):
-            direct = deployer_can_finish_self_items(ic, items, deployer)
-            if direct:
-                _progress("  applying set_controllers as deployer (the conductor would refuse apply after hand-off)")
-                deployer_items(ic, {**plan, "items": direct}, deployer, multisig_id, wasm_by_hash)
-                continue
-            mine = sum(1 for i in items if (i.get("requires") or "self") == "self")
-            _progress(f"  applying {min(mine, max_items)} of {mine} conductor item(s) (max {max_items} per call)")
-            apply_res = ic.call_update(
-                backend_id, "apply",
-                json.dumps({"plan_hash": plan.get("hash"), "max_items": max_items, "confirm_destructive": yes}),
-                timeout=3600,  # up to `max_items` chunked wasm installs in one call
-            )
-            err = str((apply_res or {}).get("error") or "") if isinstance(apply_res, dict) else ""
-            if err.startswith("stale plan") or err.startswith("busy"):
-                # A stand build moved the world under this run; re-plan.
-                stale_in_a_row += 1
-                if stale_in_a_row >= STALE_ROUNDS:
-                    emit_error(
-                        f"orchestra not converged: the conductor answered '{err}' {stale_in_a_row} times in a row; "
-                        f"something keeps changing the live orchestra under this run. Stopping instead of looping.",
-                        plan=plan,
-                    )
-                _progress(f"  {err}: re-planning")
-                last_hash = None
-                time.sleep(15 if err.startswith("busy") else 3)
-                continue
-            stale_in_a_row = 0
-            if not (isinstance(apply_res, dict) and apply_res.get("ok")):
-                raise RuntimeError(f"apply failed: {apply_res}")
-            for row in apply_res.get("applied") or []:
-                _progress(f"  applied {row.get('kind')} → {(row.get('target') or {}).get('name') or '?'}")
-            failed = apply_res.get("failed")
-            if failed:
-                raise RuntimeError(
-                    f"apply stopped at {failed.get('kind')} → {(failed.get('target') or {}).get('name')}: "
-                    f"{failed.get('error')}"
-                )
-            continue
-        # Only deployer items left. Handing the conductor's own controllers to
-        # the multisig ends the deployer's reach, so it is the deployer's very
-        # last act: while anything else is still planned (an item that only
-        # becomes the conductor's to apply once this round's controller changes
-        # land — e.g. writing /.well-known/ic-domains into casals-frontend
-        # after $self joined its controllers), the hand-off waits for a later
-        # round. Once it is all that is left, remember it, so the refusal the
-        # next plan gets is read as "done", not as a failure.
-        def _is_hand_off(i: dict) -> bool:
-            return (
-                i.get("kind") == "set_controllers"
-                and (i.get("target") or {}).get("canister_id") == backend_id
-                and deployer not in ((i.get("desired") or {}).get("controllers") or [])
-            )
-
-        rest = [i for i in items if not _is_hand_off(i)]
-        if rest and len(rest) < len(items):
-            _progress("  conductor hand-off deferred: other items are still pending")
-            deployer_items(ic, {**plan, "items": rest}, deployer, multisig_id, wasm_by_hash)
-            continue
-        handed_off = handed_off or len(rest) < len(items)
-        deployer_items(ic, plan, deployer, multisig_id, wasm_by_hash)  # last: handing the conductor over ends the deployer's reach
-
-
-def reconcile_domains(sheet: dict, env: str, bindings: Bindings) -> list[dict]:
-    """CLI-side domain reconcile; provider:none → skipped."""
-    block = env_block(sheet, env)
-    dns = block.get("dns") or {}
-    provider = (dns.get("provider") or "none").strip().lower()
-    if provider == "none":
-        return [{"field": "domains", "action": "skipped", "reason": "dns.provider is none"}]
-    return [{"field": "domains", "action": "unverifiable", "reason": f"dns provider {provider!r} not implemented in CLI"}]
-
-
-def run_up(
-    ic,
-    sheet_path: str,
-    env: str,
-    *,
-    yes: bool = False,
-    conductor_override: str | None = None,
-    max_items: int = 5,
-    project_root: str | None = None,
-    dry_run: bool = False,
-    bootstrap: bool = False,
-    sync_monitor: bool = False,
-    verbose: bool = False,
-    sheet: dict | None = None,
-) -> dict[str, Any]:
-    """Execute §7 bootstrap steps 1–9. `dry_run` (casals plan) stops after
-    `set_sheet` and returns the plan: it needs a conductor and never applies.
-
-    ``sheet``, when given, is the orchestra to apply. ``sheet_path`` is still
-    the file relative sources resolve against (``casals.json`` for a named
-    orchestra)."""
+def run_up(ic, sheet_path: str, env: str, *, dry_run: bool = False, conductor_override: str | None = None,
+           project_root: str | None = None, verbose: bool = False, sheet: dict | None = None,
+           bootstrap: bool = False, **_ignored) -> dict[str, Any]:
     project_root = project_root or os.getcwd()
     loaded = sheet if sheet is not None else load_json_file(sheet_path)
     sheet = resolve_orchestra_refs(ic, loaded, env)
     sheet, minted = resolve_new_access_codes(ic, sheet, env, conductor_override=conductor_override, mint=True)
-    # Printed before the run so a failure after set_sheet cannot lose a stored code.
     _print_access_codes(minted)
     sheet_name = str(sheet.get("name") or os.path.splitext(os.path.basename(sheet_path))[0])
     with logged_run(sheet_name, env, verbose=verbose):
-        result = _execute_up(
-            ic, sheet, sheet_path, sheet_name, env,
-            yes=yes, conductor_override=conductor_override, max_items=max_items,
-            project_root=project_root, dry_run=dry_run, bootstrap=bootstrap,
-            sync_monitor=sync_monitor,
-        )
-    _print_access_codes(minted)
-    return result
+        return _execute_up(ic, sheet, sheet_path, sheet_name, env, dry_run=dry_run,
+                           conductor_override=conductor_override, project_root=project_root, bootstrap=bootstrap)
 
 
 def _print_access_codes(minted: dict[str, str]) -> None:
-    """To the terminal only: the run log on disk must not hold a plaintext code."""
-    if not minted:
-        return
-    print("", file=sys.stderr)
-    print("New access codes (shown only in this run; claim them on the Access Denied dialog):", file=sys.stderr)
-    for alias, code in minted.items():
-        print(f"  {alias}: {code}", file=sys.stderr)
-    print("", file=sys.stderr, flush=True)
+    if minted:
+        print("\nNew access codes (shown only in this run; claim them on the Access Denied dialog):", file=sys.stderr)
+        for alias, code in minted.items():
+            print(f"  {alias}: {code}", file=sys.stderr)
 
 
-def _execute_up(
-    ic, sheet, sheet_path, sheet_name, env, *,
-    yes, conductor_override, max_items, project_root, dry_run, bootstrap, sync_monitor,
-) -> dict[str, Any]:
-    deployer = ic.deployer_principal()
-    _print_step_list(sheet, sheet_name, env, ic.network_url, deployer, dry_run)
-
-    # 1. validate
-    _step(1)
-    errors = validate(sheet, env)
-    if errors:
-        _summary_step(1, "Checking the sheet")
-        raise RuntimeError("sheet validation failed:\n  " + "\n  ".join(errors))
-    _progress("  ok")
-    _summary_step(1, "Checking the sheet — ok")
-
+def _bindings(ic, sheet_name: str, env: str, deployer: str, conductor_override, bootstrap: bool) -> Bindings:
     bindings = load_bindings(sheet_name, env)
     if bindings and bindings.network_url and bindings.network_url.rstrip("/") != ic.network_url.rstrip("/"):
-        # Bindings from another replica (a CASALS_HOME reused with a different
-        # CASALS_REPLICA_PORT): those canister ids do not exist here, and the
-        # bootstrap would try to install into them. Start over on this network.
-        _progress(f"  bindings for {sheet_name} belong to {bindings.network_url}, not {ic.network_url}: ignored")
         bindings = None
-    bindings = bindings or Bindings(
-        sheet_name=sheet_name,
-        env=env,
-        network_url=ic.network_url,
-        deployer=deployer,
-    )
+    bindings = bindings or Bindings(sheet_name=sheet_name, env=env, network_url=ic.network_url, deployer=deployer)
     if conductor_override:
         bindings.backend_id = conductor_override
-        _adopt_live_conductor(ic, bindings, conductor_override)
-    if ic._is_mainnet() and not bindings.casals_backend_id and not conductor_override and not bootstrap:
-        # No bindings here means "create a whole new orchestra on mainnet" —
-        # almost always a CASALS_HOME pointing at the wrong place, not intent.
-        from casals_cli.bindings import bindings_dir
-        raise RuntimeError(
-            f"no {env} bindings for {sheet_name} under {bindings_dir()}: this run would bootstrap a brand-new "
-            f"conductor on mainnet. If the orchestra exists, point CASALS_HOME at its bindings or pass "
-            f"--conductor <casals-backend id>; for a genuine first deploy pass --bootstrap."
-        )
+    if ic._is_mainnet() and not bindings.casals_backend_id and not bootstrap:
+        raise RuntimeError(f"no {env} bindings for {sheet_name}: this would bootstrap a new conductor on mainnet; "
+                           "pass --bootstrap for a genuine first deploy")
+    return bindings
 
-    # 2. fund
-    _step(2)
-    try:
-        funding = check_funds(ic, sheet, env, deployer, bindings)
-    except RuntimeError:
-        _summary_step(2, "Funding the deployer")
-        raise
-    have = funding.get("have_tc")
-    if have is None:
-        _summary_step(2, "Funding the deployer")
-    else:
-        _summary_step(
-            2,
-            f"Funding the deployer — {_tc(float(have))} TC available, "
-            f"about {_tc(float(funding.get('total_tc') or 0))} TC needed",
-        )
 
-    # 3. conductor bootstrap
-    _step(3)
-    _summary_step(3, "Creating the conductor, the UI, and the store")
-    if dry_run:
-        if not bindings.casals_backend_id:
-            raise RuntimeError("no conductor yet; run casals up first")
-        _progress(f"  dry run: reusing conductor {bindings.casals_backend_id}")
-    else:
-        bindings = bootstrap_conductor(
-            ic, sheet, bindings,
-            sheet_path=sheet_path,
-            project_root=project_root,
-            deployer=deployer,
-            multisig_id=multisig_id(ic, bindings.casals_backend_id),
-            progress=_progress,
-        )
-    for key in ("backend", "frontend", "store"):
-        name = CONDUCTOR_NAMES[key]
-        cid = bindings.conductor.get(name, "")
-        if cid:
-            _note(f"{name:<18} {cid}")
-    backend_id = conductor_override or bindings.casals_backend_id
-    if not backend_id:
-        raise RuntimeError("no conductor backend id after bootstrap")
-    topped = 0.0
+def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_override, project_root, bootstrap):
+    deployer = ic.deployer_principal()
+    summary(f"\n{'Planning' if dry_run else 'Installing'} {sheet_name} on {env} ({ic.network_url})\n")
+    errors = validate(sheet, env)
+    if errors:
+        raise RuntimeError("sheet validation failed:\n  " + "\n  ".join(errors))
+    _summary_step(1, "Checking the sheet — ok")
+    bindings = _bindings(ic, sheet_name, env, deployer, conductor_override, bootstrap)
+    backend_id = bindings.casals_backend_id
+    if built(ic, backend_id):
+        summary(f"{sheet_name} is already built; `up` runs once — use `casals upgrade` or the UI from here.")
+        return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": [],
+                "built": True, "bindings": bindings.to_dict()}
+    if dry_run and not backend_id:
+        raise RuntimeError("no conductor yet; run casals up first")
+    funding = check_funds(ic, sheet, env, deployer, bindings)
+    _summary_step(2, "Funding the deployer")
     if not dry_run:
-        topped = fund_conductor(ic, sheet, env, backend_id, strict=funding.get("strict", True))
-    if topped:
-        _note(f"topped the conductor up by {_tc(topped)} TC")
-
+        bindings = bootstrap_conductor(ic, sheet, bindings, sheet_path=sheet_path, project_root=project_root,
+                                       deployer=deployer, multisig_id="", progress=_progress)
+        backend_id = bindings.casals_backend_id
+        fund_conductor(ic, sheet, env, backend_id, strict=funding.get("strict", True))
+    _summary_step(3, f"Conductor {backend_id}")
     store_id = bindings.conductor.get(CONDUCTOR_NAMES["store"], "")
-    if not store_id:
-        raise RuntimeError("no casals-store store id after bootstrap (the sheet must declare conductor.store)")
-
-    # 4. store upload (CLI uploads bytes into the store; authorize via apply)
-    _step(4)
-    _summary_step(4, "Uploading artifacts")
     if not dry_run:
         fund_store(ic, sheet, "store", store_id)
-        # Writing to the asset store takes the store's own Commit permission;
-        # being a controller is not enough (the batch API checks the explicit
-        # lists only), but a controller may grant it. So: be a controller —
-        # the deployer is one at bootstrap and after a plan only when the
-        # sheet lists $deployer, otherwise borrow it through the multisig
-        # like any conductor change (the next plan removes it) — then grant
-        # Commit to ourselves if a previous deployer was the one who had it.
-        ensure_control(ic, store_id, deployer, multisig_id(ic, backend_id))
-    # The dry run uploads too (it needs the store populated to plan), so the
-    # grant is not gated on dry_run — only on being a controller, which the
-    # dry run does not arrange.
-    if deployer in (ic.read_controllers(store_id) or []) and ensure_commit(ic, store_id, deployer):
-        _progress(f"  granted Commit on the wasm store {store_id} to {deployer}")
-    uploaded = ensure_registry_uploads(
-        ic, sheet,
-        sheet_path=sheet_path,
-        project_root=project_root,
-        store_id=store_id,
-        progress=_progress,
-    )
-    uploaded_note = _upload_note(uploaded or [])
-    if uploaded_note:
-        _note(uploaded_note)
-
-    # 5. bind_conductor + set_sheet — controller-only calls. Once the deployer has
-    #    handed the conductor to the multisig (governed orchestras) it cannot make
-    #    them any more; a re-run with the same sheet needs neither.
-    _step(5)
-    _summary_step(5, "Handing the sheet to the conductor")
-    bind_map = {k: v for k, v in bindings.conductor.items() if v}
-    want_hash = sheet_hash(sheet)
-    try:
-        stored = ic.query(backend_id, "get_sheet")
-        stored_hash = (stored.get("sheet_hash") or "") if isinstance(stored, dict) and stored.get("ok") else ""
-        # Compared as documents serialised here, not by hash: the conductor's JSON
-        # writer need not escape non-ASCII exactly like this Python does.
-        same_sheet = bool(stored_hash) and canonical_json(stored.get("sheet")) == canonical_json(sheet)
-        stored_bindings = ic.query(backend_id, "get_bindings")
-        stored_bindings = (stored_bindings.get("bindings") or {}) if isinstance(stored_bindings, dict) else {}
-    except Exception:  # a conductor too old for these queries: store as before
-        stored_hash, same_sheet, stored_bindings = "", False, {}
-    bound_already = all(stored_bindings.get(k) == v for k, v in bind_map.items())
-    planning_stored = False  # dry run against a stored sheet this caller may not replace
-    monitor_changed = False
-    if same_sheet and bound_already:
-        _progress(f"  sheet hash={stored_hash} (already stored; conductor bindings unchanged)")
-    else:
-        if not bound_already:
-            bind_conductor(ic, backend_id, bind_map)
-        set_res = ic.call_update(backend_id, "set_sheet", json.dumps({"sheet": sheet, "env": env}))
-        if not (isinstance(set_res, dict) and set_res.get("ok")):
-            err = str((set_res or {}).get("error") if isinstance(set_res, dict) else set_res)
-            if _is_unauthorized(set_res) and dry_run and stored_hash:
-                # `plan` is read-only: show what the conductor would still add under
-                # the sheet it holds, and say the file is not that sheet.
-                planning_stored = True
-                _progress(f"  WARNING: {deployer} is not a conductor controller, so the file "
-                          f"({want_hash[:12]}…) is not stored; planning the stored sheet ({stored_hash[:12]}…) "
-                          "instead — releases recorded by `casals upgrade` account for most such differences")
-            elif _is_unauthorized(set_res):
-                raise RuntimeError(
-                    f"set_sheet refused ({err}): the conductor's controllers are "
-                    f"{ic.read_controllers(backend_id) or []} and {deployer} is not one of them. "
-                    f"The sheet changed since it was stored ({stored_hash[:12] or 'none'}… → {want_hash[:12]}…); "
-                    "after day one, ship changes with `casals upgrade` / the UI, or have a controller run `up`.")
-            else:
-                raise RuntimeError(f"set_sheet failed: {set_res}")
-        else:
-            _progress(f"  sheet hash={set_res.get('sheet_hash', '?')}")
-            monitor_changed = bool(set_res.get("monitor_changed"))
-            if monitor_changed:
-                _progress("  monitor settings applied from the sheet")
-
+    if deployer in (ic.read_controllers(store_id) or []):
+        ensure_commit(ic, store_id, deployer)
+    uploads = ensure_registry_uploads(ic, sheet, sheet_path=sheet_path, project_root=project_root,
+                                      store_id=store_id, progress=_progress)
+    _summary_step(4, "Uploading artifacts")
+    ids = {**bindings.conductor, CONDUCTOR_NAMES["backend"]: backend_id}
+    doc = normalize(sheet, env, deployer=deployer, ids=ids, uploads=[u for u in uploads if u.get("kind") == "wasm"])
+    res = ic.call_update(backend_id, "orchestra_up", json.dumps({**doc, "dry_run": dry_run}), timeout=900)
+    if not (isinstance(res, dict) and res.get("ok")):
+        raise RuntimeError(f"orchestra_up failed: {res}")
     if dry_run:
-        res = ic.call_update(backend_id, "plan", "{}")
-        if not (isinstance(res, dict) and res.get("ok")):
-            raise RuntimeError(f"plan failed: {res}")
-        if planning_stored:
-            res["sheet_differs"] = {"stored": stored_hash, "file": want_hash}
-        _progress(f"dry run done in {_elapsed()}")
-        _close_summary(ic, bindings, dry_run=True)
-        return res
-
-    # 6-8. plan → apply until empty
-    _step(6)
-    _summary_step(6, "Applying the sheet")
-    plan = converge(
-        ic, backend_id, deployer, multisig_id(ic, backend_id), yes=yes, max_items=max_items,
-        wasm_by_hash=registry_wasm_by_hash(
-            sheet, sheet_dir=os.path.dirname(os.path.abspath(sheet_path)), project_root=project_root,
-        ),
-    )
-
-    monitor_access = None
-    if env_monitor(sheet, env) and (monitor_changed or sync_monitor):
-        live = ic.query(backend_id, "get_bindings")
-        live = (live.get("bindings") or {}) if isinstance(live, dict) else {}
-        monitor_access = grant_monitor_access(
-            ic, backend_id, deployer, multisig_id(ic, backend_id), live, progress=_progress,
-        )
-        _progress(f"  monitor read access: {len(monitor_access['updated'])} canister(s) updated, "
-                  f"{len(monitor_access['unreachable'])} unreachable")
-        _note(
-            f"monitor read access on {len(monitor_access['updated'])} canister(s)"
-            + (f", {len(monitor_access['unreachable'])} unreachable" if monitor_access["unreachable"] else "")
-        )
-
-    ms_id = multisig_id(ic, backend_id)
-    if ms_id:
-        want_public = env_public_read(sheet, env)
-        synced = sync_public_read(ic, ms_id, deployer, want_public)
-        if synced in ("set", "proposed"):
-            _progress(f"  multisig public_read → {str(want_public).lower()} ({synced})")
-            _note(f"multisig proposals and events are {'public' if want_public else 'private'}")
-
-    rounds = plan.pop("_rounds", None)
-    if rounds:
-        word = "round" if int(rounds) == 1 else "rounds"
-        _note(f"{int(rounds)} {word}, then converged")
-
-    # 9. domains + bindings
-    _step(7)
-    _summary_step(7, "Saving bindings")
-    domain_rows = reconcile_domains(sheet, env, bindings)
+        return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": res["plan"]}
+    _summary_step(5, f"Building {len(res['plan'])} row(s)")
+    view = wait_built(ic, backend_id)
+    changed = hand_off_conductor(ic, sheet, bindings, deployer, view)
     bindings.save()
-    if plan.get("handed_off"):
-        ctls = ic.read_controllers(backend_id) or []
-        _progress(f"  the deployer handed the conductor over (controllers now {ctls})")
-        _note("the deployer handed the conductor to its multisig")
-    _progress(f"done in {_elapsed()}: {sheet_name} → {env}, conductor {backend_id}, bindings saved")
-    _close_summary(ic, bindings, dry_run=False)
-
-    return {
-        "ok": True,
-        "sheet_name": sheet_name,
-        "env": env,
-        "backend_id": backend_id,
-        "bindings": bindings.to_dict(),
-        "domains": domain_rows,
-        "monitor_access": monitor_access,
-        "plan": plan,
-    }
+    _summary_step(6, "Handed off " + (", ".join(changed) or "nothing") + "; bindings saved")
+    summary(f"Done in {_elapsed()}.")
+    return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": res["plan"],
+            "bindings": bindings.to_dict(), "canisters": {c["name"]: c["canister_id"] for c in view["canisters"]}}

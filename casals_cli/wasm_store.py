@@ -19,7 +19,7 @@ from typing import Any
 from ic.candid import Types, VecClass, decode, encode, leb128, leb128uDecode
 from ic.principal import Principal
 
-from sheetv2 import store_key, store_namespace_prefix
+from casals_cli.sheetv2 import store_key, store_namespace_prefix
 
 CHUNK_BYTES = 1024 * 1024
 

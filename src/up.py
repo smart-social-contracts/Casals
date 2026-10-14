@@ -1,6 +1,6 @@
 import chain
 from auth import KEYS
-from grants import view
+from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, orchestra, resolve, rows
 from op import op
 from rounds import schedule, step
@@ -81,6 +81,11 @@ def build_all(name):
                 return True
             yield from build(s.name)
             return False
+    for g in rows(Grant):
+        if resolve(g.principal) != g.principal:
+            moved = upsert(g.scope, resolve(g.principal))
+            moved.permissions, moved.calls = g.permissions, g.calls
+            g.delete()
     o = orchestra()
     o.multisig_id, o.built_at = resolve(o.multisig_id), chain.now()
     return True

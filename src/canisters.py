@@ -14,7 +14,7 @@ SETTABLE = {"public", "files", "content", "install_arg", "config", "policy", "ta
 
 def install(c, w, mode):
     wasm = yield from store.read(orchestra().store_id, w.path)
-    arg = resolve(c.install_arg, c.stand, c.canister_id) or ("(null)" if w.kind == "frontend" else "()")
+    arg = resolve(c.install_arg, c.stand, c.canister_id) or ("(null)" if c.kind == "frontend" else "()")
     yield from chain.install(c.canister_id, wasm, w.sha256, arg, mode)
     actual = (yield from chain.status(c.canister_id))["module_hash"]
     if actual != w.sha256:
@@ -37,11 +37,12 @@ def provision(c):
 
 
 def configure(c, call):
+    target = call.get("canister") or c.canister_id
     if call.get("text"):
-        reply = yield from chain.call_text(c.canister_id, call["method"], call["arg"])
+        reply = yield from chain.call_text(target, call["method"], call["arg"])
         failed = reply.startswith("{") and json.loads(reply).get("ok") is False
     else:
-        reply = yield from chain.call(c.canister_id, call["method"], call["arg"])
+        reply = yield from chain.call(target, call["method"], call["arg"])
         failed = "err" in reply.split("=")[0].lower()
     if failed:
         raise Exception(f"{c.name}.{call['method']}: {reply[:300]}")

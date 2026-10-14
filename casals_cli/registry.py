@@ -13,7 +13,7 @@ import hashlib
 import mimetypes
 import os
 
-from sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, store_namespace_prefix
+from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, store_namespace_prefix
 import re
 import subprocess
 import urllib.error

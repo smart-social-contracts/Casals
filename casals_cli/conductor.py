@@ -19,7 +19,7 @@ import os
 import shutil
 import tempfile
 
-from sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
+from casals_cli.sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
 
 from casals_cli.bindings import Bindings
 from casals_cli.multisig import ensure_control

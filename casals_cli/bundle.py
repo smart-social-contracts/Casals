@@ -26,7 +26,7 @@ import os
 import tarfile
 from typing import Iterable
 
-from sheetv2 import BUNDLE_MANIFEST, bundle_hash as _shared_bundle_hash
+from casals_cli.sheetv2 import BUNDLE_MANIFEST, bundle_hash as _shared_bundle_hash
 
 from casals_cli.util import gunzip
 

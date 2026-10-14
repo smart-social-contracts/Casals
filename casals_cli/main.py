@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 
-from casals_cli import __version__, commands, init, show, up, upgrade
+from casals_cli import __version__, commands, init, up, upgrade
 from casals_cli.catalog import resolve_sheet
-from casals_cli.bindings import live_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.ic import IcClient
-from casals_cli.oracle import format_oracle_table, run_oracle
-from casals_cli.util import emit_error, emit_json, load_json_file
+from casals_cli.util import emit_error, emit_json
 
 
 def looks_like_checkout(path: str) -> bool:
@@ -74,13 +71,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     up_p = sub.add_parser("up", help="build (or resume building) an orchestra from casals.json")
     up_p.add_argument("sheet", help="orchestra name in casals.json, or a path to a sheet file")
-    up_p.add_argument("--yes", "-y", action="store_true", help="continue through destructive plan items")
-    up_p.add_argument("--max-items", type=int, default=5)
+    up_p.add_argument("--yes", "-y", action="store_true", help="reserved; `up` never asks")
+    up_p.add_argument("--dry-run", action="store_true", help="list what `up` would create; change nothing")
     up_p.add_argument("--bootstrap", action="store_true",
                       help="mainnet: allow creating a brand-new conductor when no bindings exist")
-    up_p.add_argument("--sync-monitor", action="store_true",
-                      help="re-grant the sheet's monitor read access on every canister, also those the "
-                           "conductor does not control (lends it control, then restores the controllers)")
     up_p.add_argument(
         "--local",
         action="store_true",
@@ -88,8 +82,6 @@ def _build_parser() -> argparse.ArgumentParser:
              "(or --identity) as plaintext, and mint cycles",
     )
 
-    plan_p = sub.add_parser("plan", help="what `up` would still do (a dry run)")
-    plan_p.add_argument("sheet", nargs="?", help="path to casals.json")
 
     upg_p = sub.add_parser("upgrade", help="ship a registry row's artifact to canisters that already exist")
     upg_p.add_argument("sheet", help="path to casals.json")
@@ -103,13 +95,11 @@ def _build_parser() -> argparse.ArgumentParser:
     upg_p.add_argument("--yes", "-y", action="store_true", help="reserved; upgrades never ask")
 
     for name, help_text in (
-        ("export", "the sheet the conductor was built from + bindings"),
-        ("status", "conductor status"),
-        ("tree", "orchestra tree"),
+        ("export", "the orchestra as a document (orchestra_export)"),
+        ("show", "the live orchestra (orchestra_get)"),
         ("events", "audit log"),
         ("wasms", "authorized wasm catalog"),
-        ("cycles", "cycle balances"),
-        ("pool", "canister pool"),
+        ("cycles", "convert treasury ICP and read every balance"),
     ):
         sub.add_parser(name, help=help_text).add_argument("sheet", nargs="?", help="path to casals.json")
 
@@ -128,43 +118,22 @@ def _build_parser() -> argparse.ArgumentParser:
     bundle_p.add_argument("--manifest", default=None, help="also write the manifest JSON to this path")
     bundle_p.add_argument("--verify", action="store_true", help="only read and validate; print the bundle hash")
 
-    apply_p = sub.add_parser("apply", help="execute plan items")
-    apply_p.add_argument("sheet", nargs="?", help="path to casals.json")
-    apply_p.add_argument("--confirm-destructive", action="store_true")
-    apply_p.add_argument("--max-items", type=int, default=5)
-
-    show_p = sub.add_parser("show", help="live orchestra view")
-    show_p.add_argument("sheet", nargs="?", help="sheet path (for name resolution)")
-    graph_p = sub.add_parser("graph", help="control graph (Mermaid)")
-    graph_p.add_argument("sheet", nargs="?", help="sheet path")
-    graph_p.add_argument("--ascii", action="store_true", help="plain-text instead of Mermaid")
-
-    oracle_p = sub.add_parser("oracle", help="independent state grader")
-    oracle_p.add_argument("sheet", help="path to casals.json")
-
     destroy_p = sub.add_parser("destroy", help="tear down bound orchestra")
     destroy_p.add_argument("sheet", nargs="?", help="path to casals.json (or pass --conductor)")
     destroy_p.add_argument("--all", action="store_true")
     destroy_p.add_argument("--confirm-destructive", action="store_true")
+    destroy_p.add_argument("--to", default=None, help="send the treasury to this canister before deleting the conductor")
 
     reg_p = sub.add_parser("register", help="register an existing canister")
     reg_p.add_argument("stand")
     reg_p.add_argument("name")
     reg_p.add_argument("canister_id")
     reg_p.add_argument("kind", choices=("backend", "frontend"))
-    reg_p.add_argument("--wasm-type", default=None)
 
     code_p = sub.add_parser("code", help="commander access codes")
     code_sub = code_p.add_subparsers(dest="code_command", required=True)
     code_new = code_sub.add_parser("new", help="mint an access code and print its sha256: checksum")
     code_new.add_argument("--count", "-n", type=int, default=1, help="number of codes to mint")
-
-    orch_p = sub.add_parser("orchestra", help="legacy orchestra commands")
-    orch_sub = orch_p.add_subparsers(dest="orchestra_command", required=True)
-    od = orch_sub.add_parser("destroy", help="destroy via conductor destroy_orchestra")
-    od.add_argument("--preserve", action="append", required=True)
-    od.add_argument("--batch", type=int, default=1)
-    od.add_argument("--confirm-destructive", action="store_true")
 
     return ap
 
@@ -247,53 +216,19 @@ def main(argv: list[str] | None = None) -> None:
         if cmd == "up":
             sheet_path, sheet = resolve_sheet(args.sheet)
             args.sheet_name = str(sheet.get("name") or args.sheet)
-            result = up.run_up(
-                ic,
-                sheet_path,
-                args.env,
-                yes=args.yes,
-                conductor_override=args.conductor,
-                max_items=args.max_items,
-                project_root=root,
-                bootstrap=args.bootstrap,
-                sync_monitor=args.sync_monitor,
-                verbose=args.verbose,
-                sheet=sheet,
-            )
+            result = up.run_up(ic, sheet_path, args.env, dry_run=args.dry_run, conductor_override=args.conductor,
+                               project_root=root, bootstrap=args.bootstrap, verbose=args.verbose, sheet=sheet)
             emit_json(result)
-        elif cmd == "plan":
-            commands.cmd_plan(ic, args, root)
         elif cmd == "upgrade":
             upgrade.cmd_upgrade(ic, args, root)
         elif cmd == "bundle":
             commands.cmd_bundle(args)
-        elif cmd == "apply":
-            commands.cmd_apply(ic, args)
         elif cmd == "export":
             commands.cmd_export(ic, args)
         elif cmd == "destroy":
             commands.cmd_destroy(ic, args)
         elif cmd == "show":
-            sheet = load_json_file(args.sheet) if args.sheet else {"name": args.sheet_name, "environments": {args.env: {}}}
-            show.cmd_show(ic, args, sheet)
-        elif cmd == "graph":
-            sheet = load_json_file(args.sheet) if args.sheet else {"name": args.sheet_name, "environments": {args.env: {}}}
-            show.cmd_graph(ic, args, sheet)
-        elif cmd == "oracle":
-            _sheet_path, loaded = resolve_sheet(args.sheet)
-            sheet = resolve_orchestra_refs(ic, loaded, args.env)
-            sheet, _ = resolve_new_access_codes(ic, sheet, args.env, conductor_override=args.conductor)
-            _backend, bmap = live_bindings(ic, str(sheet.get("name") or ""), args.env, args.conductor)
-            report = run_oracle(sheet, args.env, bmap, ic)
-            if args.json:
-                emit_json({"ok": report.passed, "rows": [r.__dict__ for r in report.rows]})
-            else:
-                print(format_oracle_table(report))
-            sys.exit(0 if report.passed else 1)
-        elif cmd == "status":
-            commands.cmd_status(ic, args)
-        elif cmd == "tree":
-            commands.cmd_tree(ic, args)
+            commands.cmd_show(ic, args)
         elif cmd == "events":
             commands.cmd_events(ic, args)
         elif cmd == "wasms":
@@ -302,14 +237,10 @@ def main(argv: list[str] | None = None) -> None:
             commands.cmd_cycles(ic, args)
         elif cmd == "treasury-send":
             commands.cmd_treasury_send(ic, args)
-        elif cmd == "pool":
-            commands.cmd_pool(ic, args)
         elif cmd == "register":
             commands.cmd_register(ic, args)
         elif cmd == "code" and args.code_command == "new":
             commands.cmd_code_new(args)
-        elif cmd == "orchestra" and args.orchestra_command == "destroy":
-            commands.cmd_orchestra_destroy(ic, args)
         else:
             emit_error(f"unknown command: {cmd}")
     except SystemExit:

@@ -25,7 +25,7 @@ def test_reads_are_not_audited_and_bad_json_fails():
     world()
     call("grant_list")
     assert rows(Event) == []
-    assert json.loads(op.run(op.dispatch("grant_list", "{")))["ok"] is False
+    assert json.loads(op.run(op.dispatch(op.OPS["grant_list"]["fn"], "{")))["ok"] is False
 
 
 def test_query_cannot_yield():

@@ -7,7 +7,7 @@ from model import Canister, Grant, Section, Stand
 
 def call(name, caller="ctl", /, **args):
     fake_chain.state["caller"] = caller
-    return json.loads(op.run(op.dispatch(name, json.dumps(args))))
+    return json.loads(op.run(op.dispatch(op.OPS[name]["fn"], json.dumps(args))))
 
 
 def world():

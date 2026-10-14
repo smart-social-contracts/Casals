@@ -7,6 +7,7 @@
 build: build-backend
 
 build-backend:
+	python3 scripts/gen_main.py
 	CANISTER_CANDID_PATH=./casals_backend.did python3 -m basilisk casals_backend src/main.py
 	python3 scripts/fix_asset_permission_did.py casals_backend.did
 	python3 scripts/embed_candid_metadata.py .basilisk/casals_backend/casals_backend.wasm casals_backend.did
@@ -32,36 +33,8 @@ cli:
 test:
 	pytest -q
 
-# Replica-free suites; CI's backend unit job runs exactly this list.
-UNIT_TESTS = \
-	tests/test_unit.py \
-	tests/test_version_http.py \
-	tests/test_paid_ingress.py \
-	tests/test_private_reads.py \
-	tests/test_sheetv2.py \
-	tests/test_planner.py \
-	tests/test_access_code.py \
-	tests/test_control_rules.py \
-	tests/test_bundle.py \
-	tests/test_core_layout.py \
-	tests/test_release_bookkeeping.py \
-	tests/test_store_uploads.py \
-	tests/test_wasm_store.py \
-	tests/test_cli_wasm_store.py \
-	tests/test_wasm_types.py \
-	tests/test_ic_assets.py \
-	tests/test_destroy_orchestra.py \
-	tests/test_replica.py \
-	tests/test_meter.py \
-	tests/test_asset_permission_did.py \
-	tests/test_canister_calls.py \
-	tests/test_notification_settings.py \
-	tests/test_orchestra_tree_cache.py \
-	tests/test_sheet_monitor.py \
-	tests/test_resolve.py
-
 unit:
-	pytest -q $(PYTEST_ARGS) $(UNIT_TESTS)
+	pytest -q $(PYTEST_ARGS) tests/unit
 
 clean:
 	rm -rf .basilisk dist frontend/.svelte-kit frontend/node_modules \

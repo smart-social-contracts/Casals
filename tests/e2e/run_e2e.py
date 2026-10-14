@@ -33,7 +33,7 @@ import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path[:0] = [REPO, os.path.join(REPO, "src")]
-from sheetv2 import iter_canisters as _iter  # noqa: E402
+from casals_cli.sheetv2 import iter_canisters as _iter  # noqa: E402
 from casals_cli.ic import IcClient  # noqa: E402
 from casals_cli.multisig import propose  # noqa: E402
 from casals_cli.replica import (  # noqa: E402

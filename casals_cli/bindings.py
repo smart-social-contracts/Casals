@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from sheetv2 import CONDUCTOR_NAMES
+from casals_cli.sheetv2 import CONDUCTOR_NAMES
 
 
 
@@ -112,9 +112,9 @@ def live_bindings(ic, sheet_name: str, env: str, conductor_override: str | None 
     if not backend:
         raise RuntimeError("no conductor; run casals up or pass --conductor")
     ids = dict(local.conductor) if local else {}
-    res = ic.query(backend, "get_bindings")
-    if isinstance(res, dict) and res.get("bindings"):
-        ids.update(res["bindings"])
+    res = ic.query(backend, "orchestra_get", "{}")
+    if isinstance(res, dict) and res.get("ok"):
+        ids.update({c["name"]: c["canister_id"] for c in res.get("canisters") or [] if c.get("canister_id")})
     ids[CONDUCTOR_NAMES["backend"]] = backend
     return backend, ids
 
@@ -167,22 +167,8 @@ NEW_ACCESS_CODE = "$new_access_code"
 
 
 def _stored_principals(ic, sheet_name: str, env: str, conductor_override: str | None) -> dict:
-    """``environments.<env>.principals`` of the sheet the conductor holds ({} when none)."""
-    local = load_bindings(sheet_name, env)
-    if local and local.network_url and local.network_url.rstrip("/") != ic.network_url.rstrip("/"):
-        local = None
-    backend = resolve_backend_id(local, conductor_override)
-    if not backend:
-        return {}
-    try:
-        res = ic.query(backend, "get_sheet")
-    except Exception:
-        return {}
-    if not (isinstance(res, dict) and res.get("ok")):
-        return {}
-    block = ((res.get("sheet") or {}).get("environments") or {}).get(env) or {}
-    principals = block.get("principals") if isinstance(block, dict) else None
-    return principals if isinstance(principals, dict) else {}
+    """The sheet is not stored on-chain: `up` runs once, so a new code is always minted."""
+    return {}
 
 
 def resolve_new_access_codes(ic, sheet: dict, env: str, *, conductor_override: str | None = None,
@@ -191,7 +177,7 @@ def resolve_new_access_codes(ic, sheet: dict, env: str, *, conductor_override: s
     with an access-code checksum. The conductor's stored checksum wins, so a re-run
     keeps the slot; otherwise ``mint`` draws a fresh code. Returns the sheet and the
     codes minted by this call (alias → plaintext), which nothing else ever stores."""
-    from access_code import code_checksum, normalize_code_checksum
+    from casals_cli.access_code import code_checksum, normalize_code_checksum
 
     envs = sheet.get("environments")
     block = envs.get(env) if isinstance(envs, dict) else None
