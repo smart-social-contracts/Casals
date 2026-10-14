@@ -125,9 +125,18 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
         targets = [c for c in canisters.values() if wasm_ref(c.get("wasm") or "")[0] == family]
         if not targets:
             rows.append({"wasm": family, "canister": "-", "result": "skipped", "detail": "no canister runs this family"})
+        batons: dict[str, list[dict]] = {}
         for c in sorted(targets, key=lambda t: (t["section"], t["stand"], t["name"])):
-            rows.append(_ship_wasm(ic, backend_id, c, key, sha))
-            _progress(f"  {rows[-1]['result']:9} {c['name']}: {rows[-1]['detail']}")
+            row = _ship_wasm(ic, backend_id, c, key, sha)
+            if row is None:
+                batons.setdefault(c["stand"], []).append(c)
+                continue
+            rows.append(row)
+            _progress(f"  {row['result']:9} {c['name']}: {row['detail']}")
+        for stand, members in batons.items():
+            for row in _propose(ic, backend_id, stand, members, key):
+                rows.append(row)
+                _progress(f"  {row['result']:9} {row['canister']}: {row['detail']}")
     for ns in contents:
         store_hash = (bundles[ns].get("sha256") or "").strip().lower()
         declared = {name for _sec, _st, name, spec in iter_canisters(sheet) if (spec.get("content") or "") == ns}
@@ -144,20 +153,28 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             **({"error": f"{len(failed)} canister(s) failed"} if failed else {})}
 
 
-def _ship_wasm(ic, backend_id: str, c: dict, key: str, sha: str) -> dict:
+def _ship_wasm(ic, backend_id: str, c: dict, key: str, sha: str) -> dict | None:
+    """Upgrade directly, or return None when only the stand's baton can."""
     row = {"wasm": key, "canister": c["name"]}
     if (ic.read_module_hash(c["canister_id"]) or "").lower() == sha:
         return {**row, "result": "skipped", "detail": "already at this hash"}
-    if backend_id in (ic.read_controllers(c["canister_id"]) or []):
-        res = ic.call_update(backend_id, "canister_upgrade", json.dumps({"canister": c["name"], "wasm": key}), timeout=1800)
-        return {**row, "result": "upgraded" if _ok(res) else "failed", "detail": sha[:12] + "…" if _ok(res) else _err_text(res)}
+    if backend_id not in (ic.read_controllers(c["canister_id"]) or []):
+        return None
+    res = ic.call_update(backend_id, "canister_upgrade", json.dumps({"canister": c["name"], "wasm": key}), timeout=1800)
+    return {**row, "result": "upgraded" if _ok(res) else "failed", "detail": sha[:12] + "…" if _ok(res) else _err_text(res)}
+
+
+def _propose(ic, backend_id: str, stand: str, members: list[dict], key: str) -> list[dict]:
+    """One baton action per stand: the baton runs one action at a time."""
     res = ic.call_update(backend_id, "baton_propose_upgrade", json.dumps(
-        {"stand": c["stand"], "targets": [{"canister": c["name"], "wasm": key}]}), timeout=900)
+        {"stand": stand, "targets": [{"canister": c["name"], "wasm": key} for c in members]}), timeout=900)
     if not _ok(res):
         busy = "in progress" in _err_text(res).lower()
-        return {**row, "result": "deferred" if busy else "failed", "detail": _err_text(res)}
-    return {**row, "result": "pending", "detail": f"baton {res['baton']} action {res['action_id']}",
-            "action_id": res["action_id"], "baton_id": res["baton_id"]}
+        return [{"wasm": key, "canister": c["name"], "result": "deferred" if busy else "failed",
+                 "detail": _err_text(res)} for c in members]
+    return [{"wasm": key, "canister": c["name"], "result": "pending",
+             "detail": f"baton {res['baton']} action {res['action_id']}",
+             "action_id": res["action_id"], "baton_id": res["baton_id"]} for c in members]
 
 
 def _ship_content(ic, backend_id: str, name: str, ns: str, store_hash: str) -> dict:

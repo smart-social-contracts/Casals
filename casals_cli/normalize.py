@@ -94,7 +94,7 @@ def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_i
     out = {"name": name, "kind": spec.get("kind", "backend"), "wasm": keys.get(spec.get("wasm", ""), spec.get("wasm", "")),
            "public": bool(spec.get("public")), "install_arg": install_arg(spec.get("install_arg")),
            "content": spec.get("content", ""), "files": spec.get("files") or {}, "controllers": controllers,
-           "config": config}
+           "config": config, **({"optional": True} if spec.get("optional") else {})}
     if spec.get("mode") == "adopted":
         out.update(canister_id=spec["canister_id"], adopted=True, status="installed")
     return out

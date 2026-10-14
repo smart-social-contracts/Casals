@@ -88,8 +88,9 @@ def baton_upgrade(o) -> None:
         for row in res["rows"]:
             if row["result"] != "pending":
                 raise Fail(f"a sole-handed member must become a baton proposal: {row}")
-            action = (f'variant {{ CallCanister = record {{ canister = principal "{row["baton_id"]}"; '
-                      f'method = "submit_approval"; arg_json = "{row["action_id"]}" }} }}')
+        for baton_id, action_id in {(r["baton_id"], r["action_id"]) for r in res["rows"]}:
+            action = (f'variant {{ CallCanister = record {{ canister = principal "{baton_id}"; '
+                      f'method = "submit_approval"; arg_json = "{action_id}" }} }}')
             pid, status = propose(o.ic, ms, action)
             if status != "executed":
                 raise Fail(f"multisig proposal #{pid} is {status}")
