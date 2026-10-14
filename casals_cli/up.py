@@ -290,6 +290,18 @@ def _bindings(ic, sheet_name: str, env: str, deployer: str, conductor_override, 
     return bindings
 
 
+def adopt(ic, doc: dict, backend_id: str, deployer: str) -> None:
+    """The conductor drives adopted canisters, so the deployer who owns them adds it as a controller."""
+    for sec in doc["sections"]:
+        for st in sec["stands"]:
+            for c in st.get("canisters") or []:
+                if not c.get("adopted") or c["canister_id"] in (backend_id, ""):
+                    continue
+                current = ic.read_controllers(c["canister_id"]) or []
+                if backend_id not in current and deployer in current:
+                    ic.settings_update(c["canister_id"], add_controllers=[backend_id])
+
+
 def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_override, project_root, bootstrap):
     deployer = ic.deployer_principal()
     summary(f"\n{'Planning' if dry_run else 'Installing'} {sheet_name} on {env} ({ic.network_url})\n")
@@ -323,6 +335,8 @@ def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_ov
     _summary_step(4, "Uploading artifacts")
     ids = {**bindings.conductor, CONDUCTOR_NAMES["backend"]: backend_id}
     doc = normalize(sheet, env, deployer=deployer, ids=ids, uploads=[u for u in uploads if u.get("kind") == "wasm"])
+    if not dry_run:
+        adopt(ic, doc, backend_id, deployer)
     res = ic.call_update(backend_id, "orchestra_up", json.dumps({**doc, "dry_run": dry_run}), timeout=900)
     if not (isinstance(res, dict) and res.get("ok")):
         raise RuntimeError(f"orchestra_up failed: {res}")

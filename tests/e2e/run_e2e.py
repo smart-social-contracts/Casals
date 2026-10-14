@@ -141,6 +141,7 @@ def run(names: list[str]) -> list[tuple]:
         path = name if name.endswith(".json") else os.path.join(CORPUS, name, "casals.json")
         sheet_name = json.load(open(path))["name"]
         home = os.path.join(os.environ.get("CASALS_E2E_ROOT") or tempfile.mkdtemp(prefix="casals-e2e-"), sheet_name)
+        ensure_cycles()
         o, status, t0 = Orchestra(sheet_name, path, home), "PASS", time.time()
         print(f"{sheet_name}", flush=True)
         for scenario in SCENARIOS:
