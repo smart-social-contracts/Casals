@@ -92,6 +92,10 @@ def authorize(principal, spec, args):
         return
     if perm == "reader":
         return reader_scopes(principal)
+    if perm == "reader.all":
+        if reader_scopes(principal) is not None:
+            raise Unauthorized("needs read access to the whole orchestra")
+        return
     if perm == "controller" or not grants(principal) or not holds(principal, perm, scope_of(spec["at"], args)):
         raise Unauthorized(f"needs {perm}")
 

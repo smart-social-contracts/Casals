@@ -11,7 +11,7 @@ WASM2 = b"\0asm-v2"
 def catalog():
     world()
     o = orchestra()
-    o.store_id, o.multisig_id, o.monitor = "store", "msig", {"principal": "mon"}
+    o.store_id, o.multisig_id, o.monitor, o.vars = "store", "msig", {"principal": "mon"}, {"$self": "conductor"}
     for key, data in (("app@1", WASM), ("app@2", WASM2)):
         state["store"][f"/wasm/{key}"] = data
         Wasm(key=key, path=f"/wasm/{key}", sha256=hashlib.sha256(data).hexdigest())
@@ -19,16 +19,32 @@ def catalog():
 
 def created():
     catalog()
-    return call("canister_create", stand="d1", name="api", wasm="app@1")["canister_id"]
+    return call("canister_create", stand="d1", name="api", wasm="app@1",
+                controllers=["$self", "$this", "msig"])["canister_id"]
 
 
 def test_create_installs_verifies_and_hands_settings():
     cid = created()
     c = state["canisters"][cid]
     assert (c["module_hash"], c["arg"], c["mode"]) == (Canister["api"].wasm_hash, "()", "install")
-    assert (c["controllers"], c["viewers"], c["logs"]) == (["conductor", "msig"], ["mon"], True)
-    assert Canister["api"].status == "installed"
+    assert (c["controllers"], c["viewers"], c["logs"]) == (["conductor", cid, "msig"], ["mon"], True)
+    assert Canister["api"].status == "ready"
     assert "already exists" in call("canister_create", stand="d1", name="api", wasm="app@1")["error"]
+
+
+def test_config_calls_run_before_controllers():
+    catalog()
+    seen = []
+    state["replies"][("can-1", "configure")] = lambda arg: seen.append(arg) or "(variant { ok })"
+    state["replies"][("can-1", "set_config")] = '{"ok": true}'
+    config = [{"method": "configure", "arg": '(principal "$this")'}, {"method": "set_config", "arg": "{}", "text": True}]
+    assert call("canister_create", stand="d1", name="ms", wasm="app@1", config=config)["ok"]
+    assert seen == ['(principal "can-1")']
+    state["replies"][("can-2", "configure")] = '(variant { err = "no" })'
+    assert "ms2.configure" in call("canister_create", stand="d1", name="ms2", wasm="app@1", config=config[:1])["error"]
+    state["replies"][("can-3", "set_config")] = '{"ok": false, "error": "denied"}'
+    assert "denied" in call("canister_create", stand="d1", name="ms3", wasm="app@1", config=config[1:])["error"]
+    assert Canister["ms3"].status == "installed"
 
 
 def test_whitelist_and_frontend_arg():
@@ -37,7 +53,7 @@ def test_whitelist_and_frontend_arg():
     assert "not in the whitelist" in call("canister_create", stand="d1", name="x", wasm="app@1")["error"]
     Wasm["app@1"].kind = "frontend"
     Canister["c1"].stand.subnet = "sub-a"
-    cid = call("canister_create", stand="d1", name="web", wasm="app@1")["canister_id"]
+    cid = call("canister_create", stand="d1", name="web", wasm="app@1", controllers=["conductor"])["canister_id"]
     assert (state["canisters"][cid]["subnet"], state["canisters"][cid]["arg"]) == ("sub-a", "(null)")
 
 
@@ -50,9 +66,10 @@ def test_failed_install_keeps_the_row_and_a_retry_reinstalls():
     import canisters
     from op import run
 
-    c.wasm_hash = "stale"
     run(canisters.provision(c))
-    assert state["canisters"][c.canister_id]["mode"] == "reinstall" and c.status == "installed"
+    assert state["canisters"][c.canister_id]["mode"] == "install" and c.status == "installed"
+    run(canisters.provision(c))
+    assert state["canisters"][c.canister_id]["mode"] == "reinstall"
 
 
 def test_hash_mismatch_is_an_error():
@@ -66,7 +83,7 @@ def test_hash_mismatch_is_an_error():
 def test_upgrade_all_or_nothing():
     cid = created()
     Canister["c1"].delete()
-    other = call("canister_create", stand="d1", name="api2", wasm="app@1")["canister_id"]
+    other = call("canister_create", stand="d1", name="api2", wasm="app@1", controllers=["conductor"])["canister_id"]
     good = call("canister_upgrade", canister="api", wasm="app@2")
     assert good["upgraded"] == ["api"] and state["canisters"][cid]["module_hash"] == Canister["api"].wasm_hash
     assert state["canisters"][cid]["snapshots"] == {}
@@ -93,6 +110,7 @@ def test_set_rename_move_and_fields():
 
 def test_register_controllers_lifecycle_snapshots_delete():
     cid = created()
+    state["canisters"][cid]["controllers"] = ["conductor"]
     assert call("canister_register", stand="d1", name="ext", canister_id="ext-id")["canister_id"] == "ext-id"
     assert Canister["ext"].adopted
     assert "must keep" in call("canister_controllers", canister="api", controllers=["x"])["error"]
@@ -111,6 +129,7 @@ def test_register_controllers_lifecycle_snapshots_delete():
 
 def test_destroy_sweeps_cycles_before_deleting():
     cid = created()
+    state["canisters"][cid]["controllers"] = ["conductor"]
     before = state["balance"]
     out = call("canister_destroy", canister="api")
     assert out["swept"] == 10**12 - 20_000_000_000 and state["balance"] == before + out["swept"]

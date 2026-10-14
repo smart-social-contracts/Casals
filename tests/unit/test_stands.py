@@ -8,7 +8,7 @@ TEMPLATE = {
     "canisters": [
         {"name": "{stand}-backend", "wasm": "app@1", "install_arg": '("$canister:c1")',
          "controllers": ["$self", "$this"]},
-        {"name": "{stand}-frontend", "wasm": "app@1", "kind": "frontend", "files": {"/ids.js": "$stand.backend"},
+        {"name": "{stand}-frontend", "wasm": "app@1", "kind": "frontend", "install_arg": '("$stand.backend")',
          "controllers": ["$stand.backend", "$multisig"]},
         {"name": "{stand}-worker-{n}", "wasm": "app@1", "optional": True},
     ],
@@ -28,8 +28,8 @@ def test_template_stand_builds_itself():
     assert out == {"ok": True, "name": "t1", "members": ["t1-worker-1"], "created": True}
     run_timers()
     backend, front = Canister["t1-backend"], Canister["t1-frontend"]
-    assert Stand["t1"].built_at and Canister["t1-worker-1"].status == "installed"
-    assert backend.install_arg == '("c1-id")' and front.files == {"/ids.js": backend.canister_id}
+    assert Stand["t1"].built_at and Canister["t1-worker-1"].status == "ready"
+    assert backend.install_arg == '("c1-id")' and state["canisters"][front.canister_id]["arg"] == f'("{backend.canister_id}")'
     assert state["canisters"][backend.canister_id]["controllers"] == ["conductor", backend.canister_id]
     assert front.controllers == [backend.canister_id, "msig"]
     assert Grant[f"stand:t1|{backend.canister_id}"].permissions == ["stand.create"]
@@ -62,7 +62,7 @@ def test_resume_after_upgrade_and_growth():
     assert Stand["t1"].built_at
     call("stand_create", section="Tenants", name="t1", members=["t1-worker-2"])
     run_timers()
-    assert Canister["t1-worker-2"].status == "installed"
+    assert Canister["t1-worker-2"].status == "ready"
 
 
 def test_stand_without_template_and_wrong_section():

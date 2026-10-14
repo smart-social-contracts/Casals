@@ -1,40 +1,10 @@
 import chain
 from auth import find
-from canisters import destroy, provision
+from canisters import destroy, hand_off, provision
 from grants import rescope, upsert
-from model import Canister, Event, Grant, Section, Stand, orchestra, rename, rows
+from model import Canister, Event, Grant, Section, Stand, rename, resolve, rows
 from op import op
 from rounds import schedule, step
-
-TOKEN = "_.:-"
-
-
-def lookup(token, stand, this):
-    known = orchestra().vars
-    if token in known:
-        return known[token]
-    if token == "$this" and this:
-        return this
-    row = (Canister[token[10:]] if token.startswith("$canister:")
-           else Canister[f"{stand.name}-{token[7:]}"] if stand and token.startswith("$stand.") else None)
-    return row.canister_id if row and row.canister_id else token
-
-
-def resolve(value, stand=None, this=""):
-    if isinstance(value, dict):
-        return {k: resolve(v, stand, this) for k, v in value.items()}
-    if isinstance(value, list):
-        return [resolve(v, stand, this) for v in value]
-    if not isinstance(value, str):
-        return value
-    value, out, i = value.replace("{stand}", stand.name) if stand else value, [], 0
-    while (j := value.find("$", i)) >= 0:
-        k = j + 1
-        while k < len(value) and (value[k].isalnum() or value[k] in TOKEN):
-            k += 1
-        out += [value[i:j], lookup(value[j:k], stand, this)]
-        i = k
-    return "".join(out) + value[i:]
 
 
 def members(stand):
@@ -47,21 +17,13 @@ def members(stand):
     return out
 
 
-def member_row(stand, spec):
-    spec = resolve(spec, stand)
+def member_row(stand, raw):
+    spec = resolve({k: v for k, v in raw.items() if k not in ("controllers", "config")}, stand)
     c = Canister(name=spec["name"], wasm=spec["wasm"], kind=spec.get("kind", "backend"), public=spec.get("public", False),
-                 install_arg=spec.get("install_arg"), content=spec.get("content", ""), files=spec.get("files", {}))
+                 install_arg=spec.get("install_arg"), content=spec.get("content", ""), files=spec.get("files", {}),
+                 controllers=raw.get("controllers", []), config=raw.get("config", []))
     c.stand = stand
     return c
-
-
-def hand_off(stand):
-    for spec in members(stand):
-        c = Canister[spec["name"]]
-        c.controllers = resolve(spec.get("controllers", []), stand, c.canister_id) or c.controllers
-        yield from chain.update_settings(c.canister_id, controllers=c.controllers)
-    for g in stand.section.template.get("commanders", []):
-        upsert(f"stand:{stand.name}", resolve(g["principal"], stand)).permissions = g["permissions"]
 
 
 def build_failed(name, error):
@@ -76,12 +38,17 @@ def unbuilt():
 @step("stand", build_failed, unbuilt)
 def build(name):
     stand = find(Stand, name)
-    for spec in members(stand):
-        c = Canister[spec["name"]] or member_row(stand, spec)
-        if c.status != "installed":
+    for spec in members(stand) if stand.section.template else []:
+        Canister[spec["name"]] or member_row(stand, spec)
+    for c in stand.canisters:
+        if c.status == "created":
             yield from provision(c)
             return False
-    yield from hand_off(stand)
+    for c in stand.canisters:
+        if c.status == "installed":
+            yield from hand_off(c, stand)
+    for g in (stand.section.template or {}).get("commanders", []):
+        upsert(f"stand:{stand.name}", resolve(g["principal"], stand)).permissions = g["permissions"]
     stand.built_at = chain.now()
     Event(type="stand_built", payload={"stand": name}, ts=chain.now())
     return True

@@ -123,3 +123,31 @@ def rename(row, name):
     # ic-python-db keeps the old alias mapping when the alias field changes.
     row.db().delete(row._alias_key(), row.name)
     row.name = name
+
+
+def lookup(token, stand, this):
+    known = orchestra().vars
+    if token in known:
+        return known[token]
+    if token == "$this" and this:
+        return this
+    row = (Canister[token[10:]] if token.startswith("$canister:")
+           else Canister[f"{stand.name}-{token[7:]}"] if stand and token.startswith("$stand.") else None)
+    return row.canister_id if row and row.canister_id else token
+
+
+def resolve(value, stand=None, this=""):
+    if isinstance(value, dict):
+        return {k: resolve(v, stand, this) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve(v, stand, this) for v in value]
+    if not isinstance(value, str):
+        return value
+    value, out, i = value.replace("{stand}", stand.name) if stand else value, [], 0
+    while (j := value.find("$", i)) >= 0:
+        k = j + 1
+        while k < len(value) and (value[k].isalnum() or value[k] in "_.:-"):
+            k += 1
+        out += [value[i:j], lookup(value[j:k], stand, this)]
+        i = k
+    return "".join(out) + value[i:]

@@ -21,6 +21,8 @@ def allowed(spec, who):
         return True
     if perm == "reader":
         return who != "outsider"
+    if perm == "reader.all":
+        return who in ("without", "with", "monitor")
     return perm != "controller" and who == "with"
 
 

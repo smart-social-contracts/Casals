@@ -1,8 +1,10 @@
+import json
+
 import chain
 import store
 from auth import Unauthorized, find, holds
 from cycle_sweep_wasm import sweep_wasm_bytes
-from model import Canister, Stand, Wasm, orchestra, rename
+from model import Canister, Stand, Wasm, orchestra, rename, resolve
 from op import op
 
 CREATE_CYCLES = 1_000_000_000_000
@@ -12,12 +14,12 @@ SETTABLE = {"public", "files", "content", "install_arg", "config", "policy", "ta
 
 def install(c, w, mode):
     wasm = yield from store.read(orchestra().store_id, w.path)
-    arg = c.install_arg or ("(null)" if w.kind == "frontend" else "()")
+    arg = resolve(c.install_arg, c.stand, c.canister_id) or ("(null)" if w.kind == "frontend" else "()")
     yield from chain.install(c.canister_id, wasm, w.sha256, arg, mode)
     actual = (yield from chain.status(c.canister_id))["module_hash"]
     if actual != w.sha256:
         raise Exception(f"{c.name}: module hash {actual or 'none'}, expected {w.sha256}")
-    c.wasm, c.wasm_hash, c.status = w.key, actual, "installed"
+    c.wasm, c.wasm_hash = w.key, actual
 
 
 def provision(c):
@@ -27,12 +29,30 @@ def provision(c):
         if o.subnets and subnet not in o.subnets:
             raise ValueError(f"subnet '{subnet}' is not in the whitelist")
         c.canister_id = yield from chain.create([chain.self_id()], CREATE_CYCLES, subnet)
-    if c.status != "installed":
-        yield from install(c, find(Wasm, c.wasm), "reinstall" if c.wasm_hash else "install")
-    c.controllers = c.controllers or [chain.self_id()] + [o.multisig_id] * bool(o.multisig_id)
+    yield from install(c, find(Wasm, c.wasm), "reinstall" if c.wasm_hash else "install")
     monitor = o.monitor.get("principal")
-    yield from chain.update_settings(c.canister_id, controllers=c.controllers,
-                                     viewers=[monitor] if monitor else None, public_logs=True)
+    yield from chain.update_settings(c.canister_id, viewers=[monitor] if monitor else None, public_logs=True)
+    c.status = "installed"
+
+
+def configure(c, call):
+    if call.get("text"):
+        reply = yield from chain.call_text(c.canister_id, call["method"], call["arg"])
+        failed = reply.startswith("{") and json.loads(reply).get("ok") is False
+    else:
+        reply = yield from chain.call(c.canister_id, call["method"], call["arg"])
+        failed = "err" in reply.split("=")[0].lower()
+    if failed:
+        raise Exception(f"{c.name}.{call['method']}: {reply[:300]}")
+
+
+def hand_off(c, stand=None):
+    for call in resolve(c.config, stand, c.canister_id):
+        yield from configure(c, call)
+    if c.controllers:
+        c.controllers = resolve(c.controllers, stand, c.canister_id)
+        yield from chain.update_settings(c.canister_id, controllers=c.controllers)
+    c.status = "ready"
 
 
 def destroy(c):
@@ -65,15 +85,16 @@ def new_canister(args, **fields):
 def canister_create(principal, args):
     w = find(Wasm, args["wasm"])
     c = new_canister(args, wasm=w.key, kind=w.kind, install_arg=args.get("install_arg"),
-                     controllers=args.get("controllers", []))
+                     controllers=args.get("controllers", []), config=args.get("config", []))
     yield from provision(c)
+    yield from hand_off(c, c.stand)
     return {"canister_id": c.canister_id}
 
 
 @op("canister.create", at="stand")
 def canister_register(principal, args):
     c = new_canister(args, canister_id=args["canister_id"], kind=args.get("kind", "backend"),
-                     adopted=True, status="installed")
+                     adopted=True, status="ready")
     return {"canister_id": c.canister_id}
 
 
@@ -126,7 +147,7 @@ def canister_controllers(principal, args):
 def canister_start(principal, args):
     c = find(Canister, args["canister"])
     yield from chain.lifecycle(c.canister_id, "start_canister")
-    c.status = "installed"
+    c.status = "ready"
     return {"canister_id": c.canister_id}
 
 
