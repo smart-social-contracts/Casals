@@ -18,6 +18,15 @@ def upsert(scope, principal):
     return Grant[key] or Grant(key=key, scope=scope, principal=principal)
 
 
+def rescope(old, new):
+    for g in rows(Grant):
+        if g.scope == old:
+            if new:
+                moved = upsert(new, g.principal)
+                moved.permissions, moved.calls = g.permissions, g.calls
+            g.delete()
+
+
 def view(g, principal):
     hidden = g.principal.startswith("sha256:") and not holds(principal, "grant.assign", g.scope)
     return {"scope": g.scope, "principal": "sha256:hidden" if hidden else g.principal,

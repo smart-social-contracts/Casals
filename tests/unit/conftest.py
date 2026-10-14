@@ -25,7 +25,10 @@ for path in sorted(glob.glob(os.path.join(SRC, "*.py"))):
 @pytest.fixture(autouse=True)
 def fresh():
     import grants
+    import rounds
 
     Database.get_instance().clear()
     fake_chain.reset()
     grants.failures.clear()
+    rounds.queue.clear()
+    rounds.armed.clear()
