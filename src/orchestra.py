@@ -1,6 +1,6 @@
 import chain
 from auth import Unauthorized, grants, holds, is_monitor, reader_scopes, readable
-from model import Canister, Event, orchestra, rows
+from model import Canister, Event, Stand, orchestra, rows
 from op import op
 
 SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor")
@@ -30,6 +30,8 @@ def orchestra_get(principal, args):
     o, scopes = orchestra(), reader_scopes(principal)
     shown = {k: getattr(o, k) for k in SHOWN}
     return {**shown, "canister_id": chain.self_id(), "scoped": scopes is not None, "canisters": tree(scopes),
+            "stands": [{"name": s.name, "section": s.section.name, "built_at": s.built_at, "build_error": s.build_error,
+                        "members": s.members} for s in rows(Stand) if readable(scopes, f"stand:{s.name}")],
             "email": o.contacts.get(principal, ""), "contacts": o.contacts if sees_contacts(principal) else {}}
 
 

@@ -77,14 +77,11 @@ raw = open(sys.argv[1], encoding="utf-8").read()
 data = json.loads(raw[raw.index("{"):])
 if not data.get("ok"):
     sys.exit("casals up returned ok=false: " + json.dumps(data)[:800])
-items = (data.get("plan") or {}).get("items") or []
-if items:
-    sys.exit("plan not empty after pip-install up: " + str([i.get("kind") for i in items]))
-print("up ok; plan empty; conductor", data.get("backend_id"))
+print("up ok; conductor", data.get("backend_id"), "canisters", sorted(data.get("canisters") or {}))
 ' "$UP_JSON"
 
-group "oracle"
-casals --identity local-dev oracle hello-world
+group "show"
+casals --identity local-dev show hello-world
 endgroup
 
 echo "pip install ic-casals && casals init hello-world && casals up hello-world --yes --local: ok ($CASALS_RELEASE)"

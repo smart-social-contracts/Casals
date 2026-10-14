@@ -31,6 +31,12 @@ jobs:
             ic-basilisk==0.14.2 ic-basilisk-toolkit==0.5.3 \
             ic-python-db==0.11.0 ic-python-logging==0.3.4
 
+      - name: The tag matches version.txt
+        run: |
+          want="v$(tr -d '[:space:]' < version.txt)"
+          [ "$GITHUB_REF_NAME" = "$want" ] || { echo "::error::tag $GITHUB_REF_NAME but version.txt says $want"; exit 1; }
+          python scripts/gen_main.py --check
+
       - name: Stamp /version placeholders
         run: |
           # GET /version build provenance. Unstamped checkouts omit
@@ -41,7 +47,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           sed -i \
             "s/VERSION_PLACEHOLDER/${TAG}/g; s/COMMIT_HASH_PLACEHOLDER/${COMMIT}/g; s/BUILT_AT_ISO_PLACEHOLDER/${BUILT_AT_ISO}/g" \
-            src/version_http.py
+            src/main.py
           echo "Stamped /version: canister=casals_backend sha=${COMMIT} built_at=${BUILT_AT_ISO} version=${TAG}"
 
       - name: Build conductor WASM

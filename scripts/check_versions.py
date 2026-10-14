@@ -26,7 +26,6 @@ def copies() -> dict[str, str]:
     return {
         "pyproject.toml": _match("pyproject.toml", r'^version\s*=\s*"([^"]+)"'),
         "casals_cli/__init__.py": _match("casals_cli/__init__.py", r'^__version__\s*=\s*"([^"]+)"'),
-        "src/helpers.py": _match("src/helpers.py", r'^VERSION\s*=\s*"([^"]+)"'),
         "frontend/package.json": json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8")).get("version", ""),
         "frontend/package-lock.json": lock.get("version", ""),
     }

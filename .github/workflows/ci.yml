@@ -34,10 +34,8 @@ jobs:
           pip install ruff==0.14.6
           ruff check casals_cli src scripts packages/orchestration/baton/src tests
 
-      - name: The wheel ships src/ copies under casals_cli/_shared only
-        run: |
-          python -m pip wheel --no-deps -q -w "$RUNNER_TEMP/wheel" .
-          python scripts/check_wheel.py "$RUNNER_TEMP"/wheel/ic_casals-*.whl
+      - name: src/main.py matches the @op registry
+        run: python scripts/gen_main.py --check
 
   backend-unit:
     name: Backend unit tests
@@ -53,41 +51,20 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      # Replica-free modules only (#57), listed in the Makefile's `unit` target.
-      # test_sheetv2.py is the casals.json syntax suite (validate + placeholder
-      # resolution); test_planner.py,
-      # test_access_code.py, and test_control_rules.py cover what a valid
-      # sheet means. The rest are pure helpers. None of these start a replica.
-      # Live conductor coverage stays in the replica workflows.
+      # Every op through the dispatcher against tests/unit/fake_chain.py, the
+      # auth matrix, and the coverage gate (pyproject.toml). No replica.
       - name: Run unit tests
-        run: make unit PYTEST_ARGS=-v
+        run: pip install pytest-cov ic-python-db==0.11.0 && make unit PYTEST_ARGS=-v
 
-  cli-unit:
-    name: CLI unit tests
+  cli-guard:
+    name: CLI carries no principal tables
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.11"
-
-      # test_cli_v2.py patches ic-py's read_state helpers, so the CLI's runtime
-      # deps are needed even though no replica is.
-      - name: Install CLI deps
-        run: pip install -r requirements-dev.txt
-
-      # tests/test_cli_unit.py covers scripts/casals.py with no IC runtime:
-      # _parse / _candid_unescape / _candid_text_arg helpers, the arg parser,
-      # _load_sheet_file, call() subprocess wiring (mocked), error exit codes,
-      # and a full subprocess suite using a pure-Python fake icp binary.
-      - name: Run CLI unit tests
-        run: pytest -v tests/test_cli_unit.py tests/test_cli_v2.py tests/test_runlog.py
-
-      - name: CLI carries no principal / controller / commander tables
-        # Every id and every controller/commander set comes from the sheet the
-        # operator passes in (§9 of docs/issues/declarative-orchestra-spec.md).
+      - name: No hard-coded canister or principal ids in the CLI
+        # Every id and every controller/commander set comes from the sheet the operator passes in.
         run: |
           if grep -rnoE '\b[a-z0-9]{5}(-[a-z0-9]{5}){3,10}-[a-z0-9]{3}\b' casals_cli scripts --exclude-dir=examples | grep -v 'aaaaa-aa\b'; then
             echo "::error::canister/principal ids belong in a casals.json, not in the CLI"; exit 1

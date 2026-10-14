@@ -1256,7 +1256,7 @@ def _check_raw_principals(value: Any, path: str, errors: list[str]) -> None:
 
 def _looks_like_raw_principal(value: str) -> bool:
     """True when ``value`` is in IC principal text form: dash-separated groups of
-    five base32 chars and a 2–3 char tail (`rrkah-fqaaa-aaaaa-aaaaq-cai`, `aaaaa-aa`)."""
+    five base32 chars and a 2–3 char tail (a canister id such as `aaaaa-aa`)."""
     segments = value.strip().lower().split("-")
     if len(segments) < 2:
         return False

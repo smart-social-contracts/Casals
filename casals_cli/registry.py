@@ -161,6 +161,9 @@ def release_asset_url(source: str) -> str:
     if not m:
         raise ValueError(f"invalid release source: {source}")
     owner, repo, tag, asset = m.group(1), m.group(2), m.group(3), m.group(4)
+    if tag == "latest":
+        # GitHub's newest published (non-draft) release; the row then records the sha256 actually fetched.
+        return f"https://github.com/{owner}/{repo}/releases/latest/download/{asset}"
     return f"https://github.com/{owner}/{repo}/releases/download/{tag}/{asset}"
 
 
