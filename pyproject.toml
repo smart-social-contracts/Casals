@@ -46,5 +46,13 @@ packages = ["casals_cli"]
 [tool.ruff.lint]
 select = ["F"]
 
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=95"
+testpaths = ["tests/unit"]
+
+# main.py is generated; chain.py and store.py are the Basilisk boundary, exercised by tests/e2e.
+[tool.coverage.run]
+omit = ["src/main.py", "src/chain.py", "src/store.py", "src/cycle_sweep_wasm.py"]
+
 [tool.setuptools.package-data]
 casals_cli = ["examples/*.json"]
