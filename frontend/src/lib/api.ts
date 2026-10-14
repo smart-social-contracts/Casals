@@ -1,6 +1,6 @@
 import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { createHttpAgent } from './asyncAgent';
-import { idlFactory } from './declarations';
+import { idlFactory, legacyActor } from './conductor';
 import { get } from 'svelte/store';
 import { identity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
@@ -595,7 +595,7 @@ function _makeActorWithAgent(agent: HttpAgent): any {
         'asset canister on deploy) or VITE_CANISTER_ID for local dev.'
     );
   }
-  return Actor.createActor(idlFactory, { agent, canisterId });
+  return legacyActor(Actor.createActor(idlFactory, { agent, canisterId }));
 }
 
 let _signedActor: { id: Identity; actor: Promise<any> } | null = null;

@@ -17,7 +17,7 @@ import sys
 import time
 from typing import Any
 
-from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, validate, wasm_ref
+from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, iter_canisters, registry_path, store_key, validate, wasm_ref
 
 from casals_cli.bindings import load_bindings, resolve_new_access_codes, resolve_orchestra_refs
 from casals_cli.registry import ensure_registry_uploads
@@ -130,7 +130,8 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             _progress(f"  {rows[-1]['result']:9} {c['name']}: {rows[-1]['detail']}")
     for ns in contents:
         store_hash = (bundles[ns].get("sha256") or "").strip().lower()
-        targets = [c for c in canisters.values() if (c.get("content") or "") == ns]
+        declared = {name for _sec, _st, name, spec in iter_canisters(sheet) if (spec.get("content") or "") == ns}
+        targets = [c for c in canisters.values() if (c.get("content") or "") == ns or c["name"] in declared]
         if not targets:
             rows.append({"content": ns, "canister": "-", "result": "skipped", "detail": "no frontend serves this content"})
         for c in sorted(targets, key=lambda t: t["name"]):

@@ -6,7 +6,8 @@ from op import op
 SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor")
 SHOWN = ("name", "description", "currency", "reserve", "policy", "subnets", "creatable_subnets", "subnets_at",
          "monitor", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id")
-CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "public", "tags", "controllers", "cycles")
+CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "public", "tags", "controllers", "cycles",
+            "content")
 EVENTS_MAX = 2000
 
 
