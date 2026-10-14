@@ -2,21 +2,14 @@
 
 ## Reporting a vulnerability
 
-**Do not open a public GitHub issue for a security vulnerability.** Report it
-privately, in either of these ways:
+**Do not open a public GitHub issue for a security vulnerability.** How to
+report one privately is the same for every repository: see
+[Security](https://github.com/smart-social-contracts#security) on the
+organization page.
 
-- GitHub: [report a vulnerability](https://github.com/smart-social-contracts/Casals/security/advisories/new)
-  (private vulnerability reporting).
-- Encrypted email: the address and PGP key are in the
-  [organization-wide security policy](https://github.com/smart-social-contracts/.github/blob/main/SECURITY.md).
-
-Please include:
-
-- the component (conductor, multisig, Baton, UI, `casals` CLI) and its version:
-  the release tag, or `version` from the conductor's `get_status`;
-- what an attacker needs: the anonymous principal, any signed-in principal, a
-  commander with which permissions, or an IC controller;
-- steps to reproduce.
+For Casals, also say which component (conductor, multisig, Baton, UI, `casals`
+CLI) and its version: the release tag, or `version` from the conductor's
+`get_status`.
 
 Reproduce on a local replica (`casals init hello-world`, then
 `casals up hello-world --yes --local`), not on the live demo at
@@ -29,8 +22,9 @@ Only the latest release gets security fixes.
 ## Verifying a release
 
 Every GitHub release ships `checksums.txt` and its detached signature
-`checksums.txt.asc`. The organization-wide policy has the signing key and the
-commands to verify them. `ic-casals` on PyPI is published by the release
+`checksums.txt.asc`. How to verify them:
+[Security](https://github.com/smart-social-contracts#security) on the
+organization page. `ic-casals` on PyPI is published by the release
 workflow through PyPI Trusted Publishing, not with a stored token.
 
 ## Security model
