@@ -19,7 +19,6 @@ from casals_cli.bindings import load_bindings
 from casals_cli.ic import IcClient
 from casals_cli.meter import ProgressMeter
 from casals_cli.multisig import ensure_control
-from casals_cli.up import multisig_id
 from casals_cli.upgrade import run_upgrade
 
 UI_NAMESPACE = "frontend/casals-ui/main"
@@ -179,7 +178,8 @@ def _install_backend(ic, root: str, env: str, sheet: str, meter: ProgressMeter) 
         return
     meter.set_label(f"installing backend wasm on {backend_id} (one mainnet call)")
     deployer = ic.deployer_principal()
-    ensure_control(ic, backend_id, deployer, multisig_id(ic, backend_id))
+    multisig_id = ic.query(backend_id, "orchestra_get", "{}").get("multisig_id", "")
+    ensure_control(ic, backend_id, deployer, multisig_id)
     ic.install_wasm(backend_id, wasm_path, mode="upgrade")
     meter.advance(BACKEND_INSTALL_UNITS, f"backend {backend_id} upgraded")
     print(f"\nbackend {backend_id} upgraded", flush=True)

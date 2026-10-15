@@ -42,7 +42,7 @@ jobs:
           python -m pip install --upgrade pip build twine
           python -m build
           twine check dist/*
-          python scripts/check_wheel.py dist/*.whl
+          python -c "import sys, zipfile; n = zipfile.ZipFile(sys.argv[1]).namelist(); bad = [x for x in n if not x.startswith(('casals_cli/', 'ic_casals-'))]; sys.exit(f'outside casals_cli/: {bad}' if bad else 0)" dist/*.whl
 
       - name: Smoke-install the wheel
         working-directory: ${{ runner.temp }}
@@ -50,7 +50,7 @@ jobs:
           python -m venv ic-casals-wheel
           ic-casals-wheel/bin/pip install "$GITHUB_WORKSPACE"/dist/*.whl
           ic-casals-wheel/bin/casals -V
-          ic-casals-wheel/bin/python -c "import casals_cli, sheetv2, access_code, auth, ic_assets, commanders; print('imports ok', casals_cli.__version__)"
+          ic-casals-wheel/bin/python -c "import importlib, pkgutil, casals_cli; [importlib.import_module('casals_cli.' + m.name) for m in pkgutil.iter_modules(casals_cli.__path__)]; print('imports ok', casals_cli.__version__)"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
