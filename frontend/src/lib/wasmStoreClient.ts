@@ -58,7 +58,7 @@ const assetStoreIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     ),
     commit_batch: I.Func([I.Record({ batch_id: I.Nat, operations: I.Vec(Operation) })], [], []),
     delete_batch: I.Func([I.Record({ batch_id: I.Nat })], [], []),
-    list: I.Func([I.Record({})], [I.Vec(I.Record({
+    list: I.Func([I.Record({ start: I.Opt(I.Nat), length: I.Opt(I.Nat) })], [I.Vec(I.Record({
       key: I.Text,
       content_type: I.Text,
       encodings: I.Vec(I.Record({ content_encoding: I.Text, sha256: I.Opt(I.Vec(I.Nat8)), length: I.Nat, modified: I.Int })),
@@ -74,7 +74,7 @@ async function storeActor(identity: Identity | undefined, canisterId: string) {
     create_chunk: (a: { batch_id: bigint; content: Uint8Array }) => Promise<{ chunk_id: bigint }>;
     commit_batch: (a: { batch_id: bigint; operations: unknown[] }) => Promise<void>;
     delete_batch: (a: { batch_id: bigint }) => Promise<void>;
-    list: (a: Record<string, never>) => Promise<{ key: string; content_type: string; encodings: { content_encoding: string; sha256: [] | [Uint8Array]; length: bigint; modified: bigint }[] }[]>;
+    list: (a: { start: [] | [bigint]; length: [] | [bigint] }) => Promise<{ key: string; content_type: string; encodings: { content_encoding: string; sha256: [] | [Uint8Array]; length: bigint; modified: bigint }[] }[]>;
   };
 }
 
@@ -88,7 +88,12 @@ export interface StoreFile {
 
 /** Every store file (identity encoding) under `prefix`. */
 export async function storeFiles(storeCanisterId: string, prefix = '/', identity?: Identity): Promise<StoreFile[]> {
-  const rows = await (await storeActor(identity, storeCanisterId)).list({});
+  const actor = await storeActor(identity, storeCanisterId);
+  const rows: Awaited<ReturnType<typeof actor.list>> = [];
+  for (let page = null; page === null || page.length === 100; ) {  // the asset canister lists 100 keys a page
+    page = await actor.list({ start: [BigInt(rows.length)], length: [] });
+    rows.push(...page);
+  }
   const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   return rows.filter((r) => r.key.startsWith(prefix)).flatMap((r) => {
     const enc = r.encodings.find((e) => e.content_encoding === 'identity');

@@ -111,7 +111,10 @@ def read(store_id, key):
 
 
 def files(canister_id, prefix=""):
-    entries = chain.ok((yield Assets(Principal.from_str(canister_id)).list({"start": None, "length": None})))
+    entries, page = [], None
+    while page is None or len(page) == 100:  # the asset canister lists 100 keys a page
+        page = chain.ok((yield Assets(Principal.from_str(canister_id)).list({"start": len(entries), "length": None})))
+        entries += page
     return {e["key"]: {"sha256": bytes(enc["sha256"]).hex(), "type": e["content_type"]}
             for e in entries if e["key"].startswith(prefix)
             for enc in e["encodings"] if enc["content_encoding"] == "identity" and enc["sha256"]}
