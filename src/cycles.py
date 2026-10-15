@@ -84,3 +84,9 @@ def refresh_subnets():
     chain.set_timer(SUBNET_SECS, refresh_subnets)
     o = orchestra()
     o.creatable_subnets, o.subnets_at = (yield from chain.subnets()), chain.now()
+
+
+@op(None, read=True)
+def subnet_list(principal, args):
+    o = orchestra()
+    return {"subnets": o.subnets or o.creatable_subnets}

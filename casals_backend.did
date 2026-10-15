@@ -92,7 +92,7 @@ type DecimalsResult = record { decimals : nat32 };
 type Header = record { 0 : text; 1 : text };
 type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
 type HttpResponse = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
-type Permission = variant { Commit :  };
+type Permission = variant { Commit };
 type GrantArg = record { to_principal : principal; permission : Permission };
 type RevokeArg = record { of_principal : principal; permission : Permission };
 type ListArgs = record { start : opt nat; length : opt nat };
@@ -151,6 +151,7 @@ service : {
   "stand_delete" : (text) -> (text);
   "stand_destroy" : (text) -> (text);
   "stand_set" : (text) -> (text);
+  "subnet_list" : (text) -> (text) query;
   "wasm_authorize" : (text) -> (text);
   "wasm_list" : (text) -> (text) query;
   "wasm_revoke" : (text) -> (text);

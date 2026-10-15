@@ -164,6 +164,8 @@ def stand_delete(args: text) -> Async[text]: return (yield from dispatch(stands.
 def stand_destroy(args: text) -> Async[text]: return (yield from dispatch(stands.stand_destroy, args))
 @update
 def stand_set(args: text) -> Async[text]: return (yield from dispatch(stands.stand_set, args))
+@query
+def subnet_list(args: text) -> text: return run(dispatch(cycles.subnet_list, args))
 @update
 def wasm_authorize(args: text) -> Async[text]: return (yield from dispatch(wasms.wasm_authorize, args))
 @query

@@ -74,6 +74,9 @@ def test_subnet_catalogue_refreshes_hourly():
     run(cycles.refresh_subnets())
     assert orchestra().creatable_subnets == ["sub-a", "sub-b"] and state["timers"][0][0] == 3600
     assert call("orchestra_get")["creatable_subnets"] == ["sub-a", "sub-b"]
+    assert call("subnet_list", ANONYMOUS)["subnets"] == ["sub-a", "sub-b"]
+    orchestra().subnets = ["sub-b"]
+    assert call("subnet_list", ANONYMOUS)["subnets"] == ["sub-b"]
 
 
 def test_orchestra_reads_settings_and_scopes():

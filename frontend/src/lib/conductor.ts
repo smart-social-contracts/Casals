@@ -2,7 +2,7 @@
 
 const QUERIES = [
   'orchestra_get', 'orchestra_events', 'orchestra_resolve', 'orchestra_export', 'content_status', 'wasm_list',
-  'grant_list', 'cycles_get',
+  'grant_list', 'cycles_get', 'subnet_list',
 ];
 const UPDATES = [
   'orchestra_up', 'orchestra_set', 'alias_set', 'me_set', 'section_create', 'section_set', 'section_delete',
