@@ -57,6 +57,11 @@ def test_whitelist_and_frontend_arg():
     Canister["c1"].stand.subnet = "sub-a"
     cid = call("canister_create", stand="d1", name="web", wasm="app@1", controllers=["conductor"])["canister_id"]
     assert (state["canisters"][cid]["subnet"], state["canisters"][cid]["arg"]) == ("sub-a", "(null)")
+    Canister["c1"].stand.subnet = "type:european"
+    assert "not in the whitelist" in call("canister_create", stand="d1", name="eu", wasm="app@1")["error"]
+    orchestra().subnets = []
+    cid = call("canister_create", stand="d1", name="eu2", wasm="app@1", controllers=["conductor"])["canister_id"]
+    assert state["canisters"][cid]["subnet"] == "type:european"
 
 
 def test_failed_install_keeps_the_row_and_a_retry_reinstalls():

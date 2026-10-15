@@ -92,9 +92,14 @@ def create(controllers, cycles, subnet=""):
     if not subnet:
         settings = {"controllers": [Principal.from_str(c) for c in controllers]}
         return ok((yield mgmt.create_canister({"settings": settings}).with_cycles(cycles)))["canister_id"].to_str()
-    reply = yield from call(CMC, "create_canister", "(record { subnet_selection = opt variant { Subnet = record "
-                            f'{{ subnet = principal "{subnet}" }} }}; settings = opt record {{ controllers = opt '
-                            f"{principals(controllers)} }} }})", cycles)
+    kind = subnet[5:] if subnet.startswith("type:") else ""
+    if subnet.startswith("type:") and not kind.isalnum():
+        raise ValueError(f"bad subnet type '{kind}'")
+    # Candid text: the subnet comes from callers, so only a parsed principal or an alphanumeric type goes in.
+    selection = (f'Filter = record {{ subnet_type = opt "{kind}" }}' if kind
+                 else f'Subnet = record {{ subnet = principal "{Principal.from_str(subnet).to_str()}" }}')
+    reply = yield from call(CMC, "create_canister", f"(record {{ subnet_selection = opt variant {{ {selection} }}; "
+                            f"settings = opt record {{ controllers = opt {principals(controllers)} }} }})", cycles)
     return first_principal(reply)
 
 
