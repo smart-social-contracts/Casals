@@ -114,8 +114,8 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     canisters = {c["name"]: c for c in view["canisters"] if c.get("canister_id") and _in_selection(c, stands, sections)}
     rows: list[dict] = []
     for family, version in wanted:
-        newest = sorted(registry_rows[family], key=lambda v: [int(p) if p.isdigit() else p for p in v.split(".")])[-1]
-        target = version or newest
+        target = version or max(registry_rows[family],
+                                key=lambda v: [(1, int(p), "") if p.isdigit() else (0, 0, p) for p in v.split(".")])
         entry = registry_rows[family][target]
         key, sha = f"{family}@{target}", (entry.get("sha256") or "").strip().lower()
         res = ic.call_update(backend_id, "wasm_authorize", json.dumps({

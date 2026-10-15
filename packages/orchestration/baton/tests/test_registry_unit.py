@@ -58,6 +58,9 @@ def _drive(gen):
 
 
 class FakeStore:
+    """basilisk passes Candid opts as the bare value or None, and the store
+    traps on a get_chunk without the sha256 its get reported."""
+
     def __init__(self, files, chunk=MIB):
         self.files, self.chunk, self.calls = files, chunk, []
 
@@ -68,12 +71,14 @@ class FakeStore:
             raise Exception("asset not found")
         return {
             "content": data[: self.chunk], "content_type": "application/wasm", "content_encoding": "identity",
-            "sha256": [hashlib.sha256(data).digest()], "total_length": len(data),
+            "sha256": hashlib.sha256(data).digest(), "total_length": len(data),
         }
 
     def get_chunk(self, arg):
         self.calls.append(("get_chunk", arg["key"], int(arg["index"])))
         data = self.files[arg["key"]]
+        if arg["sha256"] != hashlib.sha256(data).digest():
+            raise Exception("sha256 required")
         i = int(arg["index"])
         return {"content": data[i * self.chunk:(i + 1) * self.chunk]}
 
@@ -82,7 +87,7 @@ class FakeStore:
         keys = sorted(self.files)[int(arg["start"]):int(arg["start"]) + 100]
         return [
             {"key": k, "content_type": "application/wasm", "encodings": [
-                {"content_encoding": "identity", "sha256": [hashlib.sha256(self.files[k]).digest()],
+                {"content_encoding": "identity", "sha256": hashlib.sha256(self.files[k]).digest(),
                  "length": len(self.files[k]), "modified": 0}]}
             for k in keys
         ]

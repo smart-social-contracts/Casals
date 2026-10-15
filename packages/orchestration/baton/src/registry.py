@@ -248,7 +248,7 @@ def _store_install_step_gen(
         uploaded = 1
 
     while offset < total and uploaded < STORE_CHUNKS_PER_EXECUTE:
-        sha_opt = [bytes.fromhex(sha_hex)] if sha_hex else []
+        sha_opt = bytes.fromhex(sha_hex) if sha_hex else None
         res = _unwrap((yield store.get_chunk({
             "key": key, "content_encoding": "identity", "index": index, "sha256": sha_opt,
         })))
@@ -318,7 +318,7 @@ def _store_pull_gen(config_store, namespace: str, path: str) -> Async[tuple[byte
     sha_hex = _opt_blob_hex(_field(got, "sha256"))
     index = 1
     while len(buf) < total:
-        sha_opt = [bytes.fromhex(sha_hex)] if sha_hex else []
+        sha_opt = bytes.fromhex(sha_hex) if sha_hex else None
         res = _unwrap((yield store.get_chunk({
             "key": key, "content_encoding": "identity", "index": index, "sha256": sha_opt,
         })))

@@ -124,7 +124,7 @@ class _Store:
 
     def _entry(self, key):
         data = self.files[key]
-        return {"content_encoding": "identity", "sha256": [hashlib.sha256(data).digest()],
+        return {"content_encoding": "identity", "sha256": hashlib.sha256(data).digest(),
                 "length": len(data), "modified": 0}
 
     def list(self, arg):
@@ -134,7 +134,7 @@ class _Store:
     def get(self, arg):
         data = self.files[arg["key"]]
         return {"content": data, "content_type": "text/html", "content_encoding": "identity",
-                "sha256": [hashlib.sha256(data).digest()], "total_length": len(data)}
+                "sha256": hashlib.sha256(data).digest(), "total_length": len(data)}
 
 
 class _Target:
