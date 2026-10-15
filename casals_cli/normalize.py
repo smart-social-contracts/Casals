@@ -173,6 +173,9 @@ def normalize(sheet: dict, env: str, *, deployer: str, ids: dict, uploads: list[
     doc_grants = grants("orchestra", (resolved.get("conductor") or {}).get("commanders"))
     for sec in resolved.get("sections") or []:
         doc_grants += grants(f"section:{sec['name']}", sec.get("commanders"))
+        creator = (section_arrangement(sec) or {}).get("created_by")
+        if creator:
+            doc_grants += grants(f"section:{sec['name']}", [{"principal": creator, "permissions": "stand.create"}])
         for st in sec.get("stands") or []:
             doc_grants += grants(f"stand:{st['name']}", st.get("commanders"))
     min_cycles = int(float(cycles.get("min_balance_tc") or 0) * TC)
