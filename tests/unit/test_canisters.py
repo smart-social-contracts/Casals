@@ -44,6 +44,8 @@ def test_config_calls_run_before_controllers():
     assert "ms2.configure" in call("canister_create", stand="d1", name="ms2", wasm="app@1", config=config[:1])["error"]
     state["replies"][("can-3", "set_config")] = '{"ok": false, "error": "denied"}'
     assert "denied" in call("canister_create", stand="d1", name="ms3", wasm="app@1", config=config[1:])["error"]
+    state["replies"][("can-4", "configure")] = '(variant { 5_048_165 = "duplicate signer" })'
+    assert "duplicate signer" in call("canister_create", stand="d1", name="ms4", wasm="app@1", config=config[:1])["error"]
     assert Canister["ms3"].status == "installed"
 
 

@@ -150,7 +150,7 @@ def conductor_section(sheet: dict, ids: dict, keys: dict, store_id: str) -> dict
          "status": "ready"} for k, n in CONDUCTOR_NAMES.items() if ids.get(n)]}]
     ms = (sheet.get("governance") or {}).get("multisig")
     if isinstance(ms, dict):
-        signers = "; ".join(f'principal "{s}"' for s in ms.get("signers") or [])
+        signers = "; ".join(f'principal "{s}"' for s in dict.fromkeys(ms.get("signers") or []))
         config = [{"method": "configure", "arg": f"(vec {{ {signers} }} : vec principal, "
                    f"{int(ms.get('threshold') or 1)} : nat, {int(ms.get('expiry_secs') or 604800)} : nat)"}]
         stands.append({"name": "governance", "canisters": [

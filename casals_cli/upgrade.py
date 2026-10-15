@@ -20,6 +20,7 @@ from typing import Any
 from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, iter_canisters, registry_path, store_key, validate, wasm_ref
 
 from casals_cli.bindings import load_bindings, resolve_new_access_codes, resolve_orchestra_refs
+from casals_cli.multisig import propose
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import emit_error, load_json_file
 from casals_cli.wasm_store import ensure_commit
@@ -122,6 +123,11 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             "type": entry.get("wasm_type", ""), "memory_keep": "true" if entry.get("memory_keep") else ""}))
         if not _ok(res):
             raise RuntimeError(f"wasm_authorize {key}: {_err_text(res)}")
+        if family == wasm_ref(((sheet.get("conductor") or {}).get("backend") or {}).get("wasm") or "")[0]:
+            path = store_key(WASM_NAMESPACE, registry_path(family, target))
+            rows.append(_upgrade_conductor(ic, backend_id, view.get("multisig_id", ""), store_id, key, path, sha))
+            _progress(f"  {rows[-1]['result']:9} {rows[-1]['canister']}: {rows[-1]['detail']}")
+            continue
         targets = [c for c in canisters.values() if wasm_ref(c.get("wasm") or "")[0] == family]
         if not targets:
             rows.append({"wasm": family, "canister": "-", "result": "skipped", "detail": "no canister runs this family"})
@@ -175,6 +181,26 @@ def _propose(ic, backend_id: str, stand: str, members: list[dict], key: str) -> 
     return [{"wasm": key, "canister": c["name"], "result": "pending",
              "detail": f"baton {res['baton']} action {res['action_id']}",
              "action_id": res["action_id"], "baton_id": res["baton_id"]} for c in members]
+
+
+def _upgrade_conductor(ic, backend_id: str, multisig_id: str, store_id: str, key: str, path: str, sha: str) -> dict:
+    """The conductor cannot upgrade itself: its multisig installs the module from the store."""
+    row = {"wasm": key, "canister": CONDUCTOR_NAMES["backend"]}
+    if (ic.read_module_hash(backend_id) or "").lower() == sha:
+        return {**row, "result": "skipped", "detail": "already at this hash"}
+    if not multisig_id or not sha:
+        return {**row, "result": "failed", "detail": "needs the orchestra's multisig and a pinned sha256"}
+    digest = "".join(f"\\{sha[i:i + 2]}" for i in range(0, len(sha), 2))
+    action = (f'variant {{ UpgradeCanister = record {{ canister_id = principal "{backend_id}"; '
+              f'store = principal "{store_id}"; key = "{path}"; sha256 = blob "{digest}"; '
+              f'arg = blob "DIDL\\00\\00"; wasm_memory_keep = false }} }}')
+    try:
+        pid, status = propose(ic, multisig_id, action)
+    except Exception as exc:
+        return {**row, "result": "failed", "detail": str(exc)[:300]}
+    done = status == "executed" and (ic.read_module_hash(backend_id) or "").lower() == sha
+    return {**row, "result": "upgraded" if done else "pending" if status == "pending" else "failed",
+            "detail": f"multisig proposal #{pid} {status}"}
 
 
 def _ship_content(ic, backend_id: str, name: str, ns: str, store_hash: str) -> dict:

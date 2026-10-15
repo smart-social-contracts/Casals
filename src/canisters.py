@@ -42,7 +42,7 @@ def configure(c, call):
         failed = reply.startswith("{") and json.loads(reply).get("ok") is False
     else:
         reply = yield from chain.call(target, call["method"], call["arg"])
-        failed = "err" in reply.split("=")[0].lower()
+        failed = any(tag in reply.split("=")[0].lower() for tag in ("err", "5_048_165"))  # untyped replies hash labels
     if failed:
         raise Exception(f"{c.name}.{call['method']}: {reply[:300]}")
 
