@@ -1,6 +1,6 @@
 /** Copy, labels, and helpers for governance UX (issue #41). */
 
-import type { Permission } from '$lib/api';
+import type { Grant } from '$lib/api';
 
 /** `requires` hides the link until the orchestra has the named facility. */
 export type NavLink = { href: string; label: string; description?: string; requires?: 'multisig' };
@@ -82,85 +82,51 @@ export interface OperatorRoleRow {
   allPermissions?: boolean;
 }
 
-/**
- * The backend keeps orchestra-level commanders (`conductor.commanders` in the
- * sheet) on a synthetic section named "Casals" (older builds: "Conductor").
- * The UI presents that row as the orchestra rung, not as a sibling section.
- */
-export const ORCHESTRA_SECTION = 'Casals';
+/** The section `casals up` creates for the conductor's own canisters. */
+export const CASALS_SECTION = 'Casals';
 
-export function isOrchestraSectionName(name: string | null | undefined): boolean {
-  return name === 'Casals' || name === 'Conductor';
+export const isCasalsSection = (name: string | null | undefined): boolean => name === CASALS_SECTION;
+
+export interface Permission {
+  key: string;
+  label: string;
+  group: string;
 }
 
-/** Section names an operator can pick in the assign modal (the orchestra rung has its own scope). */
-export function assignableSections(sectionNames: string[]): string[] {
-  return sectionNames.filter((n) => !isOrchestraSectionName(n));
-}
+/** The conductor's permission keys; `*` grants all of them. */
+export const PERMISSIONS: Permission[] = [
+  ['canister.create', 'Create canisters', 'Canisters'], ['canister.deploy', 'Deploy / upgrade canisters', 'Canisters'],
+  ['canister.config', 'Configure, rename and tag canisters', 'Canisters'],
+  ['canister.lifecycle', 'Start, stop, snapshot, restore', 'Canisters'], ['canister.delete', 'Delete canisters', 'Canisters'],
+  ['canister.call', 'Call a granted canister method', 'Canisters'], ['canister.browse', 'Browse canister data', 'Canisters'],
+  ['cycles.top_up', 'Top up cycles', 'Canisters'], ['stand.create', 'Create stands', 'Stand'],
+  ['stand.edit', 'Rename / edit stands', 'Stand'], ['stand.delete', 'Delete stands', 'Stand'],
+  ['section.edit', 'Edit sections and templates', 'Section'], ['grant.assign', 'Appoint commanders', 'Governance'],
+  ['wasm.upload', 'Upload files to the store', 'Platform'], ['wasm.authorize', 'Authorize / revoke wasms', 'Platform'],
+  ['orchestra.settings', 'Change orchestra settings', 'Platform'], ['alias.manage', 'Manage principal aliases', 'Platform'],
+].map(([key, label, group]) => ({ key, label, group }));
 
-export interface ScopedGrant {
-  principal: string;
-  permissions?: string[];
-  all_permissions?: boolean;
-}
-
-/** Commander grants at each rung above a stand; `null` when that rung has no row. */
+/** Grants at each rung above a stand. */
 export interface StandGrantLadder {
-  orchestra?: ScopedGrant[] | null;
-  section?: ScopedGrant[] | null;
-  stand?: ScopedGrant[] | null;
+  orchestra?: Grant[] | null;
+  section?: Grant[] | null;
+  stand?: Grant[] | null;
 }
 
-export const ARRANGEMENT_EDIT = 'arrangement.edit';
-
-/** True when ``caller`` may open and save this section's arrangement.
- * Orchestra commanders holding the permission act on every product section.
- * Controllers may always edit. The synthetic Casals section has no arrangement page. */
-export function canEditSectionArrangement(
-  caller: string,
-  sectionName: string,
-  sections: { name: string; commanders?: ScopedGrant[] | null }[],
-  isController: boolean,
-): boolean {
-  if (isOrchestraSectionName(sectionName)) return false;
-  if (isController) return true;
-  const who = (caller || '').trim();
-  if (!who) return false;
-  const orchestra = sections.find((s) => isOrchestraSectionName(s.name));
-  const section = sections.find((s) => s.name === sectionName);
-  for (const grant of [...(orchestra?.commanders ?? []), ...(section?.commanders ?? [])]) {
-    if (grant.principal === who && grantAllows(grant, ARRANGEMENT_EDIT)) return true;
-  }
-  return false;
+export function grantAllows(grant: Pick<Grant, 'permissions'>, key: string): boolean {
+  return grant.permissions.includes('*') || grant.permissions.includes(key);
 }
 
-export function grantAllows(
-  grant: { permissions?: string[]; all_permissions?: boolean },
-  key: string,
-): boolean {
-  if (grant.all_permissions) return true;
-  const perms = grant.permissions ?? [];
-  // all_permissions: false with an empty list is the no-access sentinel.
-  // A missing flag plus an empty list is still the legacy full-access grant.
-  if (grant.all_permissions !== false && perms.length === 0) return true;
-  if (perms.includes(key)) return true;
-  return key === 'subnet.whitelist' && perms.includes('commander.assign');
-}
-
-/**
- * Pure mirror of the backend's `_require_commander` ladder: orchestra
- * commanders act on every stand; otherwise the stand's own commanders, then
- * the parent section's. Controllers and open-access are decided elsewhere.
- */
-export function ladderAllows(caller: string, permissionKey: string, ladder: StandGrantLadder): boolean {
+/** Mirror of the conductor: a key held at a rung applies to everything below it. */
+export function ladderAllows(caller: string, key: string, ladder: StandGrantLadder): boolean {
   const who = caller.trim();
-  if (!who) return false;
-  for (const rung of [ladder.orchestra, ladder.stand, ladder.section]) {
-    for (const grant of rung ?? []) {
-      if (grant.principal === who && grantAllows(grant, permissionKey)) return true;
-    }
-  }
-  return false;
+  return !!who && [ladder.orchestra, ladder.stand, ladder.section].some((rung) =>
+    (rung ?? []).some((g) => g.principal === who && grantAllows(g, key)));
+}
+
+/** True when `caller` may edit the section's template (`section.edit` on the orchestra or the section). */
+export function canEditSection(caller: string, orchestra: Grant[], section: Grant[], isController: boolean): boolean {
+  return isController || ladderAllows(caller, 'section.edit', { orchestra, section });
 }
 
 /** Human label for a scope row: "Orchestra · governed", "Product", "Product / Motoko". */
@@ -318,7 +284,7 @@ export const BATON_CAPABILITY_REFERENCE: ReferenceEntry[] = [
 export const GOVERNANCE_MAP_LAYERS = [
   {
     title: 'Casals operator roles',
-    body: 'Grants permission to call Casals APIs (plan / apply, lifecycle, orchestration APIs). Scoped Orchestra → Section → Stand: a commander at one rung acts on everything beneath it.',
+    body: 'Grants permission to call Casals APIs (canisters, stands, content, cycles). Scoped Orchestra → Section → Stand: a commander at one rung acts on everything beneath it.',
   },
   {
     title: 'Platform committee (multisig)',

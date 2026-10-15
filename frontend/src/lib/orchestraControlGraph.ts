@@ -1,6 +1,6 @@
-/** Build a control-authority graph from the orchestra tree (IC controllers, commanders, batons). */
+/** Build a control-authority graph from the orchestra view (IC controllers, grants, batons). */
 
-import type { Canister, CommanderGrant, Section, Stand, Tree } from './api';
+import type { CanisterRow, Grant, OrchestraView } from './api';
 import type { BatonRef } from './orchestraGovernance';
 
 export type ControlEdgeType =
@@ -26,7 +26,7 @@ export interface ControlNode {
   kind: 'canister' | 'principal';
   label: string;
   sublabel?: string;
-  canister?: Canister;
+  canister?: CanisterRow;
   principal?: string;
   rank: number;
   section?: string;
@@ -44,7 +44,6 @@ export interface ControlEdge {
 export interface ControlGraph {
   nodes: ControlNode[];
   edges: ControlEdge[];
-  warnings: string[];
 }
 
 export interface ControlGraphOptions {
@@ -56,22 +55,22 @@ export interface ControlGraphOptions {
 const BATON_WASM_PREFIX = 'orchestration-baton';
 const MULTISIG_WASM_PREFIX = 'orchestration-multisig';
 
-function isBatonWasm(wasmKey?: string): boolean {
-  const k = wasmKey ?? '';
+function isBatonWasm(wasm?: string): boolean {
+  const k = wasm ?? '';
   return k === BATON_WASM_PREFIX || k.startsWith(`${BATON_WASM_PREFIX}@`);
 }
 
-function isMultisigWasm(wasmKey?: string): boolean {
-  const k = wasmKey ?? '';
+function isMultisigWasm(wasm?: string): boolean {
+  const k = wasm ?? '';
   return k === MULTISIG_WASM_PREFIX || k.startsWith(`${MULTISIG_WASM_PREFIX}@`);
 }
 
-function isMultisigCanister(c: Pick<Canister, 'wasm_key' | 'name'>): boolean {
-  return isMultisigWasm(c.wasm_key) || c.name === 'multisig';
+function isMultisigCanister(c: Pick<CanisterRow, 'wasm' | 'name'>): boolean {
+  return isMultisigWasm(c.wasm) || c.name === 'multisig';
 }
 
-function isBatonCanister(c: Pick<Canister, 'wasm_key'>): boolean {
-  return isBatonWasm(c.wasm_key);
+function isBatonCanister(c: Pick<CanisterRow, 'wasm'>): boolean {
+  return isBatonWasm(c.wasm);
 }
 
 const CASALS_CANISTER_NAMES = new Set([
@@ -80,62 +79,43 @@ const CASALS_CANISTER_NAMES = new Set([
   'casals-store',
 ]);
 
-function isCasalsCanister(c: Pick<Canister, 'name'>): boolean {
+function isCasalsCanister(c: Pick<CanisterRow, 'name'>): boolean {
   return CASALS_CANISTER_NAMES.has(c.name);
 }
 
-/** Canisters whose cached IC controllers include the baton. */
-export function inferManagedCanistersFromTree(
-  tree: Tree,
-  batonCanisterId: string,
-  standHint?: { section?: string; stand?: string },
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const sec of tree.sections) {
-    if (standHint?.section && sec.name !== standHint.section) continue;
-    for (const stand of sec.stands) {
-      if (standHint?.stand && stand.name !== standHint.stand) continue;
-      for (const c of stand.canisters) {
-        const cid = c.canister_id;
-        if (!cid || cid === batonCanisterId || seen.has(cid)) continue;
-        if (isBatonCanister(c) || isMultisigCanister(c)) continue;
-        if (!(c.controllers ?? []).includes(batonCanisterId)) continue;
-        seen.add(cid);
-        out.push(cid);
-      }
-    }
-  }
-  return out;
+type StandHint = { section?: string; stand?: string };
+
+function standPeers(view: OrchestraView, batonCanisterId: string, hint?: StandHint): CanisterRow[] {
+  return view.orchestra.canisters.filter(
+    (c) =>
+      c.canister_id &&
+      c.canister_id !== batonCanisterId &&
+      (!hint?.section || c.section === hint.section) &&
+      (!hint?.stand || c.stand === hint.stand) &&
+      !isBatonCanister(c) &&
+      !isMultisigCanister(c),
+  );
 }
 
-/** Same-stand member canisters when the controller cache is empty (sheet topology). */
-export function inferManagedCanistersFromStand(
-  tree: Tree,
-  batonCanisterId: string,
-  standHint?: { section?: string; stand?: string },
-): string[] {
+/** Canisters whose IC controllers include the baton. */
+export function inferManagedCanistersFromTree(view: OrchestraView, batonCanisterId: string, standHint?: StandHint): string[] {
+  return standPeers(view, batonCanisterId, standHint)
+    .filter((c) => c.controllers.includes(batonCanisterId))
+    .map((c) => c.canister_id);
+}
+
+/** Same-stand member canisters, whatever their controllers. */
+export function inferManagedCanistersFromStand(view: OrchestraView, batonCanisterId: string, standHint?: StandHint): string[] {
   if (!standHint?.section || !standHint?.stand) return [];
-  const out: string[] = [];
-  for (const sec of tree.sections) {
-    if (sec.name !== standHint.section) continue;
-    for (const stand of sec.stands) {
-      if (stand.name !== standHint.stand) continue;
-      for (const c of stand.canisters) {
-        const cid = c.canister_id;
-        if (!cid || cid === batonCanisterId) continue;
-        if (isBatonCanister(c) || isMultisigCanister(c) || isCasalsCanister(c)) continue;
-        out.push(cid);
-      }
-    }
-  }
-  return out;
+  return standPeers(view, batonCanisterId, standHint)
+    .filter((c) => !isCasalsCanister(c))
+    .map((c) => c.canister_id);
 }
 
-function resolveManagedCanisterIds(tree: Tree, baton: BatonRef): string[] {
+function resolveManagedCanisterIds(view: OrchestraView, baton: BatonRef): string[] {
   const hint = { section: baton.section, stand: baton.stand };
-  const fromTree = inferManagedCanistersFromTree(tree, baton.canister_id, hint);
-  const fromStand = inferManagedCanistersFromStand(tree, baton.canister_id, hint);
+  const fromTree = inferManagedCanistersFromTree(view, baton.canister_id, hint);
+  const fromStand = inferManagedCanistersFromStand(view, baton.canister_id, hint);
   return [...new Set([...fromTree, ...fromStand])];
 }
 
@@ -183,13 +163,8 @@ export const CONTROL_EDGE_META: Record<
   },
 };
 
-function entityCommanders(
-  entity: Pick<Section | Stand, 'commanders' | 'commander_principal'>,
-): CommanderGrant[] {
-  if (entity.commanders?.length) return entity.commanders;
-  const p = (entity.commander_principal || '').trim();
-  if (!p) return [];
-  return [{ principal: p }];
+function claimed(grants: Grant[]): Grant[] {
+  return grants.filter((g) => g.principal && !g.principal.startsWith('sha256:'));
 }
 
 function canisterNodeId(canisterId: string): string {
@@ -200,7 +175,7 @@ function principalNodeId(principal: string): string {
   return `principal:${principal}`;
 }
 
-function computeCanisterRank(c: Canister): number {
+function computeCanisterRank(c: CanisterRow): number {
   if (isMultisigCanister(c)) return 0;
   if (isCasalsCanister(c)) return 1;
   if (isBatonCanister(c)) return 2;
@@ -221,37 +196,8 @@ export function isUphillOrchestraIcEdge(
   return from.rank > to.rank;
 }
 
-export function treeMissingControllerCount(tree: Tree | null | undefined): number {
-  if (!tree) return 0;
-  let missing = 0;
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        if (c.canister_id && !(c.controllers?.length)) missing += 1;
-      }
-    }
-  }
-  return missing;
-}
-
-function findCanisterByPrincipal(
-  tree: Tree,
-  principal: string,
-): { canister: Canister; section: string; stand: string } | null {
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        if (c.canister_id === principal) {
-          return { canister: c, section: sec.name, stand: stand.name };
-        }
-      }
-    }
-  }
-  return null;
-}
-
 export function buildControlGraph(
-  tree: Tree | null | undefined,
+  view: OrchestraView | null | undefined,
   batons: BatonRef[],
   options: ControlGraphOptions = {},
 ): ControlGraph {
@@ -259,13 +205,11 @@ export function buildControlGraph(
     ...DEFAULT_CONTROL_GRAPH_LAYERS,
     ...options.layers,
   };
-  const warnings: string[] = [];
-  if (!tree) return { nodes: [], edges: [], warnings };
+  if (!view) return { nodes: [], edges: [] };
 
   const nodes = new Map<string, ControlNode>();
   const edges: ControlEdge[] = [];
   const edgeKeys = new Set<string>();
-  let missingControllers = 0;
 
   const labelFor = (principal: string) => options.principalLabel?.(principal) ?? principal.slice(0, 12);
 
@@ -287,7 +231,7 @@ export function buildControlGraph(
     edges.push({ id: key, type, from, to, label });
   }
 
-  function ensureCanisterNode(c: Canister, section?: string, stand?: string): string {
+  function ensureCanisterNode(c: CanisterRow): string {
     const id = canisterNodeId(c.canister_id);
     if (!nodes.has(id)) {
       nodes.set(id, {
@@ -297,18 +241,16 @@ export function buildControlGraph(
         sublabel: c.kind,
         canister: c,
         rank: computeCanisterRank(c),
-        section,
-        stand,
+        section: c.section,
+        stand: c.stand,
       });
     }
     return id;
   }
 
   function resolveNodeId(principal: string): string {
-    const found = tree ? findCanisterByPrincipal(tree, principal) : null;
-    if (found) {
-      return ensureCanisterNode(found.canister, found.section, found.stand);
-    }
+    const found = view?.orchestra.canisters.find((c) => c.canister_id === principal);
+    if (found) return ensureCanisterNode(found);
     const id = principalNodeId(principal);
     if (!nodes.has(id)) {
       nodes.set(id, {
@@ -323,27 +265,20 @@ export function buildControlGraph(
     return id;
   }
 
-  for (const sec of tree.sections) {
+  for (const sec of view.sections) {
     for (const stand of sec.stands) {
       for (const c of stand.canisters) {
         if (!c.canister_id) continue;
-        const targetId = ensureCanisterNode(c, sec.name, stand.name);
-
+        const targetId = ensureCanisterNode(c);
         if (layers.icControllers) {
-          const controllers = c.controllers ?? [];
-          if (!controllers.length) missingControllers += 1;
-          for (const p of controllers) {
-            addEdge('ic_controller', resolveNodeId(p), targetId);
-          }
+          for (const p of c.controllers) addEdge('ic_controller', resolveNodeId(p), targetId);
         }
       }
 
-      // A commander's grant covers the whole stand, so every canister in it is
-      // a commanded target — not just the stand's main backend.
+      // A stand grant covers every canister in the stand, not just its main backend.
       if (layers.commanders) {
-        for (const cmd of entityCommanders(stand)) {
-          if (!cmd.principal) continue;
-          const from = resolveNodeId(cmd.principal);
+        for (const g of claimed(stand.grants)) {
+          const from = resolveNodeId(g.principal);
           for (const c of stand.canisters) {
             if (!c.canister_id) continue;
             addEdge('casals_commander', from, canisterNodeId(c.canister_id), stand.name);
@@ -353,9 +288,8 @@ export function buildControlGraph(
     }
 
     if (layers.commanders) {
-      for (const cmd of entityCommanders(sec)) {
-        if (!cmd.principal) continue;
-        const from = resolveNodeId(cmd.principal);
+      for (const g of claimed(sec.grants)) {
+        const from = resolveNodeId(g.principal);
         for (const stand of sec.stands) {
           for (const c of stand.canisters) {
             if (!c.canister_id) continue;
@@ -373,16 +307,10 @@ export function buildControlGraph(
       if (options.casalsBackendId) {
         addEdge('baton_top_commander', resolveNodeId(options.casalsBackendId), batonId);
       }
-      for (const mid of resolveManagedCanisterIds(tree, b)) {
+      for (const mid of resolveManagedCanisterIds(view, b)) {
         if (mid) addEdge('baton_manages', batonId, canisterNodeId(mid));
       }
     }
-  }
-
-  if (layers.icControllers && missingControllers > 0) {
-    warnings.push(
-      `${missingControllers} canister(s) have no cached IC controllers — use Refresh on this view or open Tree and reload.`,
-    );
   }
 
   const activeEdges = edges.filter((e) => {
@@ -398,7 +326,7 @@ export function buildControlGraph(
   }
 
   const activeNodes = [...nodes.values()].filter((n) => activeNodeIds.has(n.id));
-  return { nodes: activeNodes, edges: activeEdges, warnings };
+  return { nodes: activeNodes, edges: activeEdges };
 }
 
 export function layoutControlGraph(
@@ -696,7 +624,7 @@ export function filterControlGraphByEdgeTypes(
     activeNodeIds.add(e.to);
   }
   const nodes = graph.nodes.filter((n) => activeNodeIds.has(n.id));
-  return { nodes, edges, warnings: graph.warnings };
+  return { nodes, edges };
 }
 
 export function standVisibilityKey(section: string, stand: string): string {
@@ -753,7 +681,7 @@ export function filterControlGraph(
 
   const nodes = graph.nodes.filter((n) => nodeVisible(n) && activeIds.has(n.id));
 
-  return { nodes, edges, warnings: graph.warnings };
+  return { nodes, edges };
 }
 
 export function graphDimensions(

@@ -13,14 +13,14 @@ export type TreeCacheStorage = {
 /** Open-Orchestra plan: paint cache immediately, fetch live in the background. */
 export type OrchestraOpenPlan<T extends CachedOrchestraTree = CachedOrchestraTree> = {
   tree: T | null;
-  /** True when the page must block on a live get_tree before first paint. */
+  /** True when the page must block on a live orchestra_get before first paint. */
   waitForLive: boolean;
-  /** Always true — live get_tree still refreshes after paint (or is the first load). */
+  /** Always true — live orchestra_get still refreshes after paint (or is the first load). */
   fetchLive: boolean;
 };
 
 export function treeCacheKey(backendId: string): string {
-  return `casals.orchestraTree.${backendId || 'default'}`;
+  return `casals.orchestraView.${backendId || 'default'}`;
 }
 
 export function parseCachedTree(raw: string | null | undefined): CachedOrchestraTree | null {

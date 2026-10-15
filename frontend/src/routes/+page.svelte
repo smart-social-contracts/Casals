@@ -2,63 +2,43 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import {
-    getTree,
-    getStatus,
-    createSection,
-    createStand,
-    registerCanister,
-    setCommander,
-    upgradeTo,
-    createSnapshot,
-    revertSnapshot,
-    stopCanister,
-    startCanister,
-    setLogVisibility,
-    getEvents,
-    getCanisterLogs,
-    getCanisterDeployment,
-    getCyclesCached,
-    getCyclesCachedOnChain,
-    refreshCanisters,
-    casalsMetadata,
-    orchestraCanisterNames,
-    listAuthorizedWasms,
-    refreshControllersCache,
+    loadView,
+    orchestraExport,
+    orchestraEvents,
+    wasmList,
+    cyclesGet,
+    sectionCreate,
+    sectionSet,
+    sectionDelete,
+    standCreate,
+    standSet,
+    standDelete,
+    canisterRegister,
+    canisterSet,
+    canisterUpgrade,
+    canisterSnapshot,
+    canisterRestore,
+    canisterStop,
+    canisterStart,
+    canisterDelete,
     canisterBrowse,
-    canisterExec,
+    grantSet,
+    getCanisterLogs,
     shortHash,
     shortPrincipal,
     canisterLink,
     formatCycles,
-    formatIsoTs,
     cyclesIsLow,
-    renameSection,
-    renameStand,
-    renameCanister,
-    setCanisterTags,
-    deleteSection,
-    deleteStand,
-    deleteCanister,
     backendCanisterId,
-    frontendCanisterId,
-    listBackendControllers,
-    getSheetDocument,
+  } from '$lib/api';
+  import type {
+    OrchestraView, SectionView, StandView, CanisterRow, OrchestraEvent,
+    CanisterLogRecord, Wasm, CanisterCycles, ExportDoc,
   } from '$lib/api';
   import { installArgPayload, sheetInstallArgFor } from '$lib/installArg';
-  import { hydrateTreeControllers } from '$lib/controllerAccess';
-  import { batonConsoleUrl, batonIdInStand } from '$lib/orchestrationNav';
-  import {
-    browserTreeStorage,
-    orchestraOpenPlan,
-    readCachedTree,
-    writeCachedTree,
-  } from '$lib/treeCache';
-  import type {
-    Tree, Status, Section, Stand, Canister, UpdateResult,
-    OrchestrationEvent, CanisterLogRecord, AuthorizedWasm,
-    CanisterCycles, CanisterDeployment, IcRunStatus, Sheet,
-  } from '$lib/api';
-  import { canDo, isAuthenticated, isController, principal } from '$lib/auth';
+  import { batonConsoleUrl, batonIdInStand, governanceConsoleUrl } from '$lib/orchestrationNav';
+  import { browserTreeStorage, orchestraOpenPlan, readCachedTree, writeCachedTree } from '$lib/treeCache';
+  import { isAuthenticated, isController, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
   import FormModal from '$lib/components/FormModal.svelte';
@@ -66,33 +46,24 @@
   import DeployBundleModal from '$lib/components/DeployBundleModal.svelte';
   import OrchestraDiagram from '$lib/components/OrchestraDiagram.svelte';
   import OrchestraControlGraph from '$lib/components/OrchestraControlGraph.svelte';
-  import CanisterGovernanceMeta from '$lib/components/CanisterGovernanceMeta.svelte';
   import CanisterTypeBadges from '$lib/components/CanisterTypeBadges.svelte';
   import SubnetFlags from '$lib/components/SubnetFlags.svelte';
   import CanisterControllersBadge from '$lib/components/CanisterControllersBadge.svelte';
-  import { warmSubnetGeoCache } from '$lib/subnetGeo';
-  import { governanceConsoleUrl } from '$lib/orchestrationNav';
-  import { resolveWasmType, canisterFeatures } from '$lib/canisterTypes';
+  import { resolveWasmType, canBrowse } from '$lib/canisterTypes';
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
-  import {
-    sortCanistersForDisplay,
-    findBatonsInTree,
-    augmentTreeWithCasals,
-    isCasalsCanister,
-  } from '$lib/orchestraGovernance';
-  import { treeMissingControllerCount } from '$lib/orchestraControlGraph';
-  import { entityCommanders } from '$lib/commanderAccess';
-  import { canActOnStand, orchestraSection } from '$lib/commanderPermissions';
+  import { sortCanistersForDisplay, isCasalsCanister } from '$lib/orchestraGovernance';
+  import { canActOnStand } from '$lib/commanderPermissions';
+  import { createOrchestrationLogPoll } from '$lib/orchestrationLogPoll';
   import {
     flattenTreeRows,
     listActionState,
     readOrchestraView,
     writeOrchestraView,
     type ListRow,
-    type OrchestraView,
+    type OrchestraLayout,
   } from '$lib/orchestraList';
-  import { canEditSectionArrangement, isOrchestraSectionName } from '$lib/governanceUx';
+  import { canEditSection, isCasalsSection } from '$lib/governanceUx';
   import type { Field } from '$lib/components/FormModal.svelte';
 
   type Values = Record<string, string | boolean>;
@@ -103,105 +74,69 @@
     fields: Field[];
     submitLabel: string;
     danger?: boolean;
-    onsubmit: (values: Values) => Promise<UpdateResult>;
+    onsubmit: (values: Values) => Promise<unknown>;
   }
 
-  let tree = $state<Tree | null>(null);
-  let status = $state<Status | null>(null);
-  let orchestraName = $state('');
-  let casalsControllers = $state<{ backend?: string[]; frontend?: string[] }>({});
+  let tree = $state<OrchestraView | null>(null);
   let loading = $state(true);
   let error = $state('');
-  let catalog = $state<AuthorizedWasm[]>([]);
-  /** The conductor's stored sheet — default `content` namespaces for Deploy frontend bundle. */
-  let storedSheet = $state<Sheet | null>(null);
-  let bundleTarget = $state<Canister | null>(null);
+  let catalog = $state<Wasm[]>([]);
+  /** The orchestra as an `orchestra_up` document — the source of each canister's install_arg. */
+  let exported = $state<ExportDoc | null>(null);
+  let bundleTarget = $state<CanisterRow | null>(null);
+  const orchestraName = $derived(tree?.orchestra.name ?? '');
 
-  // Per-canister expandable detail panel (status + recent events + canister logs).
   let expandedCanisters = $state<Record<string, boolean>>({});
-  let canisterEvents = $state<Record<string, OrchestrationEvent[]>>({});
+  let canisterEvents = $state<Record<string, OrchestraEvent[]>>({});
   let canisterLogs = $state<Record<string, CanisterLogRecord[]>>({});
   let canisterLogErr = $state<Record<string, string>>({});
   let canisterLoading = $state<Record<string, boolean>>({});
   let canisterCycles = $state<Record<string, CanisterCycles>>({});
-  let canisterDeployment = $state<Record<string, CanisterDeployment | null>>({});
   let canisterDetailsErr = $state<Record<string, string>>({});
 
-  // Basilisk introspection (only for canisters built with __basilisk_features__).
-  const canShell = canDo('canister.shell');
   let browseData = $state<Record<string, unknown>>({});
   let browseErr = $state<Record<string, string>>({});
   let browseBusy = $state<Record<string, boolean>>({});
-  let consoleCode = $state<Record<string, string>>({});
-  let consoleOut = $state<Record<string, string>>({});
-  let consoleErr = $state<Record<string, string>>({});
-  let consoleBusy = $state<Record<string, boolean>>({});
 
   let overviewOpen = $state(false);
-  let orchestraView = $state<OrchestraView>('list');
-  function setView(view: OrchestraView) {
+  let orchestraView = $state<OrchestraLayout>('list');
+  function setView(view: OrchestraLayout) {
     orchestraView = view;
     writeOrchestraView(typeof localStorage === 'undefined' ? null : localStorage, view);
   }
-  let controllersRefreshing = $state(false);
-  let controlAutoRefreshDone = $state(false);
   let filterQuery = $state('');
 
-  const displayTree = $derived.by(() => {
+  const principalLabels = $derived(buildPrincipalLabels(tree));
+
+  // A section is kept when any of its stands match, a stand when any of its canisters
+  // or the stand itself match; case-insensitive substring match.
+  const filteredTree = $derived.by((): OrchestraView | null => {
     if (!tree) return null;
-    return augmentTreeWithCasals(
-      tree,
-      backendCanisterId(),
-      frontendCanisterId(),
-      casalsControllers,
-    );
-  });
-
-  const principalLabels = $derived.by(() =>
-    buildPrincipalLabels(displayTree, backendCanisterId(), displayTree?.principal_aliases),
-  );
-
-  const orchestraBatons = $derived(findBatonsInTree(displayTree));
-
-  // Filtered view of the tree. A section is kept when any of its stands match,
-  // a stand is kept when any of its canisters match or the stand itself matches.
-  // Matching is case-insensitive substring against name, canister ID, WASM key,
-  // status, description, commander, subnet.
-  const filteredTree = $derived.by(() => {
-    if (!displayTree) return null;
     const q = filterQuery.trim().toLowerCase();
-    if (!q) return displayTree;
-    const matchCanister = (s: Canister) =>
-      [s.name, s.canister_id, s.wasm_key, s.wasm_hash, s.status, s.kind, s.subnet, ...(s.user_tags ?? [])]
-        .some((v) => (v ?? '').toLowerCase().includes(q));
-    const matchStand = (d: Stand) =>
-      [d.name, d.description, d.subnet, d.subnet_type, ...entityCommanders(d).map((c) => c.principal)]
-        .some((v) => (v ?? '').toLowerCase().includes(q));
-    const matchSection = (sec: Section) =>
-      [sec.name, sec.description, sec.subnet, sec.subnet_type, ...entityCommanders(sec).map((c) => c.principal)]
-        .some((v) => (v ?? '').toLowerCase().includes(q));
-    const sections = displayTree.sections
+    if (!q) return tree;
+    const has = (vals: (string | undefined)[]) => vals.some((v) => (v ?? '').toLowerCase().includes(q));
+    const sections = tree.sections
       .map((sec) => {
         const stands = sec.stands
-          .map((dk) => {
-            const canisters = dk.canisters.filter(matchCanister);
-            if (canisters.length || matchStand(dk)) return { ...dk, canisters };
-            return null;
+          .map((st) => {
+            const canisters = st.canisters.filter((c) =>
+              has([c.name, c.canister_id, c.wasm, c.wasm_hash, c.status, c.kind, ...c.tags]));
+            return canisters.length || has([st.name, st.description, ...st.grants.map((g) => g.principal)])
+              ? { ...st, canisters } : null;
           })
-          .filter(Boolean) as Stand[];
-        if (stands.length || matchSection(sec)) return { ...sec, stands };
-        return null;
+          .filter((st): st is StandView => !!st);
+        return stands.length || has([sec.name, sec.description, ...sec.grants.map((g) => g.principal)])
+          ? { ...sec, stands } : null;
       })
-      .filter(Boolean) as Section[];
-    return { ...displayTree, sections };
+      .filter((sec): sec is SectionView => !!sec);
+    return { ...tree, sections };
   });
 
   // ── List view: flat rows + selection + toolbar ─────────────────────────────
-  const listRows = $derived(flattenTreeRows(filteredTree, { sort: sortCanistersForDisplay, isCore: isOrchestraSectionName }));
+  const listRows = $derived(flattenTreeRows(filteredTree, { sort: sortCanistersForDisplay, isCore: isCasalsSection }));
   const selectableIds = $derived(new Set(listRows.filter((r) => r.canister.canister_id).map((r) => r.canister.canister_id)));
 
   let selectedIds = $state<Set<string>>(new Set());
-  /** Selected rows that are currently visible (the filter may hide some). */
   const selectedRows = $derived(listRows.filter((r) => r.canister.canister_id && selectedIds.has(r.canister.canister_id)));
   const allVisibleSelected = $derived(selectableIds.size > 0 && [...selectableIds].every((id) => selectedIds.has(id)));
   const someVisibleSelected = $derived(!allVisibleSelected && [...selectableIds].some((id) => selectedIds.has(id)));
@@ -222,31 +157,28 @@
     selectedIds = new Set();
   }
 
-  const actionCtx = $derived.by(() => {
-    const me = $principal;
-    const orchestra = orchestraSection(displayTree);
-    return {
-      isController: $isController === true,
-      // Mirrors the backend's `_require_commander` ladder: orchestra → stand → section.
-      allows: (row: ListRow, key: string) => !!me.trim() && canActOnStand(row.section, row.stand, me, key, orchestra),
-      runtimeOf: (id: string) => canisterCycles[id]?.runtime_status,
-    };
-  });
-  const actions = $derived(listActionState(selectedRows, actionCtx));
+  const actions = $derived(listActionState(selectedRows, {
+    isController: $isController === true,
+    allows: (row: ListRow, key: string) =>
+      !!tree && !!$principal.trim() && canActOnStand(tree, row.section, row.stand, $principal, key),
+  }));
   const single = $derived(selectedRows.length === 1 ? selectedRows[0] : null);
 
-  /** Controllers cell: one → its label; several → the count badge (click to list). */
-  function singleControllerLabel(c: Canister): string {
-    return controllerLabel(c.controllers![0], principalLabels).display;
+  function canEditArrangement(section: SectionView): boolean {
+    return !!tree && canEditSection($principal, tree.grants, section.grants, $isController === true);
+  }
+
+  function singleControllerLabel(c: CanisterRow): string {
+    return controllerLabel(c.controllers[0], principalLabels).display;
   }
   /** A friendly alias for the canister id when one is set and differs from its name. */
-  function canisterAlias(c: Canister): string {
-    const alias = displayTree?.principal_aliases?.[c.canister_id];
+  function canisterAlias(c: CanisterRow): string {
+    const alias = tree?.orchestra.aliases[c.canister_id];
     return alias && alias !== c.name ? alias : '';
   }
 
   // Sequential batch over the selection; one toast per outcome, one reload at the end.
-  async function runBatch(label: string, rows: ListRow[], fn: (c: Canister) => Promise<UpdateResult>) {
+  async function runBatch(label: string, rows: ListRow[], fn: (c: CanisterRow) => Promise<unknown>) {
     if (!rows.length) return;
     let ok = 0;
     const failed: string[] = [];
@@ -268,7 +200,7 @@
     const rows = selectedRows;
     openModal({
       title: `Delete ${rows.length} canisters`,
-      description: `${rows.map((r) => r.canister.name).join(', ')} — records are removed and the canisters returned to the pool (not deleted on the IC).`,
+      description: `${rows.map((r) => r.canister.name).join(', ')} — Casals forgets them; the canisters stay on the IC.`,
       fields: [{ name: 'confirm', label: 'Type "DELETE" to confirm', required: true }],
       submitLabel: `Delete ${rows.length} canisters`,
       danger: true,
@@ -276,12 +208,11 @@
         if (String(v.confirm).trim() !== 'DELETE') throw new Error('Confirmation does not match');
         const failed: string[] = [];
         for (const r of rows) {
-          try { await deleteCanister({ canister: r.canister.name }); }
+          try { await canisterDelete(r.canister.name); }
           catch (e: any) { failed.push(`${r.canister.name}: ${e?.message ?? 'failed'}`); }
         }
         clearSelection();
         if (failed.length) throw new Error(failed.join('; '));
-        return { ok: true } as UpdateResult;
       },
     });
   }
@@ -289,255 +220,65 @@
   let modal = $state<ModalConfig | null>(null);
   let modalBusy = $state(false);
   let modalLogLines = $state<string[]>([]);
-  let createCanisterStand = $state<Stand | null>(null);
-
-  // While an operation is running, poll the event log and stream new entries
-  // into the modal's live log window so the user can see progress.
-  let _logPollTimer: ReturnType<typeof setInterval> | null = null;
-  let _logLastSeen = $state(0); // timestamp_secs of last event already shown
-
-  function _eventToLogLine(ev: OrchestrationEvent): string {
-    const tid = ev.canister_id ? ` [${ev.canister_id.slice(0, 8)}…]` : '';
-    const payload = ev.payload && typeof ev.payload === 'object'
-      ? Object.entries(ev.payload as Record<string, unknown>)
-          .filter(([k]) => k !== 'stand')
-          .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-          .join(' ')
-      : '';
-    return `${ev.kind}${tid}${payload ? '  ' + payload : ''}`;
-  }
-
-  function _startLogPoll() {
-    _logLastSeen = Math.floor(Date.now() / 1000) - 2; // capture events from now
-    modalLogLines = [];
-    _logPollTimer = setInterval(async () => {
-      try {
-        const evs = await getEvents({ take: 30 });
-        const fresh = evs.filter((e) => (e.timestamp_secs ?? 0) > _logLastSeen);
-        if (fresh.length) {
-          _logLastSeen = Math.max(...fresh.map((e) => e.timestamp_secs ?? 0));
-          modalLogLines = [...modalLogLines, ...fresh.map(_eventToLogLine)];
-        }
-      } catch { /* ignore poll errors */ }
-    }, 1200);
-  }
-
-  function _stopLogPoll() {
-    if (_logPollTimer !== null) { clearInterval(_logPollTimer); _logPollTimer = null; }
-  }
-
-  function collectSubnetIds(t: Tree | null): string[] {
-    if (!t) return [];
-    const ids = new Set<string>();
-    for (const sec of t.sections) {
-      if (sec.subnet) ids.add(sec.subnet);
-      for (const stand of sec.stands) {
-        if (stand.subnet) ids.add(stand.subnet);
-        for (const c of stand.canisters) {
-          if (c.subnet) ids.add(c.subnet);
-        }
-      }
-    }
-    return [...ids];
-  }
-
-  async function hydrateDisplayedControllers(fresh: Tree, force = false): Promise<Tree> {
-    const extra = [backendCanisterId(), frontendCanisterId()].filter(Boolean);
-    const { tree: hydrated, byId } = await hydrateTreeControllers(fresh, extra, { force });
-    const backend = byId.get(backendCanisterId());
-    const frontend = byId.get(frontendCanisterId());
-    casalsControllers = {
-      backend: backend?.length ? backend : casalsControllers.backend,
-      frontend: frontend?.length ? frontend : casalsControllers.frontend,
-    };
-    if (!casalsControllers.backend?.length) {
-      const backendCtrls = await listBackendControllers().catch(() => []);
-      if (backendCtrls.length) {
-        casalsControllers = { ...casalsControllers, backend: backendCtrls };
-      }
-    }
-    return hydrated;
-  }
-
-  async function refreshControllersAndTree(): Promise<void> {
-    controllersRefreshing = true;
-    try {
-      await refreshControllersCache().catch(() => undefined);
-      const fresh = await getTree();
-      tree = await hydrateDisplayedControllers(fresh, true);
-      writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
-    } catch (e: any) {
-      toasts.error(e?.message ?? String(e));
-    } finally {
-      controllersRefreshing = false;
-    }
-  }
-
-  $effect(() => {
-    if (orchestraView !== 'control') {
-      controlAutoRefreshDone = false;
-      return;
-    }
-    if (!displayTree || controlAutoRefreshDone || controllersRefreshing) return;
-    if (treeMissingControllerCount(displayTree) === 0) return;
-    controlAutoRefreshDone = true;
-    void refreshControllersAndTree();
-  });
+  let createCanisterStand = $state<StandView | null>(null);
+  const logPoll = createOrchestrationLogPoll((lines) => (modalLogLines = lines));
 
   async function load(opts: { background?: boolean } = {}) {
-    const background = Boolean(opts.background);
-    if (!background) {
+    if (!opts.background) {
       loading = true;
       error = '';
-      canisterCycles = {};
     }
     try {
-      const missingControllers =
-        !tree ||
-        tree.sections.some((sec) =>
-          sec.stands.some((stand) =>
-            stand.canisters.some((c) => c.canister_id && !(c.controllers?.length)),
-          ),
-        );
-      // Explicit Refresh (and first visit with no cache) still walk controllers.
-      // Opening from cache skips that live walk so the last tree can stay on screen.
-      if (!background && missingControllers) {
-        await refreshControllersCache().catch(() => undefined);
-      }
-      [tree, status, catalog, storedSheet] = await Promise.all([
-        getTree(),
-        getStatus(),
-        listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
-        getSheetDocument().then((d) => d.sheet).catch(() => null),
+      [tree, catalog, exported] = await Promise.all([
+        loadView(),
+        wasmList().catch(() => [] as Wasm[]),
+        orchestraExport().catch(() => null),
       ]);
-      tree = await hydrateDisplayedControllers(tree);
       writeCachedTree(backendCanisterId(), tree, browserTreeStorage());
-      orchestraName = (status?.orchestra_name ?? '').trim();
-      if (!orchestraName) {
-        const meta = await casalsMetadata().catch(() => null);
-        orchestraName = (meta?.orchestra_name ?? '').trim();
-      }
-      void warmSubnetGeoCache(collectSubnetIds(tree));
+      void loadCycles();
     } catch (e: any) {
-      if (!background || !tree) {
-        error = e?.message ?? String(e);
-      }
+      if (!opts.background || !tree) error = e?.message ?? String(e);
     } finally {
       loading = false;
     }
   }
 
-  // All distinct families in the catalog (for free-text fallback datalist).
-  const allFamilies = $derived(
-    [...new Set(catalog.map((w) => w.family || w.key.split('@')[0]).filter(Boolean))].sort()
-  );
+  async function loadCycles() {
+    const c = await cyclesGet().catch(() => null);
+    if (c) canisterCycles = Object.fromEntries(c.canisters.map((row) => [row.canister_id, row]));
+  }
+
+  const allFamilies = $derived([...new Set(catalog.map((w) => familyOf(w.key)).filter(Boolean))].sort());
 
   function shortId(id: string): string {
     if (!id) return '';
     return id.length > 13 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
   }
 
-  // Desired-placement label for a section/stand (target for new canisters).
-  function placementLabel(o: { subnet?: string; subnet_type?: string }): string {
-    if (o.subnet) return `subnet ${shortId(o.subnet)}`;
-    if (o.subnet_type) return `subnet type: ${o.subnet_type}`;
-    return '';
-  }
-
-  // Families present in a stand (across its canisters), for stand-wide upgrades.
-  function standFamilies(stand: Stand): string[] {
-    const fams = new Set<string>();
-    for (const s of stand.canisters) {
-      const f = familyOf(s.wasm_key);
-      if (f) fams.add(f);
-    }
-    return [...fams];
+  function standFamilies(stand: StandView): string[] {
+    return [...new Set(stand.canisters.map((c) => familyOf(c.wasm)).filter(Boolean))];
   }
 
   onMount(() => {
     orchestraView = readOrchestraView(typeof localStorage === 'undefined' ? null : localStorage);
-    const cached = readCachedTree(backendCanisterId(), browserTreeStorage());
-    const plan = orchestraOpenPlan(cached);
-    if (plan.tree) {
-      tree = plan.tree as Tree;
+    const plan = orchestraOpenPlan(readCachedTree(backendCanisterId(), browserTreeStorage()));
+    if (plan.tree && 'orchestra' in plan.tree) {
+      tree = plan.tree as unknown as OrchestraView;
       loading = false;
-      void hydrateDisplayedControllers(tree).then((t) => { tree = t; });
       void load({ background: true });
     } else {
       void load();
     }
-    ensureCyclesCache();
   });
 
-  let cyclesPrimeStarted = false;
-
-  async function ensureCyclesCache() {
-    if (Object.keys(canisterCycles).length) return;
-    try {
-      const cached = await getCyclesCached();
-      if (cached?.canisters?.length) {
-        const map: Record<string, CanisterCycles> = {};
-        for (const row of cached.canisters) map[row.canister_id] = row;
-        canisterCycles = map;
-        return;
-      }
-    } catch {
-      /* cycles snapshot optional — details still show without it */
-    }
-    void primeCyclesCacheIfEmpty();
-  }
-
-  async function primeCyclesCacheIfEmpty() {
-    if (cyclesPrimeStarted) return;
-    cyclesPrimeStarted = true;
-    const CANISTER_REFRESH_BATCH = 3;
-    try {
-      const meta = await casalsMetadata().catch(() => null);
-      if ((meta?.monitor_service_url || '').trim()) return;
-
-      const onChain = await getCyclesCachedOnChain().catch(() => null);
-      if ((onChain?.canisters?.length ?? 0) > 0) {
-        const map: Record<string, CanisterCycles> = {};
-        for (const row of onChain!.canisters) map[row.canister_id] = row;
-        canisterCycles = map;
-        return;
-      }
-
-      const treeData = await getTree().catch(() => null);
-      const names = orchestraCanisterNames(treeData);
-      if (!names.length) return;
-
-      for (let i = 0; i < names.length; i += CANISTER_REFRESH_BATCH) {
-        await refreshCanisters({
-          canisters: names.slice(i, i + CANISTER_REFRESH_BATCH),
-        });
-      }
-
-      const refreshed = await getCyclesCachedOnChain().catch(() => null);
-      if (refreshed?.canisters?.length) {
-        const map: Record<string, CanisterCycles> = {};
-        for (const row of refreshed.canisters) map[row.canister_id] = row;
-        canisterCycles = map;
-      }
-    } catch (e) {
-      console.warn('background cycles prime failed', e);
-    }
-  }
-
-  function runtimeLabel(status: IcRunStatus | undefined): string {
-    if (!status || status === 'unknown') return '—';
-    return status;
-  }
-
   function balanceLabel(row: CanisterCycles | undefined): { text: string; low: boolean | null } {
-    if (!row) return { text: '—', low: null };
-    const low = cyclesIsLow(row.status);
+    const low = row ? cyclesIsLow(row.cycles, row.min) : null;
     if (low === false) return { text: 'ok', low: false };
     if (low === true) return { text: 'low balance', low: true };
-    return { text: row.error ? 'unknown' : '—', low: null };
+    return { text: '—', low: null };
   }
 
-  async function toggleCanister(canister: Canister) {
+  async function toggleCanister(canister: CanisterRow) {
     const cid = canister.canister_id;
     if (!cid) return;
     const open = !expandedCanisters[cid];
@@ -550,23 +291,15 @@
     canisterLogErr[cid] = '';
     canisterDetailsErr[cid] = '';
     try {
-      // The audit log lives in Casals; runtime logs are fetched straight from
-      // the management canister (only works if log_visibility is public).
-      const [evs, logs, deployment] = await Promise.all([
-        getEvents({ canister_id: cid, take: 8 }),
+      const [evs, logs] = await Promise.all([
+        orchestraEvents({ canister_id: cid, take: 8 }),
         getCanisterLogs(cid).catch((e: any) => {
           canisterLogErr[cid] = e?.message ?? String(e);
           return [] as CanisterLogRecord[];
         }),
-        getCanisterDeployment(cid).catch((e: any) => {
-          canisterDetailsErr[cid] = e?.message ?? String(e);
-          return null;
-        }),
       ]);
       canisterEvents[cid] = evs;
       canisterLogs[cid] = logs;
-      canisterDeployment[cid] = deployment;
-      await ensureCyclesCache();
     } catch (e: any) {
       canisterDetailsErr[cid] = e?.message ?? String(e);
     } finally {
@@ -574,23 +307,12 @@
     }
   }
 
-  async function makeLogsPublic(canister: Canister) {
-    try {
-      await setLogVisibility({ canister: canister.name, public: true });
-      toasts.success('Logs set to public');
-      await loadCanisterDetails(canister.canister_id);
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Failed to set log visibility');
-    }
-  }
-
-  async function runBrowse(canister: Canister, query?: Record<string, unknown>) {
+  async function runBrowse(canister: CanisterRow, query?: Record<string, unknown>) {
     const cid = canister.canister_id;
     browseBusy[cid] = true;
     browseErr[cid] = '';
     try {
-      const r = await canisterBrowse(canister.name, query, canister.canister_id);
-      browseData[cid] = r.result;
+      browseData[cid] = await canisterBrowse(canister.name, query);
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       browseErr[cid] = /__browse__|method|not found|no query method/i.test(msg)
@@ -598,25 +320,6 @@
         : msg;
     } finally {
       browseBusy[cid] = false;
-    }
-  }
-
-  async function runExec(canister: Canister) {
-    const cid = canister.canister_id;
-    const code = consoleCode[cid] ?? '';
-    if (!code.trim()) return;
-    consoleBusy[cid] = true;
-    consoleErr[cid] = '';
-    try {
-      const r = await canisterExec(canister.name, code, canister.canister_id);
-      consoleOut[cid] = r.output ?? '';
-    } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      consoleErr[cid] = /__shell__|method|not found/i.test(msg)
-        ? 'This canister does not expose a Python shell (rebuild with __basilisk_features__).'
-        : msg;
-    } finally {
-      consoleBusy[cid] = false;
     }
   }
 
@@ -628,28 +331,18 @@
     }
   }
 
-  function evBadge(btype: string): string {
-    if (btype.includes('failed')) return 'bg-red-50 text-red-700 border border-red-200';
-    if (btype === 'revert') return 'bg-amber-50 text-amber-700 border border-amber-200';
+  function evBadge(type: string): string {
+    if (type.includes('failed')) return 'bg-red-50 text-red-700 border border-red-200';
+    if (type === 'canister_restore') return 'bg-amber-50 text-amber-700 border border-amber-200';
     return 'badge-neutral';
   }
 
-  function evSummary(e: OrchestrationEvent): string {
+  function evSummary(e: OrchestraEvent): string {
     const p = e.payload ?? {};
-    switch (e.btype) {
-      case 'upgraded': return `→ ${p.wasm_key ?? ''}`;
-      case 'upgrade_failed': return p.reason ?? '';
-      case 'revert': return p.reason ? `rolled back: ${p.reason}` : `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
-      case 'revert_failed': return p.error ?? '';
-      case 'snapshot': return `snapshot ${String(p.snapshot_id ?? '').slice(0, 8)}`;
-      case 'canister_created': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
-      case 'canister_reinstalled': return `${p.name ?? ''} (${p.wasm_key ?? ''})`;
-      case 'assets_uploaded': return `${p.bytes ?? 0} bytes`;
-      case 'cycles_topup': return `+${p.amount ?? ''}`;
-      case 'cycles_return': return `−${p.amount ?? ''}`;
-      case 'create_failed': return 'module hash mismatch';
-      default: { const k = Object.keys(p); return k.length ? JSON.stringify(p).slice(0, 80) : ''; }
-    }
+    if (p.wasm) return `→ ${p.wasm}`;
+    if (p.error) return String(p.error);
+    const rest = Object.fromEntries(Object.entries(p).filter(([k]) => k !== 'canister'));
+    return Object.keys(rest).length ? JSON.stringify(rest).slice(0, 80) : '';
   }
 
   async function copy(text: string) {
@@ -657,26 +350,14 @@
     else toasts.error('Could not copy');
   }
 
-  function governanceConsoleLabel(canister: Canister): string {
+  function governanceConsoleLabel(canister: CanisterRow): string {
     const t = resolveWasmType(canister);
     if (t === 'baton') return 'Baton';
     if (t === 'multisig') return 'Multisig';
     return 'Console';
   }
 
-  // Strip empty optional string fields so we only send what the user provided.
-  function clean(values: Values): Record<string, any> {
-    const out: Record<string, any> = {};
-    for (const [k, v] of Object.entries(values)) {
-      if (typeof v === 'string') {
-        const trimmed = v.trim();
-        if (trimmed !== '') out[k] = trimmed;
-      } else {
-        out[k] = v;
-      }
-    }
-    return out;
-  }
+  const text = (v: string | boolean | undefined) => String(v ?? '').trim();
 
   function openModal(config: ModalConfig) {
     modal = config;
@@ -689,7 +370,7 @@
   async function submitModal(values: Values) {
     if (!modal) return;
     modalBusy = true;
-    _startLogPoll();
+    logPoll.start();
     try {
       await modal.onsubmit(values);
       toasts.success(`${modal.title} succeeded`);
@@ -698,19 +379,8 @@
     } catch (e: any) {
       toasts.error(e?.message ?? 'Operation failed');
     } finally {
-      _stopLogPoll();
+      logPoll.stop();
       modalBusy = false;
-    }
-  }
-
-  // Direct (no extra fields) per-canister lifecycle action.
-  async function runCanisterAction(label: string, fn: () => Promise<UpdateResult>) {
-    try {
-      await fn();
-      toasts.success(`${label} succeeded`);
-      await load();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Operation failed');
     }
   }
 
@@ -722,28 +392,26 @@
       fields: [
         { name: 'name', label: 'Name', required: true, placeholder: 'Production' },
         { name: 'description', label: 'Description', type: 'textarea' },
-        { name: 'commander_principal', label: 'Commander principal', placeholder: 'aaaaa-aa' },
       ],
       submitLabel: 'Create section',
-      onsubmit: (v) => createSection(clean(v) as any),
+      onsubmit: (v) => sectionCreate({ name: text(v.name), description: text(v.description) }),
     });
   }
 
-  function openCreateStand(section: Section) {
+  function openCreateStand(section: SectionView) {
     openModal({
       title: 'Create stand',
       description: `In section "${section.name}"`,
       fields: [
         { name: 'name', label: 'Name', required: true, placeholder: 'my-app' },
         { name: 'description', label: 'Description', type: 'textarea' },
-        { name: 'commander_principal', label: 'Commander principal', placeholder: 'aaaaa-aa' },
       ],
       submitLabel: 'Create stand',
-      onsubmit: (v) => createStand({ ...(clean(v) as any), section: section.name }),
+      onsubmit: (v) => standCreate({ section: section.name, name: text(v.name), description: text(v.description) }),
     });
   }
 
-  function openRegisterCanister(stand: Stand) {
+  function openRegisterCanister(stand: StandView) {
     openModal({
       title: 'Register canister',
       description: `In stand "${stand.name}" — registers an existing canister`,
@@ -762,135 +430,86 @@
         },
       ],
       submitLabel: 'Register canister',
-      onsubmit: (v) => registerCanister({ ...(clean(v) as any), stand: stand.name }),
+      onsubmit: (v) => canisterRegister({
+        stand: stand.name, name: text(v.name), canister_id: text(v.canister_id),
+        kind: text(v.kind) === 'frontend' ? 'frontend' : 'backend',
+      }),
     });
   }
 
   // ── Rename / Delete ───────────────────────────────────────────────────────
-  function openRenameSection(section: Section) {
+  function openRenameSection(section: SectionView) {
     openModal({
       title: `Rename section`,
       fields: [
-        { name: 'new_name', label: 'New name', required: true, value: section.name },
-        { name: 'description', label: 'Description', value: section.description ?? '' },
+        { name: 'name', label: 'New name', required: true, value: section.name },
+        { name: 'description', label: 'Description', value: section.description },
       ],
       submitLabel: 'Rename',
-      onsubmit: (v) => renameSection({ section: section.name, new_name: String(v.new_name).trim(), description: String(v.description) }),
+      onsubmit: (v) => sectionSet({ section: section.name, name: text(v.name), description: text(v.description) }),
     });
   }
 
-  function openRenameStand(stand: Stand) {
+  function openRenameStand(stand: StandView) {
     openModal({
       title: `Rename stand`,
       fields: [
-        { name: 'new_name', label: 'New name', required: true, value: stand.name },
-        { name: 'description', label: 'Description', value: stand.description ?? '' },
+        { name: 'name', label: 'New name', required: true, value: stand.name },
+        { name: 'description', label: 'Description', value: stand.description },
       ],
       submitLabel: 'Rename',
-      onsubmit: (v) => renameStand({ stand: stand.name, new_name: String(v.new_name).trim(), description: String(v.description) }),
+      onsubmit: (v) => standSet({ stand: stand.name, name: text(v.name), description: text(v.description) }),
     });
   }
 
-  function openRenameCanister(canister: Canister) {
+  function openRenameCanister(canister: CanisterRow) {
     openModal({
       title: `Rename canister`,
-      fields: [{ name: 'new_name', label: 'New name', required: true, value: canister.name }],
+      fields: [{ name: 'name', label: 'New name', required: true, value: canister.name }],
       submitLabel: 'Rename',
-      onsubmit: (v) => renameCanister({ canister: canister.name, new_name: String(v.new_name).trim() }),
+      onsubmit: (v) => canisterSet({ canister: canister.name, name: text(v.name) }),
     });
   }
 
-  function openEditCanisterTags(canister: Canister) {
+  function openEditCanisterTags(canister: CanisterRow) {
     openModal({
       title: `Tags for "${canister.name}"`,
-      description: 'Comma-separated labels (letters, digits, hyphens, underscores; max 8). WASM type badges are set automatically.',
-      fields: [{
-        name: 'tags',
-        label: 'Tags',
-        value: (canister.user_tags ?? []).join(', '),
-        placeholder: 'staging, team-alpha',
-      }],
+      description: 'Comma-separated labels. WASM type badges are set automatically.',
+      fields: [{ name: 'tags', label: 'Tags', value: canister.tags.join(', '), placeholder: 'staging, team-alpha' }],
       submitLabel: 'Save tags',
-      onsubmit: (v) => {
-        const tags = String(v.tags)
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean);
-        return setCanisterTags({ canister: canister.name, tags });
-      },
+      onsubmit: (v) => canisterSet({ canister: canister.name, tags: text(v.tags).split(',').map((t) => t.trim()).filter(Boolean) }),
     });
   }
 
-  function openDeleteSection(section: Section) {
+  function confirmDelete(kind: string, name: string, description: string, run: () => Promise<unknown>) {
     openModal({
-      title: `Delete section "${section.name}"`,
-      description: 'All stands and canisters will be removed. Canisters are returned to the pool (not deleted).',
-      fields: [
-        { name: 'confirm', label: `Type "${section.name}" to confirm`, required: true },
-      ],
-      submitLabel: 'Delete section',
+      title: `Delete ${kind} "${name}"`,
+      description,
+      fields: [{ name: 'confirm', label: `Type "${name}" to confirm`, required: true }],
+      submitLabel: `Delete ${kind}`,
+      danger: true,
       onsubmit: async (v) => {
-        if (String(v.confirm).trim() !== section.name) throw new Error('Name does not match');
-        return deleteSection({ section: section.name });
+        if (text(v.confirm) !== name) throw new Error('Name does not match');
+        return run();
       },
     });
   }
 
-  function openDeleteStand(stand: Stand) {
-    openModal({
-      title: `Delete stand "${stand.name}"`,
-      description: 'All canisters will be removed. Canisters are returned to the pool (not deleted).',
-      fields: [
-        { name: 'confirm', label: `Type "${stand.name}" to confirm`, required: true },
-      ],
-      submitLabel: 'Delete stand',
-      onsubmit: async (v) => {
-        if (String(v.confirm).trim() !== stand.name) throw new Error('Name does not match');
-        return deleteStand({ stand: stand.name });
-      },
-    });
-  }
+  const openDeleteSection = (section: SectionView) =>
+    confirmDelete('section', section.name, 'Only an empty section can be deleted.', () => sectionDelete(section.name));
+  const openDeleteStand = (stand: StandView) =>
+    confirmDelete('stand', stand.name, 'Casals forgets the stand and its canisters; the canisters stay on the IC.', () => standDelete(stand.name));
+  const openDeleteCanister = (canister: CanisterRow) =>
+    confirmDelete('canister', canister.name, 'Casals forgets the canister; it stays on the IC.', () => canisterDelete(canister.name));
 
-  function openDeleteCanister(canister: Canister) {
-    openModal({
-      title: `Delete canister "${canister.name}"`,
-      description: 'The canister record is removed and its canister returned to the pool (not deleted).',
-      fields: [
-        { name: 'confirm', label: `Type "${canister.name}" to confirm`, required: true },
-      ],
-      submitLabel: 'Delete canister',
-      onsubmit: async (v) => {
-        if (String(v.confirm).trim() !== canister.name) throw new Error('Name does not match');
-        return deleteCanister({ canister: canister.name });
-      },
-    });
-  }
-
-  function openAddCommander(target: { section?: string; stand?: string }) {
-    const label = target.section ? `section "${target.section}"` : `stand "${target.stand}"`;
+  function openAddCommander(scope: string, label: string) {
     openModal({
       title: 'Add commander',
-      description: `Add an authorized commander for ${label} (existing commanders are kept)`,
-      fields: [
-        {
-          name: 'commander_principal',
-          label: 'Commander principal',
-          required: true,
-          value: '',
-          placeholder: 'aaaaa-aa',
-        },
-      ],
+      description: `Grant full access on ${label} (existing commanders are kept). Narrow it on the Operator access page.`,
+      fields: [{ name: 'principal', label: 'Commander principal', required: true, placeholder: 'aaaaa-aa' }],
       submitLabel: 'Add commander',
-      onsubmit: (v) => setCommander({ ...target, commander_principal: String(v.commander_principal).trim() }),
+      onsubmit: (v) => grantSet({ scope, principal: text(v.principal), permissions: ['*'] }),
     });
-  }
-
-  function openCreateCanister(stand: Stand) {
-    createCanisterStand = stand;
-  }
-
-  function closeCreateCanister() {
-    createCanisterStand = null;
   }
 
   async function onCreateCanisterSuccess() {
@@ -899,65 +518,46 @@
     await load();
   }
 
-  function openUpgradeStand(stand: Stand) {
+  function wasmField(family: string, fallback = ''): Field {
+    const opts = versionOptions(family, catalog);
+    if (opts.length) return { name: 'wasm', label: 'Version', type: 'select', value: family, options: opts };
+    const families = allFamilies.map((f) => ({ value: f, label: f }));
+    if (families.length) return { name: 'wasm', label: 'WASM family', type: 'select', value: family || families[0].value, options: families };
+    return { name: 'wasm', label: 'WASM key', required: true, value: fallback, placeholder: 'hello-world-basilisk' };
+  }
+
+  function openUpgradeStand(stand: StandView) {
     const batonId = batonIdInStand(stand);
-    if (batonId) {
-      goto(batonConsoleUrl(batonId));
-      return;
-    }
+    if (batonId) return goto(batonConsoleUrl(batonId));
     const fams = standFamilies(stand);
-    const opts = fams.length === 1 ? versionOptions(fams[0], catalog) : [];
-    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
     openModal({
       title: 'Deploy stand',
       description: `Deploy all canisters in stand "${stand.name}"`,
       fields: [
-        opts.length > 0
-          ? { name: 'wasm_key', label: 'Version', type: 'select', value: fams[0], options: opts }
-          : familyOpts.length > 0
-            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
-                value: fams[0] || familyOpts[0].value, options: familyOpts }
-            : { name: 'wasm_key', label: 'WASM key', required: true, placeholder: 'hello-world-basilisk' },
+        wasmField(fams.length === 1 ? fams[0] : ''),
         {
           name: 'reinstall',
           type: 'checkbox',
           label: 'Reinstall (wipes all canister state — data will be lost)',
           value: false,
-          help: 'Reinstall erases canister state and runs init again. Each canister receives its install_arg from the sheet.',
+          help: 'Reinstall erases canister state and runs init again with each canister\'s install_arg.',
         },
       ],
       submitLabel: 'Deploy',
-      onsubmit: (v) => upgradeTo({
-        stand: stand.name,
-        wasm_key: String(v.wasm_key).trim(),
-        reinstall: Boolean(v.reinstall),
-      }),
+      onsubmit: (v) => canisterUpgrade({ stand: stand.name, wasm: text(v.wasm), reinstall: Boolean(v.reinstall) }),
     });
   }
 
-  function openUpgradeCanister(canister: Canister) {
-    const home = (tree?.sections ?? []).flatMap((sec) => sec.stands).find((stand) =>
-      stand.canisters.some((c) => c.canister_id === canister.canister_id),
-    );
+  function openUpgradeCanister(canister: CanisterRow) {
+    const home = tree?.sections.flatMap((sec) => sec.stands).find((st) => st.name === canister.stand);
     const batonId = batonIdInStand(home);
-    if (batonId) {
-      goto(batonConsoleUrl(batonId));
-      return;
-    }
-    const family = familyOf(canister.wasm_key);
-    const opts = versionOptions(family, catalog);
-    const familyOpts = allFamilies.map((f) => ({ value: f, label: f }));
+    if (batonId) return goto(batonConsoleUrl(batonId));
+    const family = familyOf(canister.wasm);
     openModal({
       title: 'Deploy canister',
       description: `Deploy canister "${canister.name}"${family ? ` · family ${family}` : ''}`,
       fields: [
-        opts.length > 0
-          ? { name: 'wasm_key', label: 'Version', type: 'select', value: family, options: opts }
-          : familyOpts.length > 0
-            ? { name: 'wasm_key', label: 'WASM family', type: 'select',
-                value: family || familyOpts[0].value, options: familyOpts }
-            : { name: 'wasm_key', label: 'WASM key', required: true, value: canister.wasm_key ?? '',
-                placeholder: 'hello-world-basilisk' },
+        wasmField(family, canister.wasm),
         {
           name: 'reinstall',
           type: 'checkbox',
@@ -969,30 +569,20 @@
           name: 'install_arg',
           type: 'textarea',
           label: 'Init argument',
-          value: sheetInstallArgFor(storedSheet, canister.name),
+          value: sheetInstallArgFor(exported, canister.name),
           rows: 4,
           showWhen: 'reinstall',
-          help: 'From the sheet. Edit it to pass a different Candid argument, or a JSON object such as {"top_commander":"$self"}. Blank uses the sheet.',
+          help: 'The current Candid argument. Edit it to pass a different one; blank keeps it.',
         },
       ],
       submitLabel: 'Deploy',
-      onsubmit: (v) => {
+      onsubmit: async (v) => {
         const reinstall = Boolean(v.reinstall);
-        const payload: {
-          canister: string;
-          wasm_key: string;
-          reinstall: boolean;
-          install_arg?: string | Record<string, unknown>;
-        } = {
-          canister: canister.name,
-          wasm_key: String(v.wasm_key).trim(),
-          reinstall,
-        };
-        if (reinstall) {
-          const arg = installArgPayload(String(v.install_arg ?? ''));
-          if (arg !== undefined) payload.install_arg = arg;
+        const arg = reinstall ? installArgPayload(String(v.install_arg ?? '')) : undefined;
+        if (arg !== undefined && arg !== sheetInstallArgFor(exported, canister.name)) {
+          await canisterSet({ canister: canister.name, install_arg: arg });
         }
-        return upgradeTo(payload);
+        return canisterUpgrade({ canister: canister.name, wasm: text(v.wasm), reinstall });
       },
     });
   }
@@ -1094,7 +684,7 @@
           </button>
         </div>
         <!-- Divider + Overview toggle -->
-        {#if status}
+        {#if tree}
           <div class="w-px h-5 bg-primary-100 mx-1 shrink-0"></div>
           <button
             type="button"
@@ -1141,19 +731,19 @@
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg>
             Deploy frontend bundle
           </button>
-          <button class="btn-secondary btn-sm" disabled={!actions.snapshot} title="Create snapshot" onclick={() => runBatch('Snapshot', selectedRows, (c) => createSnapshot(c.name))}>
+          <button class="btn-secondary btn-sm" disabled={!actions.snapshot} title="Create snapshot" onclick={() => runBatch('Snapshot', selectedRows, (c) => canisterSnapshot(c.name))}>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.776 48.776 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"/></svg>
             Snapshot
           </button>
-          <button class="btn-secondary btn-sm" disabled={!actions.revert} title={selectedRows.length && !actions.revert ? 'Every selected canister needs a snapshot' : 'Revert to snapshot'} onclick={() => runBatch('Revert', selectedRows, (c) => revertSnapshot(c.name))}>
+          <button class="btn-secondary btn-sm" disabled={!actions.revert} title={selectedRows.length && !actions.revert ? 'Every selected canister needs a snapshot taken through Casals' : 'Revert to snapshot'} onclick={() => runBatch('Revert', selectedRows, (c) => canisterRestore(c.name, c.snapshot))}>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"/></svg>
             Revert
           </button>
-          <button class="btn-secondary btn-sm" disabled={!actions.stop} title="Stop canister" onclick={() => runBatch('Stop', selectedRows, (c) => stopCanister(c.name))}>
+          <button class="btn-secondary btn-sm" disabled={!actions.stop} title="Stop canister" onclick={() => runBatch('Stop', selectedRows, (c) => canisterStop(c.name))}>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Stop
           </button>
-          <button class="btn-secondary btn-sm" disabled={!actions.start} title="Start canister" onclick={() => runBatch('Start', selectedRows, (c) => startCanister(c.name))}>
+          <button class="btn-secondary btn-sm" disabled={!actions.start} title="Start canister" onclick={() => runBatch('Start', selectedRows, (c) => canisterStart(c.name))}>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"/></svg>
             Start
           </button>
@@ -1165,7 +755,7 @@
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.568 3H5.25A2.25 2.25 0 0 0 3 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 0 0 5.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 0 0 9.568 3Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 6h.008v.008H6V6Z"/></svg>
             Tags
           </button>
-          <button class="btn-secondary btn-sm text-red-600 hover:bg-red-50 disabled:text-primary-400" disabled={!actions.delete} title={selectedRows.some((r) => r.core) ? 'Casals core canisters cannot be deleted here' : 'Delete (return to pool)'} onclick={openDeleteSelected}>
+          <button class="btn-secondary btn-sm text-red-600 hover:bg-red-50 disabled:text-primary-400" disabled={!actions.delete} title={selectedRows.some((r) => r.core) ? 'Casals core canisters cannot be deleted here' : 'Delete (Casals forgets it; it stays on the IC)'} onclick={openDeleteSelected}>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
             Delete
           </button>
@@ -1173,31 +763,23 @@
       {/if}
 
       <!-- Overview detail grid — expands inline, no separate card -->
-      {#if status && overviewOpen}
+      {#if tree && overviewOpen}
         <div class="border-t border-primary-100 px-4 py-3 grid grid-cols-3 sm:grid-cols-6 gap-x-6 gap-y-3 text-sm">
           <div class="flex flex-col gap-0.5">
-            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Version</span>
-            <span class="font-mono text-primary-800">v{status.version}</span>
-          </div>
-          <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Sections</span>
-            <span class="font-semibold text-primary-900">{status.sections}</span>
+            <span class="font-semibold text-primary-900">{tree.sections.length}</span>
           </div>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Stands</span>
-            <span class="font-semibold text-primary-900">{status.stands}</span>
+            <span class="font-semibold text-primary-900">{tree.orchestra.stands.length}</span>
           </div>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Canisters</span>
-            <span class="font-semibold text-primary-900">{status.canisters}</span>
+            <span class="font-semibold text-primary-900">{tree.orchestra.canisters.length}</span>
           </div>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">WASMs</span>
-            <span class="font-semibold text-primary-900">{status.authorized_wasms}</span>
-          </div>
-          <div class="flex flex-col gap-0.5">
-            <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Events</span>
-            <span class="font-semibold text-primary-900">{status.events}</span>
+            <span class="font-semibold text-primary-900">{catalog.length}</span>
           </div>
           <div class="flex flex-col gap-0.5 sm:col-span-2">
             <span class="text-[10px] font-semibold text-primary-400 uppercase tracking-wider">Conductor hosting</span>
@@ -1254,16 +836,16 @@
           {orchestraName}
           canManage={$isAuthenticated}
           onCreateStand={openCreateStand}
-          onAddSectionCommander={(section) => openAddCommander({ section: section.name })}
+          onAddSectionCommander={(section) => openAddCommander(`section:${section.name}`, `section "${section.name}"`)}
           onRenameSection={openRenameSection}
           onDeleteSection={openDeleteSection}
-          onCreateCanister={openCreateCanister}
+          onCreateCanister={(stand) => (createCanisterStand = stand)}
           onRegisterCanister={openRegisterCanister}
           onUpgradeStand={openUpgradeStand}
-          onAddStandCommander={(stand) => openAddCommander({ stand: stand.name })}
+          onAddStandCommander={(stand) => openAddCommander(`stand:${stand.name}`, `stand "${stand.name}"`)}
           onRenameStand={openRenameStand}
           onDeleteStand={openDeleteStand}
-          canEditArrangement={(section) => canEditSectionArrangement($principal, section.name, tree?.sections ?? [], $isController === true)}
+          canEditArrangement={canEditArrangement}
         />
       </div>
     {:else if orchestraView === 'control'}
@@ -1272,8 +854,8 @@
           tree={filteredTree}
           casalsBackendId={backendCanisterId()}
           principalLabel={(p) => principalLabels.get(p) ?? shortPrincipal(p)}
-          onRefreshControllers={refreshControllersAndTree}
-          controllersRefreshing={controllersRefreshing}
+          onRefreshControllers={() => load()}
+          controllersRefreshing={loading}
         />
       </div>
     {/if}
@@ -1337,7 +919,7 @@
                     <div class="flex items-center gap-2 flex-wrap">
                       <span class="font-medium text-primary-900">{canister.name}</span>
                       <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{canister.kind}</span>
-                      {#if canister.status && canister.status !== 'installed' && canister.status !== 'registered'}
+                      {#if canister.status && canister.status !== 'ready'}
                         <span class="badge badge-neutral">{canister.status}</span>
                       {/if}
                       {#if governanceConsoleUrl(canister)}
@@ -1351,7 +933,7 @@
                   </td>
                   <td class="px-2 py-2.5 text-primary-700 hidden md:table-cell whitespace-nowrap">
                     {#if row.core}<span class="badge bg-primary-800 text-white border border-primary-800 mr-1">casals-core</span>{/if}{row.core ? (orchestraName || row.section.name) : row.section.name}
-                    {#if canEditSectionArrangement($principal, row.section.name, tree?.sections ?? [], $isController === true)}
+                    {#if canEditArrangement(row.section)}
                       <a class="ml-2 text-xs text-primary-600 underline decoration-dotted hover:text-primary-900" href={`/section/${encodeURIComponent(row.section.name)}/arrangements`}>Edit</a>
                     {/if}
                   </td>
@@ -1371,9 +953,9 @@
                     {/if}
                   </td>
                   <td class="px-2 py-2.5 whitespace-nowrap">
-                    {#if (canister.controllers?.length ?? 0) === 1}
-                      <span class="text-xs text-primary-600" title={canister.controllers![0]}>{singleControllerLabel(canister)}</span>
-                    {:else if (canister.controllers?.length ?? 0) > 1}
+                    {#if canister.controllers.length === 1}
+                      <span class="text-xs text-primary-600" title={canister.controllers[0]}>{singleControllerLabel(canister)}</span>
+                    {:else if canister.controllers.length > 1}
                       <CanisterControllersBadge canisterId={cid} controllers={canister.controllers} {principalLabels} />
                     {:else}
                       <span class="text-xs text-primary-400">—</span>
@@ -1382,8 +964,8 @@
                   <td class="px-2 py-2.5 hidden sm:table-cell">
                     <div class="flex items-center gap-1 flex-wrap">
                       <CanisterTypeBadges {canister} />
-                      {#if canister.subnet || cid}
-                        <SubnetFlags subnetId={canister.subnet} canisterId={cid} variant="badge" />
+                      {#if cid}
+                        <SubnetFlags canisterId={cid} variant="badge" />
                       {/if}
                     </div>
                   </td>
@@ -1418,64 +1000,30 @@
         </div>
         {/if}
       </div>
-      {#if displayTree?.orphans?.length}
-        <!-- Invariant: every canister lives on a stand. The backend lists here what it could not home. -->
-        <div class="card overflow-hidden border-amber-200">
-          <div class="p-4 bg-amber-50/70">
-            <div class="font-semibold text-amber-900">Canisters without a stand</div>
-            <div class="text-xs text-amber-700 mt-0.5">
-              Registered with Casals but declared by no sheet stand. Add them to a stand in the sheet and run <span class="font-mono">casals up</span>.
-            </div>
-          </div>
-          <div class="px-4 py-3 space-y-1.5">
-            {#each displayTree.orphans as canister (canister.canister_id || canister.name)}
-              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                <span class="font-medium text-primary-900">{canister.name}</span>
-                <span class="badge {canister.kind === 'frontend' ? 'badge-frontend' : 'badge-backend'}">{canister.kind}</span>
-                <button class="text-xs font-mono text-primary-600 hover:text-primary-900" title="Copy canister id" onclick={() => copy(canister.canister_id)}>
-                  {canister.canister_id || '—'}
-                </button>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
     </div>
     {/if}
   {/if}
 </div>
 
-{#snippet canisterDetails(canister: Canister)}
+{#snippet canisterDetails(canister: CanisterRow)}
     {@const cycles = canisterCycles[canister.canister_id]}
-    {@const deploy = canisterDeployment[canister.canister_id]}
     {@const balance = balanceLabel(cycles)}
     <div class="space-y-3">
       <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-primary-500">
-        <span>runtime: <span class="font-medium text-primary-800">{runtimeLabel(cycles?.runtime_status)}</span></span>
         <span>balance:
           <span class="font-medium {balance.low === true ? 'text-amber-700' : balance.low === false ? 'text-emerald-700' : 'text-primary-800'}">
             {balance.text}{#if cycles?.cycles !== undefined}<span class="font-mono font-normal text-primary-400"> ({formatCycles(cycles.cycles)})</span>{/if}
           </span>
         </span>
-        <span>last deploy:
-          {#if deploy?.at}
-            <span class="font-mono text-primary-800">{formatIsoTs(deploy.at)}</span>
-            <span class="text-primary-400"> · </span>
-            <span class="font-medium text-primary-800">{deploy.kind}</span>
-          {:else}
-            <span class="font-medium text-primary-800">—</span>
-          {/if}
-        </span>
         <span>status: <span class="font-medium text-primary-800">{canister.status || '—'}</span></span>
-        <span>wasm: <span class="font-mono">{canister.wasm_key || '—'}</span></span>
+        <span>wasm: <span class="font-mono">{canister.wasm || '—'}</span></span>
         {#if canister.wasm_hash}
           <span class="font-mono" title={canister.wasm_hash}>hash {shortHash(canister.wasm_hash)}</span>
         {/if}
-        {#if canister.snapshot_id}
-          <span class="font-mono" title={canister.snapshot_id}>snapshot {shortHash(canister.snapshot_id)}</span>
+        {#if canister.snapshot}
+          <span class="font-mono" title={canister.snapshot}>snapshot {shortHash(canister.snapshot)}</span>
         {/if}
         <SubnetFlags
-          subnetId={canister.subnet}
           canisterId={canister.canister_id}
           variant="inline"
         />
@@ -1488,7 +1036,7 @@
       />
       {#if canisterDetailsErr[canister.canister_id]}
         <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
-          Couldn't load deployment info: {canisterDetailsErr[canister.canister_id]}
+          Couldn't load details: {canisterDetailsErr[canister.canister_id]}
         </div>
       {/if}
 
@@ -1501,9 +1049,9 @@
             <div class="text-xs text-primary-400">No events for this canister.</div>
           {:else}
             <ul class="space-y-1">
-              {#each canisterEvents[canister.canister_id] as e (e.self_hash || e.idx)}
+              {#each canisterEvents[canister.canister_id] as e (e.idx)}
                 <li class="text-xs flex items-start gap-2">
-                  <span class="badge {evBadge(e.btype)} shrink-0">{e.btype}</span>
+                  <span class="badge {evBadge(e.type)} shrink-0">{e.type}</span>
                   <span class="text-primary-600 break-words min-w-0">{evSummary(e)}</span>
                 </li>
               {/each}
@@ -1519,9 +1067,6 @@
           {#if canisterLogErr[canister.canister_id]}
             <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
               Couldn't fetch logs: {canisterLogErr[canister.canister_id]}
-              {#if $isAuthenticated}
-                <button class="underline ml-1 font-medium" onclick={() => makeLogsPublic(canister)}>Make logs public</button>
-              {/if}
             </div>
           {:else if (canisterLogs[canister.canister_id]?.length ?? 0) === 0}
             <div class="text-xs text-primary-400">No logs recorded yet.</div>
@@ -1531,7 +1076,7 @@
           {/if}
         </div>
 
-        {#if canisterFeatures(canister).browse && $isAuthenticated}
+        {#if canBrowse(canister) && $isAuthenticated}
           <div>
             <div class="flex items-center justify-between mb-1.5">
               <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Inspect (Basilisk)</div>
@@ -1549,28 +1094,6 @@
           </div>
         {/if}
 
-        {#if canisterFeatures(canister).shell && $canShell === true}
-          <div>
-            <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider mb-1.5">Python console (Basilisk)</div>
-            <textarea
-              class="input font-mono text-[11px] w-full min-h-[64px] resize-y"
-              placeholder={'print(1 + 1)\nimport sys; print(sys.version)'}
-              bind:value={consoleCode[canister.canister_id]}
-              onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runExec(canister); } }}
-            ></textarea>
-            <div class="flex items-center justify-between mt-1.5">
-              <span class="text-[11px] text-primary-400">Runs server-side via <span class="font-mono">__shell__</span>. ⌘/Ctrl+Enter to run.</span>
-              <button class="btn-secondary btn-sm" disabled={consoleBusy[canister.canister_id]} onclick={() => runExec(canister)}>
-                {consoleBusy[canister.canister_id] ? 'Running…' : 'Run'}
-              </button>
-            </div>
-            {#if consoleErr[canister.canister_id]}
-              <div class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 mt-1.5">{consoleErr[canister.canister_id]}</div>
-            {:else if consoleOut[canister.canister_id] !== undefined}
-              <pre class="text-[11px] leading-relaxed font-mono bg-primary-900 text-primary-100 rounded-md p-2.5 overflow-auto max-h-48 whitespace-pre-wrap mt-1.5">{consoleOut[canister.canister_id] || '(no output)'}</pre>
-            {/if}
-          </div>
-        {/if}
       {/if}
     </div>
 {/snippet}
@@ -1592,7 +1115,7 @@
 {#if bundleTarget}
   <DeployBundleModal
     canister={bundleTarget}
-    sheet={storedSheet}
+    canisters={tree?.orchestra.canisters ?? []}
     ondone={async () => { bundleTarget = null; await load(); }}
     oncancel={() => (bundleTarget = null)}
   />
@@ -1605,6 +1128,6 @@
     tree={tree}
     families={allFamilies}
     onsuccess={onCreateCanisterSuccess}
-    oncancel={closeCreateCanister}
+    oncancel={() => (createCanisterStand = null)}
   />
 {/if}

@@ -1,49 +1,17 @@
-import type { PrincipalAlias, Tree } from './api';
+import type { OrchestraView } from './api';
 import { shortPrincipal } from './api';
 
 export const CASALS_BACKEND_LABEL = 'Casals backend';
 
-/** Map principal → friendly label for Orchestra / controller badges. */
-export function buildPrincipalLabels(
-  tree: Tree | null,
-  backendCanisterId?: string,
-  aliases?: PrincipalAlias[] | Record<string, string>,
-): Map<string, string> {
+/** Map principal → friendly label: the conductor, canister names, then aliases. */
+export function buildPrincipalLabels(view: OrchestraView | null | undefined): Map<string, string> {
   const map = new Map<string, string>();
-  if (backendCanisterId) {
-    map.set(backendCanisterId, CASALS_BACKEND_LABEL);
-  }
-  if (!tree) {
-    mergeAliases(map, aliases);
-    return map;
-  }
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        if (c.canister_id) {
-          map.set(c.canister_id, c.name);
-        }
-      }
-    }
-  }
-  mergeAliases(map, aliases ?? tree.principal_aliases);
+  if (!view) return map;
+  const o = view.orchestra;
+  if (o.canister_id) map.set(o.canister_id, CASALS_BACKEND_LABEL);
+  for (const c of o.canisters) if (c.canister_id) map.set(c.canister_id, c.name);
+  for (const [principal, name] of Object.entries(o.aliases ?? {})) if (name) map.set(principal, name);
   return map;
-}
-
-function mergeAliases(
-  map: Map<string, string>,
-  aliases?: PrincipalAlias[] | Record<string, string>,
-) {
-  if (!aliases) return;
-  if (Array.isArray(aliases)) {
-    for (const row of aliases) {
-      if (row.principal && row.name) map.set(row.principal, row.name);
-    }
-    return;
-  }
-  for (const [principal, name] of Object.entries(aliases)) {
-    if (principal && name) map.set(principal, name);
-  }
 }
 
 export function controllerLabel(

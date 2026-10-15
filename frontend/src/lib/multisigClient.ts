@@ -502,7 +502,7 @@ export function buildMultisigAction(
     }
     case 'DeployBundle': {
       // A frontend release under governance: the multisig, an IC controller of
-      // the conductor, calls `deploy_content`; the conductor (Commit on the asset
+      // the conductor, calls `content_deploy`; the conductor (Commit on the asset
       // canister) writes the store's bundle in rounds. `bundle_sha256` pins what
       // the signers saw in the store.
       const casals = fieldStr(fields.casals_backend);

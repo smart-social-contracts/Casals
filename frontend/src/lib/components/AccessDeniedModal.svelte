@@ -1,14 +1,13 @@
 <script lang="ts">
   import { fade, scale } from 'svelte/transition';
   import { copyText } from '$lib/clipboard';
-  import type { ClaimedSlot } from '$lib/api';
 
   interface Props {
     message: string;
     principal: string;
     onclose: () => void;
-    /** Redeem an access code with the denied identity; resolves with the claimed slots. */
-    onclaim?: (code: string) => Promise<ClaimedSlot[]>;
+    /** Redeem an access code with the denied identity; resolves with the scopes claimed. */
+    onclaim?: (code: string) => Promise<string[]>;
   }
 
   let { message, principal, onclose, onclaim }: Props = $props();

@@ -1,50 +1,22 @@
-import type { Section, Stand, Tree } from './api';
-import { activeCommanders } from './commanderAccess';
-import { grantAllows, isOrchestraSectionName, ladderAllows } from './governanceUx';
+import type { CanisterRow, OrchestraView, SectionView, StandView } from './api';
+import { claimedGrants } from './commanderAccess';
+import { ladderAllows } from './governanceUx';
 
-export function permissionsGrant(
-  permissions: string[] | undefined,
-  allPermissions: boolean | undefined,
-  key: string,
-): boolean {
-  return grantAllows({ permissions, all_permissions: allPermissions }, key);
-}
-
-/** The synthetic section carrying orchestra-level commanders (`conductor.commanders`), if present. */
-export function orchestraSection(tree: Tree | null | undefined): Section | null {
-  return tree?.sections.find((s) => isOrchestraSectionName(s.name)) ?? null;
-}
-
-/**
- * True when `principal` has `permissionKey` on the stand — mirrors the
- * backend's `_require_commander`: orchestra commanders act everywhere, then
- * the stand's own commanders, then the parent section's.
- */
-export function canActOnStand(
-  section: Section,
-  stand: Stand,
-  principal: string,
-  permissionKey: string,
-  orchestra: Section | null = null,
-): boolean {
-  // Unclaimed access-code slots grant nothing (matches `commanders.lifecycle_access`).
-  return ladderAllows(principal, permissionKey, {
-    orchestra: orchestra ? activeCommanders(orchestra) : null,
-    stand: activeCommanders(stand),
-    section: activeCommanders(section),
+/** True when `principal` holds `key` on the stand: orchestra, then stand, then section grants. */
+export function canActOnStand(view: OrchestraView, section: SectionView, stand: StandView, principal: string, key: string): boolean {
+  return ladderAllows(principal, key, {
+    orchestra: claimedGrants(view.grants),
+    stand: claimedGrants(stand.grants),
+    section: claimedGrants(section.grants),
   });
 }
 
-/** True when `principal` may set tags on the named orchestra canister. */
-export function canTagCanister(tree: Tree | null, principal: string, canisterName: string): boolean {
-  if (!tree || !principal.trim()) return false;
-  const orchestra = orchestraSection(tree);
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      if (stand.canisters.some((c) => c.name === canisterName)) {
-        return canActOnStand(sec, stand, principal, 'canister.tag', orchestra);
-      }
-    }
+/** True when `principal` holds `key` on the stand of `canister`. */
+export function canActOnCanister(view: OrchestraView | null, principal: string, canister: Pick<CanisterRow, 'name'>, key: string): boolean {
+  if (!view || !principal.trim()) return false;
+  for (const sec of view.sections) {
+    const stand = sec.stands.find((st) => st.canisters.some((c) => c.name === canister.name));
+    if (stand) return canActOnStand(view, sec, stand, principal, key);
   }
   return false;
 }

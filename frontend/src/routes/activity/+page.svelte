@@ -1,44 +1,28 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    getEvents,
-    getTree,
-    shortPrincipal,
-    formatCycles,
-    formatIcp,
-    casalsMetadata,
-    topupSourceSuffix,
-  } from '$lib/api';
-  import type { OrchestrationEvent, Tree } from '$lib/api';
+  import { formatCycles, loadView, orchestraEvents, shortPrincipal, type OrchestraEvent } from '$lib/api';
 
-  let events = $state<OrchestrationEvent[]>([]);
+  let events = $state<OrchestraEvent[]>([]);
   let canisterNames = $state<Record<string, string>>({});
   let monitorPrincipal = $state('');
   let loading = $state(true);
   let error = $state('');
   let take = $state(100);
   let filter = $state('');
-  let btypeFilter = $state('');
+  let typeFilter = $state('');
   let kindFilter = $state<'all' | 'failures'>('all');
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const [evs, tree, meta] = await Promise.all([
-        getEvents({ take, btype: btypeFilter || undefined }),
-        getTree().catch(() => null as Tree | null),
-        casalsMetadata().catch(() => null),
+      const [evs, view] = await Promise.all([
+        orchestraEvents({ take, ...(typeFilter ? { type: typeFilter } : {}) }),
+        loadView().catch(() => null),
       ]);
       events = evs;
-      monitorPrincipal = meta?.monitor_principal?.trim() ?? '';
-      const map: Record<string, string> = {};
-      if (tree) {
-        for (const s of tree.sections)
-          for (const d of s.stands)
-            for (const st of d.canisters) if (st.canister_id) map[st.canister_id] = st.name;
-      }
-      canisterNames = map;
+      monitorPrincipal = view?.orchestra.monitor.principal ?? '';
+      canisterNames = Object.fromEntries((view?.orchestra.canisters ?? []).map((c) => [c.canister_id, c.name]));
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -48,26 +32,16 @@
 
   onMount(load);
 
-  type Severity = 'ok' | 'fail' | 'warn' | 'neutral';
-  function severity(btype: string): Severity {
-    if (btype.includes('failed')) return 'fail';
-    if (btype === 'revert' || btype === 'cycles_low') return 'warn';
-    if (/finished|created|deployed|uploaded|topup|registered|authorized|reclaimed|reinstalled|snapshot|start_canister|stop_canister|set_controllers|cycles_reconcile|cycles_checked|canister_destroyed/.test(btype))
-      return 'ok';
-    return 'neutral';
-  }
+  type Severity = 'ok' | 'fail' | 'neutral';
+  const severity = (type: string): Severity =>
+    type.includes('failed') ? 'fail' : /_(create|built|done|deploy|upgrade|register|authorize|top_up|claim|up)$|built$/.test(type) ? 'ok' : 'neutral';
 
   const badgeClass: Record<Severity, string> = {
     ok: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
     fail: 'bg-red-50 text-red-700 border border-red-200',
-    warn: 'bg-amber-50 text-amber-700 border border-amber-200',
     neutral: 'badge-neutral',
   };
 
-  function shortHash(h?: string): string {
-    if (!h) return '';
-    return h.length > 12 ? `${h.slice(0, 8)}…` : h;
-  }
   function fmtTime(secs?: number): string {
     if (!secs) return '';
     return new Date(secs * 1000).toLocaleString(undefined, {
@@ -75,55 +49,28 @@
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
   }
-  function fmt(n?: number): string {
-    if (n === undefined || n === null) return '—';
-    return formatCycles(n);
+
+  function targetLabel(e: OrchestraEvent): string {
+    return e.canister_id ? canisterNames[e.canister_id] ?? e.canister_id : '';
   }
 
-  function targetLabel(e: OrchestrationEvent): string {
-    const v = e.canister_id;
-    if (!v) return '';
-    return canisterNames[v] ?? v;
-  }
-
-  function describe(e: OrchestrationEvent): string {
+  /** Update events carry the op's arguments; a few get a sentence, the rest their target. */
+  function describe(e: OrchestraEvent): string {
     const p = e.payload ?? {};
-    switch (e.btype) {
-      case 'upgrade_finished': return `Upgraded ${p.canisters?.length ?? 0} canister(s) → ${p.wasm_key ?? ''}`;
-      case 'upgrade_failed': return `Upgrade failed: ${p.reason ?? ''}`;
-      case 'revert': return p.reason ? `Rolled back: ${p.reason}` : `Reverted to snapshot ${shortHash(p.snapshot_id)}`;
-      case 'revert_failed': return `Rollback failed: ${p.error ?? ''}`;
-      case 'snapshot': return `Snapshot ${shortHash(p.snapshot_id)}`;
-      case 'canister_created': return `Created ${p.name ?? ''} (${p.wasm_key ?? ''})${p.reused ? ' · reused canister' : ''}`;
-      case 'canister_reinstalled': return `Reinstalled ${p.name ?? ''} (${p.wasm_key ?? ''})`;
-      case 'canister_retired': return `Retired ${p.name ?? ''}`;
-      case 'canister_destroyed': return `Destroyed ${p.name ?? ''}${p.cycles_reclaimed ? ` · reclaimed ${fmt(p.cycles_reclaimed)} cycles` : ''}`;
-      case 'canister_registered': return `Registered ${p.name ?? ''} on ${p.stand ?? ''}`;
-      case 'assets_uploaded': return `Assets uploaded (${p.bytes ?? 0} bytes)`;
-      case 'assets_failed': return `Asset upload failed: ${p.error ?? ''}`;
-      case 'create_failed': return 'Create failed: module hash mismatch';
-      case 'cycles_topup':
-        return `Topped up ${fmt(p.amount)} cycles${topupSourceSuffix(p, e.caller, monitorPrincipal)}`;
-      case 'cycles_return': return `Returned ${fmt(p.amount)} cycles to treasury`;
-      case 'cycle_policy_set': return `Cycle policy: min ${fmt(p.min_cycles)}${p.topup_cycles ? `, top-up ${fmt(p.topup_cycles)}` : ''}`;
-      case 'cycles_checked': return `Checked balance ${fmt(p.balance)} · ${p.status ?? 'ok'}`;
-      case 'cycles_low': return 'Low cycles balance — treasury exhausted';
-      case 'cycles_reconcile': return `Reconcile (${p.source ?? 'autopilot'}): checked ${p.checked ?? 0}, topped up ${p.topped_up ?? 0}`;
-      case 'cycles_icp_convert': return `Converted ${formatIcp(p.icp_e8s)} → ${fmt(p.cycles)} cycles`;
-      case 'treasury_icp_deposit': return `Treasury ICP deposit: +${formatIcp(p.amount_e8s)} (balance ${formatIcp(p.balance_e8s)})`;
-      case 'treasury_cycles_deposit': return `Treasury cycles deposit: +${fmt(p.amount)} (balance ${fmt(p.balance)})`;
-      case 'treasury_spent': return `Treasury spent: ${fmt(p.amount)} on top-ups (balance ${fmt(p.balance)})`;
-      case 'set_controllers': return `Controllers updated${p.added?.length ? `: added ${p.added.join(', ')}` : ''}`;
-      case 'section_created': return `Created section ${p.name ?? ''}`;
-      case 'stand_created': return `Created stand ${p.name ?? ''} in ${p.section ?? ''}`;
-      case 'commander_set': return 'Commander updated';
-      case 'wasm_authorized': return `Authorized WASM ${p.key ?? ''}`;
-      case 'wasm_deauthorized': return `Removed WASM ${p.key ?? ''}`;
-      case 'settings_changed': return `Settings changed: ${Object.keys(p).join(', ')}`;
-      case 'sheet_deployed': return 'Sheet deployed';
-      case 'pool_reclaimed': return `Reclaimed orphan canister${p.was_canister ? ` (was ${p.was_canister})` : ''}`;
-      case 'pool_assigned': return `Assigned pool canister to ${p.name ?? ''} on stand ${p.stand ?? ''}`;
-      default: return Object.keys(p).length ? JSON.stringify(p) : '';
+    const subject = p.canister ?? p.stand ?? p.section ?? p.key ?? p.name ?? p.principal ?? '';
+    switch (e.type) {
+      case 'canister_upgrade': return `Upgraded ${p.canister ?? `stand ${p.stand}`} → ${p.wasm}`;
+      case 'canister_create': return `Created ${p.name} (${p.wasm}) on ${p.stand}`;
+      case 'cycles_top_up':
+        return `Topped up ${p.canister ?? `stand ${p.stand}`}${p.amount != null ? ` with ${formatCycles(p.amount)}` : ''}${e.caller === monitorPrincipal ? ' (monitor)' : ''}`;
+      case 'cycles_send': return `Sent ${p.all ? 'all spendable cycles' : formatCycles(p.amount)} to ${p.canister_id}`;
+      case 'grant_set': return `Granted ${(p.permissions ?? []).join(', ')} on ${p.scope} to ${shortPrincipal(p.principal)}`;
+      case 'grant_remove': return `Removed ${shortPrincipal(p.principal)} from ${p.scope}`;
+      case 'content_done': return `Content deployed to ${p.canister}`;
+      case 'content_failed': return `Content deploy to ${p.canister} failed: ${p.error ?? ''}`;
+      case 'stand_build_failed': return `Stand ${p.stand} build failed: ${p.error ?? ''}`;
+      case 'orchestra_set': return `Settings changed: ${Object.keys(p).join(', ')}`;
+      default: return String(subject);
     }
   }
 
@@ -143,19 +90,19 @@
     const seen: Record<string, true> = {};
     const out: string[] = [];
     for (const e of events) {
-      if (e.btype && !seen[e.btype]) {
-        seen[e.btype] = true;
-        out.push(e.btype);
+      if (e.type && !seen[e.type]) {
+        seen[e.type] = true;
+        out.push(e.type);
       }
     }
     return out.sort();
   });
 
-  const filtered = $derived.by<OrchestrationEvent[]>(() => {
+  const filtered = $derived.by<OrchestraEvent[]>(() => {
     let evs = events;
     if (filter) evs = evs.filter((e) => e.canister_id === filter);
     if (kindFilter === 'failures')
-      evs = evs.filter((e) => severity(e.btype) === 'fail' || e.btype === 'revert');
+      evs = evs.filter((e) => severity(e.type) === 'fail');
     return evs;
   });
 </script>
@@ -166,7 +113,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Activity</h1>
-      <p class="text-sm text-primary-500 mt-1">Hash-chained audit log of every orchestration action</p>
+      <p class="text-sm text-primary-500 mt-1">Audit log of every change the conductor made</p>
     </div>
     <button class="btn-secondary btn-sm self-start" onclick={load}>
       <svg class="w-4 h-4 {loading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -183,7 +130,7 @@
         <option value={t}>{canisterNames[t] ?? t}</option>
       {/each}
     </select>
-    <select class="text-sm rounded-lg border border-[var(--color-border-primary)] px-2 py-1.5 bg-white" bind:value={btypeFilter} onchange={load}>
+    <select class="text-sm rounded-lg border border-[var(--color-border-primary)] px-2 py-1.5 bg-white" bind:value={typeFilter} onchange={load}>
       <option value="">All event types</option>
       {#each eventTypes as bt (bt)}
         <option value={bt}>{bt}</option>
@@ -224,14 +171,14 @@
     </div>
   {:else}
     <div class="card divide-y divide-[var(--color-border-primary)] overflow-hidden">
-      {#each filtered as e (e.self_hash || e.idx)}
+      {#each filtered as e (e.idx)}
         <div class="flex items-start gap-3 px-4 py-3">
           <span class="text-xs font-mono text-primary-300 pt-1 w-8 shrink-0 text-right">{e.idx}</span>
-          <span class="badge {badgeClass[severity(e.btype)]} shrink-0 mt-0.5">{e.btype}</span>
+          <span class="badge {badgeClass[severity(e.type)]} shrink-0 mt-0.5">{e.type}</span>
           <div class="min-w-0 flex-1">
             <p class="text-sm text-primary-800 break-words">{describe(e)}</p>
             <p class="text-xs text-primary-400 mt-0.5 font-mono">
-              {#if e.timestamp_secs}<span class="text-primary-500">{fmtTime(e.timestamp_secs)}</span> · {/if}{#if targetLabel(e)}{targetLabel(e)} · {/if}by {shortPrincipal(e.caller)}
+              {#if e.ts}<span class="text-primary-500">{fmtTime(e.ts)}</span> · {/if}{#if targetLabel(e)}{targetLabel(e)} · {/if}by {shortPrincipal(e.caller)}
             </p>
           </div>
         </div>

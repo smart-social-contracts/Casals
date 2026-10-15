@@ -1,24 +1,26 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
-  import type { Canister, ContentDeploy, Sheet } from '$lib/api';
-  import { contentDeploys, deployContent, storeBundle } from '$lib/api';
+  import { contentDeploy, contentStatus, orchestraGet, type CanisterRow, type ContentDeploy } from '$lib/api';
+  import { bundleHash } from '$lib/bundle';
   import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
+  import { listStore } from '$lib/wasmStoreClient';
+  import { pathUnderNamespace, storeKey } from '$lib/wasmStorePath';
 
   interface Props {
-    canister: Canister;
-    /** the stored sheet: default namespace (`content`) and the namespaces to offer */
-    sheet: Sheet | null;
+    canister: CanisterRow;
+    /** every canister: their `content` namespaces are the ones to offer */
+    canisters: CanisterRow[];
     ondone: () => void;
     oncancel: () => void;
   }
 
-  let { canister, sheet, ondone, oncancel }: Props = $props();
+  let { canister, canisters, ondone, oncancel }: Props = $props();
 
   type Phase = 'reading' | 'ready' | 'running' | 'done' | 'failed';
 
-  let namespace = $state(defaultNamespaceFor(sheet, canister.name));
-  const known = $derived(knownContentNamespaces(sheet));
+  let namespace = $state(defaultNamespaceFor(canisters, canister.name));
+  const known = $derived(knownContentNamespaces(canisters));
   let phase = $state<Phase>('reading');
   let storeHash = $state('');
   let storeFiles = $state(0);
@@ -46,12 +48,17 @@
     }
     phase = 'reading';
     try {
-      const b = await storeBundle(namespace.trim());
-      storeFiles = Object.keys(b.files ?? {}).length;
+      const ns = namespace.trim();
+      const keys = await listStore((await orchestraGet()).store_id, storeKey(ns, ''));
+      const files = Object.fromEntries(Object.entries(keys).flatMap(([k, sha]) => {
+        const path = pathUnderNamespace(k, ns);
+        return path && !path.startsWith('.casals-') ? [[path, sha] as const] : [];
+      }));
+      storeFiles = Object.keys(files).length;
       if (!storeFiles) {
         storeError = 'The store holds nothing under this namespace — upload the bundle first (Files → Upload bundle).';
       } else {
-        storeHash = b.bundle_sha256;
+        storeHash = await bundleHash(files);
       }
     } catch (e: any) {
       storeError = e?.message ?? String(e);
@@ -72,11 +79,11 @@
     stopPolling();
     if (rec.status === 'done') {
       phase = 'done';
-      say(`done: ${rec.written} file(s) written, ${rec.deleted} removed, ${rec.rounds} round(s) · bundle ${(rec.bundle_sha256 ?? '').slice(0, 12)}…`);
+      say(`done · bundle ${storeHash.slice(0, 12)}…`);
     } else {
       phase = 'failed';
       error = rec.error || 'deploy failed';
-      say(`failed after ${rec.rounds} round(s): ${error}`);
+      say(`failed: ${error}`);
     }
   }
 
@@ -85,23 +92,20 @@
     error = '';
     lines = [];
     phase = 'running';
-    say(`deploy_content ${canister.name} ← ${namespace.trim()} (bundle ${storeHash.slice(0, 12)}…)`);
+    say(`content_deploy ${canister.name} ← ${namespace.trim()} (bundle ${storeHash.slice(0, 12)}…)`);
     try {
-      const rec = await deployContent({ canister: canister.name, namespace: namespace.trim(), bundle_sha256: storeHash });
+      const rec = await contentDeploy({ canister: canister.name, namespace: namespace.trim(), bundle_sha256: storeHash });
       record = rec;
       if (rec.status !== 'running') {
         finish(rec);
         return;
       }
-      say(`round 1: ${rec.written} written, ${rec.remaining} remaining — the conductor continues on its timer`);
+      say(`${rec.remaining} file(s) remaining — the conductor continues on its timer`);
       poll = setInterval(async () => {
         try {
-          const rows = await contentDeploys();
-          const mine = rows.find((r) => r.canister === canister.name);
+          const mine = (await contentStatus()).find((r) => r.canister === canister.name);
           if (!mine) return;
-          if (mine.rounds !== record?.rounds) {
-            say(`round ${mine.rounds}: ${mine.written} written, ${mine.remaining ?? 0} remaining`);
-          }
+          if (mine.remaining !== record?.remaining) say(`${mine.remaining} remaining`);
           record = mine;
           if (mine.status !== 'running') finish(mine);
         } catch {
@@ -158,8 +162,8 @@
         </datalist>
         {#if namespace && !nsOk}
           <p class="text-xs text-red-600 mt-1">A namespace is a slash-separated path, not under <span class="font-mono">wasm/</span>.</p>
-        {:else if !defaultNamespaceFor(sheet, canister.name)}
-          <p class="text-xs text-primary-400 mt-1">The sheet declares no <span class="font-mono">content</span> for this canister; the namespace you enter is used as is.</p>
+        {:else if !canister.content}
+          <p class="text-xs text-primary-400 mt-1">This canister has no <span class="font-mono">content</span> yet; the namespace you enter is used as is.</p>
         {/if}
       </div>
 

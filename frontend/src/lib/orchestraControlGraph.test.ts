@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { Tree } from './api.ts';
+import type { CanisterKind, CanisterRow, Grant, Orchestra, OrchestraView, StandView } from './api.ts';
 import {
   buildControlGraph,
   clampControlGraphZoom,
@@ -30,99 +30,58 @@ const TENANT_BE = 'tenant-backend-principal';
 const TENANT_FE = 'tenant-frontend-principal';
 const INSTALLER = 'installer-principal';
 
-function fixtureTree(): Tree {
+function canister(
+  section: string,
+  stand: string,
+  name: string,
+  canister_id: string,
+  wasm: string,
+  controllers: string[],
+  kind: CanisterKind = 'backend',
+): CanisterRow {
   return {
+    name, canister_id, kind, wasm, wasm_hash: '', status: 'ready', public: false, tags: [], controllers,
+    cycles: 0, content: '', snapshot: '', stand, section, stand_built_at: 0, build_error: '',
+  };
+}
+
+const allOn = (scope: string, principal: string): Grant => ({ scope, principal, permissions: ['*'], calls: [] });
+
+function stand(section: string, name: string, canisters: CanisterRow[], grants: Grant[] = []): StandView {
+  return { name, section, description: '', built_at: 0, build_error: '', members: [], grants, canisters };
+}
+
+function fixtureTree(): OrchestraView {
+  const system = [
+    canister('Casals', 'System', 'multisig', MULTISIG, 'orchestration-multisig', [MULTISIG]),
+    canister('Casals', 'System', 'casals-backend', CASALS, 'casals-backend', [MULTISIG, CASALS]),
+  ];
+  const tenant = [
+    canister('Deployments', 'testtenant7', 'testtenant7-baton', BATON, 'orchestration-baton', [MULTISIG, CASALS, BATON]),
+    canister('Deployments', 'testtenant7', 'testtenant7-backend', TENANT_BE, 'tenant-backend', [MULTISIG, CASALS, BATON]),
+    canister('Deployments', 'testtenant7', 'testtenant7-frontend', TENANT_FE, 'tenant-assets', [MULTISIG, CASALS, BATON], 'frontend'),
+  ];
+  return {
+    orchestra: { canisters: [...system, ...tenant] } as Orchestra,
+    grants: [],
     sections: [
-      {
-        name: 'Casals',
-        description: '',
-        commander_principal: '',
-        stands: [
-          {
-            name: 'System',
-            description: '',
-            commander_principal: '',
-            canisters: [
-              {
-                name: 'multisig',
-                canister_id: MULTISIG,
-                kind: 'backend',
-                wasm_key: 'orchestration-multisig',
-                wasm_hash: '',
-                status: 'installed',
-                url: '',
-                snapshot_id: '',
-                controllers: [MULTISIG],
-              },
-              {
-                name: 'casals-backend',
-                canister_id: CASALS,
-                kind: 'backend',
-                wasm_key: 'casals-backend',
-                wasm_hash: '',
-                status: 'installed',
-                url: '',
-                snapshot_id: '',
-                controllers: [MULTISIG, CASALS],
-              },
-            ],
-          },
-        ],
-      },
+      { name: 'Casals', description: '', template: null, grants: [], stands: [stand('Casals', 'System', system)] },
       {
         name: 'Deployments',
         description: '',
-        commander_principal: INSTALLER,
-        commanders: [{ principal: INSTALLER, all_permissions: true }],
-        stands: [
-          {
-            name: 'testtenant7',
-            description: '',
-            commander_principal: TENANT_BE,
-            commanders: [{ principal: TENANT_BE, all_permissions: true }],
-            canisters: [
-              {
-                name: 'testtenant7-baton',
-                canister_id: BATON,
-                kind: 'backend',
-                wasm_key: 'orchestration-baton',
-                wasm_hash: '',
-                status: 'installed',
-                url: '',
-                snapshot_id: '',
-                controllers: [MULTISIG, CASALS, BATON],
-              },
-              {
-                name: 'testtenant7-backend',
-                canister_id: TENANT_BE,
-                kind: 'backend',
-                wasm_key: 'tenant-backend',
-                wasm_hash: '',
-                status: 'installed',
-                url: '',
-                snapshot_id: '',
-                controllers: [MULTISIG, CASALS, BATON],
-              },
-              {
-                name: 'testtenant7-frontend',
-                canister_id: TENANT_FE,
-                kind: 'frontend',
-                wasm_key: 'tenant-assets',
-                wasm_hash: '',
-                status: 'installed',
-                url: '',
-                snapshot_id: '',
-                controllers: [MULTISIG, CASALS, BATON],
-              },
-            ],
-          },
-        ],
+        template: null,
+        grants: [allOn('section:Deployments', INSTALLER), allOn('section:Deployments', 'sha256:unclaimed')],
+        stands: [stand('Deployments', 'testtenant7', tenant, [allOn('stand:testtenant7', TENANT_BE)])],
       },
     ],
   };
 }
 
-test('buildControlGraph emits IC controller and commander edges', () => {
+function clearControllers(view: OrchestraView): void {
+  for (const c of view.orchestra.canisters) c.controllers = [];
+}
+
+test('buildControlGraph emits IC controller and grant edges, skipping unclaimed slots', () => {
   const graph = buildControlGraph(fixtureTree(), [], {
     layers: DEFAULT_CONTROL_GRAPH_LAYERS,
     casalsBackendId: CASALS,
@@ -137,6 +96,7 @@ test('buildControlGraph emits IC controller and commander edges', () => {
         e.to === `canister:${TENANT_BE}`,
     ),
   );
+  assert.ok(!graph.nodes.some((n) => n.principal?.startsWith('sha256:')));
 });
 
 test('buildControlGraph omits uphill IC edges between orchestra tiers', () => {
@@ -172,13 +132,13 @@ test('isUphillOrchestraIcEdge detects casals to multisig', () => {
     kind: 'canister' as const,
     label: 'multisig',
     rank: 0,
-    canister: { name: 'multisig', canister_id: 'multisig', kind: 'backend', wasm_key: 'orchestration-multisig' },
+    canister: { name: 'multisig', canister_id: 'multisig', kind: 'backend', wasm: 'orchestration-multisig' },
   };
   assert.equal(isUphillOrchestraIcEdge(from, to), true);
   assert.equal(isUphillOrchestraIcEdge(to, from), false);
 });
 
-test('inferManagedCanistersFromTree reads baton id from cached controllers', () => {
+test('inferManagedCanistersFromTree reads baton id from IC controllers', () => {
   const tree = fixtureTree();
   const inferred = inferManagedCanistersFromTree(tree, BATON, {
     section: 'Deployments',
@@ -187,15 +147,9 @@ test('inferManagedCanistersFromTree reads baton id from cached controllers', () 
   assert.deepEqual(inferred.sort(), [TENANT_BE, TENANT_FE].sort());
 });
 
-test('inferManagedCanistersFromStand links same-stand peers without controller cache', () => {
+test('inferManagedCanistersFromStand links same-stand peers without baton controllers', () => {
   const tree = fixtureTree();
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        c.controllers = [];
-      }
-    }
-  }
+  clearControllers(tree);
   const inferred = inferManagedCanistersFromStand(tree, BATON, {
     section: 'Deployments',
     stand: 'testtenant7',
@@ -203,15 +157,9 @@ test('inferManagedCanistersFromStand links same-stand peers without controller c
   assert.deepEqual(inferred.sort(), [TENANT_BE, TENANT_FE].sort());
 });
 
-test('buildControlGraph infers baton_manages from stand topology without controller cache', () => {
+test('buildControlGraph infers baton_manages from stand topology without baton controllers', () => {
   const tree = fixtureTree();
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        c.controllers = [];
-      }
-    }
-  }
+  clearControllers(tree);
   const graph = buildControlGraph(
     tree,
     [{ name: 'testtenant7-baton', canister_id: BATON, section: 'Deployments', stand: 'testtenant7' }],
@@ -221,7 +169,7 @@ test('buildControlGraph infers baton_manages from stand topology without control
   assert.ok(graph.edges.some((e) => e.type === 'baton_manages' && e.to === `canister:${TENANT_FE}`));
 });
 
-test('buildControlGraph adds baton edges from cached controllers', () => {
+test('buildControlGraph adds baton edges from IC controllers', () => {
   const graph = buildControlGraph(
     fixtureTree(),
     [{ name: 'testtenant7-baton', canister_id: BATON, section: 'Deployments', stand: 'testtenant7' }],

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import ArrangementEditor from '$lib/components/ArrangementEditor.svelte';
-  import { getSectionArrangement, setSectionArrangement } from '$lib/api';
-  import { isAuthenticated } from '$lib/auth';
+  import { loadView, sectionSet } from '$lib/api';
+  import { isAuthenticated, isController, principal } from '$lib/auth';
+  import { canEditSection } from '$lib/governanceUx';
   import { toasts } from '$lib/stores/toast';
 
   const sectionName = $derived(decodeURIComponent($page.params.section ?? ''));
@@ -17,9 +18,11 @@
     loading = true;
     error = '';
     try {
-      const doc = await getSectionArrangement(name);
-      canEdit = doc.can_edit !== false;
-      text = doc.arrangements ? JSON.stringify(doc.arrangements, null, 2) : '';
+      const view = await loadView();
+      const section = view.sections.find((s) => s.name === name);
+      if (!section) throw new Error(`no section '${name}'`);
+      canEdit = canEditSection($principal, view.grants, section.grants, $isController === true);
+      text = section.template ? JSON.stringify(section.template, null, 2) : '';
     } catch (e: any) {
       canEdit = false;
       text = '';
@@ -51,15 +54,14 @@
         return;
       }
       if (arrangements === null || typeof arrangements !== 'object' || Array.isArray(arrangements)) {
-        toasts.error('Arrangement must be an object with stand_template');
+        toasts.error('The template must be a JSON object');
         return;
       }
     }
     saving = true;
     try {
-      const saved = await setSectionArrangement({ section: sectionName, arrangements });
-      text = saved.arrangements ? JSON.stringify(saved.arrangements, null, 2) : '';
-      toasts.success(saved.arrangements ? 'Arrangement saved' : 'Arrangement removed');
+      await sectionSet({ section: sectionName, template: arrangements });
+      toasts.success(arrangements ? 'Template saved' : 'Template removed');
     } catch (e: any) {
       toasts.error(e?.message ?? 'Save failed');
     } finally {

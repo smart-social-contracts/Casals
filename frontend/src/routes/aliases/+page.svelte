@@ -1,24 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    getTree,
-    listPrincipalAliases,
-    listBackendControllers,
-    setPrincipalAlias,
-    deletePrincipalAlias,
-    type PrincipalAlias,
-    type Tree,
-  } from '$lib/api';
-  import { activeCommanders } from '$lib/commanderAccess';
+  import { aliasSet, loadView, type OrchestraView } from '$lib/api';
+  import { allGrants, claimedGrants } from '$lib/commanderAccess';
   import { canDo, isAuthenticated } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
 
   const canManageAliases = canDo('alias.manage');
 
-  let aliases = $state<PrincipalAlias[]>([]);
-  let tree = $state<Tree | null>(null);
-  let controllerPrincipals = $state<string[]>([]);
+  type Alias = { principal: string; name: string };
+
+  let aliases = $state<Alias[]>([]);
+  let tree = $state<OrchestraView | null>(null);
   let loading = $state(true);
   let error = $state('');
   let filterQuery = $state('');
@@ -27,20 +20,13 @@
   let modalOpen = $state(false);
   let formPrincipal = $state('');
   let formName = $state('');
-  let formDescription = $state('');
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const [aliasRows, t, controllers] = await Promise.all([
-        listPrincipalAliases(),
-        getTree().catch(() => null),
-        listBackendControllers().catch(() => []),
-      ]);
-      aliases = aliasRows;
-      tree = t;
-      controllerPrincipals = controllers;
+      tree = await loadView();
+      aliases = Object.entries(tree.orchestra.aliases).map(([principal, name]) => ({ principal, name }));
     } catch (e: any) {
       error = e?.message ?? 'Failed to load aliases';
     } finally {
@@ -60,37 +46,31 @@
     const q = filterQuery.trim().toLowerCase();
     if (!q) return sortedAliases;
     return sortedAliases.filter((row) =>
-      [row.name, row.principal, row.description ?? '', row.created_by ?? '']
+      [row.name, row.principal]
         .some((v) => v.toLowerCase().includes(q)),
     );
   });
 
-  /** Principals seen in commanders/controllers but not yet aliased. */
+  /** Grant holders and canister controllers not yet aliased. */
   const unaliasedPrincipals = $derived.by(() => {
+    if (!tree) return [];
     const known = new Set(sortedAliases.map((a) => a.principal));
-    const principals = new Set<string>(controllerPrincipals);
-    if (tree) {
-      for (const sec of tree.sections) {
-        for (const cmd of activeCommanders(sec)) principals.add(cmd.principal);
-        for (const stand of sec.stands) {
-          for (const cmd of activeCommanders(stand)) principals.add(cmd.principal);
-        }
-      }
-    }
+    const principals = new Set([
+      ...claimedGrants(allGrants(tree)).map((g) => g.principal),
+      ...tree.orchestra.canisters.flatMap((c) => c.controllers),
+    ]);
     return [...principals].filter((p) => !known.has(p)).sort();
   });
 
   function openCreate(prefillPrincipal = '') {
     formPrincipal = prefillPrincipal;
     formName = '';
-    formDescription = '';
     modalOpen = true;
   }
 
-  function openEdit(row: PrincipalAlias) {
+  function openEdit(row: Alias) {
     formPrincipal = row.principal;
     formName = row.name;
-    formDescription = row.description ?? '';
     modalOpen = true;
   }
 
@@ -98,11 +78,7 @@
     if (!formPrincipal.trim() || !formName.trim()) return;
     busy = true;
     try {
-      await setPrincipalAlias({
-        principal: formPrincipal.trim(),
-        name: formName.trim(),
-        description: formDescription.trim() || undefined,
-      });
+      await aliasSet(formPrincipal.trim(), formName.trim());
       toasts.success('Alias saved');
       modalOpen = false;
       await load();
@@ -116,7 +92,7 @@
   async function removeAlias(principal: string) {
     busy = true;
     try {
-      await deletePrincipalAlias(principal);
+      await aliasSet(principal, null);
       toasts.success('Alias removed');
       await load();
     } catch (e: any) {
@@ -184,7 +160,7 @@
         <input
           type="text"
           class="input pl-9 {filterQuery ? 'pr-9' : ''} text-sm"
-          placeholder="Filter by alias, principal, or description…"
+          placeholder="Filter by alias or principal…"
           bind:value={filterQuery}
         />
         {#if filterQuery}
@@ -218,8 +194,6 @@
               <tr class="text-left text-xs uppercase tracking-wide text-primary-500 border-b border-primary-100 bg-primary-50/60">
                 <th class="px-4 py-2.5 font-medium">Alias</th>
                 <th class="px-4 py-2.5 font-medium">Principal</th>
-                <th class="px-4 py-2.5 font-medium hidden md:table-cell">Description</th>
-                <th class="px-4 py-2.5 font-medium hidden lg:table-cell">Created by</th>
                 <th class="px-4 py-2.5 font-medium w-28"></th>
               </tr>
             </thead>
@@ -237,8 +211,6 @@
                       </button>
                     </div>
                   </td>
-                  <td class="px-4 py-3 text-primary-500 hidden md:table-cell">{row.description || '—'}</td>
-                  <td class="px-4 py-3 font-mono text-xs text-primary-400 hidden lg:table-cell truncate max-w-[12rem]" title={row.created_by}>{row.created_by || '—'}</td>
                   <td class="px-4 py-3 text-right whitespace-nowrap">
                     {#if $canManageAliases}
                       <button class="btn-ghost btn-sm text-xs" onclick={() => openEdit(row)} disabled={busy}>Edit</button>
@@ -301,10 +273,6 @@
       <div>
         <label class="label" for="alias-name">Alias</label>
         <input id="alias-name" type="text" class="input text-sm" placeholder="Prod II 2" bind:value={formName} />
-      </div>
-      <div>
-        <label class="label" for="alias-description">Description (optional)</label>
-        <input id="alias-description" type="text" class="input text-sm" placeholder="Staging deploy key" bind:value={formDescription} />
       </div>
       <div class="flex justify-end gap-3 pt-2 border-t border-primary-100">
         <button class="btn-secondary btn-sm" onclick={() => (modalOpen = false)} disabled={busy}>Cancel</button>

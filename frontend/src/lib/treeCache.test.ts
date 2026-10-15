@@ -24,10 +24,10 @@ function memoryStorage(): TreeCacheStorage & { calls: string[] } {
   };
 }
 
-test('Orchestra paints a cached tree without waiting on a live get_tree', () => {
+test('Orchestra paints a cached tree without waiting on a live orchestra_get', () => {
   const liveCalls: string[] = [];
   const getTree = () => {
-    liveCalls.push('get_tree');
+    liveCalls.push('orchestra_get');
     return { sections: [{ name: 'LIVE' }] };
   };
 
@@ -41,7 +41,7 @@ test('Orchestra paints a cached tree without waiting on a live get_tree', () => 
   };
   const plan = orchestraOpenPlan(cached);
 
-  // First paint uses the cached snapshot only — live get_tree is not on the critical path.
+  // First paint uses the cached snapshot only — live orchestra_get is not on the critical path.
   assert.equal(plan.waitForLive, false);
   assert.equal(plan.tree?.sections[0] && (plan.tree.sections[0] as { name: string }).name, 'Alpha');
   assert.deepEqual(liveCalls, []);
@@ -51,7 +51,7 @@ test('Orchestra paints a cached tree without waiting on a live get_tree', () => 
   assert.equal(plan.fetchLive, true);
 });
 
-test('Refresh / first visit without a cache still fetches live get_tree', () => {
+test('Refresh / first visit without a cache still fetches live orchestra_get', () => {
   const plan = orchestraOpenPlan(null);
   assert.equal(plan.tree, null);
   assert.equal(plan.waitForLive, true);

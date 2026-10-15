@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { fade, scale } from 'svelte/transition';
-  import type { AuthorizedWasm, Stand, Tree } from '$lib/api';
-  import { createCanister } from '$lib/api';
+  import { canisterCreate, type OrchestraView, type StandView, type Wasm } from '$lib/api';
   import { principal } from '$lib/auth';
   import {
     buildCreateCanisterPayload,
@@ -17,9 +16,9 @@
   import { createOrchestrationLogPoll } from '$lib/orchestrationLogPoll';
 
   interface Props {
-    stand: Stand;
-    catalog: AuthorizedWasm[];
-    tree: Tree | null;
+    stand: StandView;
+    catalog: Wasm[];
+    tree: OrchestraView | null;
     families: string[];
     onsuccess?: () => void;
     oncancel?: () => void;
@@ -116,7 +115,7 @@
         top_commander: topCommander,
         top_commander_custom: topCommanderCustom,
       }, catalog);
-      await createCanister(payload);
+      await canisterCreate(payload);
       onsuccess?.();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);

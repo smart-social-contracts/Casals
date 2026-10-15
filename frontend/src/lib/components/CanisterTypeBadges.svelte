@@ -1,19 +1,15 @@
 <script lang="ts">
   import { resolveWasmType, wasmTypeTags, wasmTypeBadgeClass } from '$lib/canisterTypes';
-  import type { Canister } from '$lib/api';
+  import type { CanisterRow } from '$lib/api';
 
   interface Props {
-    canister: Pick<Canister, 'wasm_key' | 'wasm_type' | 'tags' | 'user_tags'>;
+    canister: Pick<CanisterRow, 'wasm' | 'tags'>;
   }
 
   let { canister }: Props = $props();
 
-  const wasmTags = $derived(
-    (canister.tags?.length ? canister.tags : wasmTypeTags(resolveWasmType(canister)))
-      .filter((t) => t.toLowerCase() !== 'backend' && t.toLowerCase() !== 'frontend'),
-  );
-
-  const userTags = $derived(canister.user_tags ?? []);
+  const wasmTags = $derived(wasmTypeTags(resolveWasmType(canister)));
+  const userTags = $derived(canister.tags ?? []);
 </script>
 
 {#each wasmTags as tag (tag)}

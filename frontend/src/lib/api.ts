@@ -1,553 +1,176 @@
+// The conductor's API as the browser sees it: one function per conductor
+// method (text JSON in, text JSON out), the reply types, the off-chain
+// monitor's read endpoints, and display helpers.
 import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
-import { createHttpAgent } from './asyncAgent';
-import { idlFactory, legacyActor } from './conductor';
 import { get } from 'svelte/store';
+import { createHttpAgent } from './asyncAgent';
 import { identity } from './auth';
+import { idlFactory } from './conductor';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
-import { safeLinkUrl } from './safeUrl';
-import type { EditableSettings } from './settingsAccess';
+
+export { icHost } from './ic-host';
 
 // ---------------------------------------------------------------------------
-// Types (mirror the backend JSON payloads)
+// Reply types
 // ---------------------------------------------------------------------------
 
 export type CanisterKind = 'frontend' | 'backend';
 
-export interface Canister {
+export interface Policy {
+  min?: number;
+  topup?: number;
+}
+
+export interface CanisterRow {
   name: string;
   canister_id: string;
   kind: CanisterKind;
-  wasm_type?: string;
-  tags?: string[];
-  user_tags?: string[];
-  url: string;
-  wasm_key: string;
+  wasm: string;
   wasm_hash: string;
   status: string;
-  snapshot_id: string;
-  subnet?: string;
-  controllers?: string[];
-  /** Optional Basilisk endpoints (`shell`, `browse`) read from the canister's
-   * Candid at install; null when the conductor never checked. */
-  features?: string[] | null;
+  public: boolean;
+  tags: string[];
+  controllers: string[];
+  cycles: number;
+  content: string;
+  /** id of the last snapshot taken through Casals; `canister_restore` defaults to it */
+  snapshot: string;
+  stand: string;
+  section: string;
+  stand_built_at: number;
+  build_error: string;
 }
 
-export interface CommanderGrant {
-  /** An IC principal, or `sha256:<hex>` for a slot nobody has claimed yet. */
-  principal: string;
-  permissions?: string[];
-  all_permissions?: boolean;
-  /** True while the slot waits for its access code to be redeemed. */
-  unclaimed?: boolean;
-  /** Checksum of the access code this commander redeemed (claimed slots only). */
-  code_checksum?: string;
-  /** Methods this commander may ask Casals to call. Empty or absent means none. */
-  calls?: CanisterCallGrant[];
+export interface StandRow {
+  name: string;
+  section: string;
+  description: string;
+  built_at: number;
+  build_error: string;
+  members: string[];
 }
 
-export interface CanisterCallGrant {
-  canister: string;
+export interface SectionRow {
+  name: string;
+  description: string;
+  /** Resolved stand template for stands minted in this section. */
+  template: Record<string, any> | null;
+}
+
+export interface Orchestra {
+  name: string;
+  description: string;
+  currency: string;
+  reserve: number;
+  policy: Policy;
+  subnets: string[];
+  creatable_subnets: string[];
+  subnets_at: number;
+  monitor: { principal?: string; url?: string };
+  aliases: Record<string, string>;
+  built_at: number;
+  balances_at: number;
+  store_id: string;
+  frontend_id: string;
+  multisig_id: string;
+  canister_id: string;
+  /** True when the caller only sees the stands its grants cover. */
+  scoped: boolean;
+  sections: SectionRow[];
+  stands: StandRow[];
+  canisters: CanisterRow[];
+  /** The caller's own notification email. */
+  email: string;
+  /** principal → email; only for settings holders and the monitor. */
+  contacts: Record<string, string>;
+}
+
+export interface CallGrant {
+  canister_id: string;
   method: string;
 }
 
-export interface RunnableCanisterCall {
-  canister_id: string;
-  canister_name: string;
-  method: string;
-  section: string;
-  stand: string;
-}
-
-export interface Stand {
-  name: string;
-  description: string;
-  commanders?: CommanderGrant[];
-  commander_principal: string;
-  permissions?: string[];
-  all_permissions?: boolean;
-  subnet?: string;
-  subnet_type?: string;
-  /** Runtime (template-minted) stands: false while the conductor is still building the mint (#51). */
-  built?: boolean;
-  canisters: Canister[];
-}
-
-export interface Section {
-  name: string;
-  description: string;
-  commanders?: CommanderGrant[];
-  commander_principal: string;
-  permissions?: string[];
-  all_permissions?: boolean;
-  subnet?: string;
-  subnet_type?: string;
-  stands: Stand[];
-}
-
-export interface Permission {
-  key: string;
-  label: string;
-  group: string;
-}
-
-export interface Tree {
-  sections: Section[];
-  /** Canister rows the backend could not home on any stand (should be empty). */
-  orphans?: Canister[];
-  /** Persisted friendly names for IC principals (principal → alias). */
-  principal_aliases?: Record<string, string>;
-}
-
-export interface PrincipalAlias {
+/** `scope` is `orchestra`, `section:<name>` or `stand:<name>`. A principal of
+ * `sha256:<hex>` is a slot waiting for its access code. */
+export interface Grant {
+  scope: string;
   principal: string;
-  name: string;
-  description: string;
-  created_by?: string;
-  updated_at?: number;
+  permissions: string[];
+  calls: CallGrant[];
 }
 
-export interface Status {
-  version: string;
-  sections: number;
-  stands: number;
-  canisters: number;
-  authorized_wasms: number;
-  events: number;
-  orchestra_name?: string;
-  orchestra_description?: string;
-  /** When false, only commanders and controllers can read the orchestra. */
-  public_read?: boolean;
-}
-
-export interface Metadata {
-  version: string;
-  orchestra_name?: string;
-  orchestra_description?: string;
-  open_access: boolean;
-  /** The WASM store (`casals-store`, a certified-assets canister) every install reads from. */
-  wasm_store_canister_id?: string;
-  casals_frontend_canister_id?: string;
-  /** Off-chain monitor (casals-monitor). When set, the Cycles UI reads balances
-   * and history from monitor_service_url instead of calling the conductor. */
-  monitor_enabled?: boolean;
-  monitor_principal?: string;
-  monitor_service_url?: string;
-  /** Legacy orchestra-wide address. Per-user addresses are `notification_emails`. */
-  notification_email?: string;
-  alert_emails?: string;
-  /** Addresses users saved for themselves. The monitor emails this list. */
-  notification_emails?: string[];
-  default_min_cycles: number;
-  default_topup_cycles: number;
-  treasury_reserve: number;
-  cycles_autopilot: boolean;
-  cycles_check_interval_secs: number;
-  cycles_icp_autoconvert?: boolean;
-  /** On-chain balance history sampler (off when using the off-chain monitor). */
-  cycles_sampling?: boolean;
-  // Fiat display: the currency cycle counts are also shown in, and the cached
-  // conversion factor (millionths of currency per 1T cycles; 0 => not fetched).
-  display_currency?: string;
-  fx_micro_per_tcycle?: number;
-  fx_currency?: string;
-  fx_updated?: number;
-  fx_error?: string;
-  fx_currencies?: string[];
-  /** Subnet principals allowed for new canister placement; empty = unrestricted. */
-  subnet_whitelist?: string[];
-  canister_type: string;
-  /** Backend canister id — target for direct cycle deposits. */
-  backend_canister_id?: string;
-  /** 64-char hex ICP ledger account id for exchange withdrawals. */
-  ledger_account_id?: string;
-  /** Principals allowed to call destroy_stand without being an IC controller. */
-  delegated_destroy_principals?: string[];
-}
-
-export interface SectionSummary {
-  name: string;
-  description: string;
-  commander_principal: string;
-  stand_count: number;
-}
-
-export interface AuthorizedWasm {
+export interface Wasm {
   key: string;
-  family: string;
-  version: string;
-  latest: boolean;
-  section: string;
-  registry_namespace: string;
-  registry_path: string;
-  wasm_hash: string;
-  kind: string;
-  wasm_type?: string;
-  description: string;
-  asset_namespace?: string;
-  asset_path?: string;
-  asset_content_type?: string;
-  /** Catalog-row pin time (ms). Store `modified_ns` is the upload time. */
-  authorized_at_ms?: number;
-  updated_at_ms?: number;
-}
-
-export interface OrchestrationEvent {
-  idx: number;
-  btype: string;
-  kind: string;          // alias for btype, set by backend
-  timestamp_secs: number;
-  canister_id: string;
-  caller: string;
-  payload: Record<string, any>;
-  self_hash: string;
-  parent_hash: string;
-}
-
-export type CycleStatus = 'ok' | 'low' | 'critical' | 'frozen' | 'error';
-
-export type IcRunStatus = 'running' | 'stopped' | 'stopping' | 'unknown';
-
-export interface CanisterCycles {
-  section: string;
-  stand: string;
-  name: string;
-  canister_id: string;
+  path: string;
+  sha256: string;
   kind: CanisterKind;
-  min_cycles: number;
-  /** Canister-level override; 0 means inherit from stand/section/default. */
-  min_cycles_override?: number;
-  /** Level that supplies the effective min_cycles when override is 0. */
-  min_cycles_source?: 'canister' | 'stand' | 'section' | 'default';
-  topup_cycles: number;
-  cycles?: number;
-  freezing_threshold?: number;
-  headroom?: number;
-  status: CycleStatus;
-  runtime_status?: IcRunStatus;
-  error?: string;
-  /** Unix seconds when this canister's balance was last read live. */
-  refreshed_at?: number;
+  type: string;
+  memory_keep: string;
 }
 
-export interface CanisterDeployment {
-  at: number; // unix seconds
-  kind: 'installed' | 'upgraded' | 'reinstalled';
-  wasm_key: string;
+export interface OrchestraEvent {
+  idx: number;
+  type: string;
+  caller: string;
+  canister_id: string;
+  payload: Record<string, any>;
+  ts: number;
 }
 
 export interface Treasury {
   balance: number;
   reserve: number;
   spendable: number;
-  autopilot: boolean;
-  interval_secs: number;
-  /** When true, ledger ICP is auto-converted to cycles during reconcile / get_cycles. */
-  icp_autoconvert?: boolean;
-  /** Backend canister id — target for direct cycle deposits. */
-  backend_canister_id?: string;
-  /** 64-char hex ICP ledger account id for exchange withdrawals. */
-  ledger_account_id?: string;
-  /** ICP ledger balance (10^-8 ICP) on the Casals backend account, when known. */
-  icp_e8s?: number;
-  /** Current CMC rate: cycles minted per 1 e8s of ICP (for conversion quotes). */
-  icp_cycles_per_e8s?: number;
-  /** Unix seconds when treasury cycles / ledger ICP were last read live. */
-  refreshed_at?: number;
 }
 
-export interface PoolCanisterCycles {
+export interface CanisterCycles {
+  name: string;
   canister_id: string;
-  status: string; // "free" | "in_use"
-  canister_name: string;
-  cycles?: number; // current balance
-  deposited?: number; // cumulative cycles Casals deposited (canisters only)
-  error?: string;
-  refreshed_at?: number;
-}
-
-export interface CyclesReport {
-  treasury: Treasury;
-  totals: { canisters: number; ok: number; low: number; critical: number; frozen: number; error: number };
-  canisters: CanisterCycles[];
-  pool?: { total: number; free: number; in_use: number; canisters: PoolCanisterCycles[] };
-  cached_at?: number;
-  /** ``off-chain-monitor`` when balances came from casals-monitor instead of the canister cache. */
-  source?: string;
-  /** True when only ``refreshed_canisters`` have live balances; other rows may be stale. */
-  partial_refresh?: boolean;
-  refreshed_canisters?: string[];
-}
-
-export interface CycleSamplePoint {
-  ts: number; // unix seconds
-  canister_id: string;
-  canister: string;
   stand: string;
   section: string;
-  kind: CanisterKind;
-  cycles: number; // balance at ts
-  deposited: number; // cumulative deposited into this canister at ts
+  cycles: number;
+  min: number;
+  topup: number;
 }
 
-export interface CycleHistory {
-  now: number; // unix seconds
-  samples: CycleSamplePoint[];
-  has_more?: boolean;
-  before_id?: number;
+export interface Cycles {
+  treasury: Treasury;
+  balances_at: number;
+  canisters: CanisterCycles[];
+  /** cycles_refresh only: e8s of ICP converted to cycles. */
+  converted?: number;
 }
 
-export type TreasuryFlowPeriod = 'hour' | 'day' | 'week' | 'month' | 'inception';
-
-export interface TreasuryFlowEvent {
-  btype: string;
-  timestamp_secs: number;
-  payload: Record<string, unknown>;
+export interface ContentDeploy {
+  canister: string;
+  status: 'running' | 'done' | 'failed';
+  remaining: number;
+  error: string;
+  at: number;
 }
 
-interface TreasuryFlowPage {
-  now: number;
-  period: TreasuryFlowPeriod;
-  since: number;
-  bucket_secs: number;
-  events: TreasuryFlowEvent[];
-  has_more: boolean;
-  before_id: number;
-  display_currency: string;
-  fx_micro_per_tcycle: number;
+export interface Ok {
+  ok: true;
 }
 
-export interface TreasuryFlowBucket {
-  ts: number;
-  span_end?: number;
-  deposited_cycles: number;
-  deposited_icp_e8s: number;
-  converted_cycles: number;
-  consumed_cycles: number;
-  returned_cycles?: number;
-}
-
-function flowBucketTs(ts: number, bucketSecs: number): number {
-  const bs = Math.max(60, bucketSecs);
-  return Math.floor(ts / bs) * bs;
-}
-
-/** Mirror of cycles.aggregate_treasury_flow (frontend stitches paginated events). */
-export function aggregateTreasuryFlow(
-  events: TreasuryFlowEvent[],
-  since: number,
-  bucketSecs: number,
-  now: number,
-): { buckets: TreasuryFlowBucket[]; totals: TreasuryFlow['totals']; icp_cycles_per_e8s: number } {
-  const totals = {
-    deposited_cycles: 0,
-    deposited_icp_e8s: 0,
-    converted_cycles: 0,
-    consumed_cycles: 0,
-    returned_cycles: 0,
-  };
-  let icpCyclesPerE8s = 0;
-  const buckets = new Map<number, TreasuryFlowBucket>();
-  let earliest: number | null = null;
-
-  for (const ev of events) {
-    const ts = Number(ev.timestamp_secs || 0);
-    if (ts <= 0) continue;
-    if (earliest === null || ts < earliest) earliest = ts;
-    if (since && ts < since) continue;
-    const payload = (ev.payload ?? {}) as Record<string, unknown>;
-    const bucketKey = bucketSecs <= 0 ? 0 : flowBucketTs(ts, bucketSecs);
-    let b = buckets.get(bucketKey);
-    if (!b) {
-      b = {
-        ts: bucketSecs <= 0 ? ts : bucketKey,
-        deposited_cycles: 0,
-        deposited_icp_e8s: 0,
-        converted_cycles: 0,
-        consumed_cycles: 0,
-        returned_cycles: 0,
-      };
-      buckets.set(bucketKey, b);
-    }
-    const amt = (k: string) => Number(payload[k] || 0);
-    switch (ev.btype) {
-      case 'treasury_cycles_deposit':
-        totals.deposited_cycles += amt('amount');
-        b.deposited_cycles += amt('amount');
-        break;
-      case 'treasury_icp_deposit':
-        totals.deposited_icp_e8s += amt('amount_e8s');
-        b.deposited_icp_e8s += amt('amount_e8s');
-        break;
-      case 'cycles_icp_convert': {
-        const icp = amt('icp_e8s');
-        const cyc = amt('cycles');
-        if (icp > 0 && cyc > 0) icpCyclesPerE8s = Math.max(icpCyclesPerE8s, cyc / icp);
-        totals.converted_cycles += cyc;
-        b.converted_cycles += cyc;
-        break;
-      }
-      case 'cycles_topup':
-        totals.consumed_cycles += amt('amount');
-        b.consumed_cycles += amt('amount');
-        break;
-      case 'cycles_return':
-        totals.returned_cycles += amt('amount');
-        b.returned_cycles = (b.returned_cycles ?? 0) + amt('amount');
-        break;
-    }
-  }
-
-  if (bucketSecs <= 0 && earliest !== null) {
-    const spanEnd = now || Math.max(...[...buckets.values()].map((r) => r.ts), earliest);
-    return {
-      buckets: [{
-        ts: earliest,
-        span_end: spanEnd,
-        deposited_cycles: totals.deposited_cycles,
-        deposited_icp_e8s: totals.deposited_icp_e8s,
-        converted_cycles: totals.converted_cycles,
-        consumed_cycles: totals.consumed_cycles,
-        returned_cycles: totals.returned_cycles,
-      }],
-      totals,
-      icp_cycles_per_e8s: icpCyclesPerE8s,
-    };
-  }
-
-  return {
-    buckets: [...buckets.values()].sort((a, b) => a.ts - b.ts),
-    totals,
-    icp_cycles_per_e8s: icpCyclesPerE8s,
-  };
-}
-
-export interface TreasuryFlow {
-  now: number;
-  period: TreasuryFlowPeriod;
-  since: number;
-  bucket_secs: number;
-  totals: {
-    deposited_cycles: number;
-    deposited_icp_e8s: number;
-    converted_cycles: number;
-    consumed_cycles: number;
-    returned_cycles?: number;
-  };
-  buckets: TreasuryFlowBucket[];
-  icp_cycles_per_e8s: number;
-  display_currency: string;
-  fx_micro_per_tcycle: number;
-}
-
-export interface UpdateResult {
-  ok: boolean;
-  error?: string;
-  [key: string]: unknown;
-}
-
-export interface SheetCanister {
+/** `orchestra_export`: the orchestra as an `orchestra_up` document. */
+export interface ExportDoc {
   name: string;
-  wasm_key: string;
-  kind?: CanisterKind;
-  /** v2: `family@version` */
-  wasm?: string;
-  /** v2 frontends: the store namespace (a bundle) this canister serves */
-  content?: string;
-  files?: Record<string, string>;
-  /** Candid text, or ``{top_commander}``. Reinstall runs init with this. */
-  install_arg?: string | Record<string, unknown>;
-}
-
-export interface SheetStand {
-  name: string;
-  description?: string;
-  commander_principal?: string;
-  subnet?: string;
-  subnet_type?: string;
-  canisters?: SheetCanister[];
-}
-
-export interface SheetSection {
-  name: string;
-  description?: string;
-  commander_principal?: string;
-  subnet?: string;
-  subnet_type?: string;
-  stands?: SheetStand[];
-}
-
-export interface SheetBundleRow {
-  path: string;
-  source: string;
-  /** the bundle hash (docs/BUNDLES.md) */
-  sha256?: string;
-}
-
-export interface SheetRegistry {
-  wasms?: { family: string; version: string; source: string; sha256?: string }[];
-  bundles?: SheetBundleRow[];
-}
-
-export interface Sheet {
-  name?: string;
-  description?: string;
-  sections: SheetSection[];
-  registry?: SheetRegistry;
-  [key: string]: unknown;
-}
-
-export interface PooledCanister {
-  canister_id: string;
-  status: 'free' | 'in_use';
-  canister_name: string;
-  subnet?: string;
-  subnet_type?: string;
-}
-
-export interface PoolReport {
-  total: number;
-  free: number;
-  in_use: number;
-  canisters: PooledCanister[];
+  wasms: Wasm[];
+  grants: Grant[];
+  sections: { name: string; template?: Record<string, any> | null; stands: { name: string; canisters: Record<string, any>[] }[] }[];
+  [key: string]: any;
 }
 
 // ---------------------------------------------------------------------------
-// Actor setup
+// The conductor actor
 // ---------------------------------------------------------------------------
 
 const IS_LOCAL = isLocalHost();
-export { icHost } from './ic-host';
+let _anonymous: Promise<any> | null = null;
+let _signed: { id: Identity; actor: Promise<any> } | null = null;
 
-// ---------------------------------------------------------------------------
-// Shared agent — created once, root key fetched eagerly on local networks so
-// certificate verification never races with the first query.
-// ---------------------------------------------------------------------------
-let _sharedAgent: HttpAgent | null = null;
-let _rootKeyReady: Promise<void> | null = null;
-
-function _getAgent(): HttpAgent {
-  if (!_sharedAgent) {
-    _sharedAgent = createHttpAgent({ host: icHost() });
-    if (IS_LOCAL) {
-      _rootKeyReady = _sharedAgent.fetchRootKey().then(() => {});
-    } else {
-      _rootKeyReady = Promise.resolve();
-    }
-  }
-  return _sharedAgent;
-}
-
-async function _readyAgent(): Promise<HttpAgent> {
-  const agent = _getAgent();
-  await _rootKeyReady;
-  return agent;
-}
-
-// icp-cli injects all canister IDs (and the network root key) into the asset
-// canister and exposes them to the browser via the `ic_env` cookie. We read the
-// backend's ID from there so the same build works in every environment. The
-// VITE_CANISTER_ID build-time var is honored first for local dev convenience.
 function _canisterEnv(): Record<string, string> {
   if (typeof document === 'undefined') return {};
   const match = document.cookie.match(/(?:^|;\s*)ic_env=([^;]+)/);
@@ -560,218 +183,246 @@ function _canisterEnv(): Record<string, string> {
   return env;
 }
 
-function _backendCanisterId(): string {
-  const fromBuild = import.meta.env.VITE_CANISTER_ID as string | undefined;
-  if (fromBuild) return fromBuild;
-  return _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] ?? '';
-}
-
-/** Backend canister id for this frontend deployment (from ic_env cookie or build). */
+/** The conductor's canister id (ic_env cookie, or VITE_CANISTER_ID in local dev). */
 export function backendCanisterId(): string {
-  return _backendCanisterId();
+  return (import.meta.env.VITE_CANISTER_ID as string | undefined) || _canisterEnv()['PUBLIC_CANISTER_ID:casals_backend'] || '';
 }
 
-/** This Casals UI asset canister id (ic_env cookie or page hostname). */
+/** This UI's own asset canister id. */
 export function frontendCanisterId(): string {
   const fromEnv = _canisterEnv()['PUBLIC_CANISTER_ID:casals_frontend'];
-  if (fromEnv) return fromEnv;
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    const m =
-      host.match(/^([a-z0-9-]+)\.icp0\.io$/i) ??
-      host.match(/^([a-z0-9-]+)\.icp\.net$/i) ??
-      host.match(/^([a-z0-9-]+)\.localhost$/i) ??
-      host.match(/^([a-z0-9-]+)\.local\.localhost$/i);
-    if (m) return m[1];
+  if (fromEnv || typeof window === 'undefined') return fromEnv ?? '';
+  const m = window.location.hostname.match(/^([a-z0-9-]+)\.(?:icp0\.io|icp\.net|localhost|local\.localhost)$/i);
+  return m ? m[1] : '';
+}
+
+async function _actorWith(id?: Identity): Promise<any> {
+  const canisterId = backendCanisterId();
+  if (!canisterId) throw new Error('Conductor canister id not found (ic_env cookie or VITE_CANISTER_ID).');
+  const agent: HttpAgent = createHttpAgent({ host: icHost(), ...(id ? { identity: id } : {}) });
+  if (IS_LOCAL) await agent.fetchRootKey();
+  return Actor.createActor(idlFactory, { agent, canisterId });
+}
+
+function _actorAs(id: Identity): Promise<any> {
+  if (_signed?.id !== id) {
+    const actor = _actorWith(id);
+    _signed = { id, actor };
+    actor.catch(() => _signed?.actor === actor && (_signed = null));
   }
-  return '';
+  return _signed!.actor;
 }
 
-function _makeActorWithAgent(agent: HttpAgent): any {
-  const canisterId = _backendCanisterId();
-  if (!canisterId) {
-    throw new Error(
-      'Backend canister ID not found. Expected the ic_env cookie (set by the ' +
-        'asset canister on deploy) or VITE_CANISTER_ID for local dev.'
-    );
-  }
-  return legacyActor(Actor.createActor(idlFactory, { agent, canisterId }));
-}
-
-let _signedActor: { id: Identity; actor: Promise<any> } | null = null;
-
-async function _actorAs(id: Identity): Promise<any> {
-  if (_signedActor?.id === id) return _signedActor.actor;
-  // Authenticated calls need their own agent with the user identity.
-  // We must also fetch (and await) the root key into this agent on local
-  // networks — sharing the shared-agent's key promise is not enough because
-  // each HttpAgent instance manages its own root key buffer.
-  const actor = (async () => {
-    const agent = createHttpAgent({ identity: id, host: icHost() });
-    if (IS_LOCAL) await agent.fetchRootKey();
-    return _makeActorWithAgent(agent);
-  })();
-  _signedActor = { id, actor };
-  actor.catch(() => {
-    if (_signedActor?.actor === actor) _signedActor = null;
-  });
-  return actor;
-}
-
-/** Reads sign with the session identity when there is one: the conductor
- * answers anonymous callers only when its sheet sets `public_read`. */
-async function _actor(authenticated = false): Promise<any> {
-  const id = get(identity);
+/** Reads sign with the session identity when there is one; updates require it. */
+function _actor(update: boolean, as?: Identity): Promise<any> {
+  const id = as ?? get(identity);
   if (id) return _actorAs(id);
-  if (authenticated) throw new Error('Not authenticated');
-  const agent = await _readyAgent();
-  return _makeActorWithAgent(agent);
+  if (update) throw new Error('Not authenticated');
+  return (_anonymous ??= _actorWith().catch((e) => ((_anonymous = null), Promise.reject(e))));
 }
 
-function _parseQuery<T>(raw: string): T {
-  const result = JSON.parse(raw);
-  if (result && typeof result === 'object' && !Array.isArray(result) && result.error) {
-    throw new Error(result.error);
-  }
-  return result as T;
+async function _call<T>(method: string, args: object = {}, update = true, as?: Identity): Promise<T> {
+  const reply = JSON.parse(await (await _actor(update, as))[method](JSON.stringify(args)));
+  if (reply?.ok === false) throw new Error(reply.error || `${method} failed`);
+  return reply as T;
 }
 
-function _parseUpdate<T extends object = UpdateResult>(raw: string): UpdateResult & T {
-  const result = JSON.parse(raw) as UpdateResult & T;
-  if (result && result.ok === false) {
-    throw new Error(result.error || 'Operation failed');
-  }
-  return result;
-}
+const query = <T>(method: string, args: object = {}, as?: Identity) => _call<T>(method, args, false, as);
+const update = <T = Ok>(method: string, args: object = {}) => _call<T>(method, args, true);
 
 // ---------------------------------------------------------------------------
-// Queries
+// Conductor methods (same names as the conductor, camelCased)
 // ---------------------------------------------------------------------------
 
-export async function getStatus(): Promise<Status> {
-  return _parseQuery<Status>(await (await _actor()).get_status());
+export const orchestraGet = (as?: Identity) => query<Orchestra>('orchestra_get', {}, as);
+export const orchestraEvents = (args: { take?: number; type?: string; canister_id?: string } = {}) =>
+  query<{ events: OrchestraEvent[] }>('orchestra_events', args).then((r) => r.events);
+export const orchestraResolve = (args: { name: string } | { path: string }) =>
+  query<{ name: string; canister_id: string; stand: string; section: string }>('orchestra_resolve', args);
+/** The whole orchestra as an `orchestra_up` document (readers of everything only). */
+export const orchestraExport = () => query<ExportDoc>('orchestra_export');
+export const orchestraSet = (patch: Partial<Pick<Orchestra, 'name' | 'description' | 'currency' | 'subnets' | 'reserve' | 'policy' | 'monitor'>>) =>
+  update('orchestra_set', patch);
+export const aliasSet = (principal: string, name: string | null) => update('alias_set', { principal, name });
+export const meSet = (email: string) => update('me_set', { email });
+
+export const sectionCreate = (args: { name: string; description?: string; template?: unknown; policy?: Policy; subnet?: string }) =>
+  update('section_create', args);
+export const sectionSet = (args: { section: string; name?: string; description?: string; template?: unknown; policy?: Policy; subnet?: string }) =>
+  update('section_set', args);
+export const sectionDelete = (section: string) => update('section_delete', { section });
+
+export const standCreate = (args: { section: string; name: string; description?: string; subnet?: string; members?: string[] }) =>
+  update<{ name: string; members: string[]; created: string[] }>('stand_create', args);
+export const standSet = (args: { stand: string; name?: string; description?: string; policy?: Policy; subnet?: string }) =>
+  update('stand_set', args);
+export const standDelete = (stand: string) => update('stand_delete', { stand });
+export const standDestroy = (stand: string) => update<{ swept: number }>('stand_destroy', { stand });
+
+export const canisterCreate = (args: { stand: string; name: string; wasm: string; install_arg?: string; controllers?: string[]; config?: unknown[] }) =>
+  update<{ canister_id: string }>('canister_create', args);
+export const canisterRegister = (args: { stand: string; name: string; canister_id: string; kind?: CanisterKind }) =>
+  update<{ canister_id: string }>('canister_register', args);
+export const canisterSet = (args: { canister: string; name?: string; stand?: string; public?: boolean; tags?: string[]; policy?: Policy; content?: string; install_arg?: string }) =>
+  update<{ canister_id: string }>('canister_set', args);
+export const canisterUpgrade = (args: ({ canister: string } | { stand: string }) & { wasm: string; reinstall?: boolean }) =>
+  update<{ upgraded: string[]; wasm_hash: string }>('canister_upgrade', args);
+export const canisterControllers = (canister: string, controllers: string[]) =>
+  update('canister_controllers', { canister, controllers });
+export const canisterStart = (canister: string) => update('canister_start', { canister });
+export const canisterStop = (canister: string) => update('canister_stop', { canister });
+export const canisterSnapshot = (canister: string) => update<{ snapshot_id: string }>('canister_snapshot', { canister });
+export const canisterRestore = (canister: string, snapshot_id: string) => update('canister_restore', { canister, snapshot_id });
+export const canisterDelete = (canister: string) => update('canister_delete', { canister });
+export const canisterDestroy = (canister: string) => update<{ swept: number }>('canister_destroy', { canister });
+/** Basilisk `__browse__` relayed by the conductor; `query` defaults to `{action: "schema"}`. */
+export const canisterBrowse = (canister: string, q?: Record<string, unknown>) =>
+  update<{ result: unknown }>('canister_browse', { canister, ...(q ? { query: q } : {}) }).then((r) => r.result);
+export const callCanister = (canister: string, method: string, arg = '') =>
+  update<{ reply: string; truncated: boolean }>('call_canister', { canister, method, arg });
+
+export const contentDeploy = (args: { canister: string; namespace?: string; bundle_sha256?: string }) =>
+  update<ContentDeploy & { canister_id: string }>('content_deploy', args);
+export const contentStatus = () => query<{ deploys: ContentDeploy[] }>('content_status').then((r) => r.deploys);
+
+export const wasmList = () => query<{ wasms: Wasm[] }>('wasm_list').then((r) => r.wasms);
+export const wasmAuthorize = (args: { key: string; path?: string; sha256?: string; kind?: CanisterKind; type?: string; memory_keep?: string }) =>
+  update<{ key: string; updated: boolean }>('wasm_authorize', args);
+export const wasmRevoke = (key: string) => update('wasm_revoke', { key });
+/** Commit permission on the store for one hour. */
+export const wasmUploadBegin = () => update<{ store_id: string; expires_at: number }>('wasm_upload_begin');
+export const wasmUploadEnd = (prefix = '/') =>
+  update<{ files: Record<string, { sha256: string; type: string }> }>('wasm_upload_end', { prefix });
+
+export const grantList = (as?: Identity) => query<{ grants: Grant[] }>('grant_list', {}, as).then((r) => r.grants);
+export const grantSet = (args: { scope: string; principal: string; permissions: string[]; calls?: CallGrant[] }) =>
+  update('grant_set', args);
+export const grantRemove = (scope: string, principal: string) => update('grant_remove', { scope, principal });
+/** Redeem an access code; returns the scopes now held. `as` signs before the session opens. */
+export const grantClaim = (code: string, as?: Identity) =>
+  _call<{ claimed: string[] }>('grant_claim', { code }, true, as).then((r) => r.claimed);
+
+export const batonProposeUpgrade = (stand: string, targets: { canister: string; wasm: string }[]) =>
+  update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_upgrade', { stand, targets });
+export const batonProposeContent = (stand: string, targets: { canister: string; namespace: string }[]) =>
+  update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_content', { stand, targets });
+
+export const cyclesGet = () => query<Cycles>('cycles_get');
+/** Converts the treasury's ICP and reads every balance live. */
+export const cyclesRefresh = () => update<Cycles>('cycles_refresh');
+export const cyclesTopUp = (args: ({ canister: string } | { stand: string }) & { amount?: number }) =>
+  update<{ topped_up: { canister: string; topped_up: number }[]; treasury: Treasury }>('cycles_top_up', args);
+export const cyclesSend = (args: { canister_id: string; amount?: number; all?: boolean }) =>
+  update<{ canister_id: string; sent: number; treasury: Treasury }>('cycles_send', args);
+
+// ---------------------------------------------------------------------------
+// The orchestra grouped for display: sections → stands → canisters, with the
+// grants held on each scope.
+// ---------------------------------------------------------------------------
+
+export interface StandView extends StandRow {
+  canisters: CanisterRow[];
+  grants: Grant[];
 }
 
-let _metadataCache: Metadata | null = null;
-let _metadataInflight: Promise<Metadata | null> | null = null;
-
-export async function casalsMetadata(): Promise<Metadata> {
-  const md = _parseQuery<Metadata>(await (await _actor()).casals_metadata());
-  _metadataCache = md;
-  return md;
+export interface SectionView extends SectionRow {
+  stands: StandView[];
+  grants: Grant[];
 }
 
-/** Per-instance base URL of the off-chain monitor (casals-monitor), e.g.
- *  ``https://<host>/v1/<instance>``. Empty string when monitoring is on-chain. */
-async function _monitorBase(): Promise<string> {
-  let md = _metadataCache;
-  if (!md) {
-    if (!_metadataInflight) _metadataInflight = casalsMetadata().catch(() => null);
-    md = await _metadataInflight;
-  }
-  // The URL stays saved in on-chain mode; only an enabled monitor serves data.
-  return md?.monitor_enabled ? (md.monitor_service_url || '').trim() : '';
+export interface OrchestraView {
+  orchestra: Orchestra;
+  /** Grants on the whole orchestra. */
+  grants: Grant[];
+  sections: SectionView[];
 }
 
-/** Cached GETs hit local SQLite and finish in a few seconds. */
-const MONITOR_GET_TIMEOUT_MS = 20_000;
-/** POSTs trigger an IC update (`refresh_treasury` etc.). Those routinely take
- *  20–30s on mainnet and the monitor CLI budget is 120s — 20s aborts first. */
-const MONITOR_POST_TIMEOUT_MS = 90_000;
-
-function _monitorFetchSignal(timeoutMs: number): AbortSignal | undefined {
-  if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
-    return AbortSignal.timeout(timeoutMs);
-  }
-  return undefined;
+export function viewOf(o: Orchestra, grants: Grant[]): OrchestraView {
+  const on = (scope: string) => grants.filter((g) => g.scope === scope);
+  const names = [...new Set([...o.sections.map((s) => s.name), ...o.stands.map((s) => s.section)])];
+  const sections = names.map((name) => ({
+    name,
+    description: o.sections.find((s) => s.name === name)?.description ?? '',
+    template: o.sections.find((s) => s.name === name)?.template ?? null,
+    grants: on(`section:${name}`),
+    stands: o.stands
+      .filter((st) => st.section === name)
+      .map((st) => ({ ...st, grants: on(`stand:${st.name}`), canisters: o.canisters.filter((c) => c.stand === st.name) })),
+  }));
+  return { orchestra: o, grants: on('orchestra'), sections };
 }
 
-/** GET a path under the off-chain monitor base. Returns null when monitoring is
- *  on-chain or the service is unreachable, so callers can fall back to the canister. */
-async function _monitorGet<T>(path: string): Promise<T | null> {
-  const base = await _monitorBase();
-  if (!base) return null;
-  const url = `${base.replace(/\/$/, '')}${path}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(url, {
-        headers: { accept: 'application/json' },
-        signal: _monitorFetchSignal(MONITOR_GET_TIMEOUT_MS),
-      });
-      if (!res.ok) continue;
-      return (await res.json()) as T;
-    } catch {
-      // Transient network errors — one retry.
-    }
-  }
-  return null;
+/** `as` reads with an identity that is not the session's yet (the login gate). */
+export async function loadView(as?: Identity): Promise<OrchestraView> {
+  const [o, grants] = await Promise.all([orchestraGet(as), grantList(as)]);
+  return viewOf(o, grants);
 }
 
-/** True when this Casals instance is configured for off-chain cycle management. */
-export async function usesOffChainMonitor(): Promise<boolean> {
-  return Boolean(await _monitorBase());
+export const allCanisters = (v: OrchestraView): CanisterRow[] => v.orchestra.canisters;
+export const allStands = (v: OrchestraView): StandView[] => v.sections.flatMap((s) => s.stands);
+
+// ---------------------------------------------------------------------------
+// Off-chain monitor (casals-monitor): cycle history, treasury flow, FX
+// ---------------------------------------------------------------------------
+
+export interface MonitorCanister {
+  name: string;
+  canister_id: string;
+  stand: string;
+  section: string;
+  kind: CanisterKind;
+  cycles?: number;
+  min_cycles: number;
+  topup_cycles: number;
+  status: 'ok' | 'low' | 'critical' | 'frozen' | 'error';
+  error?: string;
+  refreshed_at?: number;
 }
 
-/** POST to the off-chain monitor — triggers a live poll on the service. */
-async function _monitorPost<T>(path: string, body?: unknown): Promise<T | null> {
-  const base = await _monitorBase();
-  if (!base) return null;
-  try {
-    const res = await fetch(`${base.replace(/\/$/, '')}${path}`, {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: body === undefined ? '{}' : JSON.stringify(body),
-      signal: _monitorFetchSignal(MONITOR_POST_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+export interface MonitorCycles {
+  treasury: Treasury & { refreshed_at?: number };
+  canisters: MonitorCanister[];
+  cached_at?: number;
 }
 
-/** Ask the monitor to fetch live treasury data from the conductor, then return the report.
- *  Falls back to the conductor when the monitor is unreachable (CSP, timeout, 5xx). */
-export async function monitorPollTreasury(): Promise<CyclesReport | null> {
-  const res = await _monitorPost<{ report?: CyclesReport }>('/poll/treasury');
-  if (res?.report?.treasury) return normalizeCyclesReport(res.report);
-  try {
-    return await refreshTreasury();
-  } catch {
-    return null;
-  }
+export interface CycleSamplePoint {
+  ts: number;
+  canister_id: string;
+  canister: string;
+  stand: string;
+  section: string;
+  kind: CanisterKind;
+  cycles: number;
+  deposited: number;
 }
 
-/** Ask the monitor to fetch live balances for named canisters, then return the report. */
-export async function monitorPollCanisters(
-  names: string[] = [],
-  canisterIds: string[] = [],
-): Promise<CyclesReport | null> {
-  if (!names.length && !canisterIds.length) return null;
-  const body: { names?: string[]; canister_ids?: string[] } = {};
-  if (canisterIds.length) body.canister_ids = canisterIds;
-  else body.names = names;
-  const res = await _monitorPost<{ report?: CyclesReport }>(
-    '/poll/canisters',
-    body,
-  );
-  if (res?.report?.treasury) return normalizeCyclesReport(res.report);
-  return null;
+export interface CycleHistory {
+  now: number;
+  samples: CycleSamplePoint[];
 }
 
-/** Re-sync treasury flow audit events from the conductor into the monitor. */
-export async function monitorPollFlow(period: TreasuryFlowPeriod = 'day'): Promise<TreasuryFlow> {
-  const qs = new URLSearchParams({ period });
-  const post = await _monitorPost<{ flow?: TreasuryFlow }>(`/poll/flow?${qs}`);
-  if (Array.isArray(post?.flow?.buckets) && post?.flow?.totals != null) {
-    return post.flow;
-  }
-  return getTreasuryFlow({ period });
+export type TreasuryFlowPeriod = 'hour' | 'day' | 'week' | 'month' | 'inception';
+
+export interface TreasuryFlowBucket {
+  ts: number;
+  span_end?: number;
+  deposited_cycles: number;
+  deposited_icp_e8s: number;
+  converted_cycles: number;
+  consumed_cycles: number;
+  returned_cycles?: number;
 }
 
-/** Refresh the cached FX rate via the monitor (throttled server-side). */
-export async function monitorRefreshFx(): Promise<void> {
-  await _monitorPost('/poll/fx');
+export interface TreasuryFlow {
+  now: number;
+  period: TreasuryFlowPeriod;
+  since: number;
+  bucket_secs: number;
+  totals: Omit<TreasuryFlowBucket, 'ts' | 'span_end'>;
+  buckets: TreasuryFlowBucket[];
+  icp_cycles_per_e8s: number;
+  display_currency: string;
+  fx_micro_per_tcycle: number;
 }
 
 export interface FxInfo {
@@ -781,1048 +432,41 @@ export interface FxInfo {
   fx_error: string;
 }
 
-/** Load FX info — from the monitor when off-chain, else from canister settings. */
-export async function loadFxInfo(): Promise<FxInfo | null> {
-  const off = await _monitorGet<FxInfo>('/fx');
-  if (off) {
-    return {
-      display_currency: off.display_currency || 'USD',
-      fx_micro_per_tcycle: off.fx_micro_per_tcycle || 0,
-      fx_updated: off.fx_updated || 0,
-      fx_error: off.fx_error || '',
-    };
-  }
-  if (await _monitorBase()) return null;
+let _monitorUrl: Promise<string> | null = null;
+
+/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
+export function monitorUrl(): Promise<string> {
+  return (_monitorUrl ??= orchestraGet()
+    .then((o) => (o.monitor?.url || '').trim().replace(/\/$/, ''))
+    .catch(() => ((_monitorUrl = null), '')));
+}
+
+async function _monitor<T>(path: string, post = false): Promise<T | null> {
+  const base = await monitorUrl();
+  if (!base) return null;
   try {
-    const m = await getSettings();
-    return {
-      display_currency: m.display_currency || 'USD',
-      fx_micro_per_tcycle: m.fx_micro_per_tcycle || 0,
-      fx_updated: m.fx_updated || 0,
-      fx_error: m.fx_error || '',
-    };
+    const res = await fetch(base + path, {
+      method: post ? 'POST' : 'GET',
+      headers: { accept: 'application/json', ...(post ? { 'content-type': 'application/json' } : {}) },
+      ...(post ? { body: '{}' } : {}),
+      signal: AbortSignal.timeout(post ? 90_000 : 20_000),
+    });
+    return res.ok ? ((await res.json()) as T) : null;
   } catch {
     return null;
   }
 }
 
-/** Refresh FX rate — monitor path when off-chain, else on-chain ``refresh_fx``. */
-export async function refreshFxRate(): Promise<void> {
-  if (await _monitorBase()) {
-    await monitorRefreshFx();
-    return;
-  }
-  await refreshFx();
-}
-
-export async function getSettings(): Promise<Metadata> {
-  return _parseQuery<Metadata>(await (await _actor()).get_settings());
-}
-
-/** `as` reads with an identity that is not the session's yet (the login gate). */
-export async function getTree(as?: Identity): Promise<Tree> {
-  const actor = as ? await _actorAs(as) : await _actor();
-  return _parseQuery<Tree>(await actor.get_tree());
-}
-
-/** Canister ids currently linked in the orchestra tree. */
-export function orchestraCanisterIds(tree: Tree): Set<string> {
-  const ids = new Set<string>();
-  for (const sec of tree.sections) {
-    for (const st of sec.stands) {
-      for (const c of st.canisters) {
-        if (c.canister_id) ids.add(c.canister_id);
-      }
-    }
-  }
-  return ids;
-}
-
-/** Registered canister names in the orchestra tree (for refresh_canisters batches). */
-export function orchestraCanisterNames(tree: Tree | null | undefined): string[] {
-  const names: string[] = [];
-  if (!tree) return names;
-  for (const sec of tree.sections) {
-    for (const st of sec.stands) {
-      for (const c of st.canisters) {
-        if (c.canister_id && c.name) names.push(c.name);
-      }
-    }
-  }
-  return names;
-}
-
-/** True when a pool entry is not backing any live orchestra canister. */
-export function isPoolUnassigned(
-  canisterId: string,
-  orchestraIds: Set<string>,
-): boolean {
-  return !orchestraIds.has(canisterId);
-}
-
-export async function listSections(): Promise<SectionSummary[]> {
-  return _parseQuery<SectionSummary[]>(await (await _actor()).list_sections());
-}
-
-export async function listAuthorizedWasms(section?: string): Promise<AuthorizedWasm[]> {
-  const args = section ? { section } : {};
-  return _parseQuery<AuthorizedWasm[]>(await (await _actor()).list_authorized_wasms(JSON.stringify(args)));
-}
-
-export async function getEvents(opts: { canister_id?: string; btype?: string; take?: number } = {}): Promise<OrchestrationEvent[]> {
-  return _parseQuery<OrchestrationEvent[]>(await (await _actor()).get_events(JSON.stringify(opts)));
-}
-
-export async function getCanisterDeployment(canisterId: string): Promise<CanisterDeployment | null> {
-  const raw = await (await _actor()).get_canister_deployment(JSON.stringify({ canister_id: canisterId }));
-  const result = JSON.parse(raw);
-  if (result && typeof result === 'object' && result.error) {
-    throw new Error(result.error);
-  }
-  return result as CanisterDeployment | null;
-}
+export const monitorCycles = () => _monitor<MonitorCycles>('/cycles');
+export const monitorHistory = (windowSecs = 0) =>
+  _monitor<CycleHistory>(`/history?window_secs=${windowSecs}`).then((h) => h && { ...h, samples: [...h.samples].sort((a, b) => a.ts - b.ts) });
+export const monitorFlow = (period: TreasuryFlowPeriod = 'day') => _monitor<TreasuryFlow>(`/flow?period=${period}`);
+export const monitorFx = () => _monitor<FxInfo>('/fx');
+export const monitorRefreshFx = () => _monitor('/poll/fx', true);
 
 // ---------------------------------------------------------------------------
-// Sheet (the day-one document the orchestra was built from) + canister pool
+// Canister logs, straight from the management canister (public logs only)
 // ---------------------------------------------------------------------------
-
-// The sheet is public to read (it is the declared layout). It is set by
-// `casals up` (controllers only) and never edited from the UI.
-export interface SheetDocument {
-  sheet: Sheet;
-  env: string;
-  sheet_hash: string;
-}
-
-export interface SectionArrangement {
-  section: string;
-  arrangements: Record<string, unknown> | null;
-  can_edit?: boolean;
-  sheet_hash?: string;
-}
-
-/** One section's ``arrangements`` object. Requires ``arrangement.edit``. */
-export async function getSectionArrangement(section: string): Promise<SectionArrangement> {
-  return _parseUpdate<SectionArrangement>(
-    await (await _actor(true)).get_section_arrangement(JSON.stringify({ section })),
-  );
-}
-
-/** Replace one section's ``arrangements``. ``null`` removes it. Requires ``arrangement.edit``. */
-export async function setSectionArrangement(args: {
-  section: string;
-  arrangements: Record<string, unknown> | null;
-}): Promise<SectionArrangement> {
-  return _parseUpdate<SectionArrangement>(
-    await (await _actor(true)).set_section_arrangement(JSON.stringify(args)),
-  );
-}
-
-/** The conductor's sheet as it stores it: `{sheet, env, sheet_hash}`. */
-export async function getSheetDocument(): Promise<SheetDocument> {
-  const doc = _parseQuery<Partial<SheetDocument>>(await (await _actor()).get_sheet());
-  return { sheet: (doc.sheet ?? { sections: [] }) as Sheet, env: doc.env ?? 'local', sheet_hash: doc.sheet_hash ?? '' };
-}
-
-export async function listPool(): Promise<PoolReport> {
-  return _parseQuery<PoolReport>(await (await _actor()).list_pool());
-}
-
-// Subnet ids the CMC creates on by default — valid `subnet` targets for a sheet.
-export type SubnetListResult = UpdateResult & {
-  subnets?: string[];
-  creatable_subnets?: string[];
-  whitelist_active?: boolean;
-};
-
-export async function listSubnetPlacement(): Promise<SubnetListResult> {
-  return _parseUpdate(await (await _actor(true)).list_subnets()) as SubnetListResult;
-}
-
-export async function listSubnets(): Promise<string[]> {
-  const r = await listSubnetPlacement();
-  return r.subnets ?? [];
-}
-
-// ---------------------------------------------------------------------------
-// Cycles management
-// ---------------------------------------------------------------------------
-
-// get_cycles reads each canister's balance from the management canister, so it is
-// an update call (not a query) even though it only reports state. It requires
-// no special caller, so we call it anonymously — the solvency snapshot is
-// public (only top-up / reconcile / policy changes need authentication).
-export async function getCycles(): Promise<CyclesReport> {
-  return normalizeCyclesReport(
-    _parseQuery<CyclesReport>(await (await _actor()).get_cycles()),
-  );
-}
-
-// Instant query returning the last stored get_cycles result (may be stale).
-// Returns null if no snapshot exists yet (first load after upgrade).
-const EMPTY_CYCLE_TOTALS: CyclesReport['totals'] = {
-  canisters: 0, ok: 0, low: 0, critical: 0, frozen: 0, error: 0,
-};
-
-/** True when ``icp_e8s`` is a CMC rate (or rate×1e8) mis-stored as a ledger balance. */
-export function isMislabeledTreasuryIcp(
-  icpE8s: number | undefined | null,
-  icpCyclesPerE8s: number | undefined | null,
-): boolean {
-  if (icpE8s === undefined || icpE8s === null || icpE8s <= 0) return false;
-  if (icpCyclesPerE8s && icpCyclesPerE8s > 0) {
-    if (icpE8s === icpCyclesPerE8s) return true;
-    if (icpE8s === Math.round(icpCyclesPerE8s * 1e8)) return true;
-  }
-  return false;
-}
-
-/** Ledger ICP balance in e8s, or undefined when absent / mislabeled. */
-export function treasuryLedgerIcpE8s(treasury: Treasury | undefined | null): number | undefined {
-  if (!treasury || treasury.icp_e8s === undefined) return undefined;
-  if (isMislabeledTreasuryIcp(treasury.icp_e8s, treasury.icp_cycles_per_e8s)) return undefined;
-  return treasury.icp_e8s;
-}
-
-export function normalizeTreasury(treasury: Treasury): Treasury {
-  const t = { ...treasury };
-  if (isMislabeledTreasuryIcp(t.icp_e8s, t.icp_cycles_per_e8s)) {
-    delete t.icp_e8s;
-  }
-  return t;
-}
-
-/** Backend may return a treasury-only stub before the first full get_cycles snapshot. */
-export function normalizeCyclesReport(raw: CyclesReport): CyclesReport {
-  return {
-    ...raw,
-    treasury: raw.treasury ? normalizeTreasury(raw.treasury) : raw.treasury,
-    canisters: raw.canisters ?? [],
-    totals: raw.totals ?? EMPTY_CYCLE_TOTALS,
-    pool: raw.pool
-      ? { ...raw.pool, canisters: raw.pool.canisters ?? [] }
-      : raw.pool,
-  };
-}
-
-async function _getCyclesCachedOnChain(): Promise<CyclesReport | null> {
-  try {
-    const raw = _parseQuery<CyclesReport>(await (await _actor()).get_cycles_cached());
-    if (!raw?.treasury) return null;
-    return normalizeCyclesReport(raw);
-  } catch {
-    return null;
-  }
-}
-
-/** Fast canister-only cached cycles (stub when no live snapshot exists yet). */
-export async function getCyclesCachedOnChain(): Promise<CyclesReport | null> {
-  return _getCyclesCachedOnChain();
-}
-
-/** Off-chain monitor snapshot only (null when monitor is not configured or unreachable). */
-export async function getCyclesCachedFromMonitor(): Promise<CyclesReport | null> {
-  const off = await _monitorGet<CyclesReport>('/cycles');
-  if (!off?.treasury) return null;
-  return normalizeCyclesReport(off);
-}
-
-export async function getCyclesCached(): Promise<CyclesReport | null> {
-  const [off, raw] = await Promise.all([
-    getCyclesCachedFromMonitor(),
-    _getCyclesCachedOnChain(),
-  ]);
-  return off ?? raw;
-}
-
-/** Live balance refresh for named canisters only (faster than get_cycles). */
-export async function refreshCanisters(args: { canisters: string[] }): Promise<CyclesReport> {
-  return normalizeCyclesReport(
-    _parseQuery<CyclesReport>(
-      await (await _actor()).refresh_canisters(JSON.stringify(args)),
-    ),
-  );
-}
-
-/** Treasury-only live refresh (cycles + ledger ICP). Does not scan orchestra canisters. */
-export async function refreshTreasury(): Promise<CyclesReport> {
-  return normalizeCyclesReport(
-    _parseQuery<CyclesReport>(
-      await (await _actor(true)).refresh_treasury(''),
-    ),
-  );
-}
-
-// Per-canister balance samples over time (public; recorded on-chain by a sampler
-// timer + opportunistically on reconcile/get_cycles). Used to chart cycles over
-// time and the burn/balance treemap.
-export async function getCycleHistory(opts: {
-  since?: number;
-  window_secs?: number;
-  before_id?: number;
-  limit?: number;
-} = {}): Promise<CycleHistory> {
-  const offChain = await _monitorBase();
-  const off = await _monitorGet<CycleHistory>(
-    `/history?window_secs=${opts.window_secs ?? 0}`,
-  );
-  if (off && Array.isArray(off.samples)) {
-    const samples = [...off.samples].sort((a, b) => a.ts - b.ts);
-    return { now: off.now ?? Math.floor(Date.now() / 1000), samples };
-  }
-  if (offChain) {
-    return { now: Math.floor(Date.now() / 1000), samples: [] };
-  }
-
-  const all: CycleSamplePoint[] = [];
-  let before_id = opts.before_id;
-  let now = Math.floor(Date.now() / 1000);
-  for (let page = 0; page < 25; page++) {
-    const raw = await _parseQuery<CycleHistory>(
-      await (await _actor()).get_cycle_history(
-        JSON.stringify({
-          since: opts.since,
-          window_secs: opts.window_secs,
-          ...(before_id ? { before_id } : {}),
-          ...(opts.limit ? { limit: opts.limit } : {}),
-        }),
-      ),
-    );
-    now = raw.now;
-    all.push(...raw.samples);
-    if (!raw.has_more || !raw.before_id) break;
-    before_id = raw.before_id;
-  }
-  all.sort((a, b) => a.ts - b.ts);
-  return { now, samples: all };
-}
-
-export async function getTreasuryFlow(opts: {
-  period?: TreasuryFlowPeriod;
-  window_secs?: number;
-} = {}): Promise<TreasuryFlow> {
-  const period = opts.period ?? 'day';
-  const qs = new URLSearchParams({ period });
-  if (opts.window_secs != null) qs.set('window_secs', String(opts.window_secs));
-  const offChain = await _monitorBase();
-  if (offChain) {
-    const off = await _monitorGet<TreasuryFlow>(`/flow?${qs}`);
-    if (Array.isArray(off?.buckets) && off?.totals != null) return off;
-    throw new Error('Treasury flow unavailable from off-chain monitor');
-  }
-
-  const actor = await _actor();
-  const all: TreasuryFlowEvent[] = [];
-  let before_id = 0;
-  let page: TreasuryFlowPage | null = null;
-  for (;;) {
-    const raw = _parseQuery<TreasuryFlowPage & Partial<TreasuryFlow>>(
-      await actor.get_treasury_flow(
-        JSON.stringify({
-          ...opts,
-          ...(before_id > 0 ? { before_id } : {}),
-        }),
-      ),
-    );
-    // Older backends returned pre-aggregated buckets in one response.
-    if (Array.isArray(raw.buckets) && raw.totals) {
-      return raw as TreasuryFlow;
-    }
-    page = raw;
-    all.push(...(raw.events ?? []));
-    if (!raw.has_more || !raw.before_id) break;
-    before_id = raw.before_id;
-  }
-  if (!page) {
-    throw new Error('treasury flow: empty response');
-  }
-  const { buckets, totals, icp_cycles_per_e8s } = aggregateTreasuryFlow(
-    all,
-    page.since,
-    page.bucket_secs,
-    page.now,
-  );
-  return {
-    now: page.now,
-    period: page.period,
-    since: page.since,
-    bucket_secs: page.bucket_secs,
-    totals,
-    buckets,
-    icp_cycles_per_e8s,
-    display_currency: page.display_currency,
-    fx_micro_per_tcycle: page.fx_micro_per_tcycle,
-  };
-}
-
-export async function topUp(args: {
-  canister?: string;
-  stand?: string;
-  amount?: number;
-  source?: 'manual' | 'autotopup';
-}): Promise<UpdateResult> {
-  return _parseUpdate(
-    await (await _actor(true)).top_up(
-      JSON.stringify({ ...args, source: args.source ?? 'manual' }),
-    ),
-  );
-}
-
-/** Human-readable suffix for cycles_topup activity/chart labels. */
-export function topupSourceSuffix(
-  payload: Record<string, unknown> | undefined,
-  caller?: string,
-  monitorPrincipal?: string,
-): string {
-  if (!payload) return '';
-  const src = typeof payload.source === 'string' ? payload.source : '';
-  if (src === 'autotopup') return ' (automatic · off-chain monitor)';
-  if (src === 'autopilot') return ' (automatic · autopilot)';
-  if (src === 'manual' || payload.manual === true) return ' (manual)';
-  // Legacy reconcile top-ups: balance_before but no manual/source.
-  if (payload.balance_before != null) return ' (automatic · autopilot)';
-  // Legacy mislabeled monitor top-ups before source was recorded.
-  if (
-    payload.manual === true
-    && monitorPrincipal
-    && caller
-    && caller === monitorPrincipal
-  ) {
-    return ' (automatic · off-chain monitor)';
-  }
-  return '';
-}
-
-export async function returnCycles(args: {
-  canister: string;
-  canister_id?: string;
-  amount: number;
-}): Promise<UpdateResult> {
-  const body: { canister: string; amount: number; canister_id?: string } = {
-    canister: args.canister,
-    amount: args.amount,
-  };
-  if (args.canister_id) body.canister_id = args.canister_id;
-  return _parseUpdate(await (await _actor(true)).return_cycles(JSON.stringify(body)));
-}
-
-export async function reconcile(): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).reconcile());
-}
-
-export async function convertTreasuryIcp(): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).convert_treasury_icp());
-}
-
-export async function setCyclePolicy(args: {
-  section?: string;
-  stand?: string;
-  canister?: string;
-  min_cycles?: number;
-  topup_cycles?: number;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_cycle_policy(JSON.stringify(args)));
-}
-
-// ---------------------------------------------------------------------------
-// Governance / registration updates
-// ---------------------------------------------------------------------------
-
-export interface SettingsPatch {
-  orchestra_name?: string;
-  orchestra_description?: string;
-  open_access?: boolean;
-  wasm_store_canister_id?: string;
-  casals_frontend_canister_id?: string;
-  monitor_enabled?: boolean;
-  monitor_principal?: string;
-  monitor_service_url?: string;
-  /** Legacy orchestra-wide address. Users save their own address with `setMySettings`. */
-  notification_email?: string;
-  alert_emails?: string;
-  default_min_cycles?: number;
-  default_topup_cycles?: number;
-  treasury_reserve?: number;
-  cycles_autopilot?: boolean;
-  cycles_check_interval_secs?: number;
-  cycles_icp_autoconvert?: boolean;
-  cycles_sampling?: boolean;
-  cycles_sample_interval_secs?: number;
-  create_cycles?: number;
-  display_currency?: string;
-  delegated_destroy_principals?: string[];
-  extra_controller_principals?: string[];
-}
-
-export async function syncControllers(opts: { dry_run?: boolean } = {}): Promise<{
-  updated?: unknown[];
-  skipped?: unknown[];
-  failed?: unknown[];
-  dry_run?: boolean;
-}> {
-  return _parseUpdate(
-    await (await _actor(true)).sync_controllers(JSON.stringify(opts)),
-  ) as {
-    updated?: unknown[];
-    skipped?: unknown[];
-    failed?: unknown[];
-    dry_run?: boolean;
-  };
-}
-
-export async function refreshControllersCache(): Promise<{
-  updated?: { name: string; canister_id: string; controllers: string[] }[];
-  failed?: { name: string; canister_id?: string; error: string }[];
-}> {
-  return _parseUpdate(
-    await (await _actor(true)).refresh_controllers_cache('{}'),
-  ) as {
-    updated?: { name: string; canister_id: string; controllers: string[] }[];
-    failed?: { name: string; canister_id?: string; error: string }[];
-  };
-}
-
-/** `''` when no address is saved. `declined`: the address owner answered
- *  "I did not ask for this"; `unsubscribed`: "Stop these emails". */
-export type NotificationEmailStatus = '' | 'confirmed' | 'pending' | 'unsubscribed' | 'declined';
-
-export async function getMySettings(): Promise<{
-  notification_email?: string;
-  notification_email_verified?: boolean;
-  notification_email_status?: NotificationEmailStatus;
-  /** Unix seconds; 0 when not unsubscribed. */
-  notification_email_unsubscribed_at?: number;
-  editable_settings?: EditableSettings;
-}> {
-  return _parseQuery(await (await _actor(true)).get_my_settings());
-}
-
-export async function setMySettings(notificationEmail: string): Promise<UpdateResult & {
-  notification_email?: string;
-  notification_email_verified?: boolean;
-  notification_email_status?: NotificationEmailStatus;
-}> {
-  return _parseUpdate(
-    await (await _actor(true)).set_my_settings(
-      JSON.stringify({ notification_email: notificationEmail }),
-    ),
-  );
-}
-
-export interface NotificationRecipient {
-  principal: string;
-  /** Masked, e.g. `a***@example.com`. */
-  email: string;
-  status: Exclude<NotificationEmailStatus, ''>;
-  unsubscribed_at: number;
-}
-
-/** Controllers, or orchestra-wide commanders holding `notification.manage`. */
-export async function listNotificationRecipients(): Promise<{
-  recipients: NotificationRecipient[];
-  /** Masked orchestra-wide address, or `''`. */
-  legacy_email: string;
-}> {
-  const res = _parseQuery<{ recipients?: NotificationRecipient[]; legacy_email?: string }>(
-    await (await _actor(true)).list_notification_recipients(),
-  );
-  return { recipients: res.recipients ?? [], legacy_email: res.legacy_email ?? '' };
-}
-
-export async function removeNotificationEmail(
-  arg: { principal: string } | { legacy: true },
-): Promise<UpdateResult & { removed?: string }> {
-  return _parseUpdate<{ removed?: string }>(
-    await (await _actor(true)).remove_notification_email(JSON.stringify(arg)),
-  );
-}
-
-export async function setSettings(patch: SettingsPatch): Promise<UpdateResult> {
-  const res = _parseUpdate(await (await _actor(true)).set_settings(JSON.stringify(patch)));
-  _metadataCache = null;
-  _metadataInflight = null;
-  return res;
-}
-
-export async function setSubnetWhitelist(subnets: string[]): Promise<UpdateResult & { subnet_whitelist?: string[] }> {
-  return _parseUpdate(
-    await (await _actor(true)).set_subnet_whitelist(JSON.stringify({ subnets })),
-  ) as UpdateResult & { subnet_whitelist?: string[] };
-}
-
-// Refresh (and cache, server-side) the cycles→currency rate for the configured
-// display currency. Throttled on the backend. Needs a signed-in operator.
-export async function refreshFx(): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).refresh_fx());
-}
-
-export async function createSection(args: {
-  name: string;
-  description?: string;
-  commander_principal?: string;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_section(JSON.stringify(args)));
-}
-
-export async function createStand(args: {
-  section: string;
-  name: string;
-  description?: string;
-  commander_principal?: string;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_stand(JSON.stringify(args)));
-}
-
-export async function renameSection(args: { section: string; new_name: string; description?: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).rename_section(JSON.stringify(args)));
-}
-
-export async function renameStand(args: { stand: string; new_name: string; description?: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).rename_stand(JSON.stringify(args)));
-}
-
-export async function renameCanister(args: { canister: string; new_name: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).rename_canister(JSON.stringify(args)));
-}
-
-export async function setCanisterTags(args: { canister: string; tags: string[] }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_canister_tags(JSON.stringify(args)));
-}
-
-export async function deleteSection(args: { section: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).delete_section(JSON.stringify(args)));
-}
-
-export async function deleteStand(args: { stand: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).delete_stand(JSON.stringify(args)));
-}
-
-export async function deleteCanister(args: { canister: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).delete_canister(JSON.stringify(args)));
-}
-
-export async function destroyCanister(args: { canister?: string; canister_id?: string }): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).destroy_canister(JSON.stringify(args)));
-}
-
-export async function destroyStand(args: {
-  stand?: string;
-  backend_canister_id?: string;
-  frontend_canister_id?: string;
-}): Promise<UpdateResult & {
-  stand?: string;
-  destroyed?: { name?: string; canister_id?: string; cycles_reclaimed?: number }[];
-  errors?: { name?: string; canister_id?: string; error?: string }[];
-  total_cycles_reclaimed?: number;
-  treasury_after?: number;
-}> {
-  return _parseUpdate(await (await _actor(true)).destroy_stand(JSON.stringify(args)));
-}
-
-export async function setCommander(args: {
-  section?: string;
-  stand?: string;
-  commander_principal: string;
-  permissions?: string[] | '*';
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_commander(JSON.stringify(args)));
-}
-
-export async function removeCommander(args: {
-  section?: string;
-  stand?: string;
-  commander_principal: string;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).remove_commander(JSON.stringify(args)));
-}
-
-export async function setPermissions(args: {
-  section?: string;
-  stand?: string;
-  commander_principal: string;
-  permissions: string[] | '*';
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_permissions(JSON.stringify(args)));
-}
-
-export async function setCanisterCalls(args: {
-  section?: string;
-  stand?: string;
-  commander_principal: string;
-  calls: CanisterCallGrant[];
-}): Promise<UpdateResult & { calls?: CanisterCallGrant[] }> {
-  return _parseUpdate(await (await _actor(true)).set_canister_calls(JSON.stringify(args)));
-}
-
-export async function myCanisterCalls(): Promise<RunnableCanisterCall[]> {
-  const raw = _parseQuery<RunnableCanisterCall[] | { error?: string }>(
-    await (await _actor(true)).my_canister_calls(),
-  );
-  if (!Array.isArray(raw)) throw new Error(raw?.error || 'Failed to load canister calls');
-  return raw;
-}
-
-export async function callCanister(args: {
-  canister: string;
-  method: string;
-  arg: string;
-}): Promise<UpdateResult & { reply?: string; truncated?: boolean }> {
-  return _parseUpdate(await (await _actor(true)).call_canister(JSON.stringify(args)));
-}
-
-export interface ClaimedSlot {
-  scope: 'orchestra' | 'section' | 'stand';
-  name: string;
-  permissions: string[];
-}
-
-/**
- * Redeem a commander access code. The caller becomes the commander of every
- * unclaimed slot whose `sha256:` checksum matches the code. Pass `as` when the
- * identity is not (yet) the session identity — the Access Denied dialog claims
- * with the freshly logged-in identity before the session is opened.
- */
-export async function claimCommander(
-  code: string,
-  as?: Identity,
-): Promise<UpdateResult & { claimed?: ClaimedSlot[] }> {
-  const actor = as ? await _actorAs(as) : await _actor(true);
-  return _parseUpdate(await actor.claim_commander(JSON.stringify({ code: code.trim() })));
-}
-
-export async function listPermissions(): Promise<Permission[]> {
-  return _parseQuery<Permission[]>(await (await _actor()).list_permissions());
-}
-
-export async function listPrincipalAliases(): Promise<PrincipalAlias[]> {
-  const res = _parseQuery<{ aliases?: PrincipalAlias[] }>(
-    await (await _actor()).list_principal_aliases(),
-  );
-  return res.aliases ?? [];
-}
-
-export async function setPrincipalAlias(args: {
-  principal: string;
-  name: string;
-  description?: string;
-}): Promise<PrincipalAlias> {
-  const res = _parseUpdate<{ alias?: PrincipalAlias }>(
-    await (await _actor(true)).set_principal_alias(JSON.stringify(args)),
-  );
-  if (!res.alias) throw new Error('Missing alias in response');
-  return res.alias;
-}
-
-export async function deletePrincipalAlias(principal: string): Promise<void> {
-  _parseUpdate(await (await _actor(true)).delete_principal_alias(JSON.stringify({ principal })));
-}
-
-export async function listBackendControllers(): Promise<string[]> {
-  const res = _parseUpdate<{ controllers?: string[] }>(
-    await (await _actor(true)).list_backend_controllers('{}'),
-  );
-  return res.controllers ?? [];
-}
-
-export async function registerCanister(args: {
-  stand: string;
-  name: string;
-  canister_id: string;
-  kind: CanisterKind;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).register_canister(JSON.stringify(args)));
-}
-
-export async function addAuthorizedWasm(args: {
-  key: string;
-  version?: string;
-  section?: string;
-  registry_namespace?: string;
-  registry_path: string;
-  wasm_hash: string;
-  kind?: string;
-  wasm_type?: string;
-  description?: string;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).add_authorized_wasm(JSON.stringify(args)));
-}
-
-export async function removeAuthorizedWasm(key: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).remove_authorized_wasm(JSON.stringify({ key })));
-}
-
-// ---------------------------------------------------------------------------
-// casals-store store: browser uploads + housekeeping
-// ---------------------------------------------------------------------------
-
-export interface UploadTicket {
-  store_canister_id: string;
-  namespace: string;
-  key_prefix: string;
-  chunk_bytes: number;
-  expires_at: number;
-  swept: string[];
-}
-
-export interface UploadReceipt {
-  revoked: string;
-  out_of_scope_deleted?: string[];
-  files?: Record<string, { sha256: string; size: number }>;
-  bundle_sha256?: string;
-  key?: string;
-  namespace?: string;
-  path?: string;
-  size?: number;
-  sha256?: string;
-  content_type?: string;
-}
-
-export interface StoreFile {
-  key: string;
-  namespace: string;
-  path: string;
-  size: number;
-  sha256: string;
-  content_type: string;
-  modified_ns: number;
-  authorized: boolean;
-}
-
-export interface StoreRetentionResult {
-  namespace: string;
-  keep_days: number;
-  dry_run: boolean;
-  candidates: { key: string; size: number; sha256: string; modified_ns: number }[];
-  deleted: string[];
-}
-
-export interface StoreSizeReport {
-  store_canister_id: string;
-  files: number;
-  bytes: number;
-  unauthorized_files: number;
-  unauthorized_bytes: number;
-  warn_bytes: number;
-  limit_bytes: number;
-  warn: boolean;
-  over_limit: boolean;
-}
-
-/** Grant the caller a just-in-time Commit on the store; returns where to upload. */
-/**
- * A just-in-time Commit grant on the store. `namespace` scopes it to one
- * bundle namespace (end_upload deletes anything written outside it).
- */
-export async function beginUpload(keyPrefixOrOpts: string | { namespace?: string; key_prefix?: string } = ''): Promise<UploadTicket> {
-  const args = typeof keyPrefixOrOpts === 'string'
-    ? (keyPrefixOrOpts ? { key_prefix: keyPrefixOrOpts } : {})
-    : Object.fromEntries(Object.entries(keyPrefixOrOpts).filter(([, v]) => v));
-  return _parseUpdate<UploadTicket>(await (await _actor(true)).begin_upload(JSON.stringify(args)));
-}
-
-/** Revoke the caller's Commit; with a path, also return the on-chain size +
- *  sha256; with `bundle`, the namespace's files and bundle hash. */
-export async function endUpload(path = '', namespace = '', bundle = false): Promise<UploadReceipt> {
-  const args: Record<string, string | boolean> = {};
-  if (path) args.path = path;
-  if (namespace) args.namespace = namespace;
-  if (bundle) args.bundle = true;
-  return _parseUpdate<UploadReceipt>(await (await _actor(true)).end_upload(JSON.stringify(args)));
-}
-
-export interface StoreBundle {
-  namespace: string;
-  files: Record<string, { sha256: string; size: number }>;
-  bundle_sha256: string;
-}
-
-/** A store namespace as a bundle, hashed on-chain (docs/BUNDLES.md). */
-export async function storeBundle(namespace: string): Promise<StoreBundle> {
-  return _parseUpdate<StoreBundle>(await (await _actor(true)).store_bundle(JSON.stringify({ namespace })));
-}
-
-/** Progress of one `deploy_content` run (the conductor ships a store bundle to a frontend in rounds). */
-export interface ContentDeploy {
-  canister: string;
-  namespace?: string;
-  bundle_sha256?: string;
-  status: 'running' | 'done' | 'failed';
-  written: number;
-  deleted: number;
-  remaining?: number;
-  rounds: number;
-  error?: string;
-  updated_at?: number;
-}
-
-/**
- * Ship the store's bundle to a frontend — every round, one call. The first round
- * runs inside the call (a bad namespace or checksum rejects here); when files
- * remain the conductor continues on its own timer: poll `contentDeploys()`.
- * `bundle_sha256` pins what the store must still hold when writing.
- */
-export async function deployContent(args: {
-  canister: string;
-  namespace?: string;
-  bundle_sha256?: string;
-  source?: string;
-}): Promise<ContentDeploy> {
-  return _parseUpdate<ContentDeploy>(await (await _actor(true)).deploy_content(JSON.stringify(args)));
-}
-
-export async function contentDeploys(): Promise<ContentDeploy[]> {
-  const res = _parseQuery<{ deploys?: ContentDeploy[] }>(await (await _actor()).content_deploys('{}'));
-  return res.deploys ?? [];
-}
-
-export async function listStoreFiles(namespace = ''): Promise<StoreFile[]> {
-  return _parseQuery<StoreFile[]>(
-    await (await _actor(true)).list_store_files(JSON.stringify(namespace ? { namespace } : {})),
-  );
-}
-
-export async function storeRetention(args: {
-  namespace?: string;
-  keep_days?: number;
-  dry_run?: boolean;
-} = {}): Promise<StoreRetentionResult> {
-  return _parseUpdate<StoreRetentionResult>(await (await _actor(true)).store_retention(JSON.stringify(args)));
-}
-
-export async function storeSize(): Promise<StoreSizeReport> {
-  return _parseUpdate<StoreSizeReport>(await (await _actor(true)).store_size('{}'));
-}
-
-// ---------------------------------------------------------------------------
-// Lifecycle updates (long-running)
-// ---------------------------------------------------------------------------
-
-export async function createCanister(args: {
-  stand: string;
-  name: string;
-  wasm_key: string;
-  kind?: CanisterKind;
-  install_arg?: Record<string, string>;
-  init?: {
-    multisig?: {
-      signers: string[];
-      threshold: number;
-      expiry_secs: number;
-    };
-  };
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_canister(JSON.stringify(args)));
-}
-
-export async function assignPoolCanister(args: {
-  canister_id: string;
-  stand: string;
-  name: string;
-  kind?: CanisterKind;
-  wasm_key?: string;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).assign_pool_canister(JSON.stringify(args)));
-}
-
-export async function upgradeTo(args: {
-  stand?: string;
-  canister?: string;
-  wasm_key: string;
-  reinstall?: boolean;
-  /** Reinstall only. Candid text, or ``{top_commander}``. Omitted uses the sheet. */
-  install_arg?: string | Record<string, unknown>;
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).upgrade_to(JSON.stringify(args)));
-}
-
-/** Ask Casals to file one Baton upgrade proposal and cast Casals' vote.
- *  ``targets`` may name several canisters on the same stand, each with its own wasm. */
-export async function proposeUpgrade(args: {
-  canister?: string;
-  wasm_key?: string;
-  targets?: { canister: string; wasm_key: string }[];
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).propose_upgrade(JSON.stringify(args)));
-}
-
-/** Ask Casals to file one Baton frontend-bundle proposal and cast Casals' vote. */
-export async function proposeAssets(args: {
-  canister?: string;
-  namespace?: string;
-  targets?: { canister: string; namespace: string }[];
-}): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).propose_assets(JSON.stringify(args)));
-}
-
-export async function createSnapshot(canister: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).create_snapshot(JSON.stringify({ canister })));
-}
-
-export async function revertSnapshot(canister: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).revert_snapshot(JSON.stringify({ canister })));
-}
-
-export async function stopCanister(canister: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).stop_canister(JSON.stringify({ canister })));
-}
-
-export async function startCanister(canister: string): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).start_canister(JSON.stringify({ canister })));
-}
-
-// Make a canister's logs publicly fetchable (or revert to controllers-only). New
-// canisters are created public already; this backfills existing ones.
-export async function setLogVisibility(
-  args: { canister?: string; public?: boolean } = {},
-): Promise<UpdateResult> {
-  return _parseUpdate(await (await _actor(true)).set_log_visibility(JSON.stringify(args)));
-}
-
-// ---------------------------------------------------------------------------
-// Basilisk introspection (browse / shell) — relayed through Casals
-// ---------------------------------------------------------------------------
-// Only available for Basilisk canisters built with
-// `__basilisk_features__ = ["shell", "browse"]`. Casals (the canister's
-// controller) relays the calls.
-
-export interface BrowseResult extends UpdateResult {
-  result?: unknown;
-}
-
-export interface ExecResult extends UpdateResult {
-  output?: string;
-}
-
-// Read-only data introspection. Requires a signed-in commander or controller.
-// `query` defaults to {action:"schema"} on the backend. Other actions: len / keys / get / items.
-export async function canisterBrowse(
-  canister: string,
-  query?: Record<string, unknown>,
-  canisterId?: string,
-): Promise<BrowseResult> {
-  const args: Record<string, unknown> = { canister };
-  if (canisterId) args.canister_id = canisterId;
-  if (query) args.query = query;
-  return _parseUpdate(await (await _actor(true)).canister_browse(JSON.stringify(args))) as BrowseResult;
-}
-
-// Run Python inside the canister (controller-gated). Requires auth.
-export async function canisterExec(
-  canister: string,
-  code: string,
-  canisterId?: string,
-): Promise<ExecResult> {
-  const args: Record<string, unknown> = { canister, code };
-  if (canisterId) args.canister_id = canisterId;
-  return _parseUpdate(await (await _actor(true)).canister_exec(JSON.stringify(args))) as ExecResult;
-}
-
-// ---------------------------------------------------------------------------
-// Canister logs (read straight from the IC management canister in the browser)
-// ---------------------------------------------------------------------------
-// `fetch_canister_logs` is a query-only management method that canisters cannot
-// call, so the dashboard fetches a canister's logs directly. It works anonymously
-// only when the canister's log_visibility is `public` (see setLogVisibility).
 
 export interface CanisterLogRecord {
   idx: number;
@@ -1837,11 +481,9 @@ export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRe
   ]);
   const agent = createHttpAgent({ host: icHost(), identity: get(identity) ?? undefined });
   if (IS_LOCAL) await agent.fetchRootKey().catch(() => {});
-  const mgmt = ICManagementCanister.create({ agent });
-  const res: any = await mgmt.fetchCanisterLogs(Principal.fromText(canisterId));
-  const recs: any[] = res?.canister_log_records ?? [];
+  const res: any = await ICManagementCanister.create({ agent }).fetchCanisterLogs(Principal.fromText(canisterId));
   const dec = new TextDecoder();
-  return recs.map((r) => ({
+  return (res?.canister_log_records ?? []).map((r: any) => ({
     idx: Number(r.idx),
     timestamp_nanos: r.timestamp_nanos as bigint,
     content: dec.decode(r.content instanceof Uint8Array ? r.content : new Uint8Array(r.content ?? [])),
@@ -1849,20 +491,18 @@ export async function getCanisterLogs(canisterId: string): Promise<CanisterLogRe
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Display helpers
 // ---------------------------------------------------------------------------
 
 export function shortHash(hash: string, len = 8): string {
-  if (!hash) return '';
-  return hash.length > len ? `${hash.slice(0, len)}…` : hash;
+  return !hash ? '' : hash.length > len ? `${hash.slice(0, len)}…` : hash;
 }
 
 export function shortPrincipal(p: string): string {
-  if (!p) return '';
-  return p.length > 12 ? `${p.slice(0, 5)}…${p.slice(-5)}` : p;
+  return !p ? '' : p.length > 12 ? `${p.slice(0, 5)}…${p.slice(-5)}` : p;
 }
 
-/** Relative time from a unix-seconds timestamp (e.g. "3m ago"). */
+/** Relative time from unix seconds ("3m ago"). */
 export function formatRelativeTime(secs: number, nowSecs = Math.floor(Date.now() / 1000)): string {
   const age = Math.max(0, nowSecs - secs);
   if (age < 60) return `${age}s ago`;
@@ -1871,185 +511,107 @@ export function formatRelativeTime(secs: number, nowSecs = Math.floor(Date.now()
   return `${Math.floor(age / 86400)}d ago`;
 }
 
-/** Tooltip text: exact local datetime plus relative age. */
+/** Exact local datetime plus relative age, for tooltips. */
 export function formatCalculatedAt(secs: number | null | undefined): string | null {
-  if (secs == null || secs <= 0) return null;
-  const exact = new Date(secs * 1000).toLocaleString(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-  });
+  if (!secs || secs <= 0) return null;
+  const exact = new Date(secs * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
   return `${exact} (${formatRelativeTime(secs)})`;
 }
 
-// Render a raw cycles count in TC (1 TC = 1e12 cycles).
+function _fixed(n: number, digits: number): string {
+  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+/** Cycles in TC (1 TC = 1e12 cycles). */
 export function formatCycles(n: number | undefined | null): string {
   if (n === undefined || n === null) return '—';
   const tc = n / 1e12;
   const abs = Math.abs(tc);
-  let digits = 2;
-  if (abs > 0 && abs < 0.01) digits = 4;
-  else if (abs < 1) digits = 3;
-  const num = tc.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  return `${num} TC`;
+  return `${_fixed(tc, abs > 0 && abs < 0.01 ? 4 : abs < 1 ? 3 : 2)} TC`;
 }
 
-// Render an ICP amount from ledger e8s (10^-8 ICP).
+/** ICP from ledger e8s. */
 export function formatIcp(e8s: number | undefined | null): string {
   if (e8s === undefined || e8s === null) return '—';
   const icp = e8s / 1e8;
   const abs = Math.abs(icp);
-  let digits = 4;
-  if (abs >= 100) digits = 2;
-  else if (abs >= 1) digits = 4;
-  else if (abs > 0 && abs < 0.0001) digits = 8;
-  const num = icp.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  return `${num} ICP`;
+  return `${_fixed(icp, abs >= 100 ? 2 : abs > 0 && abs < 0.0001 ? 8 : 4)} ICP`;
 }
 
-// Symbols for the currencies the backend offers (XRC FiatCurrency codes).
 export const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: '$', EUR: '€', GBP: '£', CHF: 'CHF ', JPY: '¥', CNY: '¥', CAD: 'CA$', AUD: 'A$',
 };
 
-// Convert a raw cycles count to its fiat value given the cached factor
-// (millionths of currency per 1T cycles). Returns null if no rate is available.
+/** Fiat value of a cycles count at `microPerTcycle` (millionths of currency per 1T cycles). */
 export function cyclesToFiat(cycles: number | undefined | null, microPerTcycle: number | undefined | null): number | null {
-  if (cycles === undefined || cycles === null) return null;
-  if (!microPerTcycle || microPerTcycle <= 0) return null;
+  if (cycles === undefined || cycles === null || !microPerTcycle || microPerTcycle <= 0) return null;
   return (cycles / 1e12) * (microPerTcycle / 1e6);
 }
 
-// Render a fiat value compactly (more decimals for small amounts), prefixed
-// with the currency symbol. "" when there's nothing to show.
 export function formatFiat(value: number | null, currency: string | undefined): string {
   if (value === null || !isFinite(value)) return '';
   const cur = currency || 'USD';
   const sym = CURRENCY_SYMBOLS[cur] ?? '';
   const abs = Math.abs(value);
-  let digits = 2;
-  if (abs > 0 && abs < 0.01) digits = 4;
-  else if (abs < 1) digits = 3;
-  const num = value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const num = _fixed(value, abs > 0 && abs < 0.01 ? 4 : abs < 1 ? 3 : 2);
   return sym ? `${sym}${num}` : `${num} ${cur}`;
 }
 
-// Parse a human cycles string ("1.5t", "1.5tc", "500b", "1000000") into a raw count.
+/** "1.5t", "500b", "1000000" → cycles. */
 export function parseCycles(s: string): number {
   const m = String(s).trim().toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*(tc|t|b|m)?$/);
   if (!m) return NaN;
-  const value = parseFloat(m[1]);
-  const unit = m[2];
-  const mult = unit === 'tc' || unit === 't' ? 1e12 : unit === 'b' ? 1e9 : unit === 'm' ? 1e6 : 1;
-  return Math.round(value * mult);
+  const mult = m[2] === 'tc' || m[2] === 't' ? 1e12 : m[2] === 'b' ? 1e9 : m[2] === 'm' ? 1e6 : 1;
+  return Math.round(parseFloat(m[1]) * mult);
 }
 
-export function cycleStatusBadge(status: CycleStatus): string {
-  switch (status) {
-    case 'ok':
-      return 'badge-frontend';
-    case 'low':
-      return 'badge-neutral';
-    case 'critical':
-      return 'badge-critical';
-    case 'frozen':
-    case 'error':
-      return 'badge-neutral';
-    default:
-      return 'badge-neutral';
-  }
+/** True when a balance is under its threshold; null when either is unknown. */
+export function cyclesIsLow(cycles: number | undefined, min: number | undefined): boolean | null {
+  return cycles === undefined || !min ? null : cycles < min;
 }
 
-/** True when the canister's cycle balance is below its policy threshold. */
-export function cyclesIsLow(status: CycleStatus | undefined): boolean | null {
-  if (!status) return null;
-  if (status === 'ok') return false;
-  if (status === 'error') return null;
-  return true;
-}
-
-/** Render an ISO-8601 timestamp from unix seconds. */
 export function formatIsoTs(secs: number | undefined | null): string {
-  if (!secs) return '';
-  return new Date(secs * 1000).toISOString();
+  return secs ? new Date(secs * 1000).toISOString() : '';
 }
 
 const MAINNET_CANDID_UI = 'a4gq6-oaaaa-aaaab-qaa4q-cai';
+let _localCandidUi = '';
 
-/** Populated from ic_env or frontend/static/local-network.json on local replica. */
-let _localCandidUiHint = '';
-
-/** Load local Candid UI id (generated by `make deploy` into static/local-network.json). */
+/** Local Candid UI id from ic_env or static/local-network.json (written by `make deploy`). */
 export async function initLocalNetworkHints(): Promise<void> {
   if (!IS_LOCAL) return;
-  const fromEnv = _canisterEnv()['PUBLIC_CANISTER_ID:candid_ui'];
-  if (fromEnv) {
-    _localCandidUiHint = fromEnv;
-    return;
-  }
+  _localCandidUi = _canisterEnv()['PUBLIC_CANISTER_ID:candid_ui'] ?? '';
+  if (_localCandidUi) return;
   try {
     const res = await fetch('/local-network.json', { cache: 'no-store' });
-    if (res.ok) {
-      const data = (await res.json()) as { candid_ui?: string };
-      _localCandidUiHint = data.candid_ui ?? '';
-    }
+    if (res.ok) _localCandidUi = ((await res.json()) as { candid_ui?: string }).candid_ui ?? '';
   } catch {
-    /* optional — only present after local deploy */
+    /* only present after a local deploy */
   }
 }
 
-function _candidUiCanisterId(): string {
-  const fromEnv = _canisterEnv()['PUBLIC_CANISTER_ID:candid_ui'];
-  if (fromEnv) return fromEnv;
-  if (IS_LOCAL && _localCandidUiHint) return _localCandidUiHint;
-  if (IS_LOCAL) return '';
-  return MAINNET_CANDID_UI;
+function _localPort(): string {
+  return typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
 }
 
-// The Candid UI URL for a backend canister (so its API can be exercised directly).
+/** Candid UI for a backend canister. */
 export function candidUiUrl(canisterId: string): string {
   if (!canisterId) return '#';
-  if (IS_LOCAL) {
-    const ui = _candidUiCanisterId();
-    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
-    if (!ui) {
-      // Fallback until deploy injects PUBLIC_CANISTER_ID:candid_ui (see Makefile).
-      return `http://localhost:${port}/?canisterId=${canisterId}`;
-    }
-    return `http://${ui}.localhost:${port}/?id=${canisterId}`;
-  }
-  return `https://${MAINNET_CANDID_UI}.icp0.io/?id=${canisterId}`;
+  if (!IS_LOCAL) return `https://${MAINNET_CANDID_UI}.icp0.io/?id=${canisterId}`;
+  const ui = _canisterEnv()['PUBLIC_CANISTER_ID:candid_ui'] || _localCandidUi;
+  return ui ? `http://${ui}.localhost:${_localPort()}/?id=${canisterId}` : `http://localhost:${_localPort()}/?canisterId=${canisterId}`;
 }
 
-// The default served URL for a frontend canister, used as a fallback when the
-// backend does not supply one.
+/** Where a frontend canister serves. */
 export function canisterUrl(canisterId: string): string {
   if (!canisterId) return '#';
-  if (IS_LOCAL) {
-    const port = typeof window !== 'undefined' ? window.location.port || '8000' : '8000';
-    return `http://${canisterId}.localhost:${port}`;
-  }
-  return `https://${canisterId}.icp0.io`;
+  return IS_LOCAL ? `http://${canisterId}.localhost:${_localPort()}` : `https://${canisterId}.icp0.io`;
 }
 
-export function canisterLink(canister: {
-  kind: CanisterKind;
-  url: string;
-  canister_id: string;
-  wasm_key?: string;
-  name?: string;
-}): string {
-  const gov = governanceConsoleUrl(canister);
-  if (gov) return gov;
-
-  // On local replica the backend bakes mainnet icp0.io URLs into every canister
-  // view (it has no knowledge of the frontend's host). Override with the
-  // correct local URL whenever we detect we are running locally.
-  if (IS_LOCAL) {
-    return canister.kind === 'backend'
-      ? candidUiUrl(canister.canister_id)
-      : canisterUrl(canister.canister_id);
-  }
-  const own = safeLinkUrl(canister.url);
-  if (own) return own;
-  return canister.kind === 'backend' ? candidUiUrl(canister.canister_id) : canisterUrl(canister.canister_id);
+/** The governance console for batons and multisigs, the site for frontends, Candid UI otherwise. */
+export function canisterLink(c: Pick<CanisterRow, 'kind' | 'canister_id' | 'wasm' | 'name'>): string {
+  return (
+    governanceConsoleUrl({ canister_id: c.canister_id, name: c.name, wasm: c.wasm }) ??
+    (c.kind === 'frontend' ? canisterUrl(c.canister_id) : candidUiUrl(c.canister_id))
+  );
 }

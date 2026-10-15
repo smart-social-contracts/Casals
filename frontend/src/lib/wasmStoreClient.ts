@@ -58,18 +58,48 @@ const assetStoreIdlFactory = ({ IDL: I }: { IDL: typeof IDL }) => {
     ),
     commit_batch: I.Func([I.Record({ batch_id: I.Nat, operations: I.Vec(Operation) })], [], []),
     delete_batch: I.Func([I.Record({ batch_id: I.Nat })], [], []),
+    list: I.Func([I.Record({})], [I.Vec(I.Record({
+      key: I.Text,
+      content_type: I.Text,
+      encodings: I.Vec(I.Record({ content_encoding: I.Text, sha256: I.Opt(I.Vec(I.Nat8)), length: I.Nat, modified: I.Int })),
+    }))], ['query']),
   });
 };
 
-async function storeActor(identity: Identity, canisterId: string) {
-  const agent = createHttpAgent({ identity, host: icHost() });
+async function storeActor(identity: Identity | undefined, canisterId: string) {
+  const agent = createHttpAgent({ ...(identity ? { identity } : {}), host: icHost() });
   if (isLocalHost()) await agent.fetchRootKey();
   return Actor.createActor(assetStoreIdlFactory as unknown as Parameters<typeof Actor.createActor>[0], { agent, canisterId }) as unknown as {
     create_batch: (a: Record<string, never>) => Promise<{ batch_id: bigint }>;
     create_chunk: (a: { batch_id: bigint; content: Uint8Array }) => Promise<{ chunk_id: bigint }>;
     commit_batch: (a: { batch_id: bigint; operations: unknown[] }) => Promise<void>;
     delete_batch: (a: { batch_id: bigint }) => Promise<void>;
+    list: (a: Record<string, never>) => Promise<{ key: string; content_type: string; encodings: { content_encoding: string; sha256: [] | [Uint8Array]; length: bigint; modified: bigint }[] }[]>;
   };
+}
+
+export interface StoreFile {
+  key: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+  modified_ns: number;
+}
+
+/** Every store file (identity encoding) under `prefix`. */
+export async function storeFiles(storeCanisterId: string, prefix = '/', identity?: Identity): Promise<StoreFile[]> {
+  const rows = await (await storeActor(identity, storeCanisterId)).list({});
+  const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return rows.filter((r) => r.key.startsWith(prefix)).flatMap((r) => {
+    const enc = r.encodings.find((e) => e.content_encoding === 'identity');
+    const sha = enc?.sha256[0];
+    return enc && sha ? [{ key: r.key, sha256: hex(sha), size: Number(enc.length), content_type: r.content_type, modified_ns: Number(enc.modified) }] : [];
+  });
+}
+
+/** key → sha256 hex of every store file under `prefix`. */
+export async function listStore(storeCanisterId: string, prefix = '/', identity?: Identity): Promise<Record<string, string>> {
+  return Object.fromEntries((await storeFiles(storeCanisterId, prefix, identity)).map((f) => [f.key, f.sha256]));
 }
 
 export interface UploadProgress {

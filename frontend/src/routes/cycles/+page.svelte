@@ -1,1865 +1,308 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from 'svelte';
+  import { onMount } from 'svelte';
   import {
-    getCycles,
-    getCyclesCached,
-    getCyclesCachedOnChain,
-    getCyclesCachedFromMonitor,
-    getCycleHistory,
-    getTreasuryFlow,
-    topUp,
-    returnCycles,
-    refreshCanisters,
-    refreshTreasury,
-    monitorPollTreasury,
-    monitorPollCanisters,
-    monitorPollFlow,
-    setCyclePolicy,
-    destroyStand,
-    reconcile,
-    convertTreasuryIcp,
-    formatCycles,
-    formatIcp,
-    formatFiat,
-    formatRelativeTime,
-    parseCycles,
-    cycleStatusBadge,
-    shortPrincipal,
-    casalsMetadata,
     backendCanisterId,
-    getTree,
-    orchestraCanisterIds,
-    orchestraCanisterNames,
-    isPoolUnassigned,
-    getEvents,
-    treasuryLedgerIcpE8s,
-    isMislabeledTreasuryIcp,
-    normalizeCyclesReport,
+    canisterDestroy,
+    canisterSet,
+    cyclesGet,
+    cyclesRefresh,
+    cyclesSend,
+    cyclesTopUp,
+    formatCycles,
+    formatRelativeTime,
+    monitorFlow,
+    monitorHistory,
+    monitorUrl,
+    orchestraEvents,
+    parseCycles,
+    type CanisterCycles,
+    type CycleHistory,
+    type Cycles,
+    type TreasuryFlow,
+    type TreasuryFlowPeriod,
   } from '$lib/api';
-  import type {
-    CyclesReport,
-    CanisterCycles,
-    CycleHistory,
-    TreasuryFlow,
-    TreasuryFlowPeriod,
-    TreasuryFlowBucket,
-    PoolCanisterCycles,
-    Metadata,
-    CycleStatus,
-    Tree,
-    OrchestrationEvent,
-  } from '$lib/api';
-  import { get } from 'svelte/store';
-  import { isAuthenticated, isController, identity, principal } from '$lib/auth';
-  import {
-    buildMultisigAction,
-    multisigListEvents,
-    multisigListProposals,
-    multisigListSigners,
-    multisigPropose,
-  } from '$lib/multisigClient';
-  import { proposalPagePath } from '$lib/multisigProposalView';
-  import { resolveMultisigCanisterId } from '$lib/resolveMultisigId';
+  import { isAuthenticated, isController } from '$lib/auth';
   import { loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
-  import { copyText as copyToClipboard } from '$lib/clipboard';
+  import { copyText } from '$lib/clipboard';
   import LineChart from '$lib/components/LineChart.svelte';
   import CyclesAdvancedChart from '$lib/components/CyclesAdvancedChart.svelte';
-  import CanisterScopePicker from '$lib/components/CanisterScopePicker.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
-  import AssignPoolCanisterModal from '$lib/components/AssignPoolCanisterModal.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
-  import { colorAt, orchestrationEventToMarker, aggregateBalanceSeries, aggregateBurnIntervalSeries, burnIntervalSeriesFromSamples, bucketBurnSeries, burnBucketChoicesForSpan, defaultBurnBucketIndex, dedupeSeriesPoints, type ChartEventMarker, type Series, type SeriesPoint, type TreemapInput } from '$lib/charts';
-  import { isSelfReportedCycles } from '$lib/cyclesSelfReported';
+  import {
+    aggregateBalanceSeries,
+    aggregateBurnIntervalSeries,
+    colorAt,
+    orchestrationEventToMarker,
+    type ChartEventMarker,
+    type Series,
+    type TreemapInput,
+  } from '$lib/charts';
 
-  let report = $state<CyclesReport | null>(null);
+  const WINDOWS = { '1h': 3600, '1d': 86400, '1w': 7 * 86400, '1month': 30 * 86400, inception: 0 } as const;
+  type WindowKey = keyof typeof WINDOWS;
+  const TILES = [
+    { key: 'balance', title: 'Balance', box: 'border-indigo-100 bg-indigo-50/60', label: 'text-indigo-600', value: 'text-indigo-950' },
+    { key: 'reserve', title: 'Reserve', box: 'border-amber-100 bg-amber-50/60', label: 'text-amber-700', value: 'text-amber-950' },
+    { key: 'spendable', title: 'Spendable', box: 'border-emerald-100 bg-emerald-50/60', label: 'text-emerald-700', value: 'text-emerald-950' },
+  ] as const;
+  const FLOW_PERIODS: TreasuryFlowPeriod[] = ['hour', 'day', 'week', 'month', 'inception'];
+
+  let report = $state<Cycles | null>(null);
+  let hasMonitor = $state(false);
   let history = $state<CycleHistory | null>(null);
   let chartEvents = $state<ChartEventMarker[]>([]);
-  let treasuryFlow = $state<TreasuryFlow | null>(null);
-  let flowError = $state('');
-  let flowLoading = $state(false);
-  let flowRequest = 0;
-  let loading = $state(true);
-  let refreshing = $state(false); // on-chain full refresh (legacy, no monitor)
-  let refreshingTreasury = $state(false);
-  let refreshProgress = $state('');
-
-  /** Max canisters per refresh_canisters call (must match backend REFRESH_CANISTERS_BATCH_MAX). */
-  const CANISTER_REFRESH_BATCH = 3;
-  /** Only attempt monolithic get_cycles below this orchestra size. */
-  const FULL_GET_CYCLES_MAX = 10;
-  let historyFetching = $state(false); // window change → API fetch only
-  let cachedAt = $state<number | null>(null);
-  let snapshotPartial = $state(false);
-  let liveSynced = $state(false);
-  let error = $state('');
-  let busy = $state('');
-  let showDeposit = $state(false);
-  let showConvert = $state(false);
-  let topUpTargets = $state<CanisterCycles[]>([]);
-  let topUpAmount = $state('');
-  let returnTargets = $state<CanisterCycles[]>([]);
-  let returnAmount = $state('');
-  let policyTargets = $state<CanisterCycles[]>([]);
-  let policyAmount = $state('');
-  let policyInherit = $state(false);
-  let destroyOpen = $state(false);
-  let destroyAck = $state(false);
-  let destroyConfirmText = $state('');
-  let multisigCanisterId = $state('');
-  let multisigSigners = $state<string[]>([]);
-  let multisigSignersLoading = $state(false);
-  let assignPoolTarget = $state<string | null>(null);
-  let canisterFilterText = $state('');
-  let selectedCanisterIds = $state<Set<string>>(new Set());
-  type CanisterSortKey = 'canister' | 'sectionStand' | 'cycles' | 'minPolicy' | 'status';
-  let canisterSortKey = $state<CanisterSortKey>('canister');
-  let canisterSortAsc = $state(true);
-  let tree = $state<Tree | null>(null);
-
-  const orchestraCanisterIdSet = $derived.by(() => {
-    const ids = orchestraCanisterIds(tree ?? { sections: [] });
-    for (const c of report?.canisters ?? []) {
-      if (c.canister_id) ids.add(c.canister_id);
-    }
-    return ids;
-  });
-
-  function closeAssignPool() {
-    assignPoolTarget = null;
-  }
-
-  async function onAssignPoolSuccess() {
-    assignPoolTarget = null;
-    await Promise.all([
-      loadCached(),
-      getTree().then((t) => { tree = t; }).catch(() => {}),
-    ]);
-  }
-
-  /** Must match util.SWEEP_EXEC_RESERVE on the backend. */
-  const SWEEP_EXEC_RESERVE = 200_000_000_000;
-
-  const ICP_TRANSFER_FEE_E8S = 10_000;
-  let copiedField = $state('');
-  let meta = $state<Metadata | null>(null);
-  let derivedLedgerId = $state('');
-
-  const depositBackendId = $derived(
-    report?.treasury?.backend_canister_id
-      ?? meta?.backend_canister_id
-      ?? backendCanisterId()
-      ?? '',
-  );
-  const depositLedgerId = $derived(
-    report?.treasury?.ledger_account_id
-      ?? meta?.ledger_account_id
-      ?? derivedLedgerId
-      ?? '',
-  );
-
-  $effect(() => {
-    if (report?.treasury?.ledger_account_id || meta?.ledger_account_id) return;
-    const cid = depositBackendId;
-    if (!cid) return;
-    ledgerAccountIdFromCanister(cid)
-      .then((id) => { derivedLedgerId = id; })
-      .catch(() => {});
-  });
-
-  // ── chart controls ──
-  type Scope = 'all' | 'orchestra' | 'sections' | 'stands' | 'canisters';
-  type WindowKey = '1h' | '1d' | '1w' | '1month' | 'inception';
-  type Metric = 'burn' | 'balance';
-  type ChartMetric = 'balance' | 'burn';
-  type FlowUnit = 'tc' | 'icp' | 'usd';
-  const WINDOWS: Record<WindowKey, number> = {
-    '1h': 3600, '1d': 86400, '1w': 604800, '1month': 2592000, 'inception': 0,
-  };
-  const WINDOW_LABELS: Record<WindowKey, string> = {
-    '1h': '1 hour', '1d': '1 day', '1w': '1 week', '1month': '1 month', 'inception': 'inception',
-  };
-  const SCOPE_OPTIONS: [Scope, string][] = [
-    ['all', 'All'],
-    ['orchestra', 'Orchestra'],
-    ['sections', 'Sections'],
-    ['stands', 'Stands'],
-    ['canisters', 'Canisters'],
-  ];
-  const FLOW_PERIODS: { key: TreasuryFlowPeriod; label: string }[] = [
-    { key: 'hour', label: 'Hour' },
-    { key: 'day', label: 'Day' },
-    { key: 'week', label: 'Week' },
-    { key: 'month', label: 'Month' },
-    { key: 'inception', label: 'Inception' },
-  ];
-  const FLOW_PERIOD_LABELS: Record<TreasuryFlowPeriod, string> = {
-    hour: 'per hour',
-    day: 'per day',
-    week: 'per week',
-    month: 'per month',
-    inception: 'since inception',
-  };
-  let scope = $state<Scope>('all');
-  let scopeFilter = $state<Set<string>>(new Set());
-  let windowKey = $state<WindowKey>('1d');
-  /** Window whose history is currently shown in the chart (lags UI while fetching). */
-  let loadedWindowKey = $state<WindowKey>('1d');
-  /** Seconds of history currently loaded. 0 means inception (unbounded). */
-  let loadedHistorySecs = $state<number | null>(null);
-  let cyclesChartRef = $state<
-    | {
-        toggleMeasure(): void;
-        toggleSnapToData(): void;
-        clearMeasureLines(): void;
-        toggleExpanded(): void;
-        exportCsv(): void;
-        fitYAxis(): void;
-      }
-    | undefined
-  >(undefined);
-  let chartMeasureActive = $state(false);
-  let chartSnapToData = $state(true);
-  let chartExpanded = $state(false);
-  let chartMeasureOverlay = $state(false);
-  let treemapWindow = $state<WindowKey>('1month');
-  let metric = $state<Metric>('burn');
-  let chartMetric = $state<ChartMetric>('balance');
-  let burnBucketIndex = $state(0);
+  let flow = $state<TreasuryFlow | null>(null);
+  let chartWindow = $state<WindowKey>('1d');
+  let chartMetric = $state<'balance' | 'burn'>('balance');
   let flowPeriod = $state<TreasuryFlowPeriod>('day');
-  let flowUnit = $state<FlowUnit>('tc');
+  let treemapMetric = $state<'balance' | 'burn'>('balance');
+  let loading = $state(true);
+  let refreshing = $state(false);
+  let busy = $state(false);
+  let error = $state('');
 
-  function fmtAge(secs: number): string {
-    return formatRelativeTime(secs);
+  let filterText = $state('');
+  let selected = $state<Set<string>>(new Set());
+  type SortKey = 'name' | 'place' | 'cycles' | 'min';
+  let sortKey = $state<SortKey>('name');
+  let sortAsc = $state(true);
+
+  type Dialog = 'deposit' | 'send' | 'topup' | 'policy' | 'destroy';
+  let dialog = $state<Dialog | null>(null);
+  let amount = $state('');
+  let topupAmount = $state('');
+  let sendTo = $state('');
+  let confirmText = $state('');
+  let depositAccount = $state('');
+
+  const canisters = $derived(report?.canisters ?? []);
+  const lowCount = $derived(canisters.filter((c) => c.min && c.cycles < c.min).length);
+
+  const visible = $derived.by(() => {
+    const q = filterText.trim().toLowerCase();
+    const rows = q
+      ? canisters.filter((c) => [c.name, c.canister_id, c.section, c.stand].some((v) => v.toLowerCase().includes(q)))
+      : [...canisters];
+    const key = (c: CanisterCycles): string | number =>
+      sortKey === 'cycles' ? c.cycles : sortKey === 'min' ? c.min : sortKey === 'place' ? `${c.section}/${c.stand}` : c.name;
+    return rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0) * (sortAsc ? 1 : -1));
+  });
+  const targets = $derived(canisters.filter((c) => selected.has(c.canister_id)));
+  const allVisibleSelected = $derived(visible.length > 0 && visible.every((c) => selected.has(c.canister_id)));
+
+  function sortBy(key: SortKey) {
+    if (sortKey === key) sortAsc = !sortAsc;
+    else { sortKey = key; sortAsc = key !== 'cycles'; }
+  }
+  function toggle(id: string) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selected = next;
+  }
+  function toggleAll() {
+    selected = allVisibleSelected ? new Set() : new Set(visible.map((c) => c.canister_id));
   }
 
-  function treasuryCalculatedAt(t = report?.treasury): number | null {
-    if (!t) return null;
-    return t.refreshed_at ?? cachedAt;
-  }
+  // ── Charts (monitor history) ────────────────────────────────────────────────
+  const names = $derived(new Map(canisters.map((c) => [c.canister_id, c.name])));
 
-  function canisterCalculatedAt(c: CanisterCycles | PoolCanisterCycles): number | null {
-    if (c.cycles === undefined) return null;
-    return c.refreshed_at ?? cachedAt;
-  }
-
-  const historyCalculatedAt = $derived(history?.now ?? null);
-  const flowCalculatedAt = $derived(treasuryFlow?.now ?? null);
-  const treemapCalculatedAt = $derived.by(() => {
-    if (metric === 'burn') return history?.now ?? null;
-    let latest = cachedAt;
-    for (const c of report?.canisters ?? []) {
-      if (c.refreshed_at && (latest == null || c.refreshed_at > latest)) {
-        latest = c.refreshed_at;
-      }
-    }
-    return latest;
+  const chartSeries = $derived.by((): Series[] => {
+    const samples = history?.samples ?? [];
+    if (!samples.length) return [];
+    const series = (name: string, i: number, rows: typeof samples): Series => ({
+      name,
+      color: colorAt(i),
+      points: chartMetric === 'balance' ? aggregateBalanceSeries(rows) : aggregateBurnIntervalSeries(rows),
+    });
+    const stands = [...new Set(samples.map((s) => `${s.section} / ${s.stand}`))].sort();
+    return [
+      series('Total', 0, samples),
+      ...stands.map((st, i) => series(st, i + 1, samples.filter((s) => `${s.section} / ${s.stand}` === st))),
+    ];
   });
 
-  async function copyText(label: string, text: string) {
-    if (await copyToClipboard(text)) {
-      copiedField = label;
-      toasts.success(`Copied ${label}`);
-      setTimeout(() => { if (copiedField === label) copiedField = ''; }, 2000);
-    } else {
-      toasts.error('Could not copy to clipboard');
+  /** Cycles each canister burned over the loaded history (net of deposits). */
+  const burnById = $derived.by(() => {
+    const first = new Map<string, { cycles: number; deposited: number }>();
+    const burn = new Map<string, number>();
+    for (const s of history?.samples ?? []) {
+      const f = first.get(s.canister_id) ?? (first.set(s.canister_id, s), s);
+      burn.set(s.canister_id, Math.max(0, f.cycles - s.cycles + (s.deposited - f.deposited)));
     }
-  }
+    return burn;
+  });
 
-  /** Chart and treemap share one history fetch. Cover whichever window is longer. */
-  function historySpanSecs(chart: WindowKey, tree: WindowKey): number {
-    const chartSecs = WINDOWS[chart];
-    const treeSecs = WINDOWS[tree];
-    if (chartSecs === 0 || treeSecs === 0) return 0;
-    return Math.max(chartSecs, treeSecs);
-  }
+  const treemapRoot = $derived.by((): TreemapInput => {
+    const leaf = (c: CanisterCycles): TreemapInput => {
+      const burn = burnById.get(c.canister_id) ?? 0;
+      return { name: c.name, value: treemapMetric === 'burn' ? burn : c.cycles, balance: c.cycles, burn,
+               section: c.section, stand: c.stand, canister_id: c.canister_id };
+    };
+    const group = (items: CanisterCycles[], key: (c: CanisterCycles) => string, inner: (cs: CanisterCycles[]) => TreemapInput[]) =>
+      [...new Set(items.map(key))].map((name) => {
+        const children = inner(items.filter((c) => key(c) === name));
+        return { name, value: children.reduce((n, ch) => n + ch.value, 0), children };
+      });
+    const children = group(canisters, (c) => c.section, (cs) => group(cs, (c) => c.stand, (leaves) => leaves.map(leaf)));
+    return { name: 'Orchestra', value: children.reduce((n, ch) => n + ch.value, 0), children };
+  });
 
-  async function loadHistoryForWindow(w: WindowKey = windowKey) {
-    const secs = historySpanSecs(w, treemapWindow);
-    history = await getCycleHistory(
-      secs === 0 ? {} : { window_secs: secs },
-    );
-    loadedWindowKey = w;
-    loadedHistorySecs = secs;
-    await loadChartEvents(w);
-  }
+  const flowSeries = $derived.by((): Series[] => {
+    const b = flow?.buckets ?? [];
+    const line = (name: string, i: number, v: (x: (typeof b)[number]) => number): Series =>
+      ({ name, color: colorAt(i), points: b.map((x) => ({ t: x.ts, v: v(x) })) });
+    return b.length ? [
+      line('Deposited', 1, (x) => x.deposited_cycles + x.deposited_icp_e8s * (flow?.icp_cycles_per_e8s ?? 0)),
+      line('Converted', 2, (x) => x.converted_cycles),
+      line('Consumed', 3, (x) => x.consumed_cycles),
+    ] : [];
+  });
 
-  function setTreemapWindow(w: WindowKey) {
-    if (w === treemapWindow) return;
-    treemapWindow = w;
-    const secs = historySpanSecs(windowKey, w);
-    const have = loadedHistorySecs;
-    const covers = have === 0 || (have != null && secs !== 0 && have >= secs);
-    if (!covers && !historyFetching) void reloadHistory();
-  }
-
-  function canisterNameForId(id: string): string | undefined {
-    return report?.canisters?.find((c) => c.canister_id === id)?.name;
-  }
-
-  function chartSeriesNameForEvent(e: OrchestrationEvent): string | undefined {
-    if (scope === 'all') return 'All';
-    const fromReport = report?.canisters?.find((c) => c.canister_id === e.canister_id);
-    const fromHistory = history?.samples?.find((s) => s.canister_id === e.canister_id);
-    if (scope === 'canisters') {
-      return fromReport?.name ?? fromHistory?.canister ?? (e.canister_id || undefined);
-    }
-    if (scope === 'stands') {
-      return (fromReport?.stand ?? fromHistory?.stand) || '(none)';
-    }
-    if (scope === 'sections' || scope === 'orchestra') {
-      return (fromReport?.section ?? fromHistory?.section) || '(none)';
-    }
-    return undefined;
-  }
-
-  async function loadChartEvents(w: WindowKey = windowKey) {
+  // ── Loading ────────────────────────────────────────────────────────────────
+  async function loadReport() {
     try {
-      const end = history?.now ?? Math.floor(Date.now() / 1000);
-      const start = w === 'inception'
-        ? (history?.samples?.length ? Math.min(...history.samples.map((s) => s.ts)) : end - WINDOWS['1d'])
-        : end - WINDOWS[w];
-      const evs = await getEvents({ take: 500 });
-      chartEvents = evs
-        .flatMap((e: OrchestrationEvent) => {
-          if (e.timestamp_secs < start || e.timestamp_secs > end) return [];
-          const canisterName = canisterNameForId(e.canister_id);
-          const m = orchestrationEventToMarker(
-            e,
-            canisterName,
-            meta?.monitor_principal,
-            chartSeriesNameForEvent(e),
-          );
-          return m ? [m] : [];
-        });
-    } catch {
-      chartEvents = [];
-    }
-  }
-
-  function applyOffChainMonitorState(cached: CyclesReport, md: Metadata | null) {
-    if (!(md?.monitor_enabled && md?.monitor_service_url) && cached.source !== 'off-chain-monitor') return;
-    liveSynced = true;
-    snapshotPartial = false;
-  }
-
-  function applyCachedReport(cached: CyclesReport, md: Metadata | null) {
-    const mislabeledIcp = isMislabeledTreasuryIcp(
-      cached.treasury?.icp_e8s,
-      cached.treasury?.icp_cycles_per_e8s,
-    );
-    const normalized = normalizeCyclesReport(cached);
-    if (md) {
-      normalized.treasury.autopilot = md.cycles_autopilot;
-      normalized.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
-      normalized.treasury.interval_secs = md.cycles_check_interval_secs;
-      const reserve = md.treasury_reserve ?? normalized.treasury.reserve ?? 0;
-      normalized.treasury.reserve = reserve;
-      normalized.treasury.spendable = Math.max(0, (normalized.treasury.balance ?? 0) - reserve);
-    }
-    report = normalized;
-    cachedAt = normalized.cached_at ?? null;
-    applyOffChainMonitorState(normalized, md);
-    if (mislabeledIcp) void refreshTreasuryOnly();
-  }
-
-  async function loadDeferredHistory() {
-    try {
-      await loadHistoryForWindow();
-    } catch {
-      // History and chart markers are non-critical for the initial treasury view.
-    }
-  }
-
-  async function loadCached(): Promise<Metadata | null> {
-    loading = true;
-    error = '';
-    let md: Metadata | null = null;
-    try {
-      const metadataP = casalsMetadata().catch(() => null);
-      const canisterP = getCyclesCachedOnChain();
-      const monitorP = getCyclesCachedFromMonitor();
-
-      const [stub, metadata] = await Promise.all([canisterP, metadataP]);
-      md = metadata;
-      meta = md;
-      if (stub?.treasury) {
-        applyCachedReport(stub, md);
-        loading = false;
-      }
-
-      const cached = await monitorP;
-      if (cached?.treasury) {
-        applyCachedReport(cached, md);
-      } else if (!stub?.treasury) {
-        error = 'Could not load cycles data';
-      }
-
-      void reloadTreasuryFlow(flowPeriod);
-      void loadDeferredHistory();
-      loadFx();
+      report = await cyclesGet();
+      error = '';
     } catch (e: any) {
       error = e?.message ?? String(e);
-    } finally {
-      loading = false;
-    }
-    return md;
-  }
-
-  async function reloadHistory() {
-    try {
-      await loadHistoryForWindow();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Could not reload cycle history');
     }
   }
 
-  async function setWindow(w: WindowKey) {
-    if (w === windowKey || historyFetching) return;
-    windowKey = w;
-    historyFetching = true;
-    await tick();
-    try {
-      await loadHistoryForWindow(w);
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Could not load cycle history');
-    } finally {
-      historyFetching = false;
-    }
+  async function loadHistory() {
+    const [h, evs] = await Promise.all([
+      monitorHistory(WINDOWS[chartWindow]),
+      orchestraEvents({ take: 200 }).catch(() => []),
+    ]);
+    history = h;
+    const since = h?.samples[0]?.ts ?? 0;
+    chartEvents = evs
+      .filter((e) => e.ts >= since)
+      .map((e) => orchestrationEventToMarker(e, names.get(e.canister_id)))
+      .filter((m): m is ChartEventMarker => !!m);
   }
 
-  function setScope(next: Scope) {
-    if (next === scope) return;
-    scope = next;
-    if (next === 'sections' || next === 'stands') {
-      scopeFilter = new Set(filterKeysForScope(next, windowSamples));
-    } else {
-      scopeFilter = new Set();
-    }
-    if (history) void loadChartEvents(windowKey);
+  async function loadFlow() {
+    flow = await monitorFlow(flowPeriod);
   }
 
-  function liveBalanceCountFrom(canisters: CanisterCycles[] | undefined): number {
-    return (canisters ?? []).filter((c) => c.cycles !== undefined).length;
-  }
+  onMount(async () => {
+    await loadReport();
+    loading = false;
+    hasMonitor = !!(await monitorUrl());
+    if (hasMonitor) await Promise.all([loadHistory(), loadFlow(), loadFx()]);
+  });
 
-  function enrichReportFromMeta(cached: CyclesReport, md: Metadata | null): CyclesReport {
-    if (md) {
-      cached.treasury.autopilot = md.cycles_autopilot;
-      cached.treasury.icp_autoconvert = md.cycles_icp_autoconvert;
-      cached.treasury.interval_secs = md.cycles_check_interval_secs;
-      const reserve = md.treasury_reserve ?? cached.treasury.reserve ?? 0;
-      cached.treasury.reserve = reserve;
-      cached.treasury.spendable = Math.max(0, (cached.treasury.balance ?? 0) - reserve);
-    }
-    return cached;
-  }
-
-  function mergeTreasuryIntoReport(live: CyclesReport) {
-    if (!report) {
-      report = enrichReportFromMeta(live, meta);
-      cachedAt = live.cached_at ?? null;
-      applyOffChainMonitorState(live, meta);
-      loadFx();
-      return;
-    }
-    const enriched = enrichReportFromMeta(live, meta);
-    report = {
-      ...report,
-      treasury: enriched.treasury,
-      cached_at: enriched.cached_at ?? report.cached_at,
-    };
-    cachedAt = report.cached_at ?? null;
-    applyOffChainMonitorState(live, meta);
-    loadFx();
-  }
-
-  function mergeCanisterRows(live: CyclesReport) {
-    if (!report) {
-      applyReport(enrichReportFromMeta(live, meta));
-      applyOffChainMonitorState(live, meta);
-      return;
-    }
-    const byId = new Map((live.canisters ?? []).map((c) => [c.canister_id, c]));
-    report = {
-      ...report,
-      canisters: (report.canisters ?? []).map((c) => byId.get(c.canister_id) ?? c),
-      totals: live.totals ?? report.totals,
-      cached_at: live.cached_at ?? report.cached_at,
-    };
-    cachedAt = report.cached_at ?? null;
-    applyOffChainMonitorState(live, meta);
-    loadFx();
-  }
-
-  async function refreshTreasuryOnly() {
-    if (refreshingTreasury) return;
-    refreshingTreasury = true;
-    error = '';
-    void reloadTreasuryFlow(flowPeriod, true);
-    try {
-      let live: CyclesReport | null = null;
-      if (usesOffChainMonitor) {
-        live = await monitorPollTreasury();
-        if (!live) throw new Error('Off-chain monitor treasury refresh failed');
-      } else {
-        live = await refreshTreasury();
-      }
-      if (live?.treasury) mergeTreasuryIntoReport(live);
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Treasury refresh failed');
-    } finally {
-      refreshingTreasury = false;
-    }
-  }
-
-  /** Legacy on-chain full refresh when the off-chain monitor is not configured. */
-  async function refreshLiveOnChain() {
-    if (refreshing) return;
+  async function refresh() {
     refreshing = true;
-    refreshProgress = '';
-    error = '';
-    void reloadHistory();
-    void reloadTreasuryFlow(undefined, true);
     try {
-      // Phase 1: treasury only (fast; avoids IC instruction limit on large orchestras).
-      refreshProgress = 'treasury';
-      let merged = await refreshTreasury();
-      report = merged;
-      cachedAt = merged.cached_at ?? null;
-      snapshotPartial = true;
-      liveSynced = false;
-      loadFx();
-
-      const treeData = tree ?? await getTree().catch(() => null);
-      if (treeData) tree = treeData;
-
-      const names = [
-        ...new Set([
-          ...orchestraCanisterNames(treeData),
-          ...(merged.canisters ?? []).map((c) => c.name),
-          ...(history?.samples ?? []).map((s) => s.canister),
-        ].filter(Boolean)),
-      ];
-      if (names.length === 0) {
-        snapshotPartial = false;
-        liveSynced = true;
-        return;
-      }
-
-      // Phase 2: small orchestras can still use one-shot get_cycles.
-      if (names.length <= FULL_GET_CYCLES_MAX) {
-        refreshProgress = 'all canisters';
-        try {
-          const live = await getCycles();
-          report = live;
-          cachedAt = live.cached_at ?? null;
-          snapshotPartial = false;
-          liveSynced = true;
-          loadFx();
-          return;
-        } catch {
-          // Fall through to batched refresh.
-        }
-      }
-
-      // Phase 3: batched canister refresh (≤ CANISTER_REFRESH_BATCH per update).
-      for (let i = 0; i < names.length; i += CANISTER_REFRESH_BATCH) {
-        refreshProgress = `${Math.min(i + CANISTER_REFRESH_BATCH, names.length)}/${names.length} canisters`;
-        merged = await refreshCanisters({
-          canisters: names.slice(i, i + CANISTER_REFRESH_BATCH),
-        });
-        report = merged;
-      }
-      cachedAt = merged.cached_at ?? null;
-      snapshotPartial = liveBalanceCountFrom(merged.canisters) < names.length;
-      liveSynced = true;
-      loadFx();
-    } catch (e: any) {
-      if (!report) error = e?.message ?? String(e);
-      else toasts.error(e?.message ?? 'Refresh failed');
-    } finally {
-      refreshing = false;
-      refreshProgress = '';
-    }
-  }
-
-  /** Load cached snapshot, then refresh live balances in the background. */
-  async function load() {
-    await loadCached();
-    if (!usesOffChainMonitor) await refreshLiveOnChain();
-  }
-
-  async function loadMultisigSigners() {
-    multisigSignersLoading = true;
-    try {
-      const msId = await resolveMultisigCanisterId();
-      multisigCanisterId = msId;
-      if (!msId) {
-        multisigSigners = [];
-        return;
-      }
-      const { signers } = await multisigListSigners(msId);
-      multisigSigners = signers;
-    } catch {
-      multisigSigners = [];
-    } finally {
-      multisigSignersLoading = false;
-    }
-  }
-
-  onMount(() => {
-    void (async () => {
-      await load();
-      getTree().then((t) => { tree = t; }).catch(() => {});
-    })();
-  });
-
-  $effect(() => {
-    if ($isAuthenticated) {
-      void loadMultisigSigners();
-    } else {
-      multisigCanisterId = '';
-      multisigSigners = [];
-      multisigSignersLoading = false;
-    }
-  });
-
-  async function reloadTreasuryFlow(
-    period: TreasuryFlowPeriod = flowPeriod,
-    refreshMonitor = false,
-  ) {
-    const req = ++flowRequest;
-    flowLoading = true;
-    flowError = '';
-    try {
-      const flow = refreshMonitor
-        ? await monitorPollFlow(period)
-        : await getTreasuryFlow({ period });
-      if (req !== flowRequest) return;
-      treasuryFlow = flow;
-    } catch (e: any) {
-      if (req !== flowRequest) return;
-      treasuryFlow = null;
-      flowError = e?.message ?? 'Treasury flow unavailable';
-    } finally {
-      if (req === flowRequest) flowLoading = false;
-    }
-  }
-
-  async function setFlowPeriod(period: TreasuryFlowPeriod) {
-    flowPeriod = period;
-    await reloadTreasuryFlow(period);
-  }
-
-  const icpCyclesPerE8s = $derived(
-    report?.treasury?.icp_cycles_per_e8s && report.treasury.icp_cycles_per_e8s > 0
-      ? report.treasury.icp_cycles_per_e8s
-      : treasuryFlow?.icp_cycles_per_e8s && treasuryFlow.icp_cycles_per_e8s > 0
-        ? treasuryFlow.icp_cycles_per_e8s
-        : 16175,
-  );
-
-  const ledgerIcpE8s = $derived(treasuryLedgerIcpE8s(report?.treasury));
-  const treasuryIcpE8s = $derived(ledgerIcpE8s ?? 0);
-  const treasuryIcpAsCycles = $derived(
-    ledgerIcpE8s !== undefined && treasuryIcpE8s > 0
-      ? treasuryIcpE8s * icpCyclesPerE8s
-      : ledgerIcpE8s !== undefined
-        ? 0
-        : null,
-  );
-  const convertibleIcpE8s = $derived(
-    treasuryIcpE8s > ICP_TRANSFER_FEE_E8S ? treasuryIcpE8s - ICP_TRANSFER_FEE_E8S : 0,
-  );
-  const estimatedConvertCycles = $derived(
-    convertibleIcpE8s > 0 ? convertibleIcpE8s * icpCyclesPerE8s : 0,
-  );
-  const tcPerIcp = $derived(icpCyclesPerE8s > 0 ? (icpCyclesPerE8s * 1e8) / 1e12 : 0);
-  const canConvertIcp = $derived(
-    $isAuthenticated && $isController === true && convertibleIcpE8s > 0,
-  );
-  // Convert stays controller-gated on purpose (Casals#54 D.19): on a multisig-
-  // governed conductor nobody is a direct controller, so conversion happens
-  // either automatically (`cycles_icp_autoconvert`, or the off-chain monitor
-  // triggering `convert_treasury_icp`) or via a multisig CallCanister proposal.
-  const convertBlockedReason = $derived.by(() => {
-    if (!$isAuthenticated) return 'Log in with Internet Identity as a Casals controller.';
-    if ($isController === null) return 'Checking controller access…';
-    if ($isController === false) {
-      return 'Your principal is not a Casals controller. On a multisig-governed conductor, ICP is converted automatically (auto-convert or the off-chain monitor) or via a multisig proposal calling convert_treasury_icp.';
-    }
-    if (ledgerIcpE8s === undefined) return 'ICP balance unknown — refresh and try again.';
-    if (convertibleIcpE8s <= 0) {
-      return `Not enough ICP to cover the ledger transfer fee (${formatIcp(ICP_TRANSFER_FEE_E8S)}).`;
-    }
-    return '';
-  });
-
-  function flowBucketCycles(b: TreasuryFlowBucket, kind: 'deposited' | 'converted' | 'consumed'): number {
-    const rate = icpCyclesPerE8s;
-    if (kind === 'deposited') {
-      return b.deposited_cycles + (b.returned_cycles ?? 0) + b.deposited_icp_e8s * rate;
-    }
-    if (kind === 'converted') return b.converted_cycles;
-    return b.consumed_cycles;
-  }
-
-  function flowValue(cycles: number): number {
-    if (flowUnit === 'tc') return cycles / 1e12;
-    if (flowUnit === 'icp') return cycles / icpCyclesPerE8s / 1e8;
-    const fx = treasuryFlow?.fx_micro_per_tcycle ?? meta?.fx_micro_per_tcycle ?? 0;
-    if (fx <= 0) return 0;
-    return (cycles / 1e12) * (fx / 1e6);
-  }
-
-  function formatFlowValue(v: number): string {
-    if (flowUnit === 'tc') return formatCycles(v * 1e12);
-    if (flowUnit === 'icp') return formatIcp(Math.round(v * 1e8));
-    const cur = treasuryFlow?.display_currency ?? meta?.display_currency ?? 'USD';
-    return formatFiat(v, cur);
-  }
-
-  const flowSeries = $derived.by<Series[]>(() => {
-    const buckets = treasuryFlow?.buckets ?? [];
-    if (!buckets.length) return [];
-    const kinds: { key: 'deposited' | 'converted' | 'consumed'; label: string; color: string }[] = [
-      { key: 'deposited', label: 'Deposited', color: '#10b981' },
-      { key: 'converted', label: 'Converted', color: '#6366f1' },
-      { key: 'consumed', label: 'Consumed', color: '#ef4444' },
-    ];
-    return kinds.map((k) => ({
-      name: k.label,
-      color: k.color,
-      points: buckets.map((b) => ({
-        t: b.ts,
-        v: flowValue(flowBucketCycles(b, k.key)),
-      })),
-    }));
-  });
-
-  const flowTotals = $derived.by(() => {
-    const t = treasuryFlow?.totals;
-    if (!t) return null;
-    return {
-      deposited: flowValue(t.deposited_cycles + (t.returned_cycles ?? 0) + t.deposited_icp_e8s * icpCyclesPerE8s),
-      converted: flowValue(t.converted_cycles),
-      consumed: flowValue(t.consumed_cycles),
-    };
-  });
-
-  const flowUnitLabel = $derived(
-    flowUnit === 'tc' ? 'TC' : flowUnit === 'icp' ? 'ICP' : (treasuryFlow?.display_currency ?? meta?.display_currency ?? 'USD'),
-  );
-
-  const now = $derived(history?.now ?? Math.floor(Date.now() / 1000));
-  const chartWindowKey = $derived(historyFetching ? loadedWindowKey : windowKey);
-  const winSecs = $derived(WINDOWS[chartWindowKey]);
-  const since = $derived(chartWindowKey === 'inception' ? 0 : now - winSecs);
-  const samples = $derived(history?.samples ?? []);
-  const windowSamples = $derived(
-    chartWindowKey === 'inception' ? samples : samples.filter((s) => s.ts >= since),
-  );
-
-  const chartTimeStart = $derived.by(() => {
-    if (chartWindowKey !== 'inception') return since;
-    if (!windowSamples.length) return now - WINDOWS['1d'];
-    return Math.min(...windowSamples.map((s) => s.ts));
-  });
-  const chartTimeEnd = $derived(now);
-
-  const chartSpanSecs = $derived(Math.max(1, chartTimeEnd - chartTimeStart));
-  const burnBucketChoices = $derived(burnBucketChoicesForSpan(chartSpanSecs));
-  const burnBucketChoice = $derived(
-    burnBucketChoices[Math.min(burnBucketIndex, Math.max(0, burnBucketChoices.length - 1))]
-      ?? burnBucketChoices[0]
-      ?? { secs: 3600, label: '1h' },
-  );
-  const burnBucketSecs = $derived(burnBucketChoice.secs);
-  const burnBucketLabel = $derived(burnBucketChoice.label);
-
-  $effect(() => {
-    const target = windowKey;
-    untrack(() => {
-      const span = target === 'inception'
-        ? Math.max(1, chartTimeEnd - chartTimeStart)
-        : WINDOWS[target];
-      burnBucketIndex = defaultBurnBucketIndex(burnBucketChoicesForSpan(span), span);
-    });
-  });
-
-  function applyBurnBuckets(points: SeriesPoint[]): SeriesPoint[] {
-    return bucketBurnSeries(points, burnBucketSecs);
-  }
-
-  const treemapWinSecs = $derived(WINDOWS[treemapWindow]);
-  const treemapSince = $derived(treemapWindow === 'inception' ? 0 : now - treemapWinSecs);
-  const treemapSamples = $derived(
-    treemapWindow === 'inception' ? samples : samples.filter((s) => s.ts >= treemapSince),
-  );
-
-  function toggleScopeFilter(key: string) {
-    const next = new Set(scopeFilter);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    scopeFilter = next;
-  }
-
-  function selectAllScopeFilter(keys: string[]) {
-    scopeFilter = new Set(keys);
-  }
-
-  function clearScopeFilter() {
-    scopeFilter = new Set();
-  }
-
-  function scopeItemKey(s: CycleHistory['samples'][number], forScope: Scope): string {
-    if (forScope === 'sections' || forScope === 'orchestra') return s.section || '(none)';
-    if (forScope === 'stands') return s.stand || '(none)';
-    return s.canister || s.canister_id;
-  }
-
-  function filterKeysForScope(
-    forScope: Scope,
-    ss: CycleHistory['samples'],
-  ): string[] {
-    if (forScope === 'sections' || forScope === 'orchestra') {
-      return [...new Set(ss.map((s) => s.section || '(none)'))].sort();
-    }
-    if (forScope === 'stands') {
-      return [...new Set(ss.map((s) => s.stand || '(none)'))].sort();
-    }
-    if (forScope === 'canisters') {
-      return [...new Set(ss.map((s) => s.canister || s.canister_id))].sort();
-    }
-    return [];
-  }
-
-  function passesScopeFilter(s: CycleHistory['samples'][number]): boolean {
-    if (scope === 'all' || scope === 'orchestra') return true;
-    if (scopeFilter.size === 0) return false;
-    return scopeFilter.has(scopeItemKey(s, scope));
-  }
-
-  const filterOptions = $derived.by<string[]>(() => filterKeysForScope(scope, windowSamples));
-
-  const canisterScopeOptions = $derived.by(() => {
-    const byKey = new Map<
-      string,
-      { key: string; name: string; canister_id: string; section?: string; stand?: string }
-    >();
-    for (const s of windowSamples) {
-      const key = scopeItemKey(s, 'canisters');
-      if (byKey.has(key)) continue;
-      byKey.set(key, {
-        key,
-        name: s.canister || s.canister_id,
-        canister_id: s.canister_id,
-        section: s.section,
-        stand: s.stand,
-      });
-    }
-    return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name));
-  });
-
-  // Over-time series for the selected scope (forward-filled sum for aggregated scopes).
-  const lineSeries = $derived.by<Series[]>(() => {
-    const ss = windowSamples.filter(passesScopeFilter);
-    if (!ss.length) return [];
-    const burnMode = chartMetric === 'burn';
-    if (scope === 'canisters') {
-      const byCan = new Map<string, { name: string; samples: typeof ss }>();
-      for (const s of ss) {
-        let e = byCan.get(s.canister_id);
-        if (!e) { e = { name: s.canister || s.canister_id, samples: [] }; byCan.set(s.canister_id, e); }
-        e.samples.push(s);
-      }
-      return [...byCan.values()].map((e, i) => ({
-        name: e.name,
-        color: colorAt(i),
-        points: burnMode
-          ? applyBurnBuckets(burnIntervalSeriesFromSamples(e.samples))
-          : dedupeSeriesPoints(e.samples.map((s) => ({ t: s.ts, v: s.cycles }))),
-      }));
-    }
-    if (scope === 'all') {
-      return [{
-        name: 'All',
-        color: colorAt(0),
-        points: burnMode ? applyBurnBuckets(aggregateBurnIntervalSeries(ss)) : aggregateBalanceSeries(ss),
-      }];
-    }
-    const keyOf =
-      scope === 'orchestra' || scope === 'sections'
-        ? (s: typeof ss[number]) => s.section
-        : (s: typeof ss[number]) => s.stand;
-    const byKey = new Map<string, typeof ss>();
-    for (const s of ss) {
-      const k = keyOf(s) || '(none)';
-      let group = byKey.get(k);
-      if (!group) { group = []; byKey.set(k, group); }
-      group.push(s);
-    }
-    return [...byKey.entries()].map(([k, group], i) => ({
-      name: k,
-      color: colorAt(i),
-      points: burnMode ? applyBurnBuckets(aggregateBurnIntervalSeries(group)) : aggregateBalanceSeries(group),
-    }));
-  });
-
-  const chartBurnTotal = $derived.by(() => {
-    if (chartMetric !== 'burn' || !lineSeries.length) return null;
-    let total = 0;
-    for (const s of lineSeries) {
-      for (const p of s.points) total += p.v;
-    }
-    return total;
-  });
-
-  const chartBurnRateLabel = $derived.by(() => {
-    if (chartBurnTotal == null || chartBurnTotal <= 0) return null;
-    const span = Math.max(1, chartTimeEnd - chartTimeStart);
-    const tcPerDay = (chartBurnTotal / 1e12) * (86400 / span);
-    return `${tcPerDay.toLocaleString(undefined, { maximumFractionDigits: 2 })} TC/day avg`;
-  });
-
-  const canisterSeriesColors = $derived.by(() => {
-    const colors = new Map<string, string>();
-    for (const s of lineSeries) {
-      colors.set(s.name, s.color);
-    }
-    return colors;
-  });
-
-  // Section ⊃ stand ⊃ canister tree. `value` sizes the tile (burn or balance).
-  // `balance` is cycles held now; `burn` is consumption across the samples in view.
-  const treemapView = $derived.by(() => {
-    const byCan = new Map<string, { section: string; stand: string; canister: string; canister_id: string; pts: typeof treemapSamples }>();
-    for (const s of treemapSamples) {
-      let e = byCan.get(s.canister_id);
-      if (!e) { e = { section: s.section, stand: s.stand, canister: s.canister, canister_id: s.canister_id, pts: [] }; byCan.set(s.canister_id, e); }
-      e.pts.push(s);
-      e.section = s.section; e.stand = s.stand; e.canister = s.canister;
-    }
-    const liveBalance = new Map<string, number>();
-    for (const c of report?.canisters ?? []) {
-      if (c.cycles !== undefined) liveBalance.set(c.canister_id, c.cycles);
-    }
-    const sections = new Map<string, Map<string, TreemapInput[]>>();
-    let periodStart = Infinity;
-    let periodEnd = -Infinity;
-    for (const e of byCan.values()) {
-      e.pts.sort((a, b) => a.ts - b.ts);
-      const end = e.pts[e.pts.length - 1];
-      const start = [...e.pts].reverse().find((s) => s.ts <= treemapSince) ?? e.pts[0];
-      const balance = liveBalance.get(e.canister_id) ?? end.cycles;
-      const burn = Math.max(0, (end.deposited - start.deposited) - (end.cycles - start.cycles));
-      if (start.ts < periodStart) periodStart = start.ts;
-      if (end.ts > periodEnd) periodEnd = end.ts;
-      const value = metric === 'balance' ? balance : burn;
-      const secName = e.section || '(none)';
-      const standName = e.stand || '(none)';
-      if (!sections.has(secName)) sections.set(secName, new Map());
-      const stands = sections.get(secName)!;
-      if (!stands.has(standName)) stands.set(standName, []);
-      stands.get(standName)!.push({
-        name: e.canister || e.canister_id,
-        value,
-        balance,
-        burn,
-        section: secName,
-        stand: standName,
-        canister_id: e.canister_id,
-      });
-    }
-    const children: TreemapInput[] = [];
-    for (const [secName, stands] of sections) {
-      const standNodes: TreemapInput[] = [];
-      for (const [standName, cans] of stands) {
-        standNodes.push({ name: standName, section: secName, stand: standName, value: cans.reduce((a, c) => a + c.value, 0), children: cans });
-      }
-      children.push({ name: secName, section: secName, value: standNodes.reduce((a, d) => a + d.value, 0), children: standNodes });
-    }
-    const period = periodStart <= periodEnd ? { start: periodStart, end: periodEnd } : null;
-    return { root: { name: 'root', value: 0, children } satisfies TreemapInput, period };
-  });
-
-  const treemapRoot = $derived(treemapView.root);
-
-  function formatTreemapStamp(ts: number): string {
-    return new Date(ts * 1000).toLocaleString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  function formatTreemapDuration(seconds: number): string {
-    const hours = seconds / 3600;
-    if (hours < 48) return `${Math.max(1, Math.round(hours))} hours`;
-    return `${Math.round(hours / 24)} days`;
-  }
-
-  const treemapPeriodLabel = $derived.by(() => {
-    const period = treemapView.period;
-    if (!period) return null;
-    const seconds = Math.max(0, period.end - period.start);
-    const requested = treemapWindow === 'inception' ? 0 : treemapWinSecs;
-    const shortOfRequest = requested > 0 && seconds + 2 * 3600 < requested;
-    return {
-      range: `${formatTreemapStamp(period.start)} – ${formatTreemapStamp(period.end)}`,
-      duration: formatTreemapDuration(seconds),
-      shortOfRequest,
-    };
-  });
-
-  const hasHistory = $derived(samples.length > 0);
-
-  const canistersAwaitingBalances = $derived(
-    (report?.canisters ?? []).length > 0
-    && (report?.canisters ?? []).every((c) => c.cycles === undefined),
-  );
-
-  const STATUS_SORT_ORDER: Record<CycleStatus, number> = {
-    frozen: 0,
-    critical: 1,
-    low: 2,
-    ok: 3,
-    error: 4,
-  };
-
-  const sortedCanisters = $derived.by(() => {
-    if (!report) return [];
-    const rows = [...(report.canisters ?? [])];
-    const dir = canisterSortAsc ? 1 : -1;
-    rows.sort((a, b) => {
-      let cmp = 0;
-      switch (canisterSortKey) {
-        case 'canister':
-          cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-          break;
-        case 'sectionStand': {
-          const aPath = `${a.section || ''}\0${a.stand || ''}`;
-          const bPath = `${b.section || ''}\0${b.stand || ''}`;
-          cmp = aPath.localeCompare(bPath, undefined, { sensitivity: 'base' });
-          break;
-        }
-        case 'cycles':
-          cmp = (a.cycles ?? -1) - (b.cycles ?? -1);
-          break;
-        case 'minPolicy':
-          cmp = (a.min_cycles ?? 0) - (b.min_cycles ?? 0);
-          break;
-        case 'status':
-          cmp = (STATUS_SORT_ORDER[a.status] ?? 99) - (STATUS_SORT_ORDER[b.status] ?? 99);
-          break;
-      }
-      return cmp * dir || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-    });
-    return rows;
-  });
-
-  const filteredCanisters = $derived.by(() => {
-    const q = canisterFilterText.trim().toLowerCase();
-    if (!q) return sortedCanisters;
-    return sortedCanisters.filter((s) =>
-      s.name.toLowerCase().includes(q)
-      || (s.section || '').toLowerCase().includes(q)
-      || (s.stand || '').toLowerCase().includes(q)
-      || s.canister_id.toLowerCase().includes(q),
-    );
-  });
-
-  const selectedCanisters = $derived(
-    sortedCanisters.filter((s) => selectedCanisterIds.has(s.canister_id)),
-  );
-
-  const allVisibleSelected = $derived(
-    filteredCanisters.length > 0
-      && filteredCanisters.every((s) => selectedCanisterIds.has(s.canister_id)),
-  );
-
-  const someVisibleSelected = $derived(
-    filteredCanisters.some((s) => selectedCanisterIds.has(s.canister_id)),
-  );
-
-  const bulkBusy = $derived(
-    busy === 'bulk:refresh'
-      || busy === 'bulk:topup'
-      || busy === 'bulk:return'
-      || busy === 'bulk:policy'
-      || busy === 'bulk:destroy',
-  );
-
-  function standKey(c: CanisterCycles): string {
-    return `${c.section || ''}\0${c.stand || ''}`;
-  }
-
-  /** Casals infra (conductor, treasury, etc.) must not be destroyed from the cycles page. */
-  function isDestroyProtected(c: CanisterCycles): boolean {
-    return (c.section || '').trim().toLowerCase() === 'casals';
-  }
-
-  type DestroyStandPlan = { section: string; stand: string; canisters: CanisterCycles[] };
-  type DestroyPlan = { stands: DestroyStandPlan[]; canisters: CanisterCycles[] };
-
-  function computeDestroyPlan(selected: CanisterCycles[], all: CanisterCycles[]): DestroyPlan {
-    const allByStand = new Map<string, CanisterCycles[]>();
-    for (const c of all) {
-      if (!c.stand?.trim()) continue;
-      const k = standKey(c);
-      const list = allByStand.get(k) ?? [];
-      list.push(c);
-      allByStand.set(k, list);
-    }
-
-    const selectedByStand = new Map<string, CanisterCycles[]>();
-    for (const c of selected) {
-      const k = standKey(c);
-      const list = selectedByStand.get(k) ?? [];
-      list.push(c);
-      selectedByStand.set(k, list);
-    }
-
-    const stands: DestroyStandPlan[] = [];
-    const canisters: CanisterCycles[] = [];
-
-    for (const sel of selectedByStand.values()) {
-      const k = standKey(sel[0]);
-      const allInStand = allByStand.get(k) ?? [];
-      const allSelected = allInStand.length > 0
-        && sel.length === allInStand.length
-        && allInStand.every((c) => sel.some((s) => s.canister_id === c.canister_id));
-      if (allSelected) {
-        stands.push({
-          section: sel[0].section,
-          stand: sel[0].stand,
-          canisters: sel,
-        });
-      } else {
-        canisters.push(...sel);
-      }
-    }
-
-    return { stands, canisters };
-  }
-
-  const destroyPlan = $derived(computeDestroyPlan(selectedCanisters, report?.canisters ?? []));
-  const destroyProtectedSelection = $derived(selectedCanisters.some(isDestroyProtected));
-  const isDelegatedDestroy = $derived(
-    Boolean($principal && (meta?.delegated_destroy_principals ?? []).includes($principal)),
-  );
-  const isMultisigSigner = $derived(
-    Boolean($principal && multisigSigners.includes($principal)),
-  );
-  const isProposeDestroy = $derived(Boolean(multisigCanisterId) && isMultisigSigner);
-  const canDestroySelection = $derived(
-    (isDelegatedDestroy && destroyPlan.stands.length > 0 && destroyPlan.canisters.length === 0)
-    || (isProposeDestroy && (destroyPlan.stands.length > 0 || destroyPlan.canisters.length > 0)),
-  );
-  const destroyBlockedReason = $derived.by(() => {
-    if (!selectedCanisterIds.size) return '';
-    if (destroyProtectedSelection) return 'Casals infrastructure canisters cannot be destroyed here';
-    if (!$isAuthenticated) return 'Log in with Internet Identity';
-    if (($isController === null || multisigSignersLoading) && !isDelegatedDestroy && !isMultisigSigner) {
-      return 'Checking access…';
-    }
-    if (!canDestroySelection) {
-      if (isDelegatedDestroy && destroyPlan.canisters.length > 0) {
-        return 'Delegated destroy can only remove a complete stand — select every canister in the stand';
-      }
-      if ($isController === false && !isMultisigSigner && !isDelegatedDestroy) {
-        return 'Your principal is not a multisig signer';
-      }
-      return 'Propose DestroyCanisters as the governance multisig';
-    }
-    return '';
-  });
-  const destroyButtonLabel = $derived(
-    busy === 'bulk:destroy'
-      ? (isProposeDestroy ? 'Proposing…' : 'Destroying…')
-      : (isProposeDestroy ? 'Propose destroy' : 'Destroy'),
-  );
-  const destroyConfirmButtonLabel = $derived(
-    busy === 'bulk:destroy'
-      ? (isProposeDestroy ? 'Proposing…' : 'Destroying…')
-      : (isProposeDestroy ? 'Propose destroy' : 'Destroy permanently'),
-  );
-  const destroyEstimatedReclaim = $derived(
-    selectedCanisters.reduce((sum, c) => sum + (c.cycles ?? 0), 0),
-  );
-  const destroyConfirmPhrase = $derived.by(() => {
-    const { stands, canisters } = destroyPlan;
-    if (stands.length === 1 && canisters.length === 0) return stands[0].stand;
-    if (canisters.length === 1 && stands.length === 0) return canisters[0].name;
-    return `${selectedCanisters.length} canisters`;
-  });
-  const destroyConfirmValid = $derived(
-    destroyAck && destroyConfirmText.trim() === destroyConfirmPhrase,
-  );
-
-  function toggleCanisterSort(key: CanisterSortKey) {
-    if (canisterSortKey === key) canisterSortAsc = !canisterSortAsc;
-    else {
-      canisterSortKey = key;
-      canisterSortAsc = key === 'cycles' || key === 'minPolicy' ? false : true;
-    }
-  }
-
-  function canisterSortMark(key: CanisterSortKey): string {
-    if (canisterSortKey !== key) return '';
-    return canisterSortAsc ? '↑' : '↓';
-  }
-
-  function cyclesToTcInput(cycles: number): string {
-    return formatCycles(cycles).replace(/ TC$/, '');
-  }
-
-  function parseTcAmount(s: string): number {
-    const trimmed = String(s).trim().toLowerCase().replace(/\s*tc$/, '');
-    if (!trimmed) return NaN;
-    return parseCycles(`${trimmed}tc`);
-  }
-
-  const topUpParsed = $derived(parseTcAmount(topUpAmount));
-  const topUpValid = $derived(Number.isFinite(topUpParsed) && topUpParsed > 0);
-  const topUpSpendable = $derived(report?.treasury?.spendable ?? 0);
-  const topUpTotalCost = $derived(topUpValid ? topUpParsed * topUpTargets.length : 0);
-  const topUpOverTreasury = $derived(topUpValid && topUpTotalCost > topUpSpendable);
-  const liveBalanceCount = $derived(
-    (report?.canisters ?? []).filter((c) => c.cycles !== undefined).length,
-  );
-  const totalCanisterCount = $derived(report?.canisters?.length ?? 0);
-  const usesOffChainMonitor = $derived(Boolean(meta?.monitor_enabled && meta?.monitor_service_url));
-  const balancesStale = $derived(
-    !usesOffChainMonitor
-      && (snapshotPartial || (!liveSynced && cachedAt !== null && !refreshing)),
-  );
-  const topUpExpectedBalance = $derived.by(() => {
-    if (!topUpValid || topUpTargets.length !== 1) return null;
-    const current = topUpTargets[0].cycles;
-    if (current === undefined) return null;
-    return current + topUpParsed;
-  });
-
-  function maxReturnable(canister: CanisterCycles): number {
-    if (canister.cycles === undefined) return 0;
-    const headroom = canister.headroom ?? (canister.cycles - (canister.freezing_threshold ?? 0));
-    return Math.max(0, headroom - (canister.min_cycles ?? 0) - SWEEP_EXEC_RESERVE);
-  }
-
-  const selectedReturnableCount = $derived(
-    selectedCanisters.filter((s) => maxReturnable(s) > 0).length,
-  );
-
-  const returnParsed = $derived(parseTcAmount(returnAmount));
-  const returnValid = $derived(Number.isFinite(returnParsed) && returnParsed > 0);
-  const returnMaxSingle = $derived(
-    returnTargets.length === 1 ? maxReturnable(returnTargets[0]) : 0,
-  );
-  const returnOverMaxSingle = $derived(returnValid && returnParsed > returnMaxSingle);
-  const returnAnyCapped = $derived(
-    returnValid
-      && returnTargets.some((c) => returnParsed > maxReturnable(c) && maxReturnable(c) > 0),
-  );
-  const returnBulkValid = $derived(
-    returnValid && returnTargets.some((c) => Math.min(returnParsed, maxReturnable(c)) > 0),
-  );
-  const returnBulkTotal = $derived(
-    returnTargets.reduce(
-      (sum, c) => sum + Math.min(returnParsed, maxReturnable(c)),
-      0,
-    ),
-  );
-
-  const policyParsed = $derived(parseTcAmount(policyAmount));
-  const policyValid = $derived(policyInherit || (Number.isFinite(policyParsed) && policyParsed > 0));
-
-  function policySourceLabel(c: CanisterCycles): string {
-    switch (c.min_cycles_source) {
-      case 'stand':
-        return `Inherited from stand “${c.stand}”`;
-      case 'section':
-        return `Inherited from section “${c.section}”`;
-      case 'default':
-        return 'Inherited from global default';
-      case 'canister':
-        return 'Set on this canister';
-      default:
-        return 'Inherited';
-    }
-  }
-
-  function toggleCanisterSelected(canisterId: string) {
-    const next = new Set(selectedCanisterIds);
-    if (next.has(canisterId)) next.delete(canisterId);
-    else next.add(canisterId);
-    selectedCanisterIds = next;
-  }
-
-  function toggleAllVisibleSelected() {
-    if (allVisibleSelected) {
-      const visible = new Set(filteredCanisters.map((s) => s.canister_id));
-      selectedCanisterIds = new Set(
-        [...selectedCanisterIds].filter((id) => !visible.has(id)),
-      );
-    } else {
-      selectedCanisterIds = new Set([
-        ...selectedCanisterIds,
-        ...filteredCanisters.map((s) => s.canister_id),
-      ]);
-    }
-  }
-
-  function canisterByName(name: string): CanisterCycles | undefined {
-    return report?.canisters.find((c) => c.name === name);
-  }
-
-  function applyReport(live: CyclesReport) {
-    report = live;
-    cachedAt = live.cached_at ?? null;
-    snapshotPartial = live.partial_refresh === true;
-    loadFx();
-  }
-
-  async function openTopUpForSelection() {
-    if (!selectedCanisters.length) return;
-    const names = selectedCanisters.map((c) => c.name);
-    busy = 'prefetch-topup';
-    try {
-      try {
-        await refreshSelectedCanisters(names);
-      } catch {
-        // Fall back to cached rows; modal shows stale warning.
-      }
-      topUpTargets = names.map((n) => canisterByName(n)).filter((c): c is CanisterCycles => !!c);
-      if (!topUpTargets.length) topUpTargets = [...selectedCanisters];
-      const first = topUpTargets[0];
-      if (!first) return;
-      topUpAmount = cyclesToTcInput(
-        first.topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000,
-      );
-    } finally {
-      busy = '';
-    }
-  }
-
-  function closeTopUp() {
-    topUpTargets = [];
-    topUpAmount = '';
-  }
-
-  function openReturnForSelection() {
-    if (!selectedCanisters.length) return;
-    returnTargets = [...selectedCanisters];
-    const maxAcross = Math.max(0, ...returnTargets.map((c) => maxReturnable(c)));
-    returnAmount = maxAcross > 0 ? cyclesToTcInput(maxAcross) : '';
-  }
-
-  function closeReturn() {
-    returnTargets = [];
-    returnAmount = '';
-  }
-
-  function openPolicyForSelection() {
-    if (!selectedCanisters.length) return;
-    policyTargets = [...selectedCanisters];
-    const first = policyTargets[0];
-    const override = first.min_cycles_override ?? 0;
-    policyInherit = override === 0;
-    policyAmount = override > 0
-      ? cyclesToTcInput(override)
-      : cyclesToTcInput(first.min_cycles);
-  }
-
-  function closePolicyEdit() {
-    policyTargets = [];
-    policyAmount = '';
-    policyInherit = false;
-  }
-
-  function openDestroyForSelection() {
-    if (!selectedCanisters.length) {
-      toasts.error('Select canisters first');
-      return;
-    }
-    if (destroyProtectedSelection) {
-      toasts.error('Casals infrastructure canisters cannot be destroyed here');
-      return;
-    }
-    if (!canDestroySelection) {
-      toasts.error(destroyBlockedReason || 'Casals controller access required');
-      return;
-    }
-    destroyAck = false;
-    destroyConfirmText = '';
-    destroyOpen = true;
-  }
-
-  function closeDestroy() {
-    destroyOpen = false;
-    destroyAck = false;
-    destroyConfirmText = '';
-  }
-
-  async function confirmProposeDestroy() {
-    if (busy === 'bulk:destroy') return;
-    const id = get(identity);
-    if (!id) {
-      toasts.error('Login required');
-      return;
-    }
-    const msId = multisigCanisterId;
-    if (!msId) {
-      toasts.error('No multisig canister found in this orchestra');
-      return;
-    }
-    busy = 'bulk:destroy';
-    const plan = destroyPlan;
-    const canisterIds: string[] = [];
-    const seen = new Set<string>();
-    for (const st of plan.stands) {
-      for (const c of st.canisters) {
-        if (c.canister_id && !seen.has(c.canister_id)) {
-          seen.add(c.canister_id);
-          canisterIds.push(c.canister_id);
-        }
-      }
-    }
-    for (const c of plan.canisters) {
-      if (c.canister_id && !seen.has(c.canister_id)) {
-        seen.add(c.canister_id);
-        canisterIds.push(c.canister_id);
-      }
-    }
-    let proposed = 0;
-    let executed = 0;
-    let pending = 0;
-    let lastErr = '';
-    let pid: bigint | null = null;
-
-    try {
-      if (!canisterIds.length) {
-        toasts.error('No canister ids to destroy');
-        return;
-      }
-      try {
-        const action = buildMultisigAction('DestroyCanisters', {
-          canister_ids: canisterIds,
-          casals_backend: backendCanisterId(),
-        });
-        pid = await multisigPropose(msId, action, id);
-        proposed = 1;
-        const allProposals = await multisigListProposals(msId);
-        const snapEvents = await multisigListEvents(msId).catch(() => []);
-        const p = allProposals.find((pr) => pr.id === pid);
-        if (p?.status === 'executed') executed = 1;
-        else if (p?.status === 'pending') pending = 1;
-        else if (p?.status === 'failed' || p?.status === 'rejected' || p?.status === 'expired') {
-          let detail = p.result ?? '';
-          if (p.status === 'failed' && !detail) {
-            let bestAt: bigint | null = null;
-            for (const e of snapEvents) {
-              if (e.kind !== 'execute_failed' || e.at < p.created_at) continue;
-              if (bestAt === null || e.at - p.created_at < bestAt) {
-                bestAt = e.at - p.created_at;
-                detail = e.detail;
-              }
-            }
-          }
-          lastErr = detail || `Proposal #${pid} ${p.status}`;
-        }
-      } catch (e: unknown) {
-        lastErr = e instanceof Error ? e.message : String(e);
-      }
-
-      if (proposed > 0) {
-        if (executed > 0) {
-          selectedCanisterIds = new Set(
-            [...selectedCanisterIds].filter((id) => !seen.has(id)),
-          );
-          toasts.success(
-            `Destroy executed for ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'}`,
-          );
-          closeDestroy();
-          await Promise.all([
-            loadCached(),
-            refreshTreasuryOnly(),
-            getTree().then((t) => { tree = t; }).catch(() => {}),
-          ]);
-        } else if (pending > 0 && pid != null) {
-          toasts.success(
-            `Proposed destroy of ${canisterIds.length} canister${canisterIds.length === 1 ? '' : 's'} — approve at ${proposalPagePath(pid, msId)}`,
-          );
-          closeDestroy();
-        }
-
-        if (lastErr) toasts.error(lastErr);
-      } else {
-        toasts.error(lastErr || 'Propose destroy failed');
-      }
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function confirmDestroy() {
-    if (!destroyConfirmValid || !report) return;
-    if (isProposeDestroy) {
-      await confirmProposeDestroy();
-      return;
-    }
-    busy = 'bulk:destroy';
-    const plan = destroyPlan;
-    const destroyedIds = new Set<string>();
-    let reclaimedTotal = 0;
-    let okCount = 0;
-    let lastErr = '';
-
-    try {
-      if (plan.canisters.length) {
-        toasts.error('Individual canisters must be destroyed via a multisig DestroyCanisters proposal');
-        return;
-      }
-      for (const st of plan.stands) {
-        try {
-          const res = await destroyStand({ stand: st.stand });
-          if (!res.ok) throw new Error(res.error || 'Stand destroy failed');
-          for (const d of st.canisters) destroyedIds.add(d.canister_id);
-          reclaimedTotal += Number(res.total_cycles_reclaimed ?? 0);
-          okCount += st.canisters.length;
-          if (res.errors?.length) {
-            lastErr = res.errors.map((e) => e.error || 'Unknown error').join('; ');
-          }
-        } catch (e: any) {
-          lastErr = e?.message ?? 'Stand destroy failed';
-        }
-      }
-
-      if (okCount > 0) {
-        toasts.success(
-          reclaimedTotal > 0
-            ? `Destroyed ${okCount} canister${okCount === 1 ? '' : 's'} — reclaimed ${formatCycles(reclaimedTotal)} to treasury`
-            : `Destroyed ${okCount} canister${okCount === 1 ? '' : 's'}`,
-        );
-        selectedCanisterIds = new Set(
-          [...selectedCanisterIds].filter((id) => !destroyedIds.has(id)),
-        );
-        closeDestroy();
-        await Promise.all([
-          loadCached(),
-          refreshTreasuryOnly(),
-          getTree().then((t) => { tree = t; }).catch(() => {}),
-        ]);
-        if (lastErr) toasts.error(lastErr);
-      } else {
-        toasts.error(lastErr || 'Destroy failed');
-      }
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function runReconcile() {
-    busy = 'reconcile';
-    try {
-      const res = await reconcile();
-      toasts.success(`Reconciled — topped up ${(res as any).topped_up ?? 0} of ${(res as any).checked ?? 0}`);
-      await refreshTreasuryOnly();
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Reconcile failed');
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function runConvertIcp() {
-    busy = 'convert';
-    try {
-      const res = await convertTreasuryIcp();
-      if (res.converted && typeof res.cycles === 'number') {
-        const icpPart = typeof res.icp_e8s === 'number' ? formatIcp(res.icp_e8s) : 'ICP';
-        toasts.success(`Converted ${icpPart} → ${formatCycles(res.cycles)}`);
-        showConvert = false;
-        await refreshTreasuryOnly();
-        await reloadTreasuryFlow(flowPeriod, true);
-      } else {
-        const msg = (res.reason as string) || res.error || 'Nothing to convert';
-        toasts.error(msg);
-      }
-    } catch (e: any) {
-      toasts.error(e?.message ?? 'Conversion failed');
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function confirmTopUp() {
-    if (!topUpTargets.length || !topUpValid) return;
-    if (topUpOverTreasury) {
-      toasts.error(`Treasury only has ${formatCycles(topUpSpendable)} spendable`);
-      return;
-    }
-    busy = 'bulk:topup';
-    const targets = [...topUpTargets];
-    let ok = 0;
-    let lastErr = '';
-    try {
-      for (const target of targets) {
-        try {
-          const res = await topUp({ canister: target.name, amount: topUpParsed });
-          ok += 1;
-          if (report && typeof res.treasury === 'number') {
-            const treasuryBal = res.treasury as number;
-            const reserve = report.treasury?.reserve ?? 0;
-            report = {
-              ...report,
-              treasury: report.treasury
-                ? {
-                    ...report.treasury,
-                    balance: treasuryBal,
-                    spendable: Math.max(0, treasuryBal - reserve),
-                  }
-                : report.treasury,
-              canisters: report.canisters.map((c) =>
-                c.name === target.name && c.cycles !== undefined
-                  ? {
-                      ...c,
-                      cycles: c.cycles + topUpParsed,
-                      headroom: (c.headroom ?? c.cycles - (c.freezing_threshold ?? 0)) + topUpParsed,
-                    }
-                  : c,
-              ),
-            };
-          }
-        } catch (e: any) {
-          lastErr = e?.message ?? 'Top-up failed';
-        }
-      }
-      if (ok === targets.length) {
-        if (targets.length === 1) {
-          const before = targets[0].cycles ?? 0;
-          toasts.success(
-            `Topped up ${targets[0].name} with ${formatCycles(topUpParsed)} → ~${formatCycles(before + topUpParsed)}`,
-          );
-        } else {
-          toasts.success(`Topped up ${ok} canisters with ${formatCycles(topUpParsed)} each`);
-        }
-      } else if (ok > 0) {
-        toasts.error(`Topped up ${ok} of ${targets.length}. ${lastErr}`);
-      } else {
-        toasts.error(lastErr || 'Top-up failed');
-      }
-      closeTopUp();
-      if (ok > 0) {
-        void refreshTreasuryOnly();
-        void refreshCanistersByNames(targets.map((t) => t.name));
-      }
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function confirmReturn() {
-    if (!returnTargets.length || !returnBulkValid) return;
-    if (returnTargets.length === 1 && returnOverMaxSingle) {
-      toasts.error(`Can only return up to ${formatCycles(returnMaxSingle)}`);
-      return;
-    }
-    busy = 'bulk:return';
-    const targets = [...returnTargets];
-    let ok = 0;
-    let returnedTotal = 0;
-    let lastErr = '';
-    try {
-      for (const target of targets) {
-        const amount = Math.min(returnParsed, maxReturnable(target));
-        if (amount <= 0) continue;
-        try {
-          await returnCycles({
-            canister: target.name,
-            canister_id: target.canister_id,
-            amount,
-          });
-          ok += 1;
-          returnedTotal += amount;
-        } catch (e: any) {
-          lastErr = e?.message ?? 'Return failed';
-        }
-      }
-      if (ok > 0) {
-        toasts.success(
-          targets.length === 1
-            ? `Returned ${formatCycles(returnedTotal)} from ${targets[0].name} to treasury`
-            : `Returned ${formatCycles(returnedTotal)} from ${ok} canister${ok === 1 ? '' : 's'} to treasury`,
-        );
-      } else {
-        toasts.error(lastErr || 'Return failed');
-      }
-      closeReturn();
-      if (ok > 0) {
-        void refreshTreasuryOnly();
-        void refreshCanistersByIds(targets.map((t) => t.canister_id));
-      }
-    } finally {
-      busy = '';
-    }
-  }
-
-  async function refreshSelectedCanisters(names: string[], canisterIds: string[] = []) {
-    if (!names.length && !canisterIds.length) return;
-    if (usesOffChainMonitor) {
-      const live = await monitorPollCanisters(names, canisterIds);
-      if (!live) throw new Error('Off-chain monitor canister refresh failed');
-      mergeCanisterRows(live);
-      return;
-    }
-    try {
-      const live = await refreshCanisters({ canisters: names });
-      applyReport(live);
+      const r = await cyclesRefresh();
+      report = r;
+      if (r.converted) toasts.success(`Converted ${r.converted / 1e8} ICP to cycles`);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Refresh failed');
-      throw e;
-    }
-  }
-
-  async function refreshSelection() {
-    const names = selectedCanisters.map((c) => c.name);
-    if (!names.length) return;
-    busy = 'bulk:refresh';
-    try {
-      await refreshSelectedCanisters(names);
-      toasts.success(`Refreshed ${names.length} canister${names.length === 1 ? '' : 's'}`);
     } finally {
-      busy = '';
+      refreshing = false;
     }
   }
 
-  async function refreshCanistersByIds(canisterIds: string[]) {
-    if (!canisterIds.length) return;
-    const names = canisterIds
-      .map((id) => report?.canisters?.find((c) => c.canister_id === id)?.name)
-      .filter((n): n is string => Boolean(n));
-    try {
-      await refreshSelectedCanisters(names, canisterIds);
-    } catch {
-      // refreshSelectedCanisters already toasts on failure
+  // ── Actions ────────────────────────────────────────────────────────────────
+  function open(d: Dialog) {
+    amount = '';
+    confirmText = '';
+    sendTo = '';
+    dialog = d;
+    if (d === 'policy' && targets.length === 1) {
+      amount = targets[0].min ? `${targets[0].min / 1e12}t` : '';
+      topupAmount = targets[0].topup ? `${targets[0].topup / 1e12}t` : '';
+    }
+    if (d === 'deposit' && !depositAccount) {
+      ledgerAccountIdFromCanister(backendCanisterId()).then((a) => (depositAccount = a)).catch(() => {});
     }
   }
 
-  /** @deprecated Prefer refreshCanistersByIds when canister_id is known. */
-  async function refreshCanistersByNames(names: string[]) {
-    if (!names.length) return;
-    try {
-      await refreshSelectedCanisters(names);
-    } catch {
-      // refreshSelectedCanisters already toasts on failure
-    }
+  /** Cycles typed in a dialog field ("1.5t", "500b"); throws on bad input. */
+  function cycles(s: string, label: string): number {
+    const n = parseCycles(s);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${label}: enter an amount such as 1.5t or 500b`);
+    return n;
   }
 
-  async function confirmPolicyEdit() {
-    if (!policyTargets.length || !policyValid) return;
-    busy = 'bulk:policy';
-    const targets = [...policyTargets];
-    const min_cycles = policyInherit ? 0 : policyParsed;
-    let ok = 0;
-    let lastErr = '';
+  async function run(label: string, fn: () => Promise<unknown>) {
+    busy = true;
     try {
-      for (const target of targets) {
-        try {
-          await setCyclePolicy({ canister: target.name, min_cycles });
-          ok += 1;
-        } catch (e: any) {
-          lastErr = e?.message ?? 'Could not update min policy';
-        }
-      }
-      if (ok === targets.length) {
-        toasts.success(
-          policyInherit
-            ? targets.length === 1
-              ? `${targets[0].name} now inherits min policy`
-              : `${ok} canisters now inherit min policy`
-            : targets.length === 1
-              ? `Min policy for ${targets[0].name} set to ${formatCycles(min_cycles)}`
-              : `Min policy set to ${formatCycles(min_cycles)} on ${ok} canisters`,
-        );
-      } else if (ok > 0) {
-        toasts.error(`Updated ${ok} of ${targets.length}. ${lastErr}`);
-      } else {
-        toasts.error(lastErr || 'Could not update min policy');
-      }
-      closePolicyEdit();
-      if (ok > 0) {
-        void refreshCanistersByNames(targets.map((t) => t.name));
-      }
+      await fn();
+      toasts.success(`${label} done`);
+      dialog = null;
+      selected = new Set();
+      await loadReport();
+    } catch (e: any) {
+      toasts.error(`${label} failed: ${e?.message ?? e}`);
     } finally {
-      busy = '';
+      busy = false;
     }
   }
 
-  // Cycles consumed by a pooled canister = funded (deposited) − current balance.
-  // Only meaningful when we know how much Casals funded it (live canisters).
-  function poolUsed(c: PoolCanisterCycles): string {
-    if (!c.deposited || c.cycles === undefined) return '—';
-    return formatCycles(Math.max(0, c.deposited - c.cycles));
+  async function each(fn: (c: CanisterCycles) => Promise<unknown>) {
+    const failed: string[] = [];
+    for (const c of targets) {
+      try { await fn(c); } catch (e: any) { failed.push(`${c.name}: ${e?.message ?? e}`); }
+    }
+    if (failed.length) throw new Error(failed.join('; '));
   }
 
+  const topUp = () => run('Top-up', () => {
+    const n = amount.trim() ? cycles(amount, 'Amount') : undefined;
+    return each((c) => cyclesTopUp({ canister: c.name, amount: n }));
+  });
+
+  const setPolicy = () => run('Policy', () => {
+    const policy = amount.trim() || topupAmount.trim()
+      ? { min: cycles(amount || '0', 'Minimum'), topup: cycles(topupAmount || '0', 'Top-up') }
+      : {};
+    return each((c) => canisterSet({ canister: c.name, policy }));
+  });
+
+  const send = () => run('Send', () =>
+    cyclesSend({ canister_id: sendTo.trim(), ...(amount.trim() ? { amount: cycles(amount, 'Amount') } : { all: true }) }));
+
+  const destroy = () => run('Destroy', async () => {
+    if (confirmText.trim() !== 'DESTROY') throw new Error('Type DESTROY to confirm');
+    await each((c) => canisterDestroy(c.name));
+  });
+
+  async function copy(text: string) {
+    if (await copyText(text)) toasts.info('Copied to clipboard');
+  }
+
+  function toggleClass(on: boolean) {
+    return `px-3 py-1.5 text-xs font-medium ${on ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}`;
+  }
 </script>
 
 <svelte:head><title>Casals · Cycles</title></svelte:head>
 
 <div class="space-y-6 animate-fade-in">
-  {#if report && balancesStale && !refreshing}
-    <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      {#if snapshotPartial && liveBalanceCount < totalCanisterCount}
-        Only {liveBalanceCount} of {totalCanisterCount} canister{totalCanisterCount === 1 ? '' : 's'} have live balances;
-        click Refresh to update the rest.
-      {:else if cachedAt}
-        Balances are from a snapshot taken {fmtAge(cachedAt)} — live refresh is running or use Refresh.
-      {/if}
-    </div>
-  {/if}
-
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-primary-900">Cycles</h1>
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
-    <div class="flex items-center gap-2 self-start flex-wrap justify-end">
-      {#if usesOffChainMonitor && cachedAt && !refreshing && !refreshingTreasury}
-        <span class="text-xs text-emerald-700 italic">off-chain monitor · {fmtAge(cachedAt)}</span>
-      {:else if cachedAt && !refreshing && !refreshingTreasury && !snapshotPartial}
-        <span class="text-xs text-primary-400 italic">live snapshot · {fmtAge(cachedAt)}</span>
-      {:else if cachedAt && !refreshing && !refreshingTreasury && snapshotPartial}
-        <span class="text-xs text-amber-700 italic">partial snapshot · {fmtAge(cachedAt)}</span>
-      {:else if refreshing}
-        <span class="text-xs text-primary-400 italic">
-          refreshing live balances…{#if refreshProgress} ({refreshProgress}){/if}
-        </span>
-      {/if}
-    </div>
+    {#if report?.balances_at}
+      <span class="text-xs text-primary-400 italic self-start">balances · {formatRelativeTime(report.balances_at)}</span>
+    {/if}
   </div>
 
   {#if error}
-    <div class="card border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
-      <svg class="w-5 h-5 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M12 8v4m0 4h.01" />
-      </svg>
-      <span class="text-sm text-red-700">{error}</span>
-    </div>
+    <div class="card border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
   {/if}
 
-  {#if (loading || refreshing) && !report}
+  {#if loading && !report}
     <div class="card p-5 space-y-4">
       <div class="skeleton h-5 w-1/3"></div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div class="skeleton h-24 rounded-xl"></div>
-        <div class="skeleton h-24 rounded-xl"></div>
-      </div>
+      <div class="skeleton h-24 rounded-xl"></div>
     </div>
   {:else if report}
     <!-- Treasury summary -->
@@ -1867,1350 +310,226 @@
       <div class="flex items-start justify-between gap-3 mb-4">
         <div>
           <h2 class="text-sm font-semibold text-primary-900">Treasury balance</h2>
-          <p class="text-xs text-primary-400 mt-0.5">Casals backend treasury — cycles and ledger ICP</p>
+          <p class="text-xs text-primary-400 mt-0.5">The conductor's own cycles. Refresh converts any ICP on its ledger account.</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            class="btn-secondary btn-sm px-2.5 py-1 text-xs inline-flex items-center gap-1"
-            onclick={refreshTreasuryOnly}
-            disabled={loading || refreshingTreasury}
-            title={usesOffChainMonitor
-              ? 'Ask the off-chain monitor to fetch live treasury data from the conductor'
-              : 'Fetch live treasury cycles and ledger ICP from the conductor'}
-          >
-            <svg class="w-3.5 h-3.5 {refreshingTreasury ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <button class="btn-secondary btn-sm" onclick={refresh} disabled={refreshing || !$isAuthenticated}
+            title="Read every balance live and convert ledger ICP to cycles">
+            <svg class="w-3.5 h-3.5 {refreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
             </svg>
-            {refreshingTreasury ? 'Refreshing…' : 'Refresh'}
+            {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm px-2.5 py-1 text-xs"
-            title={!$isAuthenticated
-              ? 'Log in with Internet Identity'
-              : $isController === false
-                ? 'Requires a Casals controller principal'
-                : $isController === null
-                  ? 'Checking controller access…'
-                  : 'Convert ledger ICP to cycles'}
-            disabled={!$isAuthenticated || $isController !== true}
-            onclick={() => (showConvert = true)}
-          >Convert</button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm px-2.5 py-1 text-xs"
-            onclick={() => (showDeposit = true)}
-          >Deposit</button>
+          <button class="btn-secondary btn-sm" onclick={() => open('deposit')}>Deposit</button>
+          <button class="btn-secondary btn-sm" disabled={$isController !== true}
+            title={$isController === true ? 'Send treasury cycles to any canister' : 'Requires a Casals controller'}
+            onclick={() => open('send')}>Send</button>
         </div>
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3.5">
-          <p class="text-[11px] font-medium uppercase tracking-wide text-indigo-600">Cycles</p>
-          <p class="text-2xl font-semibold font-mono text-indigo-950 mt-1 inline-flex items-center gap-1">
-            {formatCycles(report.treasury.balance)}
-            <CalculatedAtHint at={treasuryCalculatedAt()} label="Treasury cycles calculated" />
-          </p>
-          <Fiat value={report.treasury.balance} block class="text-indigo-700/80" />
-        </div>
-        <div class="rounded-xl border border-amber-100 bg-amber-50/60 px-4 py-3.5">
-          <p class="text-[11px] font-medium uppercase tracking-wide text-amber-700">ICP on ledger</p>
-          <p class="text-2xl font-semibold font-mono text-amber-950 mt-1 inline-flex items-center gap-1">
-            {#if ledgerIcpE8s !== undefined}
-              {formatIcp(ledgerIcpE8s)}
-              <CalculatedAtHint at={treasuryCalculatedAt()} label="Ledger ICP calculated" />
-            {:else if refreshingTreasury}
-              <span class="text-base text-amber-700/70">Refreshing…</span>
-            {:else if refreshing}
-              <span class="text-base text-amber-700/70">Refreshing…</span>
-            {:else}
-              <span class="text-base text-amber-700/70">—</span>
-            {/if}
-          </p>
-          {#if treasuryIcpAsCycles !== null}
-            <Fiat value={treasuryIcpAsCycles} block class="text-amber-800/70" />
-          {/if}
-          {#if report.treasury.icp_autoconvert}
-            <p class="text-[11px] text-amber-800/70 mt-1">Auto-converts on refresh and reconcile</p>
-          {:else}
-            <p class="text-[11px] text-amber-800/70 mt-1">Convert manually or enable auto-convert in Settings</p>
-          {/if}
-        </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {#each TILES as t (t.key)}
+          <div class="rounded-xl border px-4 py-3.5 {t.box}">
+            <p class="text-[11px] font-medium uppercase tracking-wide {t.label}">{t.title}</p>
+            <p class="text-2xl font-semibold font-mono mt-1 inline-flex items-center gap-1 {t.value}">
+              {formatCycles(report.treasury[t.key])}
+              {#if t.key === 'balance'}<CalculatedAtHint at={report.balances_at} label="Treasury read" />{/if}
+            </p>
+            <Fiat value={report.treasury[t.key]} block />
+          </div>
+        {/each}
       </div>
     </div>
 
-    <!-- Cycles over time -->
-    <div class="card p-5">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
-        <div>
-          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
-            Cycles over time
-            <CalculatedAtHint at={historyCalculatedAt} label="Chart data fetched" />
-          </h2>
-          <p class="text-xs text-primary-400">
-            {#if chartMetric === 'burn'}
-              Cycles burnt per {burnBucketLabel} over {WINDOW_LABELS[windowKey]}.
-              {#if chartBurnRateLabel}
-                <span class="text-primary-500">{chartBurnRateLabel}</span>
-              {/if}
-            {:else}
-              Remaining cycle balance over time.
-            {/if}
-          </p>
-          {#if historyFetching || !hasHistory}
-            <p class="text-xs text-primary-400">
-              {#if historyFetching}
-                <span class="text-primary-500">Loading chart…</span>
-              {:else}
-                History fills in as the sampler runs (hourly) or after a reconcile.
-              {/if}
-            </p>
-          {/if}
-        </div>
-        <div class="flex flex-wrap gap-2 self-start">
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden {historyFetching ? 'opacity-60' : ''}">
-            {#each Object.keys(WINDOWS) as w (w)}
-              <button
-                class="px-3 py-1.5 text-xs font-medium disabled:cursor-wait {windowKey === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                disabled={historyFetching}
-                onclick={() => setWindow(w as WindowKey)}
-              >{w}</button>
-            {/each}
-          </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each [['balance', 'Balance'], ['burn', 'Burn']] as opt (opt[0])}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {chartMetric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => (chartMetric = opt[0] as ChartMetric)}
-              >{opt[1]}</button>
-            {/each}
-          </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each SCOPE_OPTIONS as opt (opt[0])}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {scope === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => setScope(opt[0])}
-              >{opt[1]}</button>
-            {/each}
-          </div>
-        </div>
+    {#if !hasMonitor}
+      <div class="card p-5 text-sm text-primary-500">
+        Cycle history, treasury flow and burn need a monitor. Set its principal and URL in
+        <a href="/settings" class="underline text-primary-700">Settings</a>.
       </div>
-
-      {#if chartMetric === 'burn' && burnBucketChoices.length > 1}
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3 rounded-lg border border-[var(--color-border-primary)]/60 bg-primary-50/40 px-3 py-2.5">
-          <span class="text-xs font-medium text-primary-700 shrink-0">Bar width</span>
-          <span class="text-[11px] text-primary-400 shrink-0 w-8 text-right">{burnBucketChoices[0]?.label}</span>
-          <input
-            id="burn-bucket-slider"
-            type="range"
-            class="flex-1 min-w-[140px] max-w-md h-1.5 accent-primary-900 cursor-pointer"
-            min="0"
-            max={burnBucketChoices.length - 1}
-            step="1"
-            bind:value={burnBucketIndex}
-            aria-valuemin={0}
-            aria-valuemax={burnBucketChoices.length - 1}
-            aria-valuenow={burnBucketIndex}
-            aria-valuetext={burnBucketLabel}
-            aria-label="Burn bar width"
-          />
-          <span class="text-[11px] text-primary-400 shrink-0 w-8">{burnBucketChoices.at(-1)?.label}</span>
-          <span class="text-xs font-semibold text-primary-900 tabular-nums shrink-0 min-w-[2.5rem]">{burnBucketLabel}</span>
-          <span class="text-[11px] text-primary-400 hidden sm:inline">Wider bars = coarser time buckets</span>
-        </div>
-      {/if}
-
-      {#snippet cyclesChartToolbar()}
-        <div class="flex flex-wrap items-center gap-2 mb-3">
-          {#if scope === 'sections' || scope === 'stands' || scope === 'canisters'}
-            <button
-              type="button"
-              class="btn-secondary btn-sm btn-icon-tool"
-              aria-label="Select every {scope === 'sections' ? 'section' : scope === 'stands' ? 'stand' : 'canister'} in this time window"
-              onclick={() => selectAllScopeFilter(filterOptions)}
-            >
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="btn-secondary btn-sm btn-icon-tool"
-              aria-label="Clear the filter — hide all series until you pick items again"
-              disabled={scopeFilter.size === 0}
-              onclick={clearScopeFilter}
-            >
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-              </svg>
-            </button>
-          {/if}
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool"
-            aria-label="Fit Y-axis to visible data"
-            onclick={() => cyclesChartRef?.fitYAxis()}
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 4.5h14.25M3 9h9.75M3 13.5h5.25M17.25 3v18" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool {chartMeasureActive ? 'btn-icon-tool--active' : ''}"
-            aria-label={chartMeasureActive
-              ? 'Measuring: click two points on the chart · Esc to exit'
-              : chartMetric === 'burn'
-                ? 'Measure burn rate — click two points for TC/h and TC/day'
-                : 'Measure rate — click two points to measure Δcycles and consumption'}
-            onclick={() => cyclesChartRef?.toggleMeasure()}
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 21l9-9m0 0 3 3 9-9M12 12V3m0 9h9" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool"
-            aria-label="Clear measure lines"
-            disabled={!chartMeasureOverlay}
-            onclick={() => cyclesChartRef?.clearMeasureLines()}
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.897 2.13 1.125 1.125 0 0 0-1.085.805M9.53 16.122 13.5 12m-3.97 4.122L6 18m12-6-2.122-2.122a3 3 0 0 0-5.78-1.128 2.25 2.25 0 0 1-2.897-2.13 1.125 1.125 0 0 0-1.085-.805M15 12l-2.122 2.122" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool {chartSnapToData ? 'btn-icon-tool--active' : ''}"
-            aria-label={chartSnapToData
-              ? 'Snap to samples on — click to allow free placement'
-              : 'Snap to samples — snap measure points to nearest data'}
-            onclick={() => cyclesChartRef?.toggleSnapToData()}
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.75 0 3.75 3.75 0 0 1 7.75 0Z" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool"
-            aria-label={chartExpanded ? 'Close expanded chart (Esc)' : 'Full screen'}
-            onclick={() => cyclesChartRef?.toggleExpanded()}
-          >
-            {#if chartExpanded}
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M15 9h4.5M15 9V4.5M15 9l5.25-5.25M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
-              </svg>
-            {:else}
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-              </svg>
-            {/if}
-          </button>
-          <button
-            type="button"
-            class="btn-secondary btn-sm btn-icon-tool"
-            aria-label="Export CSV"
-            onclick={() => cyclesChartRef?.exportCsv()}
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12M12 16.5V3" />
-            </svg>
-          </button>
-          {#if chartMeasureActive}
-            <span class="text-xs text-primary-400">
-              Pan/zoom freely · Esc exits measure mode
-            </span>
-          {/if}
-        </div>
-      {/snippet}
-
-      {#if !chartExpanded}
-        {@render cyclesChartToolbar()}
-      {/if}
-
-      {#if scope === 'canisters'}
-        <CanisterScopePicker
-          options={canisterScopeOptions}
-          bind:selected={scopeFilter}
-          seriesColors={canisterSeriesColors}
-        />
-      {:else if scope === 'sections' || scope === 'stands'}
-        <div class="flex flex-wrap items-center gap-2 mb-3">
-          <span class="text-xs text-primary-500">Show</span>
-          {#each filterOptions as key (key)}
-            <button
-              type="button"
-              class="px-2 py-0.5 rounded-full text-xs border transition-colors
-                {scopeFilter.has(key)
-                  ? 'bg-primary-100 border-primary-300 text-primary-800'
-                  : 'bg-white border-[var(--color-border-primary)] text-primary-400'}"
-              onclick={() => toggleScopeFilter(key)}
-            >{key}</button>
-          {/each}
-          {#if scopeFilter.size === 0}
-            <span class="text-xs text-primary-400">(none)</span>
-          {:else if scopeFilter.size === filterOptions.length}
-            <span class="text-xs text-primary-400">(all)</span>
-          {:else}
-            <span class="text-xs text-primary-400">({scopeFilter.size} selected)</span>
-          {/if}
-        </div>
-      {/if}
-      <div class="relative min-h-[260px]">
-        {#if scope === 'canisters' && scopeFilter.size === 0}
-          <div class="flex items-center justify-center text-sm text-primary-400 min-h-[260px] rounded-lg border border-dashed border-[var(--color-border-primary)]">
-            Search and add canisters above to plot their cycles over time.
+    {:else}
+      <!-- Cycles over time -->
+      <div class="card p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+          <div>
+            <h2 class="text-sm font-semibold text-primary-900">Cycles over time</h2>
+            <p class="text-xs text-primary-400">{chartMetric === 'balance' ? 'Balance' : 'Burn'} per stand, from the monitor's samples.</p>
           </div>
-        {:else}
-        {#if historyFetching}
-          <div
-            class="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/75"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <div class="flex items-center gap-2 text-sm text-primary-600">
-              <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Loading chart…
+          <div class="flex flex-wrap gap-2 self-start">
+            <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+              {#each Object.keys(WINDOWS) as w (w)}
+                <button class={toggleClass(chartWindow === w)} onclick={() => { chartWindow = w as WindowKey; void loadHistory(); }}>{w}</button>
+              {/each}
+            </div>
+            <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
+              <button class={toggleClass(chartMetric === 'balance')} onclick={() => (chartMetric = 'balance')}>Balance</button>
+              <button class={toggleClass(chartMetric === 'burn')} onclick={() => (chartMetric = 'burn')}>Burn</button>
             </div>
           </div>
-        {/if}
-        <div class="transition-opacity duration-150 {historyFetching ? 'opacity-40 pointer-events-none' : ''}">
-          <CyclesAdvancedChart
-            bind:this={cyclesChartRef}
-            bind:measureActive={chartMeasureActive}
-            bind:snapToData={chartSnapToData}
-            bind:isExpanded={chartExpanded}
-            bind:measureOverlayVisible={chartMeasureOverlay}
-            toolbar={cyclesChartToolbar}
-            series={lineSeries}
-            variant={chartMetric === 'burn' ? 'histogram' : 'line'}
-            barBucketSecs={chartMetric === 'burn' ? burnBucketSecs : undefined}
-            format={formatCycles}
-            timeStart={chartTimeStart}
-            timeEnd={chartTimeEnd}
-            events={chartEvents}
-            showLegend={scope !== 'canisters'}
-          />
         </div>
+        {#if chartSeries.length}
+          <CyclesAdvancedChart series={chartSeries} events={chartEvents} format={formatCycles}
+            variant={chartMetric === 'burn' ? 'histogram' : 'line'} showLegend />
+        {:else}
+          <p class="text-sm text-primary-400 text-center py-8">No samples in this window yet.</p>
         {/if}
       </div>
-    </div>
 
-    <!-- Treasury flow -->
-    <div class="card p-5">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
-        <div>
-          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
-            Treasury flow
-            <CalculatedAtHint at={flowCalculatedAt} label="Treasury flow calculated" />
-          </h2>
-          <p class="text-xs text-primary-400">
-            Deposited, converted, and consumed {FLOW_PERIOD_LABELS[flowPeriod]} ({flowUnitLabel}).
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2 self-start">
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each FLOW_PERIODS as p (p.key)}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {flowPeriod === p.key ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => setFlowPeriod(p.key)}
-              >{p.label}</button>
-            {/each}
+      <!-- Treasury flow -->
+      <div class="card p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+          <div>
+            <h2 class="text-sm font-semibold text-primary-900">Treasury flow</h2>
+            <p class="text-xs text-primary-400">Deposited, converted and consumed per {flowPeriod === 'inception' ? 'bucket since inception' : flowPeriod}.</p>
           </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each [['tc', 'TC'], ['icp', 'ICP'], ['usd', meta?.display_currency ?? treasuryFlow?.display_currency ?? 'USD']] as opt (opt[0])}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {flowUnit === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => (flowUnit = opt[0] as FlowUnit)}
-              >{opt[1]}</button>
+          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
+            {#each FLOW_PERIODS as p (p)}
+              <button class={toggleClass(flowPeriod === p)} onclick={() => { flowPeriod = p; void loadFlow(); }}>{p}</button>
             {/each}
           </div>
         </div>
+        {#if flow && flowSeries.length}
+          <div class="grid grid-cols-3 gap-3 mb-4 text-center">
+            {#each flowSeries as s (s.name)}
+              <div class="rounded-lg bg-primary-50 px-3 py-2">
+                <p class="text-[11px] text-primary-600">{s.name}</p>
+                <p class="text-sm font-semibold font-mono text-primary-900">{formatCycles(s.points.reduce((n, p) => n + p.v, 0))}</p>
+              </div>
+            {/each}
+          </div>
+          <LineChart series={flowSeries} format={formatCycles} />
+        {:else}
+          <p class="text-sm text-primary-400 text-center py-8">No treasury flow in this range yet.</p>
+        {/if}
       </div>
-      {#if flowLoading}
-        <div class="flex items-center justify-center gap-2 text-sm text-primary-500 py-8" aria-live="polite" aria-busy="true">
-          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          Loading treasury flow…
-        </div>
-      {:else if flowError}
-        <p class="text-sm text-red-600 text-center py-8">
-          Could not load treasury flow: {flowError}
-        </p>
-      {:else if !flowSeries.some((s) => s.points.length)}
-        <p class="text-sm text-primary-400 text-center py-8">
-          No treasury flow events in this range yet. Deposits (ICP or cycles), returns from canisters,
-          auto-conversions, and autopilot top-ups are recorded in Activity — try <strong>Inception</strong>.
-        </p>
-      {:else if flowTotals}
-        <div class="grid grid-cols-3 gap-3 mb-4 text-center">
-          <div class="rounded-lg bg-emerald-50 px-3 py-2">
-            <p class="text-[11px] text-emerald-700">Deposited</p>
-            <p class="text-sm font-semibold font-mono text-emerald-900">{formatFlowValue(flowTotals.deposited)}</p>
-          </div>
-          <div class="rounded-lg bg-indigo-50 px-3 py-2">
-            <p class="text-[11px] text-indigo-700">Converted</p>
-            <p class="text-sm font-semibold font-mono text-indigo-900">{formatFlowValue(flowTotals.converted)}</p>
-          </div>
-          <div class="rounded-lg bg-red-50 px-3 py-2">
-            <p class="text-[11px] text-red-700">Consumed</p>
-            <p class="text-sm font-semibold font-mono text-red-900">{formatFlowValue(flowTotals.consumed)}</p>
-          </div>
-        </div>
-      {/if}
-      {#if !flowLoading && flowSeries.some((s) => s.points.length)}
-        <LineChart series={flowSeries} format={formatFlowValue} />
-      {/if}
-    </div>
+    {/if}
 
     <!-- Treemap -->
-    <div class="card p-5">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
-        <div>
-          <h2 class="text-sm font-semibold text-primary-900 inline-flex items-center gap-1">
-            Cycles by section / stand / canister
-            <CalculatedAtHint at={treemapCalculatedAt} label="Treemap calculated" />
-          </h2>
-        </div>
-        <div class="flex flex-wrap gap-2 self-start">
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each Object.keys(WINDOWS) as w (w)}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {treemapWindow === w ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => setTreemapWindow(w as WindowKey)}
-              >{w}</button>
-            {/each}
-          </div>
-          <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden">
-            {#each [['burn', 'Burn'], ['balance', 'Balance']] as opt (opt[0])}
-              <button
-                class="px-3 py-1.5 text-xs font-medium {metric === opt[0] ? 'bg-primary-900 text-white' : 'bg-white text-primary-600 hover:bg-primary-50'}"
-                onclick={() => (metric = opt[0] as Metric)}
-              >{opt[1]}</button>
-            {/each}
-          </div>
-        </div>
-      </div>
-      {#if treemapPeriodLabel}
-        <div class="mb-3 rounded-lg bg-primary-50 px-3 py-2 text-xs text-primary-800">
-          <p class="font-medium">
-            Burn period · {treemapPeriodLabel.range} · {treemapPeriodLabel.duration} of samples
-          </p>
-          {#if treemapPeriodLabel.shortOfRequest}
-            <p class="mt-0.5 text-amber-800">
-              Recorded samples cover {treemapPeriodLabel.duration}, not the full {WINDOW_LABELS[treemapWindow]} selected above.
-            </p>
+    {#if canisters.length}
+      <div class="card p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+          <h2 class="text-sm font-semibold text-primary-900">Cycles by section / stand / canister</h2>
+          {#if hasMonitor}
+            <div class="inline-flex rounded-lg border border-[var(--color-border-primary)] overflow-hidden self-start">
+              <button class={toggleClass(treemapMetric === 'balance')} onclick={() => (treemapMetric = 'balance')}>Balance</button>
+              <button class={toggleClass(treemapMetric === 'burn')} onclick={() => (treemapMetric = 'burn')}>Burn ({chartWindow})</button>
+            </div>
           {/if}
-          <p class="mt-0.5 text-primary-600 inline-flex items-center gap-1 flex-wrap">
-            Each tile shows cycles held now, then
-            <svg class="inline-block w-3.5 h-3.5 text-amber-500" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="currentColor" d="M15.362 5.214A8.252 8.252 0 0 1 12 21 8.25 8.25 0 0 1 6.038 7.048 8.287 8.287 0 0 0 9 9.6a8.983 8.983 0 0 1 3.361-6.867 8.21 8.21 0 0 0 3 2.48z"/>
-            </svg>
-            cycles burned in that period. Area follows {metric === 'burn' ? 'burn' : 'cycles held'}.
-          </p>
         </div>
-      {/if}
-      <Treemap root={treemapRoot} format={formatCycles} />
-    </div>
+        <Treemap root={treemapRoot} format={formatCycles} />
+      </div>
+    {/if}
 
     <!-- Per-canister table -->
     <div class="card p-0 overflow-hidden">
-      {#if (report.canisters ?? []).length === 0}
-        {#if refreshing}
-          <p class="text-sm text-primary-400 p-5">Fetching live balances from the IC… this can take about a minute.</p>
-        {:else if hasHistory}
-          <p class="text-sm text-primary-400 p-5">
-            Charts use stored history, but live balances are not loaded yet. Select canisters and click <strong>Refresh</strong> in the table below.
-          </p>
-        {:else}
-          <p class="text-sm text-primary-400 p-5">No canisters to monitor yet.</p>
-        {/if}
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3 justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
+        <input type="search" class="input text-sm w-full sm:max-w-xs" placeholder="Filter by name, section, stand, or ID…"
+          bind:value={filterText} aria-label="Filter canisters" />
+        <div class="flex flex-wrap items-center gap-2 self-end sm:self-auto">
+          {#if lowCount}<span class="badge bg-amber-50 text-amber-800 border border-amber-200">{lowCount} low</span>{/if}
+          {#if selected.size}<span class="text-xs text-primary-500">{selected.size} selected</span>{/if}
+          <button class="btn-secondary btn-sm" disabled={!targets.length || !$isAuthenticated} onclick={() => open('topup')}>Top up</button>
+          <button class="btn-secondary btn-sm" disabled={!targets.length || !$isAuthenticated} onclick={() => open('policy')}>Policy</button>
+          <button class="btn-danger btn-sm" disabled={!targets.length || $isController !== true}
+            title={$isController === true ? 'Sweep cycles back to the treasury, then delete' : 'Requires a Casals controller'}
+            onclick={() => open('destroy')}>Destroy</button>
+        </div>
+      </div>
+      {#if !canisters.length}
+        <p class="text-sm text-primary-400 p-5">No canisters yet.</p>
       {:else}
-        {#if canistersAwaitingBalances && refreshing}
-          <p class="text-xs text-primary-500 px-4 py-2 border-b border-[var(--color-border-primary)] bg-primary-50/50">
-            Canister list loaded — fetching live balances…
-          </p>
-        {/if}
-        <div class="flex flex-col gap-3 px-4 py-3 border-b border-[var(--color-border-primary)]">
-          <div class="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-            <div class="relative w-full sm:max-w-xs">
-              <input
-                type="search"
-                class="input text-sm w-full pl-9"
-                placeholder="Filter by name, section, stand, or ID…"
-                bind:value={canisterFilterText}
-                aria-label="Filter canisters"
-              />
-              <svg class="w-4 h-4 text-primary-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8" /><path stroke-linecap="round" d="M21 21l-4.35-4.35" />
-              </svg>
-            </div>
-            <div class="flex flex-wrap items-center gap-2 self-end sm:self-auto">
-              {#if selectedCanisterIds.size > 0}
-                <span class="text-xs text-primary-500">{selectedCanisterIds.size} selected</span>
-              {/if}
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
-                onclick={refreshSelection}
-                disabled={!selectedCanisterIds.size || bulkBusy || loading || refreshing || refreshingTreasury}
-                title={!selectedCanisterIds.size
-                  ? 'Select canisters first'
-                  : usesOffChainMonitor
-                    ? 'Ask the off-chain monitor to fetch live balances for the selection'
-                    : 'Fetch live balances for the selection from the conductor'}
-              >
-                {busy === 'bulk:refresh' ? 'Refreshing…' : 'Refresh'}
-              </button>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
-                onclick={openTopUpForSelection}
-                disabled={!selectedCanisterIds.size || !$isAuthenticated || bulkBusy || busy === 'prefetch-topup'}
-                title={!$isAuthenticated ? 'Log in with Internet Identity' : !selectedCanisterIds.size ? 'Select canisters first' : undefined}
-              >
-                {busy === 'prefetch-topup' ? 'Loading…' : 'Top up'}
-              </button>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
-                onclick={openReturnForSelection}
-                disabled={!selectedReturnableCount || !$isAuthenticated || bulkBusy}
-                title={!$isAuthenticated ? 'Log in with Internet Identity' : !selectedReturnableCount ? 'No excess cycles to return in selection' : undefined}
-              >
-                Return
-              </button>
-              <button
-                type="button"
-                class="btn-secondary btn-sm"
-                onclick={openPolicyForSelection}
-                disabled={!selectedCanisterIds.size || !$isAuthenticated || bulkBusy}
-                title={!$isAuthenticated ? 'Log in with Internet Identity (controller required)' : !selectedCanisterIds.size ? 'Select canisters first' : undefined}
-              >
-                Min policy
-              </button>
-              <button
-                type="button"
-                class="btn-danger btn-sm"
-                onclick={openDestroyForSelection}
-                disabled={
-                  !selectedCanisterIds.size
-                  || bulkBusy
-                  || Boolean(destroyBlockedReason)
-                }
-                title={
-                  destroyBlockedReason
-                    || (!selectedCanisterIds.size ? 'Select canisters first' : undefined)
-                }
-              >
-                {destroyButtonLabel}
-              </button>
-            </div>
-          </div>
-          {#if canisterFilterText.trim() && filteredCanisters.length === 0}
-            <p class="text-xs text-primary-400">No canisters match this filter.</p>
-          {/if}
-          {#if destroyBlockedReason}
-            <p class="text-xs text-red-600">{destroyBlockedReason}</p>
-          {/if}
-        </div>
-        <table class="w-full text-sm">
-          <thead class="bg-primary-50 text-primary-500 text-xs">
-            <tr>
-              <th class="w-10 px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  class="w-4 h-4 rounded border-primary-300"
-                  checked={allVisibleSelected}
-                  indeterminate={someVisibleSelected && !allVisibleSelected}
-                  onchange={toggleAllVisibleSelected}
-                  disabled={filteredCanisters.length === 0}
-                  aria-label="Select all visible canisters"
-                />
-              </th>
-              <th class="text-left font-medium px-4 py-2.5" aria-sort={canisterSortKey === 'canister' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 font-medium hover:text-primary-700 {canisterSortKey === 'canister' ? 'text-primary-800' : ''}"
-                  onclick={() => toggleCanisterSort('canister')}
-                >
-                  Canister <span class="text-[10px] opacity-70">{canisterSortMark('canister')}</span>
-                </button>
-              </th>
-              <th class="text-left font-medium px-4 py-2.5 hidden sm:table-cell" aria-sort={canisterSortKey === 'sectionStand' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 font-medium hover:text-primary-700 {canisterSortKey === 'sectionStand' ? 'text-primary-800' : ''}"
-                  onclick={() => toggleCanisterSort('sectionStand')}
-                >
-                  Section / Stand <span class="text-[10px] opacity-70">{canisterSortMark('sectionStand')}</span>
-                </button>
-              </th>
-              <th class="text-right font-medium px-4 py-2.5" aria-sort={canisterSortKey === 'cycles' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 ml-auto font-medium hover:text-primary-700 {canisterSortKey === 'cycles' ? 'text-primary-800' : ''}"
-                  onclick={() => toggleCanisterSort('cycles')}
-                >
-                  Cycles <span class="text-[10px] opacity-70">{canisterSortMark('cycles')}</span>
-                </button>
-              </th>
-              <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell" aria-sort={canisterSortKey === 'minPolicy' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 ml-auto font-medium hover:text-primary-700 {canisterSortKey === 'minPolicy' ? 'text-primary-800' : ''}"
-                  onclick={() => toggleCanisterSort('minPolicy')}
-                >
-                  Min policy <span class="text-[10px] opacity-70">{canisterSortMark('minPolicy')}</span>
-                </button>
-              </th>
-              <th class="text-center font-medium px-4 py-2.5" aria-sort={canisterSortKey === 'status' ? (canisterSortAsc ? 'ascending' : 'descending') : 'none'}>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 mx-auto font-medium hover:text-primary-700 {canisterSortKey === 'status' ? 'text-primary-800' : ''}"
-                  onclick={() => toggleCanisterSort('status')}
-                >
-                  Status <span class="text-[10px] opacity-70">{canisterSortMark('status')}</span>
-                </button>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each filteredCanisters as s (s.canister_id)}
-              <tr class="border-t border-[var(--color-border-primary)] {selectedCanisterIds.has(s.canister_id) ? 'bg-primary-50/40' : ''}">
-                <td class="px-3 py-2.5">
-                  <input
-                    type="checkbox"
-                    class="w-4 h-4 rounded border-primary-300"
-                    checked={selectedCanisterIds.has(s.canister_id)}
-                    onchange={() => toggleCanisterSelected(s.canister_id)}
-                    aria-label="Select {s.name}"
-                  />
-                </td>
-                <td class="px-4 py-2.5">
-                  <div class="font-medium text-primary-900">{s.name}</div>
-                  <div class="flex items-center gap-1">
-                    <span class="font-mono text-[11px] text-primary-400" title={s.canister_id}>{shortPrincipal(s.canister_id)}</span>
-                    <button
-                      type="button"
-                      class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
-                      title="Copy principal"
-                      onclick={() => copyText(s.canister_id, s.canister_id)}
-                    >
-                      {#if copiedField === s.canister_id}
-                        <svg class="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      {:else}
-                        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                          <rect x="9" y="9" width="13" height="13" rx="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                        </svg>
-                      {/if}
-                    </button>
-                  </div>
-                </td>
-                <td class="px-4 py-2.5 hidden sm:table-cell text-primary-500">{s.section} / {s.stand}</td>
-                <td class="px-4 py-2.5 text-right font-mono text-primary-900">
-                  <span class="inline-flex items-center justify-end gap-1">
-                    {formatCycles(s.cycles)}
-                    <CalculatedAtHint at={canisterCalculatedAt(s)} label="Balance calculated" />
-                  </span>
-                  <Fiat value={s.cycles} block class="text-right" />
-                  {#if isSelfReportedCycles(s)}
-                    <div class="text-[11px] text-primary-400" title="Balance from the canister's cycles_balance query; IC runtime state is unknown">self-reported</div>
-                  {:else if s.error}
-                    <div class="text-[11px] text-red-500" title={s.error}>error</div>
-                  {/if}
-                </td>
-                <td class="px-4 py-2.5 text-right hidden md:table-cell font-mono text-primary-500">
-                  {formatCycles(s.min_cycles)}
-                </td>
-                <td class="px-4 py-2.5 text-center">
-                  <span class="badge {cycleStatusBadge(s.status)}">{s.status ?? (s.cycles === undefined ? '…' : '—')}</span>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </div>
-
-    <!-- Canister pool -->
-    {#if report.pool}
-      <div class="card p-0 overflow-hidden">
-        <div class="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-primary)]">
-          <div>
-            <h2 class="text-sm font-semibold text-primary-900">Canister pool</h2>
-            <p class="text-xs text-primary-400">Every canister Casals has created — reused across deploys rather than discarded.</p>
-          </div>
-          <div class="text-xs text-primary-500">
-            <span class="font-semibold text-primary-900">{report.pool.total}</span> total ·
-            {report.pool.in_use} in use · {report.pool.free} free
-          </div>
-        </div>
-        {#if report.pool.canisters.length === 0}
-          <p class="text-sm text-primary-400 p-5">No canisters created yet.</p>
-        {:else}
+        <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead class="bg-primary-50 text-primary-500 text-xs">
-              <tr>
-                <th class="text-left font-medium px-4 py-2.5">Canister</th>
-                <th class="text-left font-medium px-4 py-2.5">Occupant</th>
-                <th class="text-right font-medium px-4 py-2.5">Balance</th>
-                <th class="text-right font-medium px-4 py-2.5 hidden sm:table-cell">Funded</th>
-                <th class="text-right font-medium px-4 py-2.5 hidden md:table-cell">Used</th>
-                <th class="text-center font-medium px-4 py-2.5">Status</th>
-                {#if $isAuthenticated}
-                  <th class="text-right font-medium px-4 py-2.5">Actions</th>
-                {/if}
+            <thead>
+              <tr class="text-left text-xs uppercase tracking-wide text-primary-500 border-b border-primary-100 bg-primary-50/60">
+                <th class="pl-4 pr-2 py-2.5 w-8">
+                  <input type="checkbox" class="w-4 h-4 accent-primary-800" aria-label="Select all visible"
+                    checked={allVisibleSelected} onchange={toggleAll} />
+                </th>
+                {#each [['name', 'Canister'], ['place', 'Section / stand'], ['cycles', 'Cycles'], ['min', 'Min / top-up']] as [key, label] (key)}
+                  <th class="px-2 py-2.5 font-medium">
+                    <button class="uppercase hover:text-primary-800" onclick={() => sortBy(key as SortKey)}>
+                      {label}{sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''}
+                    </button>
+                  </th>
+                {/each}
+                <th class="px-2 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
-            <tbody>
-              {#each report.pool.canisters as c (c.canister_id)}
-                {@const unassigned = isPoolUnassigned(c.canister_id, orchestraCanisterIdSet)}
-                <tr class="border-t border-[var(--color-border-primary)]">
-                  <td class="px-4 py-2.5">
-                    <div class="flex items-center gap-1">
-                      <span class="font-mono text-[12px] text-primary-700" title={c.canister_id}>{shortPrincipal(c.canister_id)}</span>
-                      <button
-                        type="button"
-                        class="shrink-0 text-primary-400 hover:text-primary-700 transition-colors"
-                        title="Copy principal"
-                        onclick={() => copyText(c.canister_id, c.canister_id)}
-                      >
-                        {#if copiedField === c.canister_id}
-                          <svg class="w-3 h-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        {:else}
-                          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                          </svg>
-                        {/if}
-                      </button>
-                    </div>
+            <tbody class="divide-y divide-primary-50">
+              {#each visible as c (c.canister_id)}
+                {@const low = c.min > 0 && c.cycles < c.min}
+                <tr class="hover:bg-primary-50/40 {selected.has(c.canister_id) ? 'bg-primary-50/70' : ''}">
+                  <td class="pl-4 pr-2 py-2.5">
+                    <input type="checkbox" class="w-4 h-4 accent-primary-800" aria-label="Select {c.name}"
+                      checked={selected.has(c.canister_id)} onchange={() => toggle(c.canister_id)} />
                   </td>
-                  <td class="px-4 py-2.5 text-primary-600">{c.canister_name || '—'}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-primary-900">
-                    <span class="inline-flex items-center justify-end gap-1">
-                      {c.cycles === undefined ? '—' : formatCycles(c.cycles)}
-                      <CalculatedAtHint at={canisterCalculatedAt(c)} label="Balance calculated" />
-                    </span>
-                    {#if c.cycles !== undefined}<Fiat value={c.cycles} block class="text-right" />{/if}
-                    {#if isSelfReportedCycles(c)}
-                      <div class="text-[11px] text-primary-400" title="Balance from the canister's cycles_balance query; IC runtime state is unknown">self-reported</div>
-                    {:else if c.error}
-                      <div class="text-[11px] text-red-500" title={c.error}>error</div>
-                    {/if}
+                  <td class="px-2 py-2.5">
+                    <div class="font-medium text-primary-900">{c.name}</div>
+                    <button class="text-xs font-mono text-primary-400 hover:text-primary-700" onclick={() => copy(c.canister_id)}>{c.canister_id}</button>
                   </td>
-                  <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden sm:table-cell">{c.deposited ? formatCycles(c.deposited) : '—'}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-primary-500 hidden md:table-cell">{poolUsed(c)}</td>
-                  <td class="px-4 py-2.5 text-center">
-                    <span class="badge {c.status === 'free' ? 'badge-neutral' : 'badge-frontend'}">{c.status}</span>
+                  <td class="px-2 py-2.5 text-primary-700">{c.section} / {c.stand}</td>
+                  <td class="px-2 py-2.5 font-mono">{formatCycles(c.cycles)}<Fiat value={c.cycles} block /></td>
+                  <td class="px-2 py-2.5 font-mono text-xs text-primary-600">
+                    {c.min ? formatCycles(c.min) : '—'} / {c.topup ? formatCycles(c.topup) : '—'}
                   </td>
-                  {#if $isAuthenticated}
-                    <td class="px-4 py-2.5 text-right">
-                      {#if unassigned}
-                        <button
-                          type="button"
-                          class="btn-secondary btn-sm"
-                          onclick={() => { assignPoolTarget = c.canister_id; }}
-                        >
-                          Assign
-                        </button>
-                      {:else}
-                        <span class="text-xs text-primary-400">—</span>
-                      {/if}
-                    </td>
-                  {/if}
+                  <td class="px-2 py-2.5">
+                    {#if !c.min}<span class="badge badge-neutral">no policy</span>
+                    {:else if low}<span class="badge bg-amber-50 text-amber-800 border border-amber-200">low</span>
+                    {:else}<span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200">ok</span>{/if}
+                  </td>
                 </tr>
               {/each}
             </tbody>
           </table>
-        {/if}
-      </div>
-    {/if}
-  {/if}
-
-  {#if topUpTargets.length && report}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close top-up dialog"
-        onclick={closeTopUp}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">
-          Top up {topUpTargets.length === 1 ? topUpTargets[0].name : `${topUpTargets.length} canisters`}
-        </h3>
-        <p class="text-sm text-primary-500 mb-4">
-          Deposit cycles from the Casals treasury into {topUpTargets.length === 1 ? 'this canister' : 'each selected canister'}.
-        </p>
-
-        {#if topUpTargets.length > 1}
-          <p class="text-xs text-primary-500 mb-4">
-            {topUpTargets.map((c) => c.name).join(', ')}
-          </p>
-        {/if}
-
-        <dl class="space-y-3 text-sm mb-5">
-          {#if topUpTargets.length === 1}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Current balance</dt>
-              <dd class="font-mono font-semibold text-primary-900">
-                {topUpTargets[0].cycles !== undefined ? formatCycles(topUpTargets[0].cycles) : '—'}
-                {#if snapshotPartial && topUpTargets[0].name && report?.refreshed_canisters?.includes(topUpTargets[0].name)}
-                  <span class="block text-[11px] font-normal text-emerald-700">live</span>
-                {/if}
-              </dd>
-            </div>
-            {#if topUpExpectedBalance !== null}
-              <div class="flex justify-between gap-4">
-                <dt class="text-primary-500">Expected after top-up</dt>
-                <dd class="font-mono font-semibold text-primary-900">{formatCycles(topUpExpectedBalance)}</dd>
-              </div>
-            {/if}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Policy top-up</dt>
-              <dd class="font-mono text-primary-700">{formatCycles(topUpTargets[0].topup_cycles)}</dd>
-            </div>
-          {/if}
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Treasury spendable</dt>
-            <dd class="font-mono text-primary-700">{formatCycles(topUpSpendable)}</dd>
-          </div>
-          {#if topUpTargets.length > 1 && topUpValid}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Total ({topUpTargets.length} × {formatCycles(topUpParsed)})</dt>
-              <dd class="font-mono font-semibold text-primary-900">{formatCycles(topUpTotalCost)}</dd>
-            </div>
-          {/if}
-        </dl>
-
-        <div class="mb-4">
-          <label class="label" for="topUpAmount">Amount (TC)</label>
-          <div class="relative">
-            <input
-              id="topUpAmount"
-              type="text"
-              class="input font-mono pr-12"
-              placeholder="1.00"
-              bind:value={topUpAmount}
-            />
-            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
-          </div>
-          <p class="text-xs text-primary-400 mt-1.5">Trillion cycles (TC), same unit as balances above.</p>
         </div>
-
-        <div class="flex flex-wrap gap-2 mb-4">
-          {#each [
-            { label: 'Policy', value: cyclesToTcInput(topUpTargets[0].topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
-            { label: '0.5 TC', value: '0.5' },
-            { label: '1 TC', value: '1' },
-            { label: '2 TC', value: '2' },
-          ] as preset (preset.label)}
-            <button
-              type="button"
-              class="px-2.5 py-1 text-xs rounded-full border border-[var(--color-border-primary)] text-primary-600 hover:bg-primary-50"
-              onclick={() => (topUpAmount = preset.value)}
-            >{preset.label}</button>
-          {/each}
-        </div>
-
-        {#if topUpAmount && !topUpValid}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Enter a valid TC amount (e.g. 1 or 0.5).
-          </p>
-        {:else if topUpOverTreasury}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Exceeds treasury spendable balance ({formatCycles(topUpSpendable)}).
-          </p>
-        {/if}
-
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm" onclick={closeTopUp}>Cancel</button>
-          <button
-            type="button"
-            class="btn-primary btn-sm"
-            disabled={!topUpValid || topUpOverTreasury || busy === 'bulk:topup'}
-            onclick={confirmTopUp}
-          >
-            {busy === 'bulk:topup' ? 'Topping up…' : topUpTargets.length === 1 ? 'Confirm top-up' : `Top up ${topUpTargets.length} canisters`}
-          </button>
-        </div>
-      </div>
+      {/if}
     </div>
-  {/if}
-
-  {#if returnTargets.length && report}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close return dialog"
-        onclick={closeReturn}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">
-          Return cycles from {returnTargets.length === 1 ? returnTargets[0].name : `${returnTargets.length} canisters`}
-        </h3>
-        <p class="text-sm text-primary-500 mb-4">
-          Sweep cycles from {returnTargets.length === 1 ? 'this canister' : 'each selected canister'} back into the Casals treasury. Each canister keeps its policy headroom and freezing reserve.
-        </p>
-        {#if busy === 'bulk:return'}
-          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
-            Returning cycles upgrades the canister briefly to sweep funds, then restores it. This usually takes 1–3 minutes — please keep this dialog open.
-          </p>
-        {/if}
-
-        {#if returnTargets.length > 1}
-          <p class="text-xs text-primary-500 mb-4">
-            {returnTargets.map((c) => c.name).join(', ')}
-          </p>
-        {/if}
-
-        <dl class="space-y-3 text-sm mb-5">
-          {#if returnTargets.length === 1}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Current balance</dt>
-              <dd class="font-mono font-semibold text-primary-900">
-                {returnTargets[0].cycles !== undefined ? formatCycles(returnTargets[0].cycles) : '—'}
-              </dd>
-            </div>
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Min policy headroom</dt>
-              <dd class="font-mono text-primary-700">{formatCycles(returnTargets[0].min_cycles)}</dd>
-            </div>
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Max returnable</dt>
-              <dd class="font-mono text-primary-700">{formatCycles(returnMaxSingle)}</dd>
-            </div>
-          {:else if returnValid}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Estimated total return</dt>
-              <dd class="font-mono font-semibold text-primary-900">{formatCycles(returnBulkTotal)}</dd>
-            </div>
-          {/if}
-        </dl>
-
-        <div class="mb-4">
-          <label class="label" for="returnAmount">Amount (TC)</label>
-          <div class="relative">
-            <input
-              id="returnAmount"
-              type="text"
-              class="input font-mono pr-12"
-              placeholder="1.00"
-              bind:value={returnAmount}
-            />
-            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
-          </div>
-          <p class="text-xs text-primary-400 mt-1.5">Trillion cycles (TC), same unit as balances above.</p>
-        </div>
-
-        <div class="flex flex-wrap gap-2 mb-4">
-          {#each returnTargets.length === 1 ? [
-            { label: 'Max', value: returnMaxSingle > 0 ? cyclesToTcInput(returnMaxSingle) : '' },
-            { label: 'Policy', value: cyclesToTcInput(returnTargets[0].topup_cycles || meta?.default_topup_cycles || 1_000_000_000_000) },
-            { label: '0.5 TC', value: '0.5' },
-            { label: '1 TC', value: '1' },
-          ] : [
-            { label: '0.5 TC', value: '0.5' },
-            { label: '1 TC', value: '1' },
-            { label: '2 TC', value: '2' },
-          ] as preset (preset.label)}
-            {#if preset.value}
-              <button
-                type="button"
-                class="px-2.5 py-1 text-xs rounded-full border border-[var(--color-border-primary)] text-primary-600 hover:bg-primary-50"
-                onclick={() => (returnAmount = preset.value)}
-              >{preset.label}</button>
-            {/if}
-          {/each}
-        </div>
-
-        {#if returnAmount && !returnValid}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Enter a valid TC amount (e.g. 1 or 0.5).
-          </p>
-        {:else if returnTargets.length === 1 && returnOverMaxSingle}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Exceeds max returnable ({formatCycles(returnMaxSingle)}).
-          </p>
-        {:else if returnAnyCapped}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Some canisters will return less than {formatCycles(returnParsed)} (capped at each canister’s max returnable).
-          </p>
-        {/if}
-
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm" onclick={closeReturn}>Cancel</button>
-          <button
-            type="button"
-            class="btn-primary btn-sm"
-            disabled={!returnBulkValid || (returnTargets.length === 1 && returnOverMaxSingle) || busy === 'bulk:return'}
-            onclick={confirmReturn}
-          >
-            {busy === 'bulk:return' ? 'Returning…' : returnTargets.length === 1 ? 'Confirm return' : `Return from ${returnTargets.length} canisters`}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if policyTargets.length && report}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close min policy dialog"
-        onclick={closePolicyEdit}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">
-          Min policy for {policyTargets.length === 1 ? policyTargets[0].name : `${policyTargets.length} canisters`}
-        </h3>
-        <p class="text-sm text-primary-500 mb-4">
-          Minimum headroom above the freezing threshold before autopilot treats {policyTargets.length === 1 ? 'this canister' : 'each selected canister'} as low.
-        </p>
-
-        {#if policyTargets.length > 1}
-          <p class="text-xs text-primary-500 mb-4">
-            {policyTargets.map((c) => c.name).join(', ')}
-          </p>
-        {/if}
-
-        <dl class="space-y-3 text-sm mb-5">
-          {#if policyTargets.length === 1}
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Effective today</dt>
-              <dd class="font-mono font-semibold text-primary-900">{formatCycles(policyTargets[0].min_cycles)}</dd>
-            </div>
-            <div class="flex justify-between gap-4">
-              <dt class="text-primary-500">Source</dt>
-              <dd class="text-primary-700 text-right">{policySourceLabel(policyTargets[0])}</dd>
-            </div>
-          {/if}
-        </dl>
-
-        <label class="flex items-center gap-2.5 cursor-pointer mb-4">
-          <input
-            type="checkbox"
-            class="w-4 h-4 rounded border-primary-300"
-            bind:checked={policyInherit}
-          />
-          <span class="text-sm text-primary-700">Inherit from stand, section, or global default</span>
-        </label>
-
-        {#if !policyInherit}
-          <div class="mb-4">
-            <label class="label" for="policyAmount">Min policy (TC)</label>
-            <div class="relative">
-              <input
-                id="policyAmount"
-                type="text"
-                class="input font-mono pr-12"
-                placeholder="0.5"
-                bind:value={policyAmount}
-              />
-              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary-400 pointer-events-none">TC</span>
-            </div>
-            <p class="text-xs text-primary-400 mt-1.5">
-              Trillion cycles (TC). Same amount applied to {policyTargets.length === 1 ? 'this canister' : 'each selected canister'}.
-            </p>
-          </div>
-
-          <div class="flex flex-wrap gap-2 mb-4">
-            {#each [
-              { label: 'Default', value: cyclesToTcInput(meta?.default_min_cycles || 500_000_000_000) },
-              { label: '0.25 TC', value: '0.25' },
-              { label: '0.5 TC', value: '0.5' },
-              { label: '1 TC', value: '1' },
-            ] as preset (preset.label)}
-              <button
-                type="button"
-                class="px-2.5 py-1 text-xs rounded-full border border-[var(--color-border-primary)] text-primary-600 hover:bg-primary-50"
-                onclick={() => (policyAmount = preset.value)}
-              >{preset.label}</button>
-            {/each}
-          </div>
-
-          {#if policyAmount && !policyValid}
-            <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-              Enter a valid TC amount (e.g. 0.5 or 1).
-            </p>
-          {/if}
-        {/if}
-
-        <p class="text-xs text-primary-400 mb-4">Requires Casals controller access.</p>
-
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm" onclick={closePolicyEdit}>Cancel</button>
-          <button
-            type="button"
-            class="btn-primary btn-sm"
-            disabled={!policyValid || busy === 'bulk:policy'}
-            onclick={confirmPolicyEdit}
-          >
-            {busy === 'bulk:policy' ? 'Saving…' : policyTargets.length === 1 ? 'Confirm' : `Apply to ${policyTargets.length} canisters`}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if destroyOpen && report}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close destroy dialog"
-        onclick={closeDestroy}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6 border border-red-200">
-        <h3 class="text-lg font-semibold text-red-900 mb-1">
-          {isProposeDestroy ? 'Propose destroy' : 'Destroy'}
-          {selectedCanisters.length === 1 ? ` ${selectedCanisters[0].name}` : ` ${selectedCanisters.length} canisters`}
-        </h3>
-        <p class="text-sm text-primary-600 mb-4">
-          {#if isProposeDestroy}
-            Submits one multisig proposal for {selectedCanisters.length} canister id{selectedCanisters.length === 1 ? '' : 's'}.
-            Approval drains remaining cycles to the Casals treasury, then deletes as the governance multisig.
-            If the drain fails the canister is left intact. This cannot be undone.
-          {:else}
-            Delegated stand teardown drains remaining cycles into the Casals treasury before deletion.
-            Individual canisters must be destroyed via a multisig DestroyCanisters proposal. This cannot be undone.
-          {/if}
-        </p>
-
-        {#if isProposeDestroy}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            With a 1-of-1 threshold the proposal may execute immediately; otherwise approve on the
-            <a href="/multisig" class="font-medium underline hover:text-amber-900">Multisig</a> page.
-          </p>
-        {/if}
-
-        {#if destroyPlan.stands.length === 1 && destroyPlan.canisters.length === 0}
-          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
-            Complete stand <span class="font-semibold">{destroyPlan.stands[0].stand}</span>
-            ({destroyPlan.stands[0].canisters.length} canister{destroyPlan.stands[0].canisters.length === 1 ? '' : 's'})
-            — stand record will be removed from Casals.
-          </p>
-        {:else if destroyPlan.stands.length > 0}
-          <p class="text-xs text-primary-500 bg-primary-50 border border-[var(--color-border-primary)] rounded-lg px-3 py-2 mb-4">
-            {destroyPlan.stands.length} complete stand{destroyPlan.stands.length === 1 ? '' : 's'}:
-            {destroyPlan.stands.map((s) => s.stand).join(', ')}
-            {#if destroyPlan.canisters.length}
-              — plus {destroyPlan.canisters.length} individual canister{destroyPlan.canisters.length === 1 ? '' : 's'}.
-            {/if}
-          </p>
-        {/if}
-
-        {#if busy === 'bulk:destroy' && !isProposeDestroy}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Destroying canisters drains cycles and deletes each canister on-chain. This can take several minutes — please keep this dialog open.
-          </p>
-        {:else if busy === 'bulk:destroy' && isProposeDestroy}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            Submitting one destroy proposal for {selectedCanisters.length} canister{selectedCanisters.length === 1 ? '' : 's'}…
-          </p>
-        {/if}
-
-        <dl class="space-y-3 text-sm mb-5">
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Estimated reclaim</dt>
-            <dd class="font-mono font-semibold text-primary-900">
-              {destroyEstimatedReclaim > 0 ? formatCycles(destroyEstimatedReclaim) : '—'}
-            </dd>
-          </div>
-        </dl>
-
-        <p class="text-xs text-primary-500 mb-4">
-          {selectedCanisters.map((c) => c.name).join(', ')}
-        </p>
-
-        <label class="flex items-start gap-2 text-sm text-primary-700 mb-4 cursor-pointer">
-          <input
-            type="checkbox"
-            class="mt-0.5 w-4 h-4 rounded border-primary-300"
-            bind:checked={destroyAck}
-          />
-          <span>I understand this permanently destroys the selected canister{selectedCanisters.length === 1 ? '' : 's'} and cannot be undone</span>
-        </label>
-
-        <div class="mb-4">
-          <label class="label" for="destroyConfirm">
-            Type <span class="font-mono font-semibold">{destroyConfirmPhrase}</span> to confirm
-          </label>
-          <input
-            id="destroyConfirm"
-            type="text"
-            class="input font-mono"
-            autocomplete="off"
-            bind:value={destroyConfirmText}
-          />
-        </div>
-
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm" onclick={closeDestroy}>Cancel</button>
-          <button
-            type="button"
-            class="btn-danger btn-sm"
-            disabled={!destroyConfirmValid || busy === 'bulk:destroy'}
-            onclick={confirmDestroy}
-          >
-            {destroyConfirmButtonLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if showConvert && report?.treasury}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close convert dialog"
-        onclick={() => (showConvert = false)}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">Convert ICP to cycles</h3>
-        <p class="text-sm text-primary-500 mb-4">
-          Burn ledger ICP on the Casals backend and mint cycles into the treasury via the CMC.
-          Works even when auto-convert is enabled.
-        </p>
-
-        <dl class="space-y-3 text-sm mb-5">
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Ledger ICP</dt>
-            <dd class="font-mono font-semibold text-primary-900">
-              {#if ledgerIcpE8s !== undefined}
-                {formatIcp(ledgerIcpE8s)}
-              {:else}
-                —
-              {/if}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Transfer fee</dt>
-            <dd class="font-mono text-primary-700">{formatIcp(ICP_TRANSFER_FEE_E8S)}</dd>
-          </div>
-          <div class="flex justify-between gap-4">
-            <dt class="text-primary-500">Rate</dt>
-            <dd class="font-mono text-primary-700">
-              {#if tcPerIcp > 0}
-                1 ICP ≈ {tcPerIcp.toLocaleString(undefined, { maximumFractionDigits: 3 })} TC
-              {:else}
-                —
-              {/if}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4 border-t border-[var(--color-border-primary)] pt-3">
-            <dt class="text-primary-700 font-medium">You receive</dt>
-            <dd class="font-mono font-semibold text-primary-900">
-              {#if estimatedConvertCycles > 0}
-                {formatCycles(estimatedConvertCycles)}
-              {:else}
-                —
-              {/if}
-            </dd>
-          </div>
-        </dl>
-
-        {#if !canConvertIcp && convertBlockedReason}
-          <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-            {convertBlockedReason}
-          </p>
-        {/if}
-
-        <div class="flex justify-end gap-2">
-          <button type="button" class="btn-secondary btn-sm" onclick={() => (showConvert = false)}>Cancel</button>
-          <button
-            type="button"
-            class="btn-primary btn-sm"
-            disabled={!canConvertIcp || busy === 'convert'}
-            onclick={runConvertIcp}
-          >
-            {busy === 'convert' ? 'Converting…' : 'Confirm conversion'}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if showDeposit && report?.treasury}
-    <div class="fixed inset-0 z-40 flex items-center justify-center">
-      <button
-        type="button"
-        class="absolute inset-0 bg-primary-900/40 backdrop-blur-sm"
-        aria-label="Close deposit instructions"
-        onclick={() => (showDeposit = false)}
-      ></button>
-      <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 max-h-[90vh] overflow-y-auto">
-        <h3 class="text-lg font-semibold text-primary-900 mb-1">Fund the treasury</h3>
-        <p class="text-sm text-primary-500 mb-4">
-          Send ICP or cycles to the Casals backend. Deposits are detected on the hourly sampler,
-          autopilot reconcile, and Cycles page refresh — and logged in Activity.
-        </p>
-
-        <div class="space-y-4 text-sm">
-          <section class="rounded-lg border border-[var(--color-border-primary)] p-4 space-y-2">
-            <h4 class="font-semibold text-primary-800">Option A — ICP (recommended)</h4>
-            <p class="text-primary-600">
-              Withdraw ICP from your exchange to this <strong>ledger account ID</strong>
-              (not the canister principal).{#if report.treasury.icp_autoconvert} Casals auto-converts ledger ICP to cycles.{/if}
-            </p>
-            {#if depositLedgerId}
-              <div class="flex items-center gap-2">
-                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{depositLedgerId}</code>
-                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('account ID', depositLedgerId)}>
-                  {copiedField === 'account ID' ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-            {:else}
-              <p class="text-xs text-primary-400">Ledger account unavailable — try again shortly.</p>
-            {/if}
-          </section>
-
-          <section class="rounded-lg border border-[var(--color-border-primary)] p-4 space-y-2">
-            <h4 class="font-semibold text-primary-800">Option B — Cycles (TC)</h4>
-            <p class="text-primary-600">
-              Deposit cycles directly onto the backend canister from your CLI identity:
-            </p>
-            {#if depositBackendId}
-              <div class="flex items-center gap-2">
-                <code class="flex-1 text-xs font-mono bg-primary-50 rounded px-2 py-2 break-all">{depositBackendId}</code>
-                <button type="button" class="btn-secondary btn-sm shrink-0 px-2 py-1 text-xs" onclick={() => copyText('canister ID', depositBackendId)}>
-                  {copiedField === 'canister ID' ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-              <pre class="text-xs font-mono bg-primary-950 text-green-400 rounded-lg p-3 overflow-x-auto">icp canister deposit-cycles {depositBackendId} --amount 0.5 --network ic</pre>
-              <p class="text-xs text-primary-400">Converts ICP from your identity and deposits cycles. Or use <code class="font-mono">--amount 1t</code> if your CLI accepts cycle units.</p>
-            {:else}
-              <p class="text-xs text-primary-400">Canister id unavailable — try again shortly.</p>
-            {/if}
-          </section>
-        </div>
-
-        <div class="flex justify-end pt-5">
-          <button type="button" class="btn-primary btn-sm" onclick={() => (showDeposit = false)}>Close</button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if assignPoolTarget}
-    <AssignPoolCanisterModal
-      canisterId={assignPoolTarget}
-      onsuccess={onAssignPoolSuccess}
-      oncancel={closeAssignPool}
-    />
   {/if}
 </div>
+
+{#if dialog}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" role="presentation" onclick={() => !busy && (dialog = null)}>
+    <div class="card w-full max-w-md p-5 space-y-4" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.key === 'Escape' && !busy && (dialog = null)}>
+      {#if dialog === 'deposit'}
+        <h3 class="text-base font-semibold text-primary-900">Deposit to the treasury</h3>
+        <p class="text-sm text-primary-600">Send cycles to the conductor with <span class="font-mono">deposit_cycles</span>, or ICP to its ledger account; Refresh converts the ICP.</p>
+        <div class="space-y-2 text-xs">
+          <div><span class="label">Conductor</span>
+            <button class="font-mono break-all text-primary-700 hover:text-primary-900" onclick={() => copy(backendCanisterId())}>{backendCanisterId()}</button></div>
+          <div><span class="label">ICP account</span>
+            <button class="font-mono break-all text-primary-700 hover:text-primary-900" onclick={() => depositAccount && copy(depositAccount)}>{depositAccount || '…'}</button></div>
+        </div>
+        <div class="flex justify-end"><button class="btn-secondary btn-sm" onclick={() => (dialog = null)}>Close</button></div>
+      {:else}
+        <h3 class="text-base font-semibold text-primary-900">
+          {dialog === 'send' ? 'Send treasury cycles' : dialog === 'topup' ? 'Top up' : dialog === 'policy' ? 'Cycles policy' : 'Destroy canisters'}
+        </h3>
+        {#if dialog !== 'send'}
+          <p class="text-xs text-primary-500">{targets.map((c) => c.name).join(', ')}</p>
+        {/if}
+        {#if dialog === 'send'}
+          <label class="block"><span class="label">Canister id</span>
+            <input class="input w-full font-mono text-sm" bind:value={sendTo} placeholder="aaaaa-aa" /></label>
+          <label class="block"><span class="label">Amount (blank sends everything spendable)</span>
+            <input class="input w-full" bind:value={amount} placeholder="1.5t" /></label>
+        {:else if dialog === 'topup'}
+          <label class="block"><span class="label">Amount per canister (blank uses each policy's top-up)</span>
+            <input class="input w-full" bind:value={amount} placeholder="1t" /></label>
+        {:else if dialog === 'policy'}
+          <p class="text-xs text-primary-500">When a balance drops under the minimum, the monitor tops it up by the top-up amount. Leave both blank to inherit from the stand, section or orchestra.</p>
+          <label class="block"><span class="label">Minimum</span><input class="input w-full" bind:value={amount} placeholder="0.5t" /></label>
+          <label class="block"><span class="label">Top-up</span><input class="input w-full" bind:value={topupAmount} placeholder="1t" /></label>
+        {:else}
+          <p class="text-sm text-red-700">Each canister's cycles are swept back to the treasury, then the canister is deleted from the IC. This cannot be undone.</p>
+          <label class="block"><span class="label">Type DESTROY to confirm</span><input class="input w-full" bind:value={confirmText} /></label>
+        {/if}
+        <div class="flex justify-end gap-2">
+          <button class="btn-secondary btn-sm" disabled={busy} onclick={() => (dialog = null)}>Cancel</button>
+          <button class="{dialog === 'destroy' ? 'btn-danger' : 'btn-primary'} btn-sm" disabled={busy || (dialog === 'send' && !sendTo.trim())}
+            onclick={dialog === 'send' ? send : dialog === 'topup' ? topUp : dialog === 'policy' ? setPolicy : destroy}>
+            {busy ? 'Working…' : 'Confirm'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}

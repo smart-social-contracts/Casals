@@ -10,36 +10,25 @@ import {
   namespaceOk,
   parseDeployBundleCall,
 } from './contentDeploy.ts';
-import type { Sheet } from './api.ts';
+const canisters = [
+  { name: 'website', content: 'frontend/website/main' },
+  { name: 'casals-frontend', content: 'frontend/casals-ui/main' },
+  { name: 'motoko-backend', content: '' },
+];
 
-const sheet = {
-  sections: [
-    {
-      name: 'Website',
-      stands: [{ name: 'Website', canisters: [{ name: 'website', wasm_key: '', content: 'frontend/website/main' }] }],
-    },
-    {
-      name: 'Demo',
-      stands: [{ name: 'Motoko', canisters: [{ name: 'motoko-backend', wasm_key: 'hello-world-motoko@1.0.0' }] }],
-    },
-  ],
-  registry: { bundles: [{ path: 'frontend/website/main', source: 'local:../casals-website/dist' }, { path: 'frontend/casals-ui/main', source: 'local:dist' }] },
-  conductor: { frontend: { wasm: 'casals-frontend', kind: 'frontend', content: 'frontend/casals-ui/main' } },
-} as unknown as Sheet;
-
-test('contentByCanister reads section canisters and the conductor frontend block', () => {
-  const m = contentByCanister(sheet);
+test('contentByCanister maps frontends to their namespace', () => {
+  const m = contentByCanister(canisters);
   assert.equal(m.get('website'), 'frontend/website/main');
   assert.equal(m.get('casals-frontend'), 'frontend/casals-ui/main');
   assert.equal(m.has('motoko-backend'), false);
-  assert.equal(contentByCanister(null).size, 0);
+  assert.equal(contentByCanister([]).size, 0);
 });
 
 test('defaultNamespaceFor and knownContentNamespaces', () => {
-  assert.equal(defaultNamespaceFor(sheet, 'casals-frontend'), 'frontend/casals-ui/main');
-  assert.equal(defaultNamespaceFor(sheet, 'motoko-backend'), '');
-  assert.deepEqual(knownContentNamespaces(sheet), ['frontend/casals-ui/main', 'frontend/website/main']);
-  assert.deepEqual(knownContentNamespaces(null), []);
+  assert.equal(defaultNamespaceFor(canisters, 'casals-frontend'), 'frontend/casals-ui/main');
+  assert.equal(defaultNamespaceFor(canisters, 'motoko-backend'), '');
+  assert.deepEqual(knownContentNamespaces(canisters), ['frontend/casals-ui/main', 'frontend/website/main']);
+  assert.deepEqual(knownContentNamespaces([]), []);
 });
 
 test('namespaceOk mirrors the upload dialog rule', () => {
@@ -52,7 +41,7 @@ test('namespaceOk mirrors the upload dialog rule', () => {
   assert.equal(namespaceOk(''), false);
 });
 
-test('deployBundleArgJson is the exact deploy_content payload; the hash is optional and lower-cased', () => {
+test('deployBundleArgJson is the exact content_deploy payload; the hash is optional and lower-cased', () => {
   assert.equal(
     deployBundleArgJson({ canister: ' web ', namespace: 'frontend/x/main ', bundle_sha256: 'AB' + 'cd'.repeat(31) }),
     JSON.stringify({ canister: 'web', namespace: 'frontend/x/main', bundle_sha256: 'ab' + 'cd'.repeat(31) }),
@@ -60,7 +49,7 @@ test('deployBundleArgJson is the exact deploy_content payload; the hash is optio
   assert.equal(deployBundleArgJson({ canister: 'web', namespace: 'ns' }), JSON.stringify({ canister: 'web', namespace: 'ns' }));
 });
 
-test('parseDeployBundleCall recognises only a deploy_content CallCanister and round-trips', () => {
+test('parseDeployBundleCall recognises only a content_deploy CallCanister and round-trips', () => {
   const args = { canister: 'casals-frontend', namespace: 'frontend/casals-ui/main', bundle_sha256: 'ab'.repeat(32) };
   const payload = { method: DEPLOY_CONTENT_METHOD, arg_json: deployBundleArgJson(args) };
   assert.deepEqual(parseDeployBundleCall(payload), args);

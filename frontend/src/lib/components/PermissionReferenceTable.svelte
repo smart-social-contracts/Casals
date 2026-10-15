@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { Permission } from '$lib/api';
-  import { groupPermissions } from '$lib/governanceUx';
+  import { groupPermissions, type Permission } from '$lib/governanceUx';
 
   interface Props {
     catalog: Permission[];

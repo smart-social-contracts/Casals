@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { installArgPayload, sheetInstallArgFor } from './installArg.ts';
-import type { Sheet } from './api.ts';
+import type { ExportDoc } from './api.ts';
 
 const sheet = {
   sections: [
@@ -21,7 +21,7 @@ const sheet = {
       ],
     },
   ],
-} as unknown as Sheet;
+} as unknown as ExportDoc;
 
 test('sheetInstallArgFor returns the canister Candid text', () => {
   assert.equal(
@@ -32,11 +32,7 @@ test('sheetInstallArgFor returns the canister Candid text', () => {
   assert.equal(sheetInstallArgFor(null, 'token-backend'), '');
 });
 
-test('installArgPayload keeps Candid text and parses a top_commander object', () => {
+test('installArgPayload keeps Candid text; blank keeps the current argument', () => {
   assert.equal(installArgPayload('  '), undefined);
-  assert.equal(installArgPayload('(record { symbol = "RLM" })'), '(record { symbol = "RLM" })');
-  assert.deepEqual(installArgPayload('{ "top_commander": "$self" }'), { top_commander: '$self' });
-  assert.throws(() => installArgPayload('{'), /not valid/);
-  assert.throws(() => installArgPayload('{"top_commander":'), /not valid/);
-  assert.equal(installArgPayload('[1]'), '[1]');
+  assert.equal(installArgPayload(' (record { symbol = "RLM" }) '), '(record { symbol = "RLM" })');
 });

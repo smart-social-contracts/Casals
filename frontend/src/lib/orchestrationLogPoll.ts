@@ -1,6 +1,6 @@
-import { getEvents, type OrchestrationEvent } from '$lib/api';
+import { orchestraEvents, type OrchestraEvent } from '$lib/api';
 
-export function eventToLogLine(ev: OrchestrationEvent): string {
+export function eventToLogLine(ev: OrchestraEvent): string {
   const tid = ev.canister_id ? ` [${ev.canister_id.slice(0, 8)}…]` : '';
   const payload =
     ev.payload && typeof ev.payload === 'object'
@@ -9,7 +9,7 @@ export function eventToLogLine(ev: OrchestrationEvent): string {
           .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
           .join(' ')
       : '';
-  return `${ev.kind}${tid}${payload ? '  ' + payload : ''}`;
+  return `${ev.type}${tid}${payload ? '  ' + payload : ''}`;
 }
 
 export function createOrchestrationLogPoll(onLines: (lines: string[]) => void) {
@@ -24,10 +24,10 @@ export function createOrchestrationLogPoll(onLines: (lines: string[]) => void) {
     onLines(lines);
     timer = setInterval(async () => {
       try {
-        const evs = await getEvents({ take: 30 });
-        const fresh = evs.filter((e) => (e.timestamp_secs ?? 0) > lastSeen);
+        const evs = await orchestraEvents({ take: 30 });
+        const fresh = evs.filter((e) => e.ts > lastSeen);
         if (fresh.length) {
-          lastSeen = Math.max(...fresh.map((e) => e.timestamp_secs ?? 0));
+          lastSeen = Math.max(...fresh.map((e) => e.ts));
           lines = [...lines, ...fresh.map(eventToLogLine)];
           onLines(lines);
         }

@@ -1,12 +1,12 @@
 /**
- * Init argument for a Deploy reinstall. The sheet is the source; the dialog
+ * Init argument for a Deploy reinstall. The export is the source; the dialog
  * shows it so the operator can keep it or replace it before init runs again.
  */
 
-import type { Sheet } from './api';
+import type { ExportDoc } from './api';
 
 /** Sheet `install_arg` for one canister, as the dialog should display it. */
-export function sheetInstallArgFor(sheet: Sheet | null | undefined, name: string): string {
+export function sheetInstallArgFor(sheet: ExportDoc | null | undefined, name: string): string {
   const wanted = (name || '').trim();
   if (!sheet || !wanted) return '';
   for (const sec of sheet.sections ?? []) {
@@ -23,25 +23,7 @@ export function sheetInstallArgFor(sheet: Sheet | null | undefined, name: string
   return '';
 }
 
-/**
- * Dialog text → `upgrade_to` `install_arg`.
- * Blank means "use the sheet". A `{...}` value is the `top_commander` object.
- * Anything else is Candid text, sent as written.
- */
-export function installArgPayload(raw: string): string | Record<string, unknown> | undefined {
-  const text = (raw || '').trim();
-  if (!text) return undefined;
-  if (text.startsWith('{')) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error('Init argument JSON is not valid');
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Init argument JSON must be an object');
-    }
-    return parsed as Record<string, unknown>;
-  }
-  return text;
+/** Dialog text → Candid `install_arg`; blank keeps the current one. */
+export function installArgPayload(raw: string): string | undefined {
+  return (raw || '').trim() || undefined;
 }

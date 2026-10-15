@@ -10,55 +10,64 @@ import {
   type ActionContext,
   type ListRow,
 } from './orchestraList.ts';
-import type { Canister, Section, Stand, Tree } from './api.ts';
+import type { CanisterRow, Orchestra, OrchestraView, SectionView, StandView } from './api.ts';
 
 const OPERATOR = 'operator-xx';
 
-function canister(over: Partial<Canister> & { name: string }): Canister {
+function canister(over: Partial<CanisterRow> & { name: string }): CanisterRow {
   return {
     canister_id: `${over.name}-id`,
     kind: 'backend',
-    url: '',
-    wasm_key: 'hello@1.0.0',
+    wasm: 'hello@1.0.0',
     wasm_hash: '',
-    status: 'installed',
-    snapshot_id: '',
+    status: 'ready',
+    public: false,
+    tags: [],
+    controllers: [],
+    cycles: 0,
+    content: '',
+    snapshot: 'snap-1',
+    stand: '',
+    section: '',
+    stand_built_at: 0,
+    build_error: '',
     ...over,
   };
 }
 
-function stand(name: string, canisters: Canister[]): Stand {
-  return { name, description: '', commander_principal: '', canisters };
+function stand(name: string, canisters: CanisterRow[]): StandView {
+  return { name, section: '', description: '', built_at: 0, build_error: '', members: [], grants: [], canisters };
 }
 
-function section(name: string, stands: Stand[]): Section {
-  return { name, description: '', commander_principal: '', stands };
+function section(name: string, stands: StandView[]): SectionView {
+  return { name, description: '', template: null, grants: [], stands };
 }
 
-function tree(): Tree {
+function tree(): OrchestraView {
   return {
+    orchestra: {} as Orchestra,
+    grants: [],
     sections: [
       section('Casals', [stand('conductor', [canister({ name: 'casals-backend' })])]),
       section('Demo', [
-        stand('Motoko', [canister({ name: 'motoko-backend', snapshot_id: 'snap-1' }), canister({ name: 'motoko-frontend', kind: 'frontend', wasm_key: 'hello-world-frontend@1.0.0' })]),
+        stand('Motoko', [canister({ name: 'motoko-backend' }), canister({ name: 'motoko-frontend', kind: 'frontend', wasm: 'hello-world-frontend@1.0.0' })]),
         stand('Rust', [canister({ name: 'rust-backend', canister_id: '' })]),
       ]),
     ],
   };
 }
 
-/** A stand-in for the commander ladder: `grants[section][principal]` = permission keys. */
+/** A stand-in for the grant ladder: `grants[section][principal]` = permission keys. */
 function allowsFrom(grants: Record<string, Record<string, string[]>>) {
   return (row: ListRow, key: string) => (grants[row.section.name]?.[OPERATOR] ?? []).includes(key);
 }
 
-const DEMO_GRANTS = { Demo: { [OPERATOR]: ['canister.deploy', 'canister.lifecycle', 'canister.snapshot'] } };
+const DEMO_GRANTS = { Demo: { [OPERATOR]: ['canister.deploy', 'canister.lifecycle'] } };
 
 function ctx(over: Partial<ActionContext> = {}): ActionContext {
   return {
     isController: false,
     allows: allowsFrom(DEMO_GRANTS),
-    runtimeOf: () => undefined,
     ...over,
   };
 }
@@ -94,8 +103,16 @@ test('a controller may do everything on a single non-core canister', () => {
   const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
   const state = listActionState(rowsByName(rows, 'motoko-backend'), ctx({ isController: true }));
   assert.deepEqual(state, {
-    deploy: true, bundle: false, snapshot: true, revert: true, stop: true, start: true, rename: true, tags: true, delete: true,
+    deploy: true, bundle: false, snapshot: true, revert: true, stop: true, start: false, rename: true, tags: true, delete: true,
   });
+});
+
+test('Revert needs a snapshot on every selected canister', () => {
+  const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
+  const [row] = rowsByName(rows, 'motoko-backend');
+  const bare = { ...row, canister: { ...row.canister, snapshot: '' } };
+  assert.equal(listActionState([bare], ctx({ isController: true })).revert, false);
+  assert.equal(listActionState([row, bare], ctx({ isController: true })).revert, false);
 });
 
 test('Deploy frontend bundle: one canister, and it must be a frontend', () => {
@@ -109,14 +126,12 @@ test('Deploy frontend bundle: one canister, and it must be a frontend', () => {
   assert.equal(listActionState(rowsByName(rows, 'motoko-frontend'), ctx({ allows: () => false })).bundle, false);
 });
 
-test('isFrontend prefers wasm type / tags over the tree kind', () => {
-  assert.equal(isFrontend({ kind: 'backend', wasm_type: 'assets', wasm_key: '' }), true);
-  assert.equal(isFrontend({ kind: 'backend', tags: ['Assets'], wasm_key: '' }), true);
-  assert.equal(isFrontend({ kind: 'backend', wasm_key: 'hello-world-frontend@1.0.0' }), true);
-  assert.equal(isFrontend({ kind: 'backend', wasm_key: 'certified-assets@0.3.0' }), true);
-  assert.equal(isFrontend({ kind: 'frontend', wasm_key: '' }), true);
-  assert.equal(isFrontend({ kind: 'backend', wasm_type: 'motoko', wasm_key: 'hello-world-frontend@1.0.0' }), false, 'a typed non-asset wasm wins');
-  assert.equal(isFrontend({ kind: 'backend', wasm_key: 'hello-world-rust@1.0.0' }), false);
+test('isFrontend: kind, asset tags, or an asset wasm', () => {
+  assert.equal(isFrontend({ kind: 'backend', tags: ['Assets'], wasm: '' }), true);
+  assert.equal(isFrontend({ kind: 'backend', tags: [], wasm: 'hello-world-frontend@1.0.0' }), true);
+  assert.equal(isFrontend({ kind: 'backend', tags: [], wasm: 'certified-assets@0.3.0' }), true);
+  assert.equal(isFrontend({ kind: 'frontend', tags: [], wasm: '' }), true);
+  assert.equal(isFrontend({ kind: 'backend', tags: ['assets-team'], wasm: 'hello-world-rust@1.0.0' }), false);
 });
 
 test('deploy, rename and tags act on exactly one canister', () => {
@@ -142,45 +157,34 @@ test('Casals core canisters are never renamed or deleted from the list, even by 
   assert.equal(mixed.snapshot, true);
 });
 
-test('revert needs a snapshot on every selected canister', () => {
-  const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
-  assert.equal(listActionState(rowsByName(rows, 'motoko-backend'), ctx({ isController: true })).revert, true);
-  assert.equal(listActionState(rowsByName(rows, 'motoko-frontend'), ctx({ isController: true })).revert, false);
-  assert.equal(listActionState(rowsByName(rows, 'motoko-backend', 'motoko-frontend'), ctx({ isController: true })).revert, false);
-});
-
-test('stop / start follow the cached run status; unknown keeps both on', () => {
+test('stop / start follow the canister status', () => {
   const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
   const sel = rowsByName(rows, 'motoko-backend', 'motoko-frontend');
-  const running = listActionState(sel, ctx({ isController: true, runtimeOf: () => 'running' }));
+  const running = listActionState(sel, ctx({ isController: true }));
   assert.equal(running.stop, true);
   assert.equal(running.start, false);
-  const stopped = listActionState(sel, ctx({ isController: true, runtimeOf: () => 'stopped' }));
+  for (const r of sel) r.canister.status = 'stopped';
+  const stopped = listActionState(sel, ctx({ isController: true }));
   assert.equal(stopped.stop, false);
   assert.equal(stopped.start, true);
-  const mixed = listActionState(sel, ctx({
-    isController: true,
-    runtimeOf: (id) => (id === 'motoko-backend-id' ? 'running' : 'stopped'),
-  }));
+  sel[0].canister.status = 'ready';
+  const mixed = listActionState(sel, ctx({ isController: true }));
   assert.equal(mixed.stop, true);
   assert.equal(mixed.start, true);
-  const unknown = listActionState(sel, ctx({ isController: true }));
-  assert.equal(unknown.stop, true);
-  assert.equal(unknown.start, true);
 });
 
-test('a section commander gets exactly the keys they hold, on their section only', () => {
+test('a section grant gives exactly the keys it holds, on its section only', () => {
   const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
   const demo = listActionState(rowsByName(rows, 'motoko-backend'), ctx());
   assert.equal(demo.deploy, true);
   assert.equal(demo.snapshot, true);
+  assert.equal(demo.revert, true);
   assert.equal(demo.stop, true);
-  assert.equal(demo.start, true);
-  assert.equal(demo.revert, false, 'canister.revert is not in the grant');
-  assert.equal(demo.rename, false);
+  assert.equal(demo.start, false, 'already running');
+  assert.equal(demo.rename, false, 'canister.config is not in the grant');
   assert.equal(demo.tags, false);
   assert.equal(demo.delete, false);
-  // Casals section: the commander holds nothing there.
+  // Casals section: the grant holds nothing there.
   const core = listActionState(rowsByName(rows, 'casals-backend'), ctx());
   assert.ok(Object.values(core).every((v) => v === false));
   // A mixed selection across sections needs the permission on every row.
@@ -190,10 +194,10 @@ test('a section commander gets exactly the keys they hold, on their section only
 
 test('the ladder is consulted per row: a grant that spans sections enables the whole batch', () => {
   const rows = flattenTreeRows(tree(), { isCore: (n) => n === 'Casals' });
-  const everywhere = (_row: ListRow, key: string) => key === 'canister.snapshot';
+  const everywhere = (_row: ListRow, key: string) => key === 'canister.lifecycle';
   const state = listActionState(rowsByName(rows, 'casals-backend', 'motoko-backend'), ctx({ allows: everywhere }));
   assert.equal(state.snapshot, true);
-  assert.equal(state.stop, false, 'canister.lifecycle is not granted anywhere');
+  assert.equal(state.delete, false, 'canister.delete is not granted anywhere');
 });
 
 test('a session the ladder refuses gets nothing', () => {

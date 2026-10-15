@@ -1,11 +1,5 @@
 import type { Identity } from '@dfinity/agent';
-import type { Tree } from './api';
 import { createHttpAgent } from './asyncAgent';
-import {
-  allControllerLookupIds,
-  applyControllerMapToTree,
-  missingControllerIds,
-} from './controllerTree';
 import { icHost, isLocalHost } from './ic-host';
 
 const CONTROLLER_FETCH_TIMEOUT_MS = 15_000;
@@ -108,60 +102,15 @@ export async function listCanisterControllers(
   );
 }
 
-/**
- * Resolve the live IC controller list for add/remove merges.
- * Uses public `read_state` / `canister_info`. Casals `canister_status` is
- * only a fallback — Casals is often not a controller of orchestra canisters.
- */
+/** Live IC controller list for add/remove merges; throws when the IC cannot be read. */
 export async function resolveCanisterControllers(
   canisterId: string,
   identity?: Identity | null,
 ): Promise<string[]> {
   if (!canisterId) return [];
-  try {
-    const list = await listCanisterControllers(canisterId, identity);
-    if (list.length) return list;
-  } catch {
-    // Public reads failed; try Casals only if it actually has a list.
-  }
-  try {
-    const { refreshControllersCache } = await import('./api');
-    const res = await refreshControllersCache();
-    const row = res.updated?.find((u) => u.canister_id === canisterId);
-    if (row?.controllers?.length) return row.controllers;
-  } catch {
-    // Casals cannot read status unless it is a controller.
-  }
+  const list = await listCanisterControllers(canisterId, identity).catch(() => []);
+  if (list.length) return list;
   throw new Error('Could not load current controllers from the IC.');
-}
-
-export { allControllerLookupIds, applyControllerMapToTree, coalesceControllers, missingControllerIds } from './controllerTree';
-
-export async function fetchControllersMap(ids: string[]): Promise<Map<string, string[]>> {
-  const unique = [...new Set(ids.filter(Boolean))];
-  const pairs = await Promise.all(
-    unique.map(async (id) => {
-      try {
-        return [id, await listCanisterControllers(id)] as const;
-      } catch {
-        return [id, [] as string[]] as const;
-      }
-    }),
-  );
-  return new Map(pairs);
-}
-
-/** Public IC reads for every canister that should show controllers on a card. */
-export async function hydrateTreeControllers(
-  tree: Tree,
-  extraIds: string[] = [],
-  opts: { force?: boolean } = {},
-): Promise<{ tree: Tree; byId: Map<string, string[]> }> {
-  const ids = opts.force
-    ? allControllerLookupIds(tree, extraIds)
-    : missingControllerIds(tree, extraIds);
-  const byId = await fetchControllersMap(ids);
-  return { tree: applyControllerMapToTree(tree, byId, opts), byId };
 }
 
 /** True when `identity` is an IC controller of `canisterId`. */
@@ -169,17 +118,9 @@ export async function checkIsCanisterController(
   identity: Identity,
   canisterId: string,
 ): Promise<boolean> {
-  const caller = identity.getPrincipal().toText();
   try {
-    const controllers = await listCanisterControllers(canisterId, identity);
-    return controllers.includes(caller);
+    return (await listCanisterControllers(canisterId, identity)).includes(identity.getPrincipal().toText());
   } catch {
-    try {
-      const { listBackendControllers } = await import('./api');
-      const controllers = await listBackendControllers();
-      return controllers.includes(caller);
-    } catch {
-      return false;
-    }
+    return false;
   }
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Tree, Canister, Section, Stand } from '$lib/api';
+  import type { OrchestraView, CanisterRow as Canister, SectionView as Section, StandView as Stand } from '$lib/api';
   import { shortHash, shortPrincipal, canisterLink } from '$lib/api';
   import { colorAt } from '$lib/charts';
   import {
@@ -11,13 +11,12 @@
     isMultisigCanister,
     isCasalsCanister,
   } from '$lib/orchestraGovernance';
-  import { entityCommanders, isUnclaimedSlot } from '$lib/commanderAccess';
-  import { isOrchestraSectionName } from '$lib/governanceUx';
+  import { isUnclaimed } from '$lib/commanderAccess';
+  import { isCasalsSection } from '$lib/governanceUx';
   import CanisterTypeBadges from '$lib/components/CanisterTypeBadges.svelte';
-  import SubnetFlags from '$lib/components/SubnetFlags.svelte';
 
   interface Props {
-    tree: Tree;
+    tree: OrchestraView;
     /** Shown in place of the synthetic Casals section's name. */
     orchestraName?: string;
     /** Render the section / stand management buttons (the signed-in operator). */
@@ -52,15 +51,6 @@
     onRenameStand,
     onDeleteStand,
   }: Props = $props();
-
-  function shortId(id: string): string {
-    return id.length > 13 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
-  }
-  function placementLabel(e: { subnet?: string; subnet_type?: string }): string {
-    if (e.subnet) return `subnet ${shortId(e.subnet)}`;
-    if (e.subnet_type) return `subnet type: ${e.subnet_type}`;
-    return '';
-  }
 
   type HoverTarget = { section: string; stand: string; canister: Canister };
 
@@ -154,7 +144,7 @@
       <div class="flex gap-4 min-w-min mx-auto justify-center">
         {#each tree.sections as section, si (`${section.name}|${si}`)}
           {@const accent = colorAt(si)}
-          {@const core = isOrchestraSectionName(section.name)}
+          {@const core = isCasalsSection(section.name)}
           <div
             class="flex flex-col w-[min(100%,320px)] shrink-0 rounded-xl border bg-white shadow-sm overflow-hidden"
             style="border-color: {accent}33"
@@ -179,18 +169,12 @@
                         href={`/section/${encodeURIComponent(section.name)}/arrangements`}
                       >Edit</a>
                     {/if}
-                    {#each entityCommanders(section) as cmd (cmd.principal)}
+                    {#each section.grants as cmd (cmd.principal)}
                       <div class="text-[10px] text-primary-400 mt-0.5 font-mono truncate" title={cmd.principal}>
                         {core ? 'orchestra commander' : 'commander'}:
-                        {#if isUnclaimedSlot(cmd)}<span class="italic">pending access code</span>{:else}{shortPrincipal(cmd.principal)}{/if}
+                        {#if isUnclaimed(cmd)}<span class="italic">pending access code</span>{:else}{shortPrincipal(cmd.principal)}{/if}
                       </div>
                     {/each}
-                    {#if placementLabel(section)}
-                      <div class="flex items-center gap-1.5 text-[10px] text-primary-400 mt-0.5 font-mono" title={section.subnet || section.subnet_type}>
-                        <span>⬡ {placementLabel(section)}</span>
-                        {#if section.subnet}<SubnetFlags subnetId={section.subnet} hoverOnly />{/if}
-                      </div>
-                    {/if}
                   </div>
                 </div>
                 {#if canManage}
@@ -226,18 +210,12 @@
                       {#if stand.description}
                         <div class="text-[10px] text-primary-400 mt-0.5 line-clamp-2">{stand.description}</div>
                       {/if}
-                      {#each entityCommanders(stand) as cmd (cmd.principal)}
+                      {#each stand.grants as cmd (cmd.principal)}
                         <div class="text-[10px] text-primary-400 mt-0.5 font-mono truncate" title={cmd.principal}>
                           commander:
-                          {#if isUnclaimedSlot(cmd)}<span class="italic">pending access code</span>{:else}{shortPrincipal(cmd.principal)}{/if}
+                          {#if isUnclaimed(cmd)}<span class="italic">pending access code</span>{:else}{shortPrincipal(cmd.principal)}{/if}
                         </div>
                       {/each}
-                      {#if placementLabel(stand)}
-                        <div class="flex items-center gap-1.5 text-[10px] text-primary-400 mt-0.5 font-mono" title={stand.subnet || stand.subnet_type}>
-                          <span>⬡ {placementLabel(stand)}</span>
-                          {#if stand.subnet}<SubnetFlags subnetId={stand.subnet} hoverOnly />{/if}
-                        </div>
-                      {/if}
                     </div>
                     {#if canManage}
                       <div class="flex items-center gap-0.5 shrink-0 -mr-1">

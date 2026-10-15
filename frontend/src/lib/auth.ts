@@ -3,7 +3,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 import type { Identity } from '@dfinity/agent';
 import { checkIsCanisterController } from './controllerAccess';
 import { checkCommanderAccess, holdsPermission } from './commanderAccess';
-import { claimCommander, type ClaimedSlot } from './api';
+import { grantClaim } from './api';
 
 export const identity = writable<Identity | null>(null);
 export const isAuthenticated = writable(false);
@@ -52,11 +52,10 @@ export async function dismissAccessDenied() {
  * Redeem a commander access code with the identity that was just denied
  * access. On success the session opens as usual. Returns the claimed slots.
  */
-export async function claimAccessCode(code: string): Promise<ClaimedSlot[]> {
+export async function claimAccessCode(code: string): Promise<string[]> {
   const id = _pendingIdentity;
   if (!id) throw new Error('Log in first, then enter your access code.');
-  const res = await claimCommander(code, id);
-  const claimed = res.claimed ?? [];
+  const claimed = await grantClaim(code, id);
   const ok = await _verifyLoginAccess(id, _pendingBackendCanisterId);
   if (!ok) throw new Error('Code accepted, but access could not be verified. Please log in again.');
   return claimed;

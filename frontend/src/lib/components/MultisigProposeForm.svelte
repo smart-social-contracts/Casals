@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Identity } from '@dfinity/agent';
-  import type { AuthorizedWasm, Sheet, Tree } from '$lib/api';
-  import { backendCanisterId, casalsMetadata, getSheetDocument, getTree, listAuthorizedWasms, storeBundle } from '$lib/api';
+  import { backendCanisterId, loadView, orchestraGet, wasmList, type OrchestraView as Tree, type Wasm } from '$lib/api';
+  import { bundleHash as hashBundle } from '$lib/bundle';
+  import { listStore } from '$lib/wasmStoreClient';
   import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
   import { isFrontend } from '$lib/orchestraList';
   import { get } from 'svelte/store';
@@ -14,8 +15,7 @@
   } from '$lib/multisigClient';
   import { batonForStand } from '$lib/orchestraGovernance';
   import { findStandForCanister } from '$lib/orchestrationNav';
-  import { upgradeMemoryKeepForWasm } from '$lib/batonUpgrade';
-  import { catalogForTarget, defaultInstallArg, storeKey } from '$lib/wasmStorePath';
+  import { catalogForTarget, defaultInstallArg, pathUnderNamespace, storeKey } from '$lib/wasmStorePath';
 
   interface Props {
     canisterId: string;
@@ -56,14 +56,13 @@
 
   // Upgrade canister: catalog + store come from Casals; the committee only
   // streams what an operator already authorized.
-  let catalog = $state<AuthorizedWasm[]>([]);
+  let catalog = $state<Wasm[]>([]);
   let catalogLoading = $state(false);
   let storeId = $state('');
   let wasmKey = $state('');
 
-  // Deploy frontend bundle: the committee asks the conductor (`deploy_content`)
+  // Deploy frontend bundle: the committee asks the conductor (`content_deploy`)
   // to ship a store namespace to a frontend; the store's bundle hash is pinned.
-  let storedSheet = $state<Sheet | null>(null);
   let bundleNamespace = $state('');
   let bundleHash = $state('');
   let bundleFiles = $state(0);
@@ -76,7 +75,6 @@
     /** true / false from the tree's cached controllers; undefined when unknown. */
     controlled?: boolean;
     wasm_key?: string;
-    wasm_type?: string;
     wasm_hash?: string;
   }
 
@@ -98,8 +96,7 @@
             label: c.name,
             controllers: ctrls,
             controlled: ctrls && ctrls.length ? ctrls.some(isSelf) : undefined,
-            wasm_key: c.wasm_key,
-            wasm_type: c.wasm_type,
+            wasm_key: c.wasm,
             wasm_hash: c.wasm_hash,
           });
         }
@@ -109,13 +106,9 @@
   });
 
   const isBundleAction = $derived(actionType === 'DeployBundle');
-  const bundleNamespaces = $derived(knownContentNamespaces(storedSheet));
-  const bundleTargets = $derived(canisterOptions.filter((o) => isFrontend({ kind: 'backend', wasm_key: o.wasm_key ?? '', wasm_type: o.wasm_type })));
-
-  async function ensureStoredSheet() {
-    if (storedSheet) return;
-    storedSheet = await getSheetDocument().then((d) => d.sheet).catch(() => null);
-  }
+  const allRows = $derived((loadedTree ?? tree)?.orchestra.canisters ?? []);
+  const bundleNamespaces = $derived(knownContentNamespaces(allRows));
+  const bundleTargets = $derived(allRows.filter((c) => isFrontend(c)).map((c) => canisterOptions.find((o) => o.id === c.canister_id)!).filter(Boolean));
 
   async function readBundle() {
     bundleHash = '';
@@ -125,10 +118,14 @@
     if (!ns || !namespaceOk(ns)) return;
     bundleReading = true;
     try {
-      const b = await storeBundle(ns);
-      bundleFiles = Object.keys(b.files ?? {}).length;
+      const keys = await listStore(storeId || (await orchestraGet()).store_id, storeKey(ns, ''));
+      const files = Object.fromEntries(Object.entries(keys).flatMap(([k, sha]) => {
+        const path = pathUnderNamespace(k, ns);
+        return path && !path.startsWith('.casals-') ? [[path, sha] as const] : [];
+      }));
+      bundleFiles = Object.keys(files).length;
       if (!bundleFiles) bundleError = 'The store holds nothing under this namespace — upload the bundle first (Files → Upload bundle).';
-      else bundleHash = b.bundle_sha256;
+      else bundleHash = await hashBundle(files);
     } catch (e: unknown) {
       bundleError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -138,10 +135,10 @@
 
   async function syncBundleTarget() {
     if (!isBundleAction) return;
-    await ensureStoredSheet();
+    await ensureTree();
     if (!bundleTargets.some((o) => o.id === targetCanister)) targetCanister = bundleTargets[0]?.id ?? '';
     const name = canisterOptions.find((o) => o.id === targetCanister)?.label ?? '';
-    bundleNamespace = defaultNamespaceFor(storedSheet, name);
+    bundleNamespace = defaultNamespaceFor(allRows, name);
     await readBundle();
   }
 
@@ -276,12 +273,9 @@
     if (catalog.length && storeId) return;
     catalogLoading = true;
     try {
-      const [wasms, meta] = await Promise.all([
-        listAuthorizedWasms().catch(() => [] as AuthorizedWasm[]),
-        casalsMetadata().catch(() => null),
-      ]);
+      const [wasms, o] = await Promise.all([wasmList().catch(() => [] as Wasm[]), orchestraGet().catch(() => null)]);
       catalog = wasms;
-      storeId = (meta?.wasm_store_canister_id || '').trim();
+      storeId = o?.store_id ?? '';
     } finally {
       catalogLoading = false;
     }
@@ -337,7 +331,7 @@
 
   async function ensureTree() {
     if (loadedTree ?? tree) return loadedTree ?? tree;
-    loadedTree = await getTree().catch(() => null);
+    loadedTree = await loadView().catch(() => null);
     return loadedTree;
   }
 
@@ -436,16 +430,15 @@
       const action = buildMultisigAction(actionType, {
         store: storeId,
         store_key: selectedWasm
-          ? storeKey(selectedWasm.registry_namespace, selectedWasm.registry_path)
+          ? selectedWasm.path
           : '',
-        sha256: selectedWasm?.wasm_hash ?? '',
+        sha256: selectedWasm?.sha256 ?? '',
         arg: selectedWasm
-          ? defaultInstallArg(selectedWasm, {
+          ? defaultInstallArg({ key: selectedWasm.key, kind: selectedWasm.kind, wasm_type: selectedWasm.type }, {
               wasm_key: selectedOption?.wasm_key,
-              wasm_type: selectedOption?.wasm_type,
             })
           : undefined,
-        wasm_memory_keep: selectedWasm ? upgradeMemoryKeepForWasm(selectedWasm) : false,
+        wasm_memory_keep: selectedWasm?.memory_keep === 'true',
         add_signers: addSigners,
         remove_signers: removeSigners,
         new_threshold: newThreshold,
@@ -577,7 +570,7 @@
             Store bundle {bundleFiles} file(s) · {bundleHash}
           </p>
           <p class="text-xs text-[var(--color-text-secondary)]">
-            On approval the committee calls the conductor's <span class="font-mono">deploy_content</span>; the conductor writes this
+            On approval the committee calls the conductor's <span class="font-mono">content_deploy</span>; the conductor writes this
             bundle into the frontend in rounds, refusing if the store changed meanwhile.
           </p>
         {/if}
@@ -590,7 +583,7 @@
         {:else if wasmOptions.length}
           <select id="ms-wasm" class="input text-xs font-mono" bind:value={wasmKey}>
             {#each wasmOptions as w (w.key)}
-              <option value={w.key}>{w.key} · {w.wasm_hash.slice(0, 8)}</option>
+              <option value={w.key}>{w.key} · {w.sha256.slice(0, 8)}</option>
             {/each}
           </select>
         {:else}
@@ -607,10 +600,10 @@
         {/if}
         {#if selectedWasm}
           <p class="text-xs text-[var(--color-text-secondary)]">
-            The committee streams {storeKey(selectedWasm.registry_namespace, selectedWasm.registry_path)}
+            The committee streams {selectedWasm.path}
             from the WASM store into the target and installs it in upgrade mode, pinned to
-            sha256 {selectedWasm.wasm_hash.slice(0, 12)}…
-            {upgradeMemoryKeepForWasm(selectedWasm) ? ' (Motoko: main memory kept).' : '.'}
+            sha256 {selectedWasm.sha256.slice(0, 12)}…
+            {selectedWasm.memory_keep === 'true' ? ' (Motoko: main memory kept).' : '.'}
             {#if !storeId}
               <span class="text-red-700">WASM store id unknown — run `casals up` first.</span>
             {/if}

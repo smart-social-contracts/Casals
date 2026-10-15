@@ -4,14 +4,13 @@
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/stores';
   import { initAuth, login, logout, isAuthenticated, principal, accessDenied, dismissAccessDenied, claimAccessCode } from '$lib/auth';
-  import { backendCanisterId, casalsMetadata, getStatus, getTree, initLocalNetworkHints } from '$lib/api';
+  import { backendCanisterId, initLocalNetworkHints, orchestraGet } from '$lib/api';
   import { readGate } from '$lib/readGate';
   import { toasts } from '$lib/stores/toast';
   import Toast from '$lib/components/Toast.svelte';
   import AccessDeniedModal from '$lib/components/AccessDeniedModal.svelte';
   import BuildFooter from '$lib/components/BuildFooter.svelte';
   import { NAV_SECTIONS, navLinkActive, visibleNavSections } from '$lib/governanceUx';
-  import { findMultisigCanister } from '$lib/orchestraGovernance';
 
   let { children } = $props();
 
@@ -25,8 +24,9 @@
   let hasMultisig = $state(false);
   let navSections = $derived(visibleNavSections(NAV_SECTIONS, { multisig: hasMultisig }));
 
-  let publicRead = $state<boolean | null>(null);
-  let statusFailed = $state(false);
+  // The conductor answers no anonymous reads.
+  const publicRead = false;
+  const statusFailed = false;
   let authReady = $state(false);
   let gate = $derived(
     readGate({ publicRead, statusFailed, authReady, authenticated: $isAuthenticated, path: currentPath }),
@@ -34,7 +34,9 @@
 
   async function refreshFacilities() {
     try {
-      hasMultisig = !!findMultisigCanister(await getTree());
+      const o = await orchestraGet();
+      hasMultisig = !!o.multisig_id;
+      orchestraName = o.name.trim();
     } catch {
       /* keep the last known state */
     }
@@ -55,9 +57,7 @@
 
   async function handleClaimAccessCode(code: string) {
     const claimed = await claimAccessCode(code);
-    const where = claimed
-      .map((c) => (c.scope === 'orchestra' ? 'the orchestra' : `${c.scope} ${c.name}`))
-      .join(', ');
+    const where = claimed.map((s) => (s === 'orchestra' ? 'the orchestra' : s.replace(':', ' '))).join(', ');
     toasts.success(where ? `Access granted on ${where}` : 'Access granted');
     return claimed;
   }
@@ -83,19 +83,7 @@
       .finally(() => {
         authReady = true;
       });
-    void getStatus()
-      .then((s) => {
-        publicRead = s.public_read !== false;
-      })
-      .catch(() => {
-        statusFailed = true;
-      });
     void initLocalNetworkHints();
-    void casalsMetadata()
-      .then((md) => {
-        orchestraName = (md.orchestra_name ?? '').trim();
-      })
-      .catch(() => {});
 
     const mq = window.matchMedia('(min-width: 1024px)');
     const syncViewport = () => {

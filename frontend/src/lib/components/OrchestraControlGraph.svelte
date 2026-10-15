@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { Tree } from '$lib/api';
-  import { shortPrincipal } from '$lib/api';
+  import { shortPrincipal, type OrchestraView } from '$lib/api';
   import {
     findBatonsInTree,
     isBatonCanister,
@@ -37,7 +36,7 @@
   } from '$lib/orchestraControlGraph';
 
   interface Props {
-    tree: Tree;
+    tree: OrchestraView;
     casalsBackendId?: string;
     principalLabel?: (principal: string) => string;
     onRefreshControllers?: () => Promise<void>;
@@ -697,13 +696,6 @@
       </div>
     {/if}
 
-    {#if fullGraph.warnings.length}
-      <div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 space-y-1 shrink-0">
-        {#each fullGraph.warnings as warning (warning)}
-          <div>{warning}</div>
-        {/each}
-      </div>
-    {/if}
 
     <div class="flex {isExpanded ? 'flex-1 min-h-0 gap-4' : 'flex-col gap-4'}">
       <aside

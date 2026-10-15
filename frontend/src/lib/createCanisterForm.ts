@@ -1,24 +1,17 @@
-import type { AuthorizedWasm, CanisterKind, Stand, Sheet, Tree } from '$lib/api';
-import { inferWasmType, resolveWasmType, wasmTypeTags } from '$lib/canisterTypes';
+import type { CanisterKind, OrchestraView, Wasm } from '$lib/api';
+import { resolveWasmType, wasmTypeTags } from '$lib/canisterTypes';
 
+/** `canister_create` arguments. */
 export interface CreateCanisterPayload {
   stand: string;
   name: string;
-  wasm_key: string;
-  kind?: CanisterKind;
-  install_arg?: Record<string, string>;
-  init?: {
-    multisig?: {
-      signers: string[];
-      threshold: number;
-      expiry_secs: number;
-    };
-  };
+  wasm: string;
+  install_arg?: string;
+  config?: { method: string; arg: string }[];
 }
 
-export function familyOf(wasmKey: string): string {
-  return (wasmKey || '').split('@')[0];
-}
+export const familyOf = (key: string): string => (key || '').split('@')[0];
+export const versionOf = (key: string): string => (key || '').split('@').slice(1).join('@');
 
 export function verCmp(a: string, b: string): number {
   const pa = (a || '0').split('.').map((n) => parseInt(n, 10) || 0);
@@ -30,113 +23,49 @@ export function verCmp(a: string, b: string): number {
   return 0;
 }
 
-export function membersInFamily(family: string, catalog: AuthorizedWasm[]): AuthorizedWasm[] {
-  return catalog
-    .filter((w) => (w.family || familyOf(w.key)) === family)
-    .sort((a, b) =>
-      verCmp(b.version || b.key.split('@')[1] || '',
-             a.version || a.key.split('@')[1] || ''),
-    );
+/** Catalog rows of a family, newest first. */
+export function membersInFamily(family: string, catalog: Wasm[]): Wasm[] {
+  return catalog.filter((w) => familyOf(w.key) === family).sort((a, b) => verCmp(versionOf(b.key), versionOf(a.key)));
 }
 
-export function latestCatalogEntry(
-  family: string,
-  catalog: AuthorizedWasm[],
-): AuthorizedWasm | undefined {
+/** A pinned `family@version`, or the newest row of a bare family. */
+export function catalogEntryForKey(key: string, catalog: Wasm[]): Wasm | undefined {
+  return key.includes('@') ? catalog.find((w) => w.key === key) : membersInFamily(key, catalog)[0];
+}
+
+/** Version options for a family: the bare family means newest. */
+export function versionOptions(family: string, catalog: Wasm[]): { value: string; label: string }[] {
   const members = membersInFamily(family, catalog);
-  if (!members.length) return undefined;
-  return members.find((m) => m.latest) ?? members[0];
+  if (!members.length) return [];
+  return [
+    { value: family, label: `Latest (v${versionOf(members[0].key)})` },
+    ...members.map((m, i) => ({ value: m.key, label: `v${versionOf(m.key)}${i === 0 ? ' · latest' : ''}` })),
+  ];
 }
 
-/** Resolve a wasm key (bare family or pinned family@version) to a catalog entry. */
-export function catalogEntryForKey(
-  wasmKey: string,
-  catalog: AuthorizedWasm[],
-): AuthorizedWasm | undefined {
-  const family = familyOf(wasmKey);
-  const versionPart = wasmKey.includes('@') ? wasmKey.split('@').slice(1).join('@') : '';
-  if (versionPart) {
-    return (
-      catalog.find((w) => w.key === wasmKey)
-      ?? catalog.find(
-        (w) =>
-          (w.family || familyOf(w.key)) === family
-          && (w.version || w.key.split('@')[1] || '') === versionPart,
-      )
-    );
-  }
-  return latestCatalogEntry(family, catalog);
+export function wasmTypeForWasmKey(key: string, catalog: Wasm[]): string {
+  const entry = catalogEntryForKey(key, catalog);
+  return resolveWasmType(entry ?? { key: familyOf(key) });
 }
 
-/** Build version <select> options for a family. Bare family = latest; other values pin a version. */
-export function versionOptions(
-  family: string,
-  catalog: AuthorizedWasm[],
-): { value: string; label: string }[] {
-  if (!family || !catalog.length) return [];
-  const members = membersInFamily(family, catalog);
-  if (members.length === 0) return [];
-  const latest = members.find((m) => m.latest) ?? members[0];
-  const latestVer = latest.version || latest.key.split('@')[1] || '?';
-  const opts = [{ value: family, label: `Latest (v${latestVer})` }];
-  for (const m of members) {
-    const ver = m.version || m.key.split('@')[1] || '?';
-    opts.push({
-      value: m.key,
-      label: `v${ver}${m.latest !== false && m === latest ? ' · latest' : ''}`,
-    });
-  }
-  return opts;
+export function kindForWasmKey(key: string, catalog: Wasm[]): CanisterKind {
+  return catalogEntryForKey(key, catalog)?.kind === 'frontend' ? 'frontend' : 'backend';
 }
 
-export function wasmTypeForWasmKey(wasmKey: string, catalog: AuthorizedWasm[]): string {
-  const entry = catalogEntryForKey(wasmKey, catalog);
-  return (entry?.wasm_type || inferWasmType(familyOf(wasmKey))).trim();
-}
-
-export function kindForWasmKey(wasmKey: string, catalog: AuthorizedWasm[]): CanisterKind {
-  const entry = catalogEntryForKey(wasmKey, catalog);
-  return entry?.kind === 'frontend' ? 'frontend' : 'backend';
-}
-
-export function wasmTypeForFamily(family: string, catalog: AuthorizedWasm[]): string {
-  return wasmTypeForWasmKey(family, catalog);
-}
-
-export function kindForFamily(family: string, catalog: AuthorizedWasm[]): CanisterKind {
-  return kindForWasmKey(family, catalog);
-}
-
-export function wasmFamilyLabel(family: string, catalog: AuthorizedWasm[]): string {
-  const tags = wasmTypeTags(wasmTypeForFamily(family, catalog));
-  const kind = kindForFamily(family, catalog);
-  const tagPart = tags.length ? ` · ${tags.join(', ')}` : '';
-  return `${family} (${kind}${tagPart})`;
+export function wasmFamilyLabel(family: string, catalog: Wasm[]): string {
+  const tags = wasmTypeTags(wasmTypeForWasmKey(family, catalog));
+  return `${family} (${kindForWasmKey(family, catalog)}${tags.length ? ` · ${tags.join(', ')}` : ''})`;
 }
 
 export function parseSignerLines(text: string): string[] {
-  return text
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export function multisigCommanderOptions(tree: Tree | null): { value: string; label: string }[] {
-  if (!tree) return [];
-  const out: { value: string; label: string }[] = [];
-  for (const sec of tree.sections) {
-    for (const stand of sec.stands) {
-      for (const c of stand.canisters) {
-        if (resolveWasmType(c) === 'multisig' && c.name) {
-          out.push({
-            value: `$canister:${c.name}`,
-            label: `${c.name}${c.canister_id ? ` (${c.canister_id.slice(0, 5)}…)` : ''}`,
-          });
-        }
-      }
-    }
-  }
-  return out;
+/** Multisig canisters a new baton can name as its top commander. */
+export function multisigCommanderOptions(view: OrchestraView | null): { value: string; label: string }[] {
+  return (view?.orchestra.canisters ?? [])
+    .filter((c) => resolveWasmType(c) === 'multisig')
+    .map((c) => ({ value: `$canister:${c.name}`, label: `${c.name}${c.canister_id ? ` (${c.canister_id.slice(0, 5)}…)` : ''}` }));
 }
 
 export function buildCreateCanisterPayload(
@@ -150,45 +79,21 @@ export function buildCreateCanisterPayload(
     top_commander?: string;
     top_commander_custom?: string;
   },
-  catalog: AuthorizedWasm[],
+  catalog: Wasm[],
 ): CreateCanisterPayload {
-  const wasmKey = values.wasm_key.trim();
-  const wasmType = wasmTypeForWasmKey(wasmKey, catalog);
-  const payload: CreateCanisterPayload = {
-    stand,
-    name: values.name.trim(),
-    wasm_key: wasmKey,
-    kind: kindForWasmKey(wasmKey, catalog),
-  };
-
-  if (wasmType === 'multisig') {
+  const wasm = catalogEntryForKey(values.wasm_key.trim(), catalog)?.key ?? values.wasm_key.trim();
+  const type = wasmTypeForWasmKey(wasm, catalog);
+  const payload: CreateCanisterPayload = { stand, name: values.name.trim(), wasm };
+  if (type === 'multisig') {
     const signers = parseSignerLines(values.signers_text ?? '');
-    if (!signers.length) {
-      throw new Error('Add at least one signer principal for the multisig');
-    }
+    if (!signers.length) throw new Error('Add at least one signer principal for the multisig');
     const threshold = Math.max(1, parseInt(values.threshold ?? '1', 10) || 1);
-    if (threshold > signers.length) {
-      throw new Error(`Threshold (${threshold}) cannot exceed signer count (${signers.length})`);
-    }
-    const expiryDays = Math.max(1, parseInt(values.expiry_days ?? '7', 10) || 7);
-    payload.init = {
-      multisig: {
-        signers,
-        threshold,
-        expiry_secs: expiryDays * 86400,
-      },
-    };
+    if (threshold > signers.length) throw new Error(`Threshold (${threshold}) cannot exceed signer count (${signers.length})`);
+    const expiry = Math.max(1, parseInt(values.expiry_days ?? '7', 10) || 7) * 86400;
+    const vec = signers.map((s) => `principal "${s}"`).join('; ');
+    payload.config = [{ method: 'configure', arg: `(vec { ${vec} } : vec principal, ${threshold} : nat, ${expiry} : nat)` }];
   }
-
-  if (wasmType === 'baton') {
-    const top =
-      (values.top_commander === '__custom__'
-        ? values.top_commander_custom
-        : values.top_commander)?.trim();
-    if (top) {
-      payload.install_arg = { top_commander: top };
-    }
-  }
-
+  const top = (values.top_commander === '__custom__' ? values.top_commander_custom : values.top_commander)?.trim();
+  if (type === 'baton' && top) payload.install_arg = `(record { top_commander = principal "${top}" })`;
   return payload;
 }

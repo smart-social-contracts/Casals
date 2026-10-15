@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SubnetFlagMatrix from '$lib/components/SubnetFlagMatrix.svelte';
-  import { listSubnetPlacement, setSubnetWhitelist } from '$lib/api';
+  import { orchestraGet, orchestraSet } from '$lib/api';
   import {
     buildRegionGroups,
     getSubnetGeo,
@@ -137,7 +137,7 @@
     try {
       const [icSubnets, placement] = await Promise.all([
         listIcSubnets(),
-        listSubnetPlacement().catch(() => ({ creatable_subnets: [] as string[] })),
+        orchestraGet().catch(() => ({ creatable_subnets: [] as string[] })),
       ]);
       allSubnetIds = icSubnets.map((s) => s.subnetId);
       creatableSubnetIds = new Set(placement.creatable_subnets ?? []);
@@ -200,8 +200,8 @@
     try {
       const selectedCreatable = allSubnetIds.filter((id) => selected.has(id) && isCreatable(id));
       const subnets = subnetsToPersist(selectedCreatable);
-      const r = await setSubnetWhitelist(subnets);
-      const saved = r.subnet_whitelist ?? subnets;
+      await orchestraSet({ subnets });
+      const saved = subnets;
       toasts.success(
         saved.length
           ? `Saved whitelist (${saved.length} subnet${saved.length === 1 ? '' : 's'})`

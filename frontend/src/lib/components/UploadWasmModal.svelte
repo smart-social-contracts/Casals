@@ -3,8 +3,7 @@
   import { fade, scale } from 'svelte/transition';
   import { get } from 'svelte/store';
   import { canDo, identity } from '$lib/auth';
-  import { addAuthorizedWasm, beginUpload, endUpload } from '$lib/api';
-  import type { StoreFile } from '$lib/api';
+  import { wasmAuthorize, wasmUploadBegin, wasmUploadEnd } from '$lib/api';
   import {
     formatBytes,
     isWasmModule,
@@ -16,11 +15,12 @@
     wasmStorePath,
     WASM_NAMESPACE,
   } from '$lib/wasmStoreClient';
+  import { upgradeMemoryKeepForWasm } from '$lib/wasmStorePath';
   import { inferWasmType } from '$lib/canisterTypes';
 
   interface Props {
     /** Authorize an existing store file instead of uploading a new one. */
-    existing?: StoreFile | null;
+    existing?: { path: string; sha256: string } | null;
     ondone?: () => void;
     oncancel?: () => void;
   }
@@ -44,15 +44,13 @@
   // then from what the store reports after the upload.
   let family = $state(initial ? parseWasmFilename(initial.path).family : '');
   let version = $state(initial ? parseWasmFilename(initial.path).version : '');
-  let section = $state('');
   let path = $state(initial?.path ?? '');
   let onChainSha = $state(initial?.sha256 ?? '');
-  let onChainSize = $state(initial?.size ?? 0);
+  let onChainSize = $state(0);
   let kind = $state<'backend' | 'frontend'>('backend');
   let wasmType = $state('');
   /** "" follows the wasm type. "true"/"false" overrides it for this catalog row. */
   let memoryKeep = $state('');
-  let description = $state('');
 
   const key = $derived(version ? `${family}@${version}` : family);
   const pct = $derived(progress.total ? Math.round((progress.sent / progress.total) * 100) : 0);
@@ -108,25 +106,23 @@
     phase = 'uploading';
     let ticket;
     try {
-      ticket = await beginUpload();
-      say(`store ${ticket.store_canister_id}: Commit granted until ${new Date(ticket.expires_at * 1000).toLocaleTimeString()}`);
-      const target = storeKey(ticket.namespace, storePath);
+      ticket = await wasmUploadBegin();
+      say(`store ${ticket.store_id}: Commit granted until ${new Date(ticket.expires_at * 1000).toLocaleTimeString()}`);
+      const target = storeKey(WASM_NAMESPACE, storePath);
       await uploadToStore({
         identity: id,
-        storeCanisterId: ticket.store_canister_id,
+        storeCanisterId: ticket.store_id,
         key: target,
         bytes,
         sha256Hex: localSha,
-        chunkBytes: ticket.chunk_bytes,
         onProgress: (p) => {
           progress = p;
         },
       });
       say(`uploaded ${progress.chunks} chunk(s) to ${target}`);
       phase = 'verifying';
-      const receipt = await endUpload(storePath, ticket.namespace);
-      onChainSha = receipt.sha256 ?? '';
-      onChainSize = receipt.size ?? 0;
+      onChainSha = (await wasmUploadEnd(target)).files[target]?.sha256 ?? '';
+      onChainSize = bytes.length;
       say(`store reports ${formatBytes(onChainSize)}, sha256 ${onChainSha.slice(0, 12)}…`);
       if (onChainSha !== localSha) {
         error = `sha256 mismatch: browser ${localSha.slice(0, 12)}… vs store ${onChainSha.slice(0, 12)}…`;
@@ -135,7 +131,7 @@
     } catch (e: any) {
       error = e?.message ?? String(e);
       // Never leave a Commit grant behind on a failed upload.
-      if (ticket) await endUpload().catch(() => {});
+      if (ticket) await wasmUploadEnd().catch(() => {});
       phase = 'ready';
     }
   }
@@ -143,19 +139,14 @@
   async function authorize() {
     error = '';
     try {
-      const args: Record<string, string> = {
-        key: family.trim(),
-        registry_namespace: WASM_NAMESPACE,
-        registry_path: path,
-        wasm_hash: onChainSha,
+      await wasmAuthorize({
+        key,
+        path: path.startsWith('/') ? path : storeKey(WASM_NAMESPACE, path),
+        sha256: onChainSha,
         kind,
-      };
-      if (version.trim()) args.version = version.trim();
-      if (section.trim()) args.section = section.trim();
-      if (wasmType) args.wasm_type = wasmType;
-      if (memoryKeep === 'true' || memoryKeep === 'false') args.memory_keep = memoryKeep;
-      if (description.trim()) args.description = description.trim();
-      await addAuthorizedWasm(args as any);
+        type: wasmType,
+        memory_keep: memoryKeep === 'true' || (!memoryKeep && upgradeMemoryKeepForWasm({ key, wasm_type: wasmType })) ? 'true' : '',
+      });
       say(`authorized ${key}`);
       phase = 'done';
       ondone?.();
@@ -295,14 +286,6 @@
           <p class="text-xs text-primary-400 mt-1">
             Current Motoko keeps the heap. Rust, Basilisk, and asset canisters must not. Override only for a Motoko build compiled with <span class="font-mono">--legacy-persistence</span>.
           </p>
-        </div>
-        <div>
-          <label class="label" for="upload-section">Section</label>
-          <input id="upload-section" class="input" bind:value={section} disabled={phase === 'done'} placeholder="(optional) restrict to a section" />
-        </div>
-        <div>
-          <label class="label" for="upload-description">Description</label>
-          <textarea id="upload-description" class="input" rows="2" bind:value={description} disabled={phase === 'done'}></textarea>
         </div>
       {/if}
 

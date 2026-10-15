@@ -4,14 +4,11 @@ import {
   NAV_SECTIONS,
   navLinkActive,
   visibleNavSections,
-  ORCHESTRA_SECTION,
-  assignableSections,
   describeOperatorAccess,
   describeMultisigSignerStatus,
   displayPermissionGroup,
   groupPermissions,
-  canEditSectionArrangement,
-  isOrchestraSectionName,
+  canEditSection,
   ladderAllows,
   scopeLabel,
 } from './governanceUx.ts';
@@ -92,14 +89,6 @@ test('describeOperatorAccess reports the orchestra rung ahead of section/stand r
   );
 });
 
-test('orchestra rung is the synthetic Casals/Conductor section', () => {
-  assert.equal(ORCHESTRA_SECTION, 'Casals');
-  assert.ok(isOrchestraSectionName('Casals'));
-  assert.ok(isOrchestraSectionName('Conductor'));
-  assert.equal(isOrchestraSectionName('Product'), false);
-  assert.deepEqual(assignableSections(['Casals', 'Product', 'Infra']), ['Product', 'Infra']);
-});
-
 test('scopeLabel names the orchestra after the sheet', () => {
   assert.equal(scopeLabel({ scope: 'orchestra', section: 'Casals' }, 'governed'), 'Orchestra · governed');
   assert.equal(scopeLabel({ scope: 'orchestra', section: 'Casals' }, ''), 'Orchestra');
@@ -108,39 +97,31 @@ test('scopeLabel names the orchestra after the sheet', () => {
   assert.equal(scopeLabel({ scope: 'controller', section: '' }, 'governed'), 'Casals controller');
 });
 
-test('ladderAllows: orchestra commanders act on every stand', () => {
-  // The governed corpus: II holds `*` on the orchestra only; operator holds
-  // canister.* on Product; dev holds stand.* on Motoko.
+const g = (principal: string, ...permissions: string[]) => ({ scope: '', principal, permissions, calls: [] });
+
+test('ladderAllows: orchestra grants act on every stand', () => {
   const ladder = {
-    orchestra: [{ principal: 'ii', all_permissions: true }],
-    section: [{ principal: 'operator', permissions: ['canister.tag', 'canister.deploy'] }],
-    stand: [{ principal: 'dev', permissions: ['stand.rename', 'stand.delete'] }],
+    orchestra: [g('ii', '*')],
+    section: [g('operator', 'canister.config', 'canister.deploy')],
+    stand: [g('dev', 'stand.edit', 'stand.delete')],
   };
-  for (const key of ['canister.tag', 'canister.deploy', 'stand.rename', 'stand.delete']) {
+  for (const key of ['canister.config', 'canister.deploy', 'stand.edit', 'stand.delete']) {
     assert.ok(ladderAllows('ii', key, ladder), key);
   }
-  assert.ok(ladderAllows('operator', 'canister.tag', ladder));
+  assert.ok(ladderAllows('operator', 'canister.config', ladder));
   assert.equal(ladderAllows('operator', 'stand.delete', ladder), false);
-  assert.ok(ladderAllows('dev', 'stand.rename', ladder));
+  assert.ok(ladderAllows('dev', 'stand.edit', ladder));
   assert.equal(ladderAllows('dev', 'canister.deploy', ladder), false);
-  assert.equal(ladderAllows('stranger', 'canister.tag', ladder), false);
-  assert.equal(ladderAllows('', 'canister.tag', ladder), false);
+  assert.equal(ladderAllows('stranger', 'canister.config', ladder), false);
+  assert.equal(ladderAllows('', 'canister.config', ladder), false);
 });
 
-test('ladderAllows: orchestra grant is permission-scoped and tolerates missing rungs', () => {
-  const ladder = { orchestra: [{ principal: 'auditor', permissions: ['canister.tag'] }] };
-  assert.ok(ladderAllows('auditor', 'canister.tag', ladder));
+test('ladderAllows: a grant holds only its keys and missing rungs grant nothing', () => {
+  const ladder = { orchestra: [g('auditor', 'canister.config')] };
+  assert.ok(ladderAllows('auditor', 'canister.config', ladder));
   assert.equal(ladderAllows('auditor', 'canister.delete', ladder), false);
-  assert.equal(ladderAllows('auditor', 'canister.tag', {}), false);
-  // Legacy empty permission list means full access, as in the backend.
-  assert.ok(ladderAllows('legacy', 'stand.delete', { stand: [{ principal: 'legacy', permissions: [] }] }));
-  // An explicit empty grant (all_permissions false, no keys) cannot act.
-  assert.equal(
-    ladderAllows('cleared', 'canister.deploy', {
-      stand: [{ principal: 'cleared', permissions: [], all_permissions: false }],
-    }),
-    false,
-  );
+  assert.equal(ladderAllows('auditor', 'canister.config', {}), false);
+  assert.equal(ladderAllows('cleared', 'canister.deploy', { stand: [g('cleared')] }), false);
 });
 
 test('describeMultisigSignerStatus', () => {
@@ -160,15 +141,9 @@ test('visibleNavSections drops Platform committee when the orchestra has no mult
   assert.equal(without.find((s) => s.id === 'operate')!.links.length, NAV_SECTIONS.find((s) => s.id === 'operate')!.links.length);
 });
 
-test('arrangement.edit is section-scoped and orchestra-wide for a full grant', () => {
-  const sections = [
-    { name: 'Casals', commanders: [{ principal: 'op', all_permissions: true }] },
-    { name: 'Deployments', commanders: [{ principal: 'dep', permissions: ['arrangement.edit'] }] },
-    { name: 'Other', commanders: [{ principal: 'dep', permissions: ['stand.create'] }] },
-  ];
-  assert.equal(canEditSectionArrangement('op', 'Deployments', sections, false), true);
-  assert.equal(canEditSectionArrangement('op', 'Casals', sections, false), false);
-  assert.equal(canEditSectionArrangement('dep', 'Deployments', sections, false), true);
-  assert.equal(canEditSectionArrangement('dep', 'Other', sections, false), false);
-  assert.equal(canEditSectionArrangement('stranger', 'Deployments', sections, true), true);
+test('canEditSection: section.edit on the orchestra or the section, or a controller', () => {
+  assert.equal(canEditSection('op', [g('op', '*')], [], false), true);
+  assert.equal(canEditSection('dep', [], [g('dep', 'section.edit')], false), true);
+  assert.equal(canEditSection('dep', [], [g('dep', 'stand.create')], false), false);
+  assert.equal(canEditSection('stranger', [], [], true), true);
 });

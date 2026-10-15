@@ -1,7 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import type { Canister, Tree, AuthorizedWasm } from '$lib/api';
-  import { listAuthorizedWasms, shortHash } from '$lib/api';
+  import { shortHash, wasmList, type CanisterRow as Canister, type OrchestraView, type Wasm } from '$lib/api';
   import {
     batonCanApprove,
     batonCanPropose,
@@ -28,7 +27,7 @@
     prepareBatonManagedUpgrade,
     wasmsForCanister,
   } from '$lib/batonUpgrade';
-  import { getSheetDocument, proposeAssets, proposeUpgrade, type Sheet } from '$lib/api';
+  import { batonProposeContent, batonProposeUpgrade } from '$lib/api';
   import { defaultNamespaceFor, knownContentNamespaces, namespaceOk } from '$lib/contentDeploy';
   import { identity, isAuthenticated, loginInternetIdentity, principal } from '$lib/auth';
   import {
@@ -44,7 +43,7 @@
     config: BatonConfig;
     commanders: BatonCommander[];
     managed: string[];
-    tree?: Tree | null;
+    tree?: OrchestraView | null;
     blockingAction?: BatonActionRecord | null;
     /** Logged-in Casals commander holds `canister.deploy` on this stand. */
     casalsDeploy?: boolean;
@@ -62,19 +61,20 @@
     onsuccess,
   }: Props = $props();
 
+  const allRows = $derived(tree?.orchestra.canisters ?? []);
+
   let open = $state(false);
   let busy = $state(false);
   let error = $state('');
   let pipelineStatus = $state('');
   let pipelineLines = $state<PipelineLogLine[]>([]);
-  let wasms = $state<AuthorizedWasm[]>([]);
+  let wasms = $state<Wasm[]>([]);
   let selectedIds = $state<Record<string, boolean>>({});
   let wasmKeysByCanister = $state<Record<string, string>>({});
   /** Frontend rows default to a bundle. `'wasm'` opts that row back to a module upgrade. */
   let shipModeByCanister = $state<Record<string, 'wasm' | 'bundle'>>({});
   let namespaceByCanister = $state<Record<string, string>>({});
   let bundleNamespaces = $state<string[]>([]);
-  let contentSheet = $state<Sheet | null>(null);
   let applyAllWasmKey = $state('');
   let autoApprove = $state(true);
   let runPipeline = $state(true);
@@ -121,9 +121,8 @@
 
   const backendWasms = $derived(catalogBackendWasms(wasms));
 
-  /** A page canister. Live rows sometimes keep kind `backend` while wasm_type is `assets`. */
   function isPageCanister(c: Canister): boolean {
-    return c.kind === 'frontend' || (c.wasm_type || '').toLowerCase() === 'assets';
+    return c.kind === 'frontend';
   }
 
   function shipMode(c: Canister): 'wasm' | 'bundle' {
@@ -146,13 +145,13 @@
 
   const approvalPolicy = $derived(batonDefaultApprovalPolicy(config));
 
-  function catalogBackendWasms(list: AuthorizedWasm[]): AuthorizedWasm[] {
+  function catalogBackendWasms(list: Wasm[]): Wasm[] {
     return list
       .filter((w) => !isBatonWasm(w.key) && !isMultisigWasm(w.key))
       .sort((a, b) => a.key.localeCompare(b.key));
   }
 
-  function defaultWasmKeys(catalog: AuthorizedWasm[] = backendWasms): Record<string, string> {
+  function defaultWasmKeys(catalog: Wasm[] = backendWasms): Record<string, string> {
     const keys: Record<string, string> = {};
     for (const c of upgradeCandidates) {
       if (c.canister_id) {
@@ -189,11 +188,11 @@
     namespaceByCanister = {};
   }
 
-  function fillNamespaces(sheet: Sheet | null) {
+  function fillNamespaces() {
     const next = { ...namespaceByCanister };
     for (const c of upgradeCandidates) {
       if (isPageCanister(c) && c.canister_id && !next[c.canister_id]) {
-        next[c.canister_id] = defaultNamespaceFor(sheet, c.name);
+        next[c.canister_id] = defaultNamespaceFor(allRows, c.name);
       }
     }
     namespaceByCanister = next;
@@ -201,7 +200,7 @@
 
   async function loadWasms() {
     try {
-      wasms = await listAuthorizedWasms('');
+      wasms = await wasmList();
     } catch {
       wasms = [];
     }
@@ -211,15 +210,8 @@
   }
 
   async function loadNamespaces() {
-    try {
-      const doc = await getSheetDocument();
-      contentSheet = doc.sheet;
-      bundleNamespaces = knownContentNamespaces(doc.sheet);
-    } catch {
-      contentSheet = null;
-      bundleNamespaces = [];
-    }
-    if (open) fillNamespaces(contentSheet);
+    bundleNamespaces = knownContentNamespaces(allRows);
+    if (open) fillNamespaces();
   }
 
   function toggle() {
@@ -254,7 +246,7 @@
     applyAllWasmKey = key;
   }
 
-  function resolveWasm(canisterId: string): AuthorizedWasm | null {
+  function resolveWasm(canisterId: string): Wasm | null {
     const key = wasmKeysByCanister[canisterId]?.trim();
     if (!key) return null;
     return backendWasms.find((w) => w.key === key) ?? null;
@@ -375,13 +367,10 @@
       }).join(', ');
       if (viaCasals && bundleOnly) {
         appendClientLog(`Asking Casals to propose a bundle: ${plan}`);
-        const filed = await proposeAssets({
-          targets: bundleTargets.map((c) => ({
-            canister: c.name,
-            namespace: (namespaceByCanister[c.canister_id] || '').trim(),
-          })),
-        });
-        if (!filed.ok) throw new Error(filed.error || 'propose_assets failed');
+        const filed = await batonProposeContent(bundleTargets[0].stand, bundleTargets.map((c) => ({
+          canister: c.name,
+          namespace: (namespaceByCanister[c.canister_id] || '').trim(),
+        })));
         const actionId = String(filed.action_id || '');
         appendClientLog(`Bundle proposal ${actionId} filed. Casals has voted.`);
         toasts.success(
@@ -393,13 +382,10 @@
       }
       if (viaCasals) {
         appendClientLog(`Asking Casals to propose: ${plan}`);
-        const filed = await proposeUpgrade({
-          targets: selectedTargets.map((c) => ({
-            canister: c.name,
-            wasm_key: resolveWasm(c.canister_id)!.key,
-          })),
-        });
-        if (!filed.ok) throw new Error(filed.error || 'propose_upgrade failed');
+        const filed = await batonProposeUpgrade(selectedTargets[0].stand, selectedTargets.map((c) => ({
+          canister: c.name,
+          wasm: resolveWasm(c.canister_id)!.key,
+        })));
         const actionId = String(filed.action_id || '');
         appendClientLog(`Proposal ${actionId} filed. Casals has voted.`);
         toasts.success(
@@ -612,7 +598,7 @@
                       if (checked && isPageCanister(c) && !namespaceByCanister[cid]) {
                         namespaceByCanister = {
                           ...namespaceByCanister,
-                          [cid]: defaultNamespaceFor(contentSheet, c.name),
+                          [cid]: defaultNamespaceFor(allRows, c.name),
                         };
                       }
                     }}
@@ -620,8 +606,8 @@
                   <span class="min-w-0 flex-1">
                     <span class="font-medium">{c.name || cid.slice(0, 8)}</span>
                     <span class="block text-xs font-mono text-primary-400 truncate">{cid}</span>
-                    {#if c.wasm_key}
-                      <span class="block text-xs text-primary-500">installed: {c.wasm_key}</span>
+                    {#if c.wasm}
+                      <span class="block text-xs text-primary-500">installed: {c.wasm}</span>
                     {/if}
                   </span>
                 </label>
@@ -678,7 +664,7 @@
                     >
                       <option value="">— select —</option>
                       {#each options as w (w.key)}
-                        <option value={w.key}>{w.key} ({shortHash(w.wasm_hash)})</option>
+                        <option value={w.key}>{w.key} ({shortHash(w.sha256)})</option>
                       {/each}
                     </select>
                   </div>

@@ -23,13 +23,9 @@ export function inferWasmType(wasmKey: string | undefined): WasmType {
   return '';
 }
 
-export function resolveWasmType(canister: {
-  wasm_key?: string;
-  wasm_type?: string;
-}): WasmType {
-  const t = (canister.wasm_type ?? '').trim();
-  if (t) return t;
-  return inferWasmType(canister.wasm_key);
+/** A catalog row's `type`, else inferred from the wasm key. */
+export function resolveWasmType(x: { wasm?: string; key?: string; type?: string }): WasmType {
+  return (x.type ?? '').trim() || inferWasmType(x.wasm ?? x.key);
 }
 
 /** Tags shown on orchestra canister rows (role + runtime when relevant). */
@@ -58,19 +54,9 @@ export function hasBasiliskFeatures(wasmType: WasmType): boolean {
   return t === 'basilisk' || t === 'baton';
 }
 
-/** Which optional Basilisk endpoints a canister has. The conductor records
- * them from the installed Candid; canisters installed before it did (null)
- * fall back to the wasm type. */
-export function canisterFeatures(canister: {
-  features?: string[] | null;
-  wasm_type?: string;
-  wasm_key?: string;
-}): { browse: boolean; shell: boolean } {
-  if (Array.isArray(canister.features)) {
-    return { browse: canister.features.includes('browse'), shell: canister.features.includes('shell') };
-  }
-  const legacy = hasBasiliskFeatures(resolveWasmType(canister));
-  return { browse: legacy, shell: legacy };
+/** Basilisk canisters answer `__browse__`. */
+export function canBrowse(canister: { wasm?: string }): boolean {
+  return hasBasiliskFeatures(resolveWasmType(canister));
 }
 
 export function wasmTypeBadgeClass(tag: string): string {

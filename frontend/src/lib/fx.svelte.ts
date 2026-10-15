@@ -2,10 +2,10 @@
 //
 // Cycle counts are rendered with a small gray "≈ <currency>" annotation. The
 // conversion factor (millionths of the display currency per 1T cycles) is
-// fetched and cached server-side; here we just hold the latest snapshot so any
+// computed by the off-chain monitor; here we just hold the latest snapshot so any
 // component can show the equivalent without re-fetching.
 
-import { cyclesToFiat, formatFiat, loadFxInfo, refreshFxRate } from './api';
+import { cyclesToFiat, formatFiat, monitorFx, monitorRefreshFx } from './api';
 
 export const fx = $state<{
   currency: string;
@@ -21,7 +21,7 @@ export const fx = $state<{
 
 export async function loadFx(): Promise<void> {
   try {
-    const info = await loadFxInfo();
+    const info = await monitorFx();
     if (!info) return;
     fx.currency = info.display_currency || 'USD';
     fx.microPerTcycle = info.fx_micro_per_tcycle || 0;
@@ -33,11 +33,7 @@ export async function loadFx(): Promise<void> {
 }
 
 export async function ensureFx(): Promise<void> {
-  try {
-    await refreshFxRate();
-  } catch {
-    // ignore — fall back to whatever the cached metadata gives us
-  }
+  await monitorRefreshFx();
   await loadFx();
 }
 

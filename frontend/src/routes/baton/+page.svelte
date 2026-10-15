@@ -2,8 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { candidUiUrl, getTree, refreshControllersCache, backendCanisterId, frontendCanisterId, type Tree } from '$lib/api';
-  import { hydrateTreeControllers } from '$lib/controllerAccess';
+  import { candidUiUrl, loadView, type OrchestraView } from '$lib/api';
   import {
     batonLoadSnapshot,
     batonDisplayCommanders,
@@ -17,7 +16,7 @@
   import { batonSupportsQuorumApproval } from '$lib/batonApproval';
   import { batonActionSummary, batonProposalPath, batonStatusClass } from '$lib/batonProposalView';
   import { isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
-  import { canActOnStand, orchestraSection } from '$lib/commanderPermissions';
+  import { canActOnCanister } from '$lib/commanderPermissions';
   import { findStandForCanister } from '$lib/orchestrationNav';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
@@ -31,7 +30,7 @@
   let managed = $state<string[]>([]);
   let actions = $state<BatonActionRecord[]>([]);
   let policy = $state<unknown | null>(null);
-  let tree = $state<Tree | null>(null);
+  let tree = $state<OrchestraView | null>(null);
   const pendingCount = $derived(actions.filter((a) => !isTerminal(a.status)).length);
 
   const blockingAction = $derived(
@@ -44,12 +43,8 @@
 
   const casalsDeploy = $derived.by(() => {
     if (!$isAuthenticated || !tree || !canisterId || !$principal) return false;
-    const loc = findStandForCanister(tree, canisterId);
-    if (!loc) return false;
-    const section = tree.sections.find((s) => s.name === loc.section);
-    const stand = section?.stands.find((s) => s.name === loc.stand);
-    if (!section || !stand) return false;
-    return canActOnStand(section, stand, $principal, 'canister.deploy', orchestraSection(tree));
+    const c = tree.orchestra.canisters.find((x) => x.canister_id === canisterId);
+    return !!c && canActOnCanister(tree, $principal, c, 'canister.deploy');
   });
 
   function isTerminal(status?: string): boolean {
@@ -71,28 +66,14 @@
     try {
       const [snap, treeData] = await Promise.all([
         batonLoadSnapshot(canisterId),
-        getTree().catch(() => null),
+        loadView().catch(() => null),
       ]);
       config = snap.config;
       commanders = snap.commanders;
       managed = snap.managed;
       actions = snap.actions.sort((a, b) => (b.proposed_at ?? 0) - (a.proposed_at ?? 0));
       policy = snap.policy;
-      if (treeData) {
-        const extra = [backendCanisterId(), frontendCanisterId(), canisterId, ...snap.managed].filter(Boolean);
-        const stale = extra.some((mid) => {
-          const c = treeData.sections.flatMap((s) => s.stands).flatMap((st) => st.canisters)
-            .find((x) => x.canister_id === mid);
-          return !c || !(c.controllers?.length);
-        });
-        if (stale) {
-          await refreshControllersCache().catch(() => undefined);
-        }
-        const fresh = stale ? await getTree().catch(() => treeData) : treeData;
-        tree = (await hydrateTreeControllers(fresh, extra, { force: stale })).tree;
-      } else {
-        tree = treeData;
-      }
+      tree = treeData;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {

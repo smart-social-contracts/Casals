@@ -1,5 +1,5 @@
 import type { Identity } from '@dfinity/agent';
-import { casalsMetadata, type AuthorizedWasm } from './api';
+import { orchestraGet, type CanisterRow, type Wasm } from './api';
 import {
   batonGetConfig,
   batonProposeManagedUpgrade,
@@ -10,7 +10,6 @@ import {
 } from './batonClient';
 import { createHttpAgent } from './asyncAgent';
 import { icHost, isLocalHost } from './ic-host';
-import { upgradeMemoryKeepForWasm } from './wasmStorePath';
 
 export async function fetchCanisterModuleHash(
   canisterId: string,
@@ -42,8 +41,7 @@ async function ensureBatonWasmStore(
   batonId: string,
   identity: Identity,
 ): Promise<void> {
-  const meta = await casalsMetadata();
-  const storeId = (meta.wasm_store_canister_id || '').trim();
+  const storeId = (await orchestraGet()).store_id;
   if (!storeId) {
     throw new Error('WASM store not bound on Casals — run `casals up` (conductor.store) first');
   }
@@ -58,34 +56,20 @@ async function ensureBatonWasmStore(
   }
 }
 
-// The EOP `keep` rule lives with the other pure catalog helpers (tested there).
-export { upgradeMemoryKeepForWasm };
-
 export function wasmCatalogFamily(key: string): string {
   const i = key.indexOf('@');
   return i >= 0 ? key.slice(0, i) : key;
 }
 
-/** Authorized WASMs compatible with a canister (same catalog family or wasm_type). */
-export function wasmsForCanister(
-  canister: { wasm_key?: string; wasm_type?: string },
-  catalog: AuthorizedWasm[],
-): AuthorizedWasm[] {
-  const family = wasmCatalogFamily(canister.wasm_key || '');
-  const wasmType = (canister.wasm_type || '').toLowerCase();
-  const filtered = catalog.filter((w) => {
-    if (family && wasmCatalogFamily(w.key) === family) return true;
-    if (wasmType && (w.wasm_type || '').toLowerCase() === wasmType) return true;
-    return false;
-  });
+/** Authorized wasms of the canister's family, else the whole catalog. */
+export function wasmsForCanister(canister: Pick<CanisterRow, 'wasm'>, catalog: Wasm[]): Wasm[] {
+  const family = wasmCatalogFamily(canister.wasm);
+  const filtered = catalog.filter((w) => family && wasmCatalogFamily(w.key) === family);
   return filtered.length ? filtered : catalog;
 }
 
-export function defaultWasmKeyForCanister(
-  canister: { wasm_key?: string; wasm_type?: string },
-  catalog: AuthorizedWasm[],
-): string {
-  const current = (canister.wasm_key || '').trim();
+export function defaultWasmKeyForCanister(canister: Pick<CanisterRow, 'wasm'>, catalog: Wasm[]): string {
+  const current = canister.wasm.trim();
   const options = wasmsForCanister(canister, catalog);
   if (current && options.some((w) => w.key === current)) return current;
   return options[0]?.key ?? '';
@@ -94,7 +78,7 @@ export function defaultWasmKeyForCanister(
 export interface BatonUpgradeTargetInput {
   canisterId: string;
   cachedModuleHash?: string;
-  wasm: AuthorizedWasm;
+  wasm: Wasm;
 }
 
 export interface PrepareBatonUpgradeResult {
@@ -149,12 +133,9 @@ export async function prepareBatonManagedUpgrade(args: {
 
   for (const t of uniqueTargets) {
     const wasm = t.wasm;
-    const postHash = (wasm.wasm_hash || '').toLowerCase();
-    const registryNamespace = (wasm.registry_namespace || '').trim();
-    const registryPath = (wasm.registry_path || '').trim();
-    if (!registryNamespace || !registryPath) {
-      throw new Error(`WASM ${wasm.key} is missing registry_namespace or registry_path`);
-    }
+    const postHash = wasm.sha256.toLowerCase();
+    const [registryNamespace, registryPath] = wasm.path.replace(/^\/+/, '').split(/\/(.*)/s);
+    if (!registryNamespace || !registryPath) throw new Error(`WASM ${wasm.key} has no store path`);
 
     onStep?.(`Reading module hash for ${t.canisterId.slice(0, 5)}…`);
     const preHash = await fetchCanisterModuleHash(t.canisterId, {
@@ -172,7 +153,7 @@ export async function prepareBatonManagedUpgrade(args: {
       registry_namespace: registryNamespace,
       registry_path: registryPath,
       upgrade_args_hex: '',
-      upgrade_memory_keep: upgradeMemoryKeepForWasm(wasm),
+      upgrade_memory_keep: wasm.memory_keep === 'true',
     };
     if (smokeTest?.method?.trim()) {
       target.smoke_test = {

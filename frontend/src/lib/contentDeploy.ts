@@ -3,50 +3,29 @@
  * and the multisig proposal form. No runtime imports (node --test runs the
  * tests without a bundler).
  *
- * A frontend serves a *bundle*: the files of one store namespace. The sheet
- * names that namespace on the canister (`content`), and `registry.bundles`
- * lists the namespaces it fills. Shipping is the conductor's `deploy_content`
+ * A frontend serves a *bundle*: the files of one store namespace, named by
+ * the canister's `content`. Shipping is the conductor's `content_deploy`
  * (all rounds, one call); the multisig reaches it through `CallCanister`.
  */
 
-import type { Sheet } from './api';
+import type { CanisterRow } from './api';
 
-/** The conductor endpoint both entry points call. */
-export const DEPLOY_CONTENT_METHOD = 'deploy_content';
+/** The conductor method both entry points call. */
+export const DEPLOY_CONTENT_METHOD = 'content_deploy';
 
-/** Sheet name of the conductor's own UI canister (`sheetv2.CONDUCTOR_NAMES.frontend`). */
-const CONDUCTOR_FRONTEND = 'casals-frontend';
-
-type Block = { content?: unknown } | null | undefined;
-
-/** canister name → store namespace, for every frontend the sheet gives a `content`. */
-export function contentByCanister(sheet: Sheet | null | undefined): Map<string, string> {
-  const out = new Map<string, string>();
-  if (!sheet) return out;
-  const conductor = (sheet as { conductor?: { frontend?: Block } }).conductor;
-  const fe = conductor?.frontend;
-  if (fe && typeof fe.content === 'string' && fe.content.trim()) out.set(CONDUCTOR_FRONTEND, fe.content.trim());
-  for (const sec of sheet.sections ?? []) {
-    for (const st of sec.stands ?? []) {
-      for (const c of st.canisters ?? []) {
-        if (c?.name && typeof c.content === 'string' && c.content.trim()) out.set(c.name, c.content.trim());
-      }
-    }
-  }
-  return out;
+/** canister name → store namespace, for every frontend that serves one. */
+export function contentByCanister(canisters: Pick<CanisterRow, 'name' | 'content'>[]): Map<string, string> {
+  return new Map(canisters.filter((c) => c.content.trim()).map((c) => [c.name, c.content.trim()]));
 }
 
-/** Namespaces worth offering: `registry.bundles` paths plus every canister `content`. */
-export function knownContentNamespaces(sheet: Sheet | null | undefined): string[] {
-  const out = new Set<string>();
-  for (const row of sheet?.registry?.bundles ?? []) if (row?.path) out.add(row.path);
-  for (const ns of contentByCanister(sheet).values()) out.add(ns);
-  return [...out].sort();
+/** Namespaces worth offering: every canister's `content`. */
+export function knownContentNamespaces(canisters: Pick<CanisterRow, 'name' | 'content'>[]): string[] {
+  return [...new Set(contentByCanister(canisters).values())].sort();
 }
 
-/** The namespace a canister ships by default (its sheet `content`), else ''. */
-export function defaultNamespaceFor(sheet: Sheet | null | undefined, canisterName: string): string {
-  return contentByCanister(sheet).get(canisterName) ?? '';
+/** The namespace a canister ships by default, else ''. */
+export function defaultNamespaceFor(canisters: Pick<CanisterRow, 'name' | 'content'>[], canisterName: string): string {
+  return contentByCanister(canisters).get(canisterName) ?? '';
 }
 
 /** A store namespace is a slash-separated path outside `wasm/` (mirrors the upload dialog). */
@@ -62,7 +41,7 @@ export interface DeployBundleArgs {
   bundle_sha256?: string;
 }
 
-/** The JSON `deploy_content` takes — what a `CallCanister` proposal carries as `arg_json`. */
+/** The JSON `content_deploy` takes — what a `CallCanister` proposal carries as `arg_json`. */
 export function deployBundleArgJson(args: DeployBundleArgs): string {
   const out: Record<string, string> = { canister: args.canister.trim(), namespace: args.namespace.trim() };
   const h = (args.bundle_sha256 ?? '').trim().toLowerCase();

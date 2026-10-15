@@ -1,24 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    getTree, setCommander, removeCommander, setPermissions, setCanisterCalls, myCanisterCalls, callCanister,
-    listPermissions, listBackendControllers,
-    casalsMetadata,
-    type Tree, type Permission, type CanisterCallGrant, type RunnableCanisterCall,
-  } from '$lib/api';
+  import { callCanister, grantRemove, grantSet, loadView, type CallGrant, type Grant, type OrchestraView } from '$lib/api';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
-  import { entityCommanders, isUnclaimedSlot } from '$lib/commanderAccess';
+  import { allGrants, isUnclaimed } from '$lib/commanderAccess';
   import { codeChecksum, generateAccessCode, shortChecksum } from '$lib/accessCode';
-  import { identity, isAuthenticated, principal } from '$lib/auth';
+  import { isAuthenticated, isController, principal } from '$lib/auth';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
   import {
     OPERATOR_ACCESS_TABS,
-    ORCHESTRA_SECTION,
-    assignableSections,
+    PERMISSIONS,
     describeOperatorAccess,
     groupPermissions,
-    isOrchestraSectionName,
+    isCasalsSection,
     scopeLabel,
     type OperatorAccessTab,
     type OperatorScope,
@@ -28,40 +22,35 @@
 
   interface CommanderRow {
     scope: OperatorScope;
-    section: string;          // backing section row ("Casals" for orchestra scope)
+    /** the grant's scope string: `orchestra`, `section:<name>` or `stand:<name>` */
+    key: string;
+    section: string;
     stand?: string;
     principal: string;        // principal, or `sha256:<hex>` for an unclaimed slot
-    label: string;            // hierarchy path label
-    permissions: string[];    // resolved granted keys
-    allPermissions: boolean;  // true => full access ("*")
-    unclaimed: boolean;       // access-code slot nobody has redeemed yet
-    codeChecksum?: string;    // checksum of the code a claimed commander redeemed
-    calls: CanisterCallGrant[];
+    label: string;
+    permissions: string[];
+    allPermissions: boolean;
+    unclaimed: boolean;
+    calls: CallGrant[];
   }
 
-  let tree = $state<Tree | null>(null);
-  let catalog = $state<Permission[]>([]);
-  let controllerPrincipals = $state<string[]>([]);
-  let orchestraName = $state('');
+  interface RunnableCall extends CallGrant {
+    canister_name: string;
+  }
+
+  const catalog = PERMISSIONS;
+  let tree = $state<OrchestraView | null>(null);
   let loading = $state(true);
   let error = $state('');
   let filterQuery = $state('');
   let activeTab = $state<OperatorAccessTab>('roles');
+  const orchestraName = $derived(tree?.orchestra.name ?? '');
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const [t, perms, controllers, meta] = await Promise.all([
-        getTree(),
-        listPermissions().catch(() => []),
-        listBackendControllers().catch(() => []),
-        casalsMetadata().catch(() => null),
-      ]);
-      tree = t;
-      controllerPrincipals = controllers;
-      orchestraName = (meta?.orchestra_name ?? '').trim();
-      if (perms.length) catalog = perms;
+      tree = await loadView();
     } catch (e: any) {
       error = e?.message ?? 'Failed to load data';
     } finally {
@@ -69,65 +58,36 @@
     }
   }
 
-  onMount(() => { refresh(); });
+  onMount(() => { load(); });
 
-  // Catalog grouped by group, in declaration order.
   const groupedCatalog = $derived.by(() => groupPermissions(catalog));
 
   const operatorStatus = $derived.by(() =>
-    describeOperatorAccess($principal, controllerPrincipals, rows, orchestraName),
+    describeOperatorAccess($principal, $isController === true ? [$principal] : [], rows, orchestraName),
   );
 
   const labelFor = (key: string) => catalog.find((p) => p.key === key)?.label ?? key;
 
-  const principalLabels = $derived.by(() => buildPrincipalLabels(tree));
+  const principalLabels = $derived.by(() => (tree ? buildPrincipalLabels(tree) : new Map<string, string>()));
 
-  // Flatten tree + Casals backend controllers into commander rows.
+  function rowOf(g: Grant, scope: OperatorScope, section: string, stand?: string): CommanderRow {
+    return {
+      scope, key: g.scope, section, stand, principal: g.principal,
+      label: scopeLabel({ scope, section, stand }, orchestraName),
+      permissions: g.permissions, allPermissions: g.permissions.includes('*'),
+      unclaimed: isUnclaimed(g), calls: g.calls,
+    };
+  }
+
   const rows = $derived.by((): CommanderRow[] => {
-    const out: CommanderRow[] = [];
-    for (const principal of controllerPrincipals) {
-      out.push({
-        scope: 'controller',
-        section: '',
-        principal,
-        label: 'Casals controller',
-        permissions: [],
-        allPermissions: true,
-        unclaimed: false,
-        calls: [],
-      });
-    }
-    if (!tree) return out;
-    // Orchestra rung first: the backend stores `conductor.commanders` on a
-    // synthetic section; those commanders act on every section and stand.
-    const sections = [...tree.sections].sort(
-      (a, b) => Number(isOrchestraSectionName(b.name)) - Number(isOrchestraSectionName(a.name)),
-    );
-    for (const sec of sections) {
-      const orchestra = isOrchestraSectionName(sec.name);
-      for (const cmd of entityCommanders(sec)) {
-        const scope: OperatorScope = orchestra ? 'orchestra' : 'section';
-        out.push({
-          scope, section: sec.name, principal: cmd.principal,
-          label: scopeLabel({ scope, section: sec.name }, orchestraName),
-          permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
-          unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
-          calls: cmd.calls ?? [],
-        });
-      }
-      for (const dk of sec.stands) {
-        for (const cmd of entityCommanders(dk)) {
-          out.push({
-            scope: 'stand', section: sec.name, stand: dk.name, principal: cmd.principal,
-            label: scopeLabel({ scope: 'stand', section: sec.name, stand: dk.name }, orchestraName),
-            permissions: cmd.permissions ?? [], allPermissions: cmd.all_permissions ?? true,
-            unclaimed: isUnclaimedSlot(cmd), codeChecksum: cmd.code_checksum,
-            calls: cmd.calls ?? [],
-          });
-        }
-      }
-    }
-    return out;
+    if (!tree) return [];
+    return [
+      ...tree.grants.map((g) => rowOf(g, 'orchestra', '')),
+      ...tree.sections.flatMap((sec) => [
+        ...sec.grants.map((g) => rowOf(g, 'section', sec.name)),
+        ...sec.stands.flatMap((st) => st.grants.map((g) => rowOf(g, 'stand', sec.name, st.name))),
+      ]),
+    ];
   });
 
   const filteredRows = $derived.by(() => {
@@ -155,8 +115,7 @@
   }
 
   // ── Assign commander modal ──────────────────────────────────────────────────
-  const sectionOptions = $derived(assignableSections((tree?.sections ?? []).map((s) => s.name)));
-  const hasOrchestraRung = $derived((tree?.sections ?? []).some((s) => isOrchestraSectionName(s.name)));
+  const sectionOptions = $derived((tree?.sections ?? []).map((s) => s.name).filter((n) => !isCasalsSection(n)));
   function standNames(sectionName: string) {
     return (tree?.sections.find((s) => s.name === sectionName)?.stands ?? []).map((d) => d.name);
   }
@@ -222,14 +181,10 @@
     if (!assignReady) return;
     busy = true;
     try {
-      const target = assignScope === 'orchestra'
-        ? { section: ORCHESTRA_SECTION }
-        : assignScope === 'stand' && assignStand
-          ? { stand: assignStand }
-          : { section: assignSection };
-      const permissions: string[] | '*' = assignAllChecked ? '*' : [...assignPerms];
-      const commander_principal = assignMode === 'code' ? assignCodeChecksum : assignPrincipal.trim();
-      await setCommander({ ...target, commander_principal, permissions });
+      const scope = assignScope === 'orchestra' ? 'orchestra'
+        : assignScope === 'stand' && assignStand ? `stand:${assignStand}` : `section:${assignSection}`;
+      const who = assignMode === 'code' ? assignCodeChecksum : assignPrincipal.trim();
+      await grantSet({ scope, principal: who, permissions: assignAllChecked ? ['*'] : [...assignPerms] });
       if (assignMode === 'code') {
         // Keep the dialog open: this is the last time the plaintext code is visible.
         mintedCode = assignCode;
@@ -275,10 +230,7 @@
     if (!confirm(`Remove ${who} from ${where}?`)) return;
     busy = true;
     try {
-      const target = row.scope === 'stand' && row.stand
-        ? { stand: row.stand }
-        : { section: row.section };
-      await removeCommander({ ...target, commander_principal: row.principal });
+      await grantRemove(row.key, row.principal);
       toasts.success('Commander removed');
       await load();
     } catch (e: any) {
@@ -292,10 +244,7 @@
     if (!permsRow) return;
     busy = true;
     try {
-      const target = permsRow.scope === 'stand' ? { stand: permsRow.stand! } : { section: permsRow.section };
-      // Collapse a full set to "*" so it reads as full access.
-      const permissions: string[] | '*' = allChecked ? '*' : [...permsSelected];
-      await setPermissions({ ...target, commander_principal: permsRow.principal, permissions });
+      await grantSet({ scope: permsRow.key, principal: permsRow.principal, permissions: allChecked ? ['*'] : [...permsSelected], calls: permsRow.calls });
       toasts.success('Permissions updated');
       permsOpen = false;
       await load();
@@ -307,28 +256,17 @@
   }
 
   // ── Canister calls ──────────────────────────────────────────────────────────
-  let myCalls = $state<RunnableCanisterCall[]>([]);
   let runArg = $state<Record<string, string>>({});
   let runReply = $state<Record<string, string>>({});
+  const names = $derived(Object.fromEntries((tree?.orchestra.canisters ?? []).map((c) => [c.canister_id, c.name])));
+  const myCalls = $derived<RunnableCall[]>(
+    tree ? allGrants(tree).filter((g) => g.principal === $principal).flatMap((g) => g.calls)
+      .map((c) => ({ ...c, canister_name: names[c.canister_id] ?? c.canister_id })) : [],
+  );
 
-  async function loadCalls() {
-    if (!$isAuthenticated) {
-      myCalls = [];
-      return;
-    }
-    try {
-      myCalls = await myCanisterCalls();
-    } catch {
-      myCalls = [];
-    }
-  }
+  const refresh = load;
 
-  const refresh = async () => {
-    await load();
-    await loadCalls();
-  };
-
-  function callKey(call: RunnableCanisterCall) {
+  function callKey(call: CallGrant) {
     return `${call.canister_id}:${call.method}`;
   }
 
@@ -339,16 +277,12 @@
     return '';
   }
 
-  async function submitCall(call: RunnableCanisterCall) {
+  async function submitCall(call: RunnableCall) {
     const key = callKey(call);
     busy = true;
     runReply[key] = '';
     try {
-      const res = await callCanister({
-        canister: call.canister_id,
-        method: call.method,
-        arg: runArg[key] ?? '',
-      });
+      const res = await callCanister(call.canister_name, call.method, runArg[key] ?? '');
       runReply[key] = res.reply ?? '';
       toasts.success(res.truncated ? 'Call returned (reply truncated)' : 'Call returned');
     } catch (e: any) {
@@ -360,39 +294,20 @@
 
   let callsOpen = $state(false);
   let callsRow = $state<CommanderRow | null>(null);
-  let callsDraft = $state<CanisterCallGrant[]>([]);
+  let callsDraft = $state<CallGrant[]>([]);
   let callsCanister = $state('');
   let callsMethod = $state('');
 
+  /** Canisters a grant's scope covers. */
   function canistersFor(row: CommanderRow) {
-    const sections = tree?.sections ?? [];
-    const rows: { id: string; label: string }[] = [];
-    for (const sec of sections) {
-      const orchestra = isOrchestraSectionName(sec.name);
-      for (const stand of sec.stands) {
-        if (row.scope === 'stand' && stand.name !== row.stand) continue;
-        if (row.scope === 'section' && sec.name !== row.section) continue;
-        // Orchestra grants cover every canister. Section and stand grants stay
-        // in that scope; a same-named stand on the synthetic orchestra section
-        // is not offered to a product stand.
-        if (
-          row.scope !== 'controller' &&
-          (row.scope === 'orchestra' || !orchestra || sec.name === row.section)
-        ) {
-          for (const c of stand.canisters) {
-            if (!c.canister_id) continue;
-            if (row.scope === 'section' && sec.name !== row.section) continue;
-            rows.push({ id: c.canister_id, label: `${c.name} (${c.canister_id})` });
-          }
-        }
-      }
-    }
-    return rows;
+    return (tree?.orchestra.canisters ?? [])
+      .filter((c) => c.canister_id && (row.scope === 'orchestra' || (row.scope === 'section' ? c.section === row.section : c.stand === row.stand)))
+      .map((c) => ({ id: c.canister_id, label: `${c.name} (${c.canister_id})` }));
   }
 
   function openCalls(row: CommanderRow) {
     callsRow = row;
-    callsDraft = row.calls.map((c) => ({ canister: c.canister, method: c.method }));
+    callsDraft = row.calls.map((c) => ({ ...c }));
     const options = canistersFor(row);
     callsCanister = options[0]?.id ?? '';
     callsMethod = '';
@@ -403,8 +318,8 @@
     const canister = callsCanister.trim();
     const method = callsMethod.trim();
     if (!canister || !method) return;
-    if (callsDraft.some((c) => c.canister === canister && c.method === method)) return;
-    callsDraft = [...callsDraft, { canister, method }];
+    if (callsDraft.some((c) => c.canister_id === canister && c.method === method)) return;
+    callsDraft = [...callsDraft, { canister_id: canister, method }];
     callsMethod = '';
   }
 
@@ -416,14 +331,7 @@
     if (!callsRow) return;
     busy = true;
     try {
-      const target = callsRow.stand
-        ? { stand: callsRow.stand }
-        : { section: callsRow.section };
-      await setCanisterCalls({
-        ...target,
-        commander_principal: callsRow.principal,
-        calls: callsDraft,
-      });
+      await grantSet({ scope: callsRow.key, principal: callsRow.principal, permissions: callsRow.permissions, calls: callsDraft });
       toasts.success('Canister calls saved');
       callsOpen = false;
       await refresh();
@@ -597,8 +505,6 @@
                 {/if}
                 {#if unclaimed}
                   <span class="badge shrink-0 bg-amber-50 text-amber-800 border border-amber-200">unclaimed</span>
-                {:else if pRows.some((r) => r.codeChecksum)}
-                  <span class="badge shrink-0 badge-neutral" title="Joined by redeeming an access code">via code</span>
                 {/if}
               </div>
               <div class="font-mono text-xs text-primary-400 truncate mt-0.5" title={pl.title}>
@@ -660,7 +566,7 @@
                       <span class="inline-flex items-center rounded bg-primary-50 border border-primary-100 px-2 py-0.5 text-[11px] text-primary-600">{labelFor(key)}</span>
                     {/each}
                   {/if}
-                  {#each row.calls as call (`${call.canister}:${call.method}`)}
+                  {#each row.calls as call (`${call.canister_id}:${call.method}`)}
                     <span class="inline-flex items-center rounded bg-primary-50 border border-primary-100 px-2 py-0.5 text-[11px] font-mono text-primary-600">{call.method}</span>
                   {/each}
                 </div>
@@ -701,9 +607,7 @@
       <div>
         <span class="label">Scope</span>
         <div class="flex gap-2 mt-1">
-          {#if hasOrchestraRung}
-            <button class="btn-sm {assignScope === 'orchestra' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'orchestra'; assignStand = ''; }}>Orchestra</button>
-          {/if}
+          <button class="btn-sm {assignScope === 'orchestra' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'orchestra'; assignStand = ''; }}>Orchestra</button>
           <button class="btn-sm {assignScope === 'section' ? 'btn-primary' : 'btn-secondary'}" onclick={() => { assignScope = 'section'; assignStand = ''; }}>Section</button>
           <button class="btn-sm {assignScope === 'stand' ? 'btn-primary' : 'btn-secondary'}" onclick={() => (assignScope = 'stand')}>Stand</button>
         </div>
@@ -866,9 +770,9 @@
         <p class="text-sm text-primary-400">No calls granted.</p>
       {:else}
         <ul class="space-y-2">
-          {#each callsDraft as call, i (`${call.canister}:${call.method}:${i}`)}
+          {#each callsDraft as call, i (`${call.canister_id}:${call.method}:${i}`)}
             <li class="flex items-center gap-2 text-sm">
-              <span class="font-mono text-xs text-primary-700 flex-1 break-all">{call.method} · {call.canister}</span>
+              <span class="font-mono text-xs text-primary-700 flex-1 break-all">{call.method} · {names[call.canister_id] ?? call.canister_id}</span>
               <button type="button" class="btn-ghost btn-sm text-xs text-red-600" onclick={() => removeCallDraft(i)}>Remove</button>
             </li>
           {/each}

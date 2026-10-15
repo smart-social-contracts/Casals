@@ -57,7 +57,7 @@ test('deploy-bundle call is described as a frontend publish', () => {
   const action = {
     CallCanister: {
       canister: 'casals-backend',
-      method: 'deploy_content',
+      method: 'content_deploy',
       arg_json: JSON.stringify({
         canister: 'website',
         namespace: 'frontend/website/main',

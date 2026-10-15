@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
-  import { candidUiUrl, refreshControllersCache } from '$lib/api';
+  import { candidUiUrl } from '$lib/api';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import {
     batonGetAction,
@@ -209,7 +209,6 @@
       const res = await batonSkipBakeAndComplete(canisterId, action.action_id, id);
       if (!res.ok) throw new Error(res.error || 'Could not complete proposal');
       toasts.success('Proposal marked COMPLETE');
-      await refreshControllersCache().catch(() => {});
       await reload();
     } catch (e: unknown) {
       toasts.error(e instanceof Error ? e.message : String(e));
@@ -226,17 +225,10 @@
     pipelineLines = [clientLogLine('Starting pipeline…')];
     pipelineStatus = '…';
     try {
-      const final = await batonRunPipeline(canisterId, actionId, id, (progressUpdate) => {
-        absorbPipelineProgress(progressUpdate);
-        const st = progressUpdate.action?.status;
-        if (st === 'FINALIZING' || st === 'COMPLETE' || progressUpdate.execute.status === 'VERIFYING') {
-          void refreshControllersCache().catch(() => {});
-        }
-      });
+      const final = await batonRunPipeline(canisterId, actionId, id, absorbPipelineProgress);
       if (!final.ok) throw new Error(final.error || `Stopped at ${final.status}`);
       pipelineStatus = final.status || pipelineStatus || 'COMPLETE';
       toasts.success(final.status === 'COMPLETE' ? 'Pipeline complete' : `Finished: ${final.status}`);
-      if (final.status === 'COMPLETE') await refreshControllersCache().catch(() => {});
       await reload();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

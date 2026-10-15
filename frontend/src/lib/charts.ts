@@ -1,6 +1,5 @@
 // Tiny dependency-free charting helpers (SVG-rendered in LineChart/Treemap).
 
-import { topupSourceSuffix } from '$lib/api';
 //
 // We hand-roll these instead of pulling in a charting library: the data is
 // small (a handful of canisters, a few hundred samples) and the static adapter
@@ -792,11 +791,10 @@ export function downloadTextFile(filename: string, text: string, mime = 'text/cs
 }
 
 const CHART_MARKER_META: Record<string, { label: string; text: string; color: string }> = {
-  cycles_topup: { label: 'Top-up', text: '↑', color: '#10b981' },
-  cycles_return: { label: 'Return', text: '↓', color: '#f59e0b' },
-  treasury_spent: { label: 'Treasury spend', text: '¢', color: '#ef4444' },
-  cycles_icp_convert: { label: 'ICP convert', text: '⇄', color: '#6366f1' },
-  treasury_cycles_deposit: { label: 'Treasury deposit', text: '+', color: '#14b8a6' },
+  cycles_top_up: { label: 'Top-up', text: '↑', color: '#10b981' },
+  canister_destroy: { label: 'Destroyed (cycles returned)', text: '↓', color: '#f59e0b' },
+  cycles_send: { label: 'Treasury send', text: '¢', color: '#ef4444' },
+  cycles_refresh: { label: 'Refresh (ICP converted)', text: '⇄', color: '#6366f1' },
 };
 
 export const CHART_MARKER_LEGEND: ChartMarkerLegendItem[] = Object.entries(CHART_MARKER_META).map(
@@ -814,49 +812,21 @@ function markerFmtCycles(n: unknown): string {
   return `${tc.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} TC`;
 }
 
-function markerFmtIcp(e8s: unknown): string {
-  const v = typeof e8s === 'number' ? e8s : Number(e8s);
-  if (!Number.isFinite(v)) return '—';
-  const icp = v / 1e8;
-  return `${icp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ICP`;
-}
-
-function chartMarkerCopy(
-  btype: string,
-  payload: Record<string, unknown>,
-  canisterName?: string,
-  caller?: string,
-  monitorPrincipal?: string,
-): { title: string; detail: string } {
-  const who = canisterName ? canisterName : 'Treasury';
-  switch (btype) {
-    case 'cycles_topup':
-      return {
-        title: `Top-up · ${who}`,
-        detail: `${markerFmtCycles(payload.amount)}${topupSourceSuffix(payload, caller, monitorPrincipal)}`,
-      };
-    case 'cycles_return':
-      return {
-        title: `Return · ${who}`,
-        detail: `${markerFmtCycles(payload.amount)} to treasury`,
-      };
-    case 'treasury_spent':
-      return {
-        title: 'Treasury spent on top-ups',
-        detail: `${markerFmtCycles(payload.amount)} · balance ${markerFmtCycles(payload.balance)}`,
-      };
-    case 'cycles_icp_convert':
-      return {
-        title: 'ICP converted to cycles',
-        detail: `${markerFmtIcp(payload.icp_e8s)} → ${markerFmtCycles(payload.cycles)}`,
-      };
-    case 'treasury_cycles_deposit':
-      return {
-        title: 'Treasury cycles deposit',
-        detail: `+${markerFmtCycles(payload.amount)} · balance ${markerFmtCycles(payload.balance)}`,
-      };
+function chartMarkerCopy(type: string, payload: Record<string, unknown>, canisterName?: string, caller?: string,
+  monitorPrincipal?: string): { title: string; detail: string } {
+  const who = canisterName || String(payload.canister ?? payload.stand ?? 'Treasury');
+  const by = caller && caller === monitorPrincipal ? ' (monitor)' : '';
+  switch (type) {
+    case 'cycles_top_up':
+      return { title: `Top-up · ${who}`, detail: `${payload.amount == null ? 'policy amount' : markerFmtCycles(payload.amount)}${by}` };
+    case 'canister_destroy':
+      return { title: `Destroyed · ${who}`, detail: 'cycles returned to the treasury' };
+    case 'cycles_send':
+      return { title: 'Treasury send', detail: `${payload.all ? 'everything spendable' : markerFmtCycles(payload.amount)} → ${payload.canister_id}` };
+    case 'cycles_refresh':
+      return { title: 'Balances refreshed', detail: 'treasury ICP converted to cycles' };
     default:
-      return { title: btype, detail: '' };
+      return { title: type, detail: '' };
   }
 }
 
@@ -881,8 +851,8 @@ export function valueNearTime(points: PlotPoint[], t: number): number | null {
 
 export function orchestrationEventToMarker(
   e: {
-    btype: string;
-    timestamp_secs: number;
+    type: string;
+    ts: number;
     canister_id?: string;
     caller?: string;
     payload?: Record<string, unknown>;
@@ -891,15 +861,14 @@ export function orchestrationEventToMarker(
   monitorPrincipal?: string,
   targetSeriesName?: string,
 ): ChartEventMarker | null {
-  const meta = CHART_MARKER_META[e.btype];
+  const meta = CHART_MARKER_META[e.type];
   if (!meta) return null;
-  const payload = e.payload ?? {};
-  const copy = chartMarkerCopy(e.btype, payload, canisterName, e.caller, monitorPrincipal);
+  const copy = chartMarkerCopy(e.type, e.payload ?? {}, canisterName, e.caller, monitorPrincipal);
   return {
-    time: e.timestamp_secs,
+    time: e.ts,
     text: meta.text,
     color: meta.color,
-    btype: e.btype,
+    btype: e.type,
     label: meta.label,
     title: copy.title,
     detail: copy.detail,

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import type { Tree } from '$lib/api';
-  import { casalsMetadata } from '$lib/api';
+  import { orchestraGet, type OrchestraView } from '$lib/api';
   import { identity, isAuthenticated, loginInternetIdentity, principal } from '$lib/auth';
   import {
     BATON_CAPABILITIES,
@@ -28,7 +27,7 @@
     commanders: BatonCommander[];
     managed: string[];
     policy: unknown | null;
-    tree?: Tree | null;
+    tree?: OrchestraView | null;
     onsuccess?: () => void;
   }
 
@@ -119,11 +118,9 @@
     requiredApprovers = Object.fromEntries(
       candidates.map((c) => [c.principal, requiredSet.has(c.principal.toLowerCase())]),
     );
-    void casalsMetadata()
-      .then((m) => {
-        if (!wasmStoreId.trim() && m.wasm_store_canister_id) {
-          wasmStoreId = m.wasm_store_canister_id;
-        }
+    void orchestraGet()
+      .then((o) => {
+        if (!wasmStoreId.trim() && o.store_id) wasmStoreId = o.store_id;
       })
       .catch(() => {});
     newCommander = '';

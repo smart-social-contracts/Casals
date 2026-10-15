@@ -2,9 +2,9 @@
   import { fade, scale } from 'svelte/transition';
   import { get } from 'svelte/store';
   import { identity } from '$lib/auth';
-  import { beginUpload, endUpload, listStoreFiles } from '$lib/api';
-  import { formatBytes, uploadBundleToStore } from '$lib/wasmStoreClient';
-  import { bundleNamespace, parseBundleFilename, pathUnderNamespace } from '$lib/wasmStorePath';
+  import { orchestraGet, wasmUploadBegin, wasmUploadEnd } from '$lib/api';
+  import { formatBytes, listStore, uploadBundleToStore } from '$lib/wasmStoreClient';
+  import { bundleNamespace, parseBundleFilename, pathUnderNamespace, storeKey } from '$lib/wasmStorePath';
   import type { BundleUploadProgress } from '$lib/wasmStoreClient';
   import {
     bundleDiff,
@@ -43,7 +43,6 @@
   let progress = $state<BundleUploadProgress>({ sent: 0, total: 0, filesDone: 0, files: 0, phase: 'chunks' });
   let onChainHash = $state('');
   let onChainFiles = $state(0);
-  let outOfScope = $state<string[]>([]);
   const busy = $derived(phase === 'hashing' || phase === 'uploading' || phase === 'verifying');
   const nsOk = $derived(/^[^\s/][^\s]*$/.test(namespace.trim()) && !namespace.split('/').includes('..') && !namespace.startsWith('wasm/') && namespace.trim() !== 'wasm');
   const uploadBytes = $derived(files.filter((f) => diff.upload.includes(f.path)).reduce((n, f) => n + f.bytes.length, 0));
@@ -59,17 +58,18 @@
 
   async function compare() {
     // What the store holds for this namespace right now → what changes.
-    const rows = await listStoreFiles(namespace.trim());
-    // Paths come from the key, relative to *this* namespace — the listing's own
-    // `path` field is not guaranteed to be (it once split on the first slash).
-    existing = Object.fromEntries(
-      rows.flatMap((r) => {
-        const path = pathUnderNamespace(r.key, namespace.trim());
-        return path ? [[path, r.sha256] as const] : [];
-      }),
-    );
+    const ns = namespace.trim();
+    existing = byPath(await listStore((await orchestraGet()).store_id, storeKey(ns, '')), ns);
     diff = bundleDiff(existing, hashesOf(files));
-    say(`store ${namespace.trim()}: ${rows.length} file(s) → ${diff.upload.length} to write, ${diff.unchanged.length} unchanged, ${diff.delete.length} to remove`);
+    say(`store ${ns}: ${Object.keys(existing).length} file(s) → ${diff.upload.length} to write, ${diff.unchanged.length} unchanged, ${diff.delete.length} to remove`);
+  }
+
+  /** store key → sha256, as bundle path → sha256 under `ns`. */
+  function byPath(keys: Record<string, string>, ns: string): Record<string, string> {
+    return Object.fromEntries(Object.entries(keys).flatMap(([k, sha]) => {
+      const path = pathUnderNamespace(k, ns);
+      return path ? [[path, sha] as const] : [];
+    }));
   }
 
   async function pickDirectory(event: Event) {
@@ -133,36 +133,33 @@
     phase = 'uploading';
     let ticket;
     try {
-      ticket = await beginUpload({ namespace: ns });
-      say(`store ${ticket.store_canister_id}: Commit granted for ${ticket.key_prefix} until ${new Date(ticket.expires_at * 1000).toLocaleTimeString()}`);
+      ticket = await wasmUploadBegin();
+      say(`store ${ticket.store_id}: Commit granted until ${new Date(ticket.expires_at * 1000).toLocaleTimeString()}`);
       const toWrite = files.filter((f) => diff.upload.includes(f.path));
       await uploadBundleToStore({
         identity: id,
-        storeCanisterId: ticket.store_canister_id,
+        storeCanisterId: ticket.store_id,
         namespace: ns,
         files: toWrite.map((f) => ({ ...f, contentType: contentTypeFor(f.path) })),
         deletePaths: diff.delete,
-        chunkBytes: ticket.chunk_bytes,
         onProgress: (p) => {
           progress = p;
         },
       });
       say(`committed one batch: ${toWrite.length} file(s) written, ${diff.delete.length} removed`);
       phase = 'verifying';
-      const receipt = await endUpload('', ns, true);
-      onChainHash = receipt.bundle_sha256 ?? '';
-      onChainFiles = Object.keys(receipt.files ?? {}).length;
-      outOfScope = receipt.out_of_scope_deleted ?? [];
+      const have = byPath(Object.fromEntries(Object.entries((await wasmUploadEnd(storeKey(ns, ''))).files)
+        .map(([k, f]) => [k, f.sha256])), ns);
+      onChainHash = await bundleHash(have);
+      onChainFiles = Object.keys(have).length;
       say(`store now holds ${onChainFiles} file(s), bundle sha256 ${onChainHash.slice(0, 12)}…`);
-      if (outOfScope.length) say(`removed ${outOfScope.length} file(s) written outside ${ticket.key_prefix}`);
       if (onChainHash !== localHash) {
         // Name the difference: files the store has that the bundle does not,
         // and vice versa — a mismatch should never be a bare pair of hashes.
         const want = hashesOf(files);
-        const have = receipt.files ?? {};
         const extra = Object.keys(have).filter((p) => !(p in want));
         const missing = Object.keys(want).filter((p) => !(p in have));
-        const changed = Object.keys(want).filter((p) => p in have && have[p]?.sha256 !== want[p]);
+        const changed = Object.keys(want).filter((p) => p in have && have[p] !== want[p]);
         say(`mismatch: ${extra.length} extra in store, ${missing.length} missing, ${changed.length} differ`);
         for (const p of extra.slice(0, 8)) say(`  extra   ${p}`);
         for (const p of missing.slice(0, 8)) say(`  missing ${p}`);
@@ -172,7 +169,7 @@
       phase = 'uploaded';
     } catch (e: any) {
       error = e?.message ?? String(e);
-      if (ticket) await endUpload().catch(() => {});
+      if (ticket) await wasmUploadEnd().catch(() => {});
       phase = 'ready';
     }
   }

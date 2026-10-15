@@ -1,10 +1,8 @@
-import { getTree } from './api';
-import { findMultisigCanister } from './orchestraGovernance';
+import { orchestraGet } from './api';
 
-/** Resolve the orchestra multisig canister id (URL param wins, else the tree). */
+/** Resolve the orchestra multisig canister id (URL param wins, else the conductor's). */
 export async function resolveMultisigCanisterId(urlId?: string | null): Promise<string> {
   const fromUrl = (urlId ?? '').trim();
   if (fromUrl) return fromUrl;
-  const tree = await getTree().catch(() => null);
-  return findMultisigCanister(tree)?.canister_id?.trim() ?? '';
+  return (await orchestraGet().catch(() => null))?.multisig_id?.trim() ?? '';
 }
