@@ -19,7 +19,7 @@ import os
 import shutil
 import tempfile
 
-from casals_cli.sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES
+from casals_cli.sheetv2 import CONDUCTOR_KEYS, CONDUCTOR_NAMES, ResolveContext, resolve_partial
 
 from casals_cli.bindings import Bindings
 from casals_cli.multisig import ensure_control
@@ -176,6 +176,24 @@ def frontend_dist(sheet: dict, *, sheet_dir: str, project_root: str, progress=No
     return ensure_asset_build("frontend", project_root, progress=progress), False
 
 
+def frontend_files(sheet: dict, env: str, backend_id: str) -> dict[str, str]:
+    """`conductor.frontend.files` as deployed, resolved for `env` (with `ic-domains` from `domains`)."""
+    resolved, _ = resolve_partial(sheet, env, ResolveContext(self_id=backend_id))
+    return ((resolved.get("conductor") or {}).get("frontend") or {}).get("files") or {}
+
+
+def with_files(dist: str, files: dict[str, str]) -> str:
+    """A copy of `dist` with `files` added; the caller deletes it."""
+    tmp = tempfile.mkdtemp(prefix="casals-ui-")
+    shutil.copytree(dist, tmp, dirs_exist_ok=True)
+    for rel, text in files.items():
+        dest = os.path.join(tmp, rel.lstrip("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(text)
+    return tmp
+
+
 def bootstrap_conductor(
     ic,
     sheet: dict,
@@ -223,23 +241,20 @@ def _bootstrap_declared(
     project_dir = bindings.icp_project_dir
     for key in declared:
         name = CONDUCTOR_NAMES[key]
-        # Regenerate the private icp project each round so a UI deployed now sees
-        # the backend ids created in earlier rounds.
-        write_icp_project(project_dir, casals_dist, bindings.env, ic.network_url, bindings.conductor)
+        files = frontend_files(sheet, bindings.env, bindings.conductor.get(CONDUCTOR_NAMES["backend"], "")) if key == "frontend" else {}
+        dist = with_files(casals_dist, files) if files else casals_dist
+        try:
+            # Regenerate the private icp project each round so a UI deployed now sees
+            # the backend ids created in earlier rounds.
+            write_icp_project(project_dir, dist, bindings.env, ic.network_url, bindings.conductor)
+            if key in ASSET_KEYS:
+                bootstrap_asset_canister(ic, bindings, key=key, project_dir=project_dir, dist_path=dist,
+                                         deployer=deployer, multisig_id=multisig_id, progress=progress)
+                continue
+        finally:
+            if dist != casals_dist:
+                shutil.rmtree(dist, ignore_errors=True)
         existing_id = bindings.conductor.get(name, "")
-        if key in ASSET_KEYS:
-            bootstrap_asset_canister(
-                ic,
-                bindings,
-                key=key,
-                project_dir=project_dir,
-                dist_path=casals_dist,
-                deployer=deployer,
-                multisig_id=multisig_id,
-                progress=progress,
-            )
-            continue
-
         wasm_path = None
         try:
             wasm_path, expected_hash = _store_wasm_path(
