@@ -17,6 +17,7 @@ from casals_cli.bindings import Bindings, load_bindings, resolve_new_access_code
 from casals_cli.conductor import bootstrap_conductor
 from casals_cli.normalize import normalize
 from casals_cli.registry import ensure_registry_uploads
+from casals_cli.replica import canister_http_url
 from casals_cli.runlog import detail, logged_run, summary
 from casals_cli.sheetv2 import CONDUCTOR_NAMES, env_block, validate
 from casals_cli.util import cycles_to_tc, load_json_file, tc_to_cycles
@@ -302,6 +303,14 @@ def adopt(ic, doc: dict, backend_id: str, deployer: str) -> None:
                     ic.settings_update(c["canister_id"], add_controllers=[backend_id])
 
 
+def _print_ui_url(ic, bindings) -> None:
+    frontend = bindings.conductor.get(CONDUCTOR_NAMES["frontend"], "")
+    if not frontend:
+        return
+    local = any(h in ic.network_url for h in ("127.0.0.1", "localhost"))
+    summary(f"Open {canister_http_url(frontend, url=ic.network_url) if local else f'https://{frontend}.icp0.io/'}")
+
+
 def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_override, project_root, bootstrap):
     deployer = ic.deployer_principal()
     summary(f"\n{'Planning' if dry_run else 'Installing'} {sheet_name} on {env} ({ic.network_url})\n")
@@ -313,6 +322,7 @@ def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_ov
     backend_id = bindings.casals_backend_id
     if built(ic, backend_id):
         summary(f"{sheet_name} is already built; `up` runs once — use `casals upgrade` or the UI from here.")
+        _print_ui_url(ic, bindings)
         return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": [],
                 "built": True, "bindings": bindings.to_dict()}
     if dry_run and not backend_id:
@@ -348,5 +358,6 @@ def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_ov
     bindings.save()
     _summary_step(6, "Handed off " + (", ".join(changed) or "nothing") + "; bindings saved")
     summary(f"Done in {_elapsed()}.")
+    _print_ui_url(ic, bindings)
     return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": res["plan"],
             "bindings": bindings.to_dict(), "canisters": {c["name"]: c["canister_id"] for c in view["canisters"]}}
