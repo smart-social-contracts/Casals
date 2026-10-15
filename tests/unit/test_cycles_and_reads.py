@@ -73,7 +73,7 @@ def test_orchestra_reads_settings_and_scopes():
     mine = call("orchestra_get", "ann")
     assert (mine["name"], mine["currency"], mine["aliases"], mine["scoped"]) == ("Demo", "EUR", {"ann": "Ann"}, True)
     assert [c["name"] for c in mine["canisters"]] == ["api"] and mine["contacts"] == {}
-    assert [s["name"] for s in mine["stands"]] == ["d1"]
+    assert [s["name"] for s in mine["stands"]] == ["d1"] and len(mine["sections"]) == 1
     assert mine["email"] == "ann@example.org"
     assert call("orchestra_get", "ops")["contacts"] == {"ann": "ann@example.org"}
     call("alias_set", "ops", principal="ann", name=None)
