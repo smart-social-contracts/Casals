@@ -1,7 +1,7 @@
 # Baton orchestrator
 
 Application-agnostic managed-canister upgrade orchestrator (Basilisk / Python),
-version 1.6.0 (`BATON_VERSION` in `src/config.py`; `get_config` reports it).
+version 1.6.1 (`BATON_VERSION` in `src/config.py`; `get_config` reports it).
 
 See [issue #9](https://github.com/smart-social-contracts/Casals/issues/9).
 
