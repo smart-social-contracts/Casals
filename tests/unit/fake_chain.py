@@ -128,6 +128,12 @@ def deposit(cid, cycles):
 
 
 @gen
+def deposit_account(owner, cycles):
+    state["balance"] -= cycles
+    state.setdefault("accounts", {})[owner] = state.get("accounts", {}).get(owner, 0) + cycles
+
+
+@gen
 def convert_icp():
     minted, state["icp"] = state.get("icp", 0) * 100, 0
     state["balance"] += minted

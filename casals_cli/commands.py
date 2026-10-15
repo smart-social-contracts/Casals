@@ -124,7 +124,9 @@ def cmd_destroy(ic, args) -> None:
         emit_json({"ok": False, "error": "product drain incomplete; conductor left intact", "drained": drained,
                    "failed": failed})
         return
-    sent = _call(ic, backend, "cycles_send", {"canister_id": args.to, "all": True}) if getattr(args, "to", None) else None
+    target = ({"account": args.account} if getattr(args, "account", None)
+              else {"canister_id": args.to} if getattr(args, "to", None) else None)
+    sent = _call(ic, backend, "cycles_send", {**target, "all": True}) if target else None
     ids = {**(bindings.conductor if bindings else {}), "casals-backend": backend, "multisig": multisig}
     deleted = []
     for name in [n for n in ("casals-frontend", "casals-store", "multisig", "casals-backend") if ids.get(n)]:
@@ -159,7 +161,8 @@ def cmd_cycles(ic, args) -> None:
 
 def cmd_treasury_send(ic, args) -> None:
     backend, _ = _backend(args)
-    payload = {"canister_id": args.to, **({"all": True} if getattr(args, "all", False) else {"amount": int(args.amount)})}
+    payload = {**({"account": args.account} if args.account else {"canister_id": args.to}),
+               **({"all": True} if getattr(args, "all", False) else {"amount": int(args.amount)})}
     emit_json(_call(ic, backend, "cycles_send", payload))
 
 

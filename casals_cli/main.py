@@ -103,9 +103,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         sub.add_parser(name, help=help_text).add_argument("sheet", nargs="?", help="path to casals.json")
 
-    send_p = sub.add_parser("treasury-send", help="deposit treasury cycles into any canister id (controller/multisig)")
+    send_p = sub.add_parser("treasury-send", help="send treasury cycles to a canister or a cycles-ledger account (controller/multisig)")
     send_p.add_argument("sheet", nargs="?", help="path to casals.json")
-    send_p.add_argument("--to", required=True, help="target canister id (e.g. the conductor that replaces this one)")
+    dest = send_p.add_mutually_exclusive_group(required=True)
+    dest.add_argument("--to", help="target canister id (e.g. the conductor that replaces this one)")
+    dest.add_argument("--account", help="principal whose cycles-ledger balance receives the cycles")
     grp = send_p.add_mutually_exclusive_group(required=True)
     grp.add_argument("--amount", type=int, help="cycles to send")
     grp.add_argument("--all", action="store_true", help="everything above the treasury reserve")
@@ -123,6 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     destroy_p.add_argument("--all", action="store_true")
     destroy_p.add_argument("--confirm-destructive", action="store_true")
     destroy_p.add_argument("--to", default=None, help="send the treasury to this canister before deleting the conductor")
+    destroy_p.add_argument("--account", default=None, help="or to this principal's cycles-ledger balance")
 
     reg_p = sub.add_parser("register", help="register an existing canister")
     reg_p.add_argument("stand")

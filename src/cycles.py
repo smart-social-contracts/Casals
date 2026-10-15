@@ -71,6 +71,11 @@ def cycles_top_up(principal, args):
 def cycles_send(principal, args):
     yield from chain.convert_icp()
     amount = treasury()["spendable"] if args.get("all") else int(args["amount"])
+    if "account" in args:
+        if amount > treasury()["spendable"]:
+            raise ValueError(f"insufficient treasury: spendable {treasury()['spendable']}")
+        yield from chain.deposit_account(args["account"], amount)
+        return {"account": args["account"], "sent": amount, "treasury": treasury()}
     yield from spend(args["canister_id"], amount)
     return {"canister_id": args["canister_id"], "sent": amount, "treasury": treasury()}
 

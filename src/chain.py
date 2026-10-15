@@ -5,6 +5,7 @@ ANONYMOUS = "2vxsx-fae"
 MGMT = "aaaaa-aa"
 CMC = "rkp4c-7iaaa-aaaaa-aaaca-cai"
 LEDGER = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+CYCLES_LEDGER = "um5iw-rqaaa-aaaaq-qaaba-cai"
 ICP_FEE = 10_000
 ESCAPES = {"n": b"\n", "r": b"\r", "t": b"\t", '"': b'"', "\\": b"\\", "'": b"'"}
 
@@ -147,6 +148,11 @@ def snapshot(cid, action, snap=""):
 
 def deposit(cid, cycles):
     yield from call(MGMT, "deposit_cycles", f'(record {{ canister_id = principal "{cid}" }})', cycles)
+
+
+def deposit_account(owner, cycles):
+    yield from call(CYCLES_LEDGER, "deposit",
+                    f'(record {{ to = record {{ owner = principal "{owner}"; subaccount = null }}; memo = null }})', cycles)
 
 
 def label(name):

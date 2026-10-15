@@ -63,6 +63,13 @@ def test_send_moves_treasury_out():
     assert out["sent"] == state["canisters"]["dest"]["cycles"] and out["treasury"]["spendable"] == 0
 
 
+def test_send_pays_a_cycles_ledger_account():
+    funded()
+    out = call("cycles_send", account="me", amount=10**12)
+    assert out["sent"] == state["accounts"]["me"] == 10**12
+    assert "insufficient" in call("cycles_send", account="me", amount=10**18)["error"]
+
+
 def test_subnet_catalogue_refreshes_hourly():
     run(cycles.refresh_subnets())
     assert orchestra().creatable_subnets == ["sub-a", "sub-b"] and state["timers"][0][0] == 3600
