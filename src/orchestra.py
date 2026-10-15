@@ -7,7 +7,7 @@ SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "
 SHOWN = ("name", "description", "currency", "reserve", "policy", "subnets", "creatable_subnets", "subnets_at",
          "monitor", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id")
 CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "public", "tags", "controllers", "cycles",
-            "content")
+            "content", "snapshot")
 EVENTS_MAX = 2000
 
 
@@ -30,7 +30,7 @@ def orchestra_get(principal, args):
     o, scopes = orchestra(), reader_scopes(principal)
     shown = {k: getattr(o, k) for k in SHOWN}
     return {**shown, "canister_id": chain.self_id(), "scoped": scopes is not None, "canisters": tree(scopes),
-            "sections": [{"name": s.name, "description": s.description} for s in rows(Section)
+            "sections": [{"name": s.name, "description": s.description, "template": s.template} for s in rows(Section)
                          if scopes is None or any(readable(scopes, f"stand:{st.name}") for st in s.stands)],
             "stands": [{"name": s.name, "section": s.section.name, "description": s.description, "built_at": s.built_at,
                         "build_error": s.build_error, "members": s.members}

@@ -149,7 +149,16 @@ def deposit(cid, cycles):
     yield from call(MGMT, "deposit_cycles", f'(record {{ canister_id = principal "{cid}" }})', cycles)
 
 
+def label(name):
+    """How an untyped reply names the field `name`: by its candid hash, e.g. `5_035_232`."""
+    h = 0
+    for ch in name.encode():
+        h = (h * 223 + ch) % 2**32
+    return f"{h:_}"
+
+
 def number(reply, marker):
+    marker = marker if marker in reply or not marker.isidentifier() else label(marker)
     if marker not in reply:
         raise Exception(reply[:300])
     return int("".join(ch for ch in reply.split(marker, 1)[1].split(":")[0] if ch.isdigit()))
@@ -159,8 +168,8 @@ def all_principals(text):
     return [part.split('"', 1)[0] for part in text.split('principal "')[1:]]
 
 
-def account(owner, sub=b""):
-    return Principal.from_str(owner).to_account_id(int.from_bytes(sub, "big")).bytes
+def account(owner, sub=bytes(32)):
+    return bytes.fromhex(Principal.from_str(owner).to_account_id(sub).to_str()[2:])
 
 
 def convert_icp():

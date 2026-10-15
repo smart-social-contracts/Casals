@@ -123,6 +123,10 @@ def test_register_controllers_lifecycle_snapshots_delete():
     state["canisters"][cid]["module_hash"] = "changed"
     call("canister_restore", canister="api", snapshot_id=snap)
     assert state["canisters"][cid]["module_hash"] == Canister["api"].wasm_hash
+    state["canisters"][cid]["module_hash"] = "changed"
+    assert Canister["api"].snapshot == snap
+    call("canister_restore", canister="api")
+    assert state["canisters"][cid]["module_hash"] == Canister["api"].wasm_hash
     call("canister_delete", canister="api")
     assert Canister["api"] is None and cid in state["canisters"]
 

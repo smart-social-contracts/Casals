@@ -157,4 +157,23 @@ def access_code(o) -> None:
         raise Fail("the claimer still holds the grant")
 
 
-SCENARIOS = [fresh, idempotent, content_change, runtime_stand, baton_upgrade, access_code, export_roundtrip]
+def cycles_and_snapshot(o) -> None:
+    res = o.call("cycles_refresh")
+    if res.get("ok") is False or not any(c["cycles"] for c in res["canisters"]):
+        raise Fail(f"cycles_refresh read no balance: {res}")
+    view = o.view()
+    target = next((c for c in view["canisters"] if c["status"] == "ready" and c["wasm"].startswith("hello-world")
+                   and view["canister_id"] in c["controllers"]), None)
+    if target is None:
+        return
+    before = o.hashes()[target["name"]]
+    for method in ("canister_snapshot", "canister_restore"):
+        res = o.call(method, {"canister": target["name"]})
+        if not res.get("ok"):
+            raise Fail(f"{method} {target['name']}: {res}")
+    if o.hashes()[target["name"]] != before:
+        raise Fail("restoring the last snapshot changed the module")
+
+
+SCENARIOS = [fresh, idempotent, content_change, runtime_stand, baton_upgrade, access_code, cycles_and_snapshot,
+             export_roundtrip]

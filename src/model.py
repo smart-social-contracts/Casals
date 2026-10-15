@@ -83,6 +83,7 @@ class Canister(Entity):
     policy = Json({})
     tags = Json([])
     cycles = Integer(default=0)
+    snapshot = String(default="")
 
 
 class Wasm(Entity):

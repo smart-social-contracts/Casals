@@ -37,6 +37,13 @@ def test_refresh_converts_icp_and_stores_balances():
     assert state["canisters"][cid]["cycles"] == 2 * 10**12
 
 
+def test_refresh_reads_the_conductor_and_skips_canisters_it_cannot_read():
+    funded()
+    call("canister_register", stand="d1", name="self", canister_id="conductor")
+    call("canister_register", stand="d1", name="foreign", canister_id="nobody-controls-this")
+    out = {c["name"]: c["cycles"] for c in call("cycles_refresh")["canisters"]}
+    assert out["self"] == state["balance"] and out["foreign"] == 0 and out["api"] == 2 * 10**12
+
 def test_top_up_by_commander_and_monitor():
     cid = funded()
     grant("ann", "stand:d1", "cycles.top_up")

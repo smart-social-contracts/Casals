@@ -163,13 +163,14 @@ def canister_stop(principal, args):
 @op("canister.lifecycle", at="canister")
 def canister_snapshot(principal, args):
     c = find(Canister, args["canister"])
-    return {"canister_id": c.canister_id, "snapshot_id": (yield from chain.snapshot(c.canister_id, "take"))}
+    c.snapshot = yield from chain.snapshot(c.canister_id, "take")
+    return {"canister_id": c.canister_id, "snapshot_id": c.snapshot}
 
 
 @op("canister.lifecycle", at="canister")
 def canister_restore(principal, args):
     c = find(Canister, args["canister"])
-    yield from chain.snapshot(c.canister_id, "load", args["snapshot_id"])
+    yield from chain.snapshot(c.canister_id, "load", args.get("snapshot_id") or c.snapshot)
     return {"canister_id": c.canister_id}
 
 

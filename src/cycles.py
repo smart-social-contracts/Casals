@@ -38,8 +38,13 @@ def cycles_get(principal, args):
 def cycles_refresh(principal, args):
     converted = yield from chain.convert_icp()
     for c in rows(Canister):
-        if c.canister_id and not c.adopted:
-            c.cycles = (yield from chain.status(c.canister_id))["cycles"]
+        if c.canister_id == chain.self_id():
+            c.cycles = chain.balance()
+        elif c.canister_id:
+            try:
+                c.cycles = (yield from chain.status(c.canister_id))["cycles"]
+            except Exception:  # an adopted canister the conductor does not control
+                pass
     orchestra().balances_at = chain.now()
     return {**cycles_get(principal, args), "converted": converted}
 
