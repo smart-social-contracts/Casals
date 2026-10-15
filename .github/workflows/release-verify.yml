@@ -25,8 +25,10 @@ jobs:
   pypi-build:
     needs: verify
     if: ${{ github.event_name == 'release' }}
+    # GitHub checks every nested job's permissions; publish-pypi.yml's dispatch-only publish job asks for id-token.
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/publish-pypi.yml
 
   # Here, not in publish-pypi.yml: PyPI Trusted Publishing refuses reusable workflows.
