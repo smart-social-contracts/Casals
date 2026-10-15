@@ -1,6 +1,6 @@
 import chain
 from auth import find
-from canisters import destroy, hand_off, provision
+from canisters import destroy, hand_off, provision, require_control
 from content import sync
 from grants import rescope, upsert
 from model import Canister, Event, Grant, Section, Stand, rename, resolve, rows
@@ -127,6 +127,7 @@ def stand_delete(principal, args):
 @op("stand.delete", at="stand")
 def stand_destroy(principal, args):
     stand, swept = find(Stand, args["stand"]), 0
+    yield from require_control(stand.canisters)
     for c in list(stand.canisters):
         swept += yield from destroy(c)
     forget(stand)

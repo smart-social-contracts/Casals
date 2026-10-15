@@ -49,7 +49,7 @@ class HttpResponse(Record):
 
 
 def start():
-    rounds.resume()
+    rounds.resume({steps})
     chain.set_timer(0, cycles.refresh_subnets)
 
 
@@ -93,7 +93,7 @@ def icrc10_supported_standards() -> text:
 '''
 
 def registry():
-    ops, modules = {}, set()
+    ops, modules, steps = {}, set(), []
     for path in sorted(SRC.glob("*.py")):
         for node in ast.parse(path.read_text()).body:
             for dec in getattr(node, "decorator_list", []):
@@ -101,17 +101,20 @@ def registry():
                     read = any(k.arg == "read" and k.value.value for k in dec.keywords)
                     ops[node.name] = (read, path.stem)
                     modules.add(path.stem)
-    return dict(sorted(ops.items())), sorted(modules)
+                if isinstance(dec, ast.Call) and getattr(dec.func, "id", "") == "step":
+                    steps.append(f"{path.stem}.{node.name}")
+    return dict(sorted(ops.items())), sorted(modules), steps
 
 
 def render():
-    ops, modules = registry()
+    ops, modules, steps = registry()
+    assert {s.split(".")[0] for s in steps} <= set(modules), "a @step module must also define an @op"
     imports = "\n".join(f"import {m}  # noqa: E402" for m in modules if m not in ("cycles",))
     stubs = "\n" + "".join(
         f"@query\ndef {name}(args: text) -> text: return run(dispatch({module}.{name}, args))\n" if read else
         f"@update\ndef {name}(args: text) -> Async[text]: return (yield from dispatch({module}.{name}, args))\n"
         for name, (read, module) in ops.items())
-    return HEAD.format(imports=imports) + stubs
+    return HEAD.format(imports=imports, steps=", ".join(steps)) + stubs
 
 
 def main():

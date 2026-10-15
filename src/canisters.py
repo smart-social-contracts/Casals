@@ -56,6 +56,19 @@ def hand_off(c, stand=None):
     c.status = "ready"
 
 
+def require_control(cs):
+    """Destroy needs the conductor as controller; a handed-off canister is governed elsewhere."""
+    governed = []
+    for c in cs:
+        try:
+            c.canister_id and (yield from chain.status(c.canister_id))
+        except Exception:
+            governed.append(c.name)
+    if governed:
+        raise ValueError(f"{', '.join(governed)}: governed by {orchestra().multisig_id or 'its controllers'}, "
+                         "not the conductor; the conductor cannot destroy it")
+
+
 def destroy(c):
     cid = c.canister_id
     yield from chain.update_settings(cid, freezing=0)
@@ -184,5 +197,6 @@ def canister_delete(principal, args):
 @op("controller", at="canister")
 def canister_destroy(principal, args):
     c = find(Canister, args["canister"])
+    yield from require_control([c])
     cid = c.canister_id
     return {"canister_id": cid, "swept": (yield from destroy(c))}

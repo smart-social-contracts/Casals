@@ -68,6 +68,38 @@ def test_checksum_mismatch_and_failed_round():
     assert call("content_status", "ann")["deploys"] == []
 
 
+def test_watchdog_fails_a_round_that_trapped(monkeypatch):
+    import content
+    import op
+    import rounds
+
+    class Trap(BaseException):  # like an IC trap, it escapes `except Exception`
+        pass
+
+    frontend()
+    call("content_deploy", canister="web", namespace="web/v1")
+    run_timers()
+    for _, dog in [t for t in state["timers"] if t[0] == rounds.WATCHDOG]:
+        dog()  # rounds that finished are left alone
+    assert call("content_status")["deploys"][0]["status"] == "done"
+
+    def trap(c, expected=""):
+        raise Trap()
+        yield
+    monkeypatch.setattr(content, "sync", trap)
+    state["timers"].clear()
+    rounds.schedule("content", "web")
+    try:
+        op.run(rounds.tick())
+    except Trap:
+        pass
+    assert rounds.queue == [] and rounds.running
+    [dog] = [cb for secs, cb in state["timers"] if secs == rounds.WATCHDOG]
+    dog()
+    deploy = call("content_status")["deploys"][0]
+    assert deploy["status"] == "failed" and "trapped" in deploy["error"] and not rounds.running
+
+
 def test_wasm_catalog_and_uploads():
     catalog()
     grant("dev", "orchestra", "wasm.upload", "wasm.authorize")

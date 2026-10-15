@@ -49,7 +49,7 @@ def test_failed_build_stops_and_create_retries():
     run_timers()
     assert Stand["t1"].built_at and not Stand["t1"].build_error
     assert call("stand_create", section="Tenants", name="t1")["created"] is False
-    assert state["timers"] == []
+    assert [t for t in state["timers"] if t[0] != rounds.WATCHDOG] == []
 
 
 def test_resume_after_upgrade_and_growth():
@@ -95,6 +95,8 @@ def test_stand_rename_delete_destroy():
     call("stand_create", section="Tenants", name="t1")
     run_timers()
     cids = [c.canister_id for c in Stand["t1"].canisters]
+    assert "governed by" in call("stand_destroy", stand="t1")["error"]
+    assert Stand["t1"] and all(c in state["canisters"] for c in cids)
     for cid in cids:
         state["canisters"][cid]["controllers"].append("conductor")
     out = call("stand_destroy", stand="t1")

@@ -108,6 +108,12 @@ def content_change(o) -> None:
     new_dir = os.path.join(o.home, "dist-v2")
     shutil.copytree(entry["source"].removeprefix("local:"), new_dir, dirs_exist_ok=True)
     open(os.path.join(new_dir, "v2.txt"), "w").write("only in v2\n")
+    # Past a list page (100 keys), each file carrying its .ic-assets headers, and one file of two chunks:
+    # the realm frontend (138 files) stalled at 100 when every round re-parsed the applied properties.
+    os.makedirs(os.path.join(new_dir, "bulk"), exist_ok=True)
+    for i in range(150):
+        open(os.path.join(new_dir, "bulk", f"f{i:03}.js"), "w").write(f"export const n = {i};\n")
+    open(os.path.join(new_dir, "bulk", "big.bin"), "wb").write(bytes(range(256)) * 10_000)
     packed = o.casals("bundle", new_dir, "-o", os.path.join(o.home, "v2.tgz"))
     changed = json.loads(json.dumps(o.sheet))
     changed["registry"]["bundles"].append({"path": entry["path"] + "-v2", "source": "local:" + os.path.join(o.home, "v2.tgz"),
@@ -124,8 +130,9 @@ def content_change(o) -> None:
         if {r["result"] for r in res["rows"]} != {"synced"}:
             raise Fail(f"upgrade --content {ns}: {res['rows']}")
         for name in frontends:
-            if (o.serves(name, "/v2.txt") is not None) is not present:
-                raise Fail(f"{name}: v2.txt {'missing' if present else 'still served'} after {ns}")
+            for page in ("/v2.txt", "/bulk/f149.js", "/bulk/big.bin"):
+                if (o.serves(name, page) is not None) is not present:
+                    raise Fail(f"{name}: {page} {'missing' if present else 'still served'} after {ns}")
         if present and os.path.exists(os.path.join(new_dir, ".ic-assets.json5")):
             for name in frontends:
                 for page in ("/index.html", "/v2.txt"):

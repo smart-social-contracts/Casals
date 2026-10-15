@@ -41,8 +41,9 @@ def sync(c, expected=""):
     if expected and bundle_hash(want) != expected:
         raise ValueError(f"store bundle {c.content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
     live = yield from store.files(c.canister_id)
+    applied = c.assets_props  # each read of a Json field parses it again
     writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]
-              or c.assets_props.get(k, {}) != want[k]["props"]]
+              or applied.get(k, {}) != want[k]["props"]]
     puts = []
     for key in writes[:MAX_FILES]:
         data = want[key]["text"].encode() if "text" in want[key] else (
@@ -51,7 +52,7 @@ def sync(c, expected=""):
     deletes = sorted(set(live) - set(want)) if len(writes) == len(puts) else []
     if puts or deletes:
         yield from store.apply(c.canister_id, puts, deletes)
-    kept = {k: p for k, p in c.assets_props.items() if k not in deletes and k not in writes[:MAX_FILES]}
+    kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
     return len(writes) - len(puts)
 
