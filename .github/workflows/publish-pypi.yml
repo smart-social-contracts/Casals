@@ -1,10 +1,10 @@
 # Publish ic-casals to https://pypi.org/project/ic-casals/ through PyPI Trusted
-# Publishing (OIDC): no token. PyPI matches the top-level workflow, so the
-# trusted publishers on pypi.org are release-verify.yml (the release path) and
-# publish-pypi.yml (manual dispatch); the caller grants `id-token: write`.
+# Publishing (OIDC): no token. PyPI rejects tokens from reusable workflows, so
+# this file only builds when called (release-verify.yml uploads the `pypi-dist`
+# artifact itself) and builds + uploads on manual dispatch. Trusted publishers
+# on pypi.org: release-verify.yml and publish-pypi.yml.
 name: Publish to PyPI
 
-# Called by release-verify.yml once a published release's signature checks out.
 on:
   workflow_dispatch:
   workflow_call:
@@ -13,11 +13,10 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -51,6 +50,24 @@ jobs:
           ic-casals-wheel/bin/pip install "$GITHUB_WORKSPACE"/dist/*.whl
           ic-casals-wheel/bin/casals -V
           ic-casals-wheel/bin/python -c "import importlib, pkgutil, casals_cli; [importlib.import_module('casals_cli.' + m.name) for m in pkgutil.iter_modules(casals_cli.__path__)]; print('imports ok', casals_cli.__version__)"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pypi-dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pypi-dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

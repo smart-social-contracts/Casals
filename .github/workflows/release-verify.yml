@@ -22,13 +22,30 @@ jobs:
       fingerprint: 6B7B038DEB77849F1F615E67CA38831314D6AA09
       revert_on_failure: ${{ github.event_name == 'release' }}
 
-  pypi:
+  pypi-build:
     needs: verify
     if: ${{ github.event_name == 'release' }}
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/publish-pypi.yml
+
+  # Here, not in publish-pypi.yml: PyPI Trusted Publishing refuses reusable workflows.
+  pypi:
+    needs: pypi-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pypi-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          skip-existing: true
 
   # The visitor path against what was just published: PyPI + this release.
   pypi-install-up:
