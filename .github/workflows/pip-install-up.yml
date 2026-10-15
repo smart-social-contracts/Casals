@@ -66,7 +66,8 @@ jobs:
           PIP_SPEC="ic-casals==${RELEASE#v}"
           echo "CASALS_PIP_SPEC=$PIP_SPEC" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
-            if python -m pip download --no-deps -q -d /tmp/pypi-probe "$PIP_SPEC"; then exit 0; fi
+            # --no-cache-dir: pip would otherwise keep serving the index page it cached before the upload.
+            if python -m pip download --no-cache-dir --no-deps -q -d /tmp/pypi-probe "$PIP_SPEC"; then exit 0; fi
             echo "not on PyPI yet ($i/30)"; sleep 20
           done
           exit 1
