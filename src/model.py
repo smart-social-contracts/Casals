@@ -76,6 +76,7 @@ class Canister(Entity):
     public = Boolean(default=False)
     install_arg = Json(None)
     content = String(default="")
+    assets_props = Json({})
     files = Json({})
     controllers = Json([])
     config = Json([])

@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 import chain
 import store
@@ -9,6 +10,7 @@ from rounds import schedule, step
 
 MAX_FILES = 10
 MANIFEST = ".casals-bundle.json"
+PROPERTIES = ".casals-assets.json"  # the bundle's .ic-assets.json5, resolved per file by the CLI
 TYPES = {"js": "text/javascript", "json": "application/json", "html": "text/html", "css": "text/css"}
 deploys = {}
 
@@ -25,10 +27,13 @@ def bundle_hash(want):
 def wanted(c):
     prefix = f"/{c.content}"
     published = (yield from store.files(orchestra().store_id, prefix + "/")) if c.content else {}
-    want = {k[len(prefix):]: v for k, v in published.items() if not k.endswith(MANIFEST)}
+    props = {}
+    if prefix + "/" + PROPERTIES in published:
+        props = json.loads((yield from store.read(orchestra().store_id, prefix + "/" + PROPERTIES)))
+    want = {k[len(prefix):]: v for k, v in published.items() if not k.endswith((MANIFEST, PROPERTIES))}
     for key, text in resolve(c.files, c.stand, c.canister_id).items():
         want[key] = {"sha256": sha(text.encode()), "type": TYPES.get(key.rsplit(".", 1)[-1], "text/plain"), "text": text}
-    return want
+    return {k: {**v, "props": props.get(k, {})} for k, v in want.items()}
 
 
 def sync(c, expected=""):
@@ -36,16 +41,19 @@ def sync(c, expected=""):
     if expected and bundle_hash(want) != expected:
         raise ValueError(f"store bundle {c.content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
     live = yield from store.files(c.canister_id)
-    writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]]
+    writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]
+              or c.assets_props.get(k, {}) != want[k]["props"]]
+    puts = []
     for key in writes[:MAX_FILES]:
         data = want[key]["text"].encode() if "text" in want[key] else (
             yield from store.read(orchestra().store_id, f"/{c.content}{key}"))
-        yield from store.put(c.canister_id, key, data, want[key]["type"])
-    if len(writes) > MAX_FILES:
-        return len(writes) - MAX_FILES
-    for key in sorted(set(live) - set(want)):
-        yield from store.delete(c.canister_id, key)
-    return 0
+        puts.append({**want[key], "key": key, "data": data, "replace": key in live})
+    deletes = sorted(set(live) - set(want)) if len(writes) == len(puts) else []
+    if puts or deletes:
+        yield from store.apply(c.canister_id, puts, deletes)
+    kept = {k: p for k, p in c.assets_props.items() if k not in deletes and k not in writes[:MAX_FILES]}
+    c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
+    return len(writes) - len(puts)
 
 
 def record(name, remaining, error=""):

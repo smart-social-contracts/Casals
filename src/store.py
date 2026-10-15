@@ -1,6 +1,10 @@
+import json
+
 from basilisk import Opt, Principal, Record, Service, Variant, Vec, blob, nat, service_query, service_update, text, void
 
 import chain
+
+CHUNK = 1_900_000
 
 
 class Permission(Variant, total=False):
@@ -59,16 +63,17 @@ class Chunk(Record):
     content: blob
 
 
-class StoreArg(Record):
-    key: text
-    content_type: text
-    content_encoding: text
-    content: blob
-    sha256: Opt[blob]
-
-
 class KeyArg(Record):
     key: text
+
+
+class ChunkIn(Record):
+    batch_id: nat
+    content: blob
+
+
+class ChunkOut(Record):
+    chunk_id: nat
 
 
 class Assets(Service):
@@ -79,7 +84,7 @@ class Assets(Service):
     def revoke_permission(self, arg: RevokeArg) -> void: ...
 
     @service_update
-    def store(self, arg: StoreArg) -> void: ...
+    def create_chunk(self, arg: ChunkIn) -> ChunkOut: ...
 
     @service_update
     def delete_asset(self, arg: KeyArg) -> void: ...
@@ -112,13 +117,43 @@ def files(canister_id, prefix=""):
             for enc in e["encodings"] if enc["content_encoding"] == "identity" and enc["sha256"]}
 
 
-def put(canister_id, key, content, content_type):
-    arg = {"key": key, "content_type": content_type, "content_encoding": "identity", "content": content, "sha256": None}
-    chain.ok((yield Assets(Principal.from_str(canister_id)).store(arg)))
+def lit(s):
+    return json.dumps(s, ensure_ascii=False)
 
 
-def delete(canister_id, key):
-    chain.ok((yield Assets(Principal.from_str(canister_id)).delete_asset({"key": key})))
+def some(value, show=lit):
+    return "null" if value is None else f"opt {show(value)}"
+
+
+def new_asset(f):
+    p = f["props"]
+    headers = "vec { " + "; ".join(f"record {{ {lit(k)}; {lit(v)} }}" for k, v in sorted((p.get("headers") or {}).items())) + " }"
+    return (f'(record {{ key = {lit(f["key"])}; content_type = {lit(f["type"])}; '
+            f'max_age = {some(p.get("max_age"), lambda n: f"({n} : nat64)")}; headers = {some(p.get("headers") or None, lambda _: headers)}; '
+            f'enable_aliasing = {some(p.get("enable_aliasing"))}; allow_raw_access = {some(p.get("allow_raw_access"))} }})')
+
+
+def asset_content(f, chunk_ids):
+    ids = "; ".join(f"({i} : nat)" for i in chunk_ids)
+    return (f'(record {{ key = {lit(f["key"])}; content_encoding = "identity"; chunk_ids = vec {{ {ids} }}; '
+            f'sha256 = opt blob {chain.blob(bytes.fromhex(f["sha256"]))} }})')
+
+
+def apply(canister_id, puts, deletes):
+    """Each file in `puts` recreated with its properties (only create_asset sets them all), then `deletes` removed."""
+    # Candid text: Basilisk's typed encoding lost the optional header list.
+    svc = Assets(Principal.from_str(canister_id))
+    batch = chain.number((yield from chain.call(canister_id, "create_batch", "(record {})")), "=") if puts else 0
+    for f in puts:
+        ids = []
+        for i in range(0, max(len(f["data"]), 1), CHUNK):
+            ids.append(chain.ok((yield svc.create_chunk({"batch_id": batch, "content": f["data"][i:i + CHUNK]})))["chunk_id"])
+        if f["replace"]:
+            chain.ok((yield svc.delete_asset({"key": f["key"]})))
+        yield from chain.call(canister_id, "create_asset", new_asset(f))
+        yield from chain.call(canister_id, "set_asset_content", asset_content(f, ids))
+    for key in deletes:
+        chain.ok((yield svc.delete_asset({"key": key})))
 
 
 def permit(store_id, principal, allow):

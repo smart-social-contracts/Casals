@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from casals_cli import bundle as _bundle
 from casals_cli import wasm_store as _store
+from casals_cli.ic_assets import properties_file
 from casals_cli.util import MAX_ARTIFACT_BYTES, gunzip
 
 CHUNK_BYTES = 1024 * 1024
@@ -382,6 +383,8 @@ def publish_bundle(target, entry: dict, *, sheet_dir: str, project_root: str, pr
     if expected and expected != digest:
         raise ValueError(f"bundle sha256 mismatch for {ns}: expected {expected}, source is {digest}")
     entry["sha256"] = digest
+    files = {**files, **properties_file(files)}
+    hashes = _bundle.file_hashes(files)
     existing = target.file_hashes(ns)
     plan = _bundle.diff(existing, hashes)
     uploads = [p for p in sorted(hashes) if p in plan["upload"]]

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import urllib.request
 
 from casals_cli.multisig import propose
+from casals_cli.replica import canister_http_url
 from run_e2e import Fail, sh
 
 ACCESS_CODE_ALIAS, ACCESS_CODE, CLAIMER = "invited_operator", "casals", "casals-e2e-claimer"
@@ -124,6 +126,12 @@ def content_change(o) -> None:
         for name in frontends:
             if (o.serves(name, "/v2.txt") is not None) is not present:
                 raise Fail(f"{name}: v2.txt {'missing' if present else 'still served'} after {ns}")
+        if present and os.path.exists(os.path.join(new_dir, ".ic-assets.json5")):
+            for name in frontends:
+                for page in ("/index.html", "/v2.txt"):
+                    url = canister_http_url(o.ids()[name], page)
+                    if not urllib.request.urlopen(url, timeout=10).headers.get("Content-Security-Policy"):
+                        raise Fail(f"{name}{page}: no Content-Security-Policy from .ic-assets.json5")
 
 
 def access_code(o) -> None:

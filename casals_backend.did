@@ -102,9 +102,10 @@ type GetArg = record { key : text; accept_encodings : vec text };
 type Asset = record { content : blob; content_type : text; content_encoding : text; sha256 : opt blob; total_length : nat };
 type ChunkArg = record { key : text; content_encoding : text; index : nat; sha256 : opt blob };
 type Chunk = record { content : blob };
-type StoreArg = record { key : text; content_type : text; content_encoding : text; content : blob; sha256 : opt blob };
 type KeyArg = record { key : text };
-type Assets = service { grant_permission : (GrantArg) -> (); revoke_permission : (RevokeArg) -> (); store : (StoreArg) -> (); delete_asset : (KeyArg) -> (); list : (ListArgs) -> (vec Entry) query; get : (GetArg) -> (Asset) query; get_chunk : (ChunkArg) -> (Chunk) query };
+type ChunkIn = record { batch_id : nat; content : blob };
+type ChunkOut = record { chunk_id : nat };
+type Assets = service { grant_permission : (GrantArg) -> (); revoke_permission : (RevokeArg) -> (); create_chunk : (ChunkIn) -> (ChunkOut); delete_asset : (KeyArg) -> (); list : (ListArgs) -> (vec Entry) query; get : (GetArg) -> (Asset) query; get_chunk : (ChunkArg) -> (Chunk) query };
 
 service : {
   "http_request" : (HttpRequest) -> (HttpResponse) query;

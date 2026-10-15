@@ -2,8 +2,8 @@
 deploys a frontend (headers, CSP, caching, raw access, aliasing). Casals
 syncs frontends itself, so it honours the same file the same way: every
 rule whose `match` glob fits an asset path contributes, later rules win per
-key. Shared by the conductor (applies properties after `store`) and the CLI
-oracle (checks the served headers). Pure Python, no imports beyond stdlib.
+key. The CLI resolves it per file (`properties_file`) and the conductor
+applies the result when it syncs the frontend. Pure Python, stdlib only.
 
 Supported keys per rule: `match`, `headers`, `security_policy`
 (`standard` | `hardened` | `disabled`), `cache: {max_age}`,
@@ -195,3 +195,17 @@ def properties_for(key: str, rules: list[dict]) -> dict:
 def any_properties(props: dict) -> bool:
     return props.get("headers") is not None or any(
         props.get(k) is not None for k in ("max_age", "allow_raw_access", "enable_aliasing"))
+
+
+PROPERTIES_FILE = ".casals-assets.json"
+
+
+def properties_file(files: dict[str, bytes]) -> dict[str, bytes]:
+    """The bundle's policy resolved per file (`{"/index.html": {...}}`), published
+    beside the bundle so the conductor applies it without parsing JSON5 or globs."""
+    policy = files.get(POLICY_FILE.lstrip("/"))
+    if policy is None:
+        return {}
+    rules = rules_from(policy.decode("utf-8"))
+    props = {f"/{p}": properties_for(f"/{p}", rules) for p in sorted(files)}
+    return {PROPERTIES_FILE: json.dumps({k: v for k, v in props.items() if any_properties(v)}, sort_keys=True).encode()}

@@ -171,13 +171,12 @@ def files(cid, prefix=""):
 
 
 @gen
-def put(cid, key, content, content_type):
-    assets(cid)[key] = content
-
-
-@gen
-def delete(cid, key):
-    del assets(cid)[key]
+def apply(cid, puts, deletes):
+    for f in puts:
+        assets(cid)[f["key"]] = f["data"]
+        state.setdefault("props", {})[(cid, f["key"])] = f["props"]
+    for key in deletes:
+        del assets(cid)[key]
 
 
 @gen

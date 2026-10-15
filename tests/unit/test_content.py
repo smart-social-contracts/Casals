@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 from fake_chain import run_timers, state
 from kit import call, grant
@@ -41,6 +42,19 @@ def test_new_bundle_replaces_and_deletes_stale_files():
     state["store"]["/web/v2/f00.js"] = b"v2"
     assert call("content_deploy", canister="web", namespace="web/v2")["status"] == "done"
     assert state["canisters"][cid]["assets"] == {"/ids.js": f"id={cid}".encode(), "/f00.js": b"v2"}
+
+
+def test_asset_properties_follow_the_policy_file():
+    cid = frontend(2)
+    policy = "/web/v1/.casals-assets.json"
+    state["store"][policy] = json.dumps({"/f00.js": {"max_age": 60}}).encode()
+    call("content_deploy", canister="web", namespace="web/v1")
+    props = state["props"]
+    assert props[(cid, "/f00.js")] == {"max_age": 60} and props[(cid, "/f01.js")] == {}
+    state["store"][policy] = json.dumps({"/f01.js": {"max_age": 5}}).encode()
+    call("content_deploy", canister="web", namespace="web/v1")
+    assert props[(cid, "/f00.js")] == {} and props[(cid, "/f01.js")] == {"max_age": 5}
+    assert "casals-assets" not in str(state["canisters"][cid]["assets"])
 
 
 def test_checksum_mismatch_and_failed_round():
