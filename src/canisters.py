@@ -3,12 +3,11 @@ import json
 import chain
 import store
 from auth import Unauthorized, find, holds
-from cycle_sweep_wasm import sweep_wasm_bytes
+import sweeper
 from model import Canister, Stand, Wasm, orchestra, rename, resolve
 from op import op
 
 CREATE_CYCLES = 2_000_000_000_000
-SWEEP_RESERVE = 20_000_000_000
 SETTABLE = {"public", "files", "content", "install_arg", "config", "policy", "tags"}
 
 
@@ -60,11 +59,11 @@ def hand_off(c, stand=None):
 def destroy(c):
     cid = c.canister_id
     yield from chain.update_settings(cid, freezing=0)
-    yield from chain.install_code(cid, sweep_wasm_bytes())
+    yield from chain.install_code(cid, sweeper.module())
     yield from chain.lifecycle(cid, "start_canister")
-    swept = (yield from chain.status(cid))["cycles"] - SWEEP_RESERVE
+    swept = (yield from chain.status(cid))["cycles"] - sweeper.RESERVE
     if swept > 0:
-        yield from chain.call(cid, "sweep", f'(principal "{chain.self_id()}", {swept} : nat64)')
+        yield from chain.call(cid, "sweep")
     yield from chain.lifecycle(cid, "stop_canister")
     yield from chain.lifecycle(cid, "delete_canister")
     c.delete()

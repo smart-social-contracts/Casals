@@ -1,3 +1,0 @@
-service : {
-  "sweep" : (principal, nat64) -> ();
-}

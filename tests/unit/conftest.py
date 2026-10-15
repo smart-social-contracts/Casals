@@ -18,7 +18,7 @@ from ic_python_db import Database  # noqa: E402
 Database.init()
 for path in sorted(glob.glob(os.path.join(SRC, "*.py"))):
     name = os.path.basename(path)[:-3]
-    if name not in ("main", "chain", "store", "cycle_sweep_wasm"):
+    if name not in ("main", "chain", "store"):
         importlib.import_module(name)
 
 

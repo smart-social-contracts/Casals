@@ -142,7 +142,7 @@ def subnets():
 @gen
 def call(cid, method, candid="()", cycles=0):
     if method == "sweep":
-        amount = int(candid.split(", ")[1].split(" ")[0])
+        amount = state["canisters"][cid]["cycles"] - 100_000_000_000
         state["canisters"][cid]["cycles"] -= amount
         state["balance"] += amount
         return "()"

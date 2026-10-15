@@ -106,7 +106,7 @@ def status(cid):
 
 def update_settings(cid, controllers=None, freezing=None, viewers=None, public_logs=False):
     parts = [f"controllers = opt {principals(controllers)}" if controllers is not None else "",
-             f"freezing_threshold = opt {freezing}" if freezing is not None else "",
+             f"freezing_threshold = opt ({freezing} : nat)" if freezing is not None else "",
              f"status_visibility = opt variant {{ allowed_viewers = {principals(viewers)} }}" if viewers else "",
              "log_visibility = opt variant { public }" if public_logs else ""]
     settings = "; ".join(p for p in parts if p)
