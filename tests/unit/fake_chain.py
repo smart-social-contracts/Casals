@@ -157,7 +157,7 @@ def call(cid, method, candid="()", cycles=0):
 
 
 @gen
-def call_text(cid, method, arg):
+def call_text(cid, method, arg=None):
     reply = state["replies"][(cid, method)]
     return reply(arg) if callable(reply) else reply
 

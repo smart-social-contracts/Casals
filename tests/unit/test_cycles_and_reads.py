@@ -1,6 +1,7 @@
 import json
 
 import cycles
+from batons import READS
 from fake_chain import ANONYMOUS, state
 from kit import call, grant
 from model import Canister, Event, orchestra, rows
@@ -147,6 +148,7 @@ def test_batons_read_through_the_conductor():
     events = Event.max_id()
     out = call("baton_get", "ann", canister_id="can-1")
     assert out["config"]["top_commander"] == "conductor" and out["managed"] == ["c1-id"] and out["policy"] is None
+    assert {c[3] for c in state["calls"] if c[0] == "call_text" and c[2] in READS.values()} == {None}
     assert call("baton_action", "mon", canister_id="can-1", action_id="a1")["action"]["status"] == "PENDING"
     assert Event.max_id() == events
     assert "no readable baton" in call("baton_get", "bob", canister_id="can-1")["error"]

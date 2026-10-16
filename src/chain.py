@@ -57,8 +57,10 @@ def call(cid, method, candid="()", cycles=0):
     return ic.candid_decode(ok(res))
 
 
-def call_text(cid, method, arg):
-    reply = yield from call(cid, method, '("' + arg.replace("\\", "\\\\").replace('"', '\\"') + '")')
+def call_text(cid, method, arg=None):
+    # arg None: a method that takes no argument.
+    candid = "()" if arg is None else '("' + arg.replace("\\", "\\\\").replace('"', '\\"') + '")'
+    reply = yield from call(cid, method, candid)
     return unquote(reply)
 
 

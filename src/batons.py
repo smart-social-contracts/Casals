@@ -43,7 +43,7 @@ def readable_baton(principal, canister_id):
     return c
 
 
-def read(baton, method, arg=""):
+def read(baton, method, arg=None):
     reply = json.loads((yield from chain.call_text(baton.canister_id, method, arg)))
     if isinstance(reply, dict) and reply.get("ok") is False:
         raise Exception(f"baton {baton.name}: {reply.get('error')}")
