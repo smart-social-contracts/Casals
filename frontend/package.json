@@ -1,6 +1,6 @@
 {
   "name": "casals-frontend",
-  "version": "0.7.0-rc9",
+  "version": "0.7.0-rc10",
   "private": true,
   "type": "module",
   "scripts": {
