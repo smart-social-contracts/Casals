@@ -1,11 +1,13 @@
 import json
 
 import chain
-from auth import find
-from model import Canister, Stand, Wasm
+from auth import find, reader_scopes, readable
+from model import Canister, Stand, Wasm, rows
 from op import op
 
 BATON = "orchestration-baton@"
+READS = {"config": "get_config", "commanders": "list_commanders", "managed": "list_managed_canisters",
+         "actions": "list_actions", "policy": "get_commander_policy"}
 
 
 def baton_of(stand):
@@ -32,6 +34,35 @@ def propose(baton, method, payload):
     action = str(reply["action_id"])
     vote = yield from chain.call_text(baton.canister_id, "submit_approval", action)
     return {"action_id": action, "baton": baton.name, "baton_id": baton.canister_id, "vote": vote[:200]}
+
+
+def readable_baton(principal, canister_id):
+    c = next((c for c in rows(Canister) if c.canister_id == canister_id), None)
+    if c is None or not c.wasm.startswith(BATON) or not readable(reader_scopes(principal), f"stand:{c.stand.name}"):
+        raise ValueError(f"no readable baton '{canister_id}'")
+    return c
+
+
+def read(baton, method, arg=""):
+    reply = json.loads((yield from chain.call_text(baton.canister_id, method, arg)))
+    if isinstance(reply, dict) and reply.get("ok") is False:
+        raise Exception(f"baton {baton.name}: {reply.get('error')}")
+    return reply
+
+
+@op("reader", quiet=True)
+def baton_get(principal, args):
+    baton = readable_baton(principal, args["canister_id"])
+    out = {"canister_id": baton.canister_id, "stand": baton.stand.name}
+    for key, method in READS.items():
+        out[key] = yield from read(baton, method)
+    return out
+
+
+@op("reader", quiet=True)
+def baton_action(principal, args):
+    baton = readable_baton(principal, args["canister_id"])
+    return {"canister_id": baton.canister_id, "action": (yield from read(baton, "get_action", args["action_id"]))}
 
 
 @op("canister.deploy", at="stand")

@@ -10,9 +10,10 @@ SECRET = {"code"}
 GENERATOR = type((lambda: (yield))())
 
 
-def op(perm, at=None, read=False, monitor=False):
+def op(perm, at=None, read=False, monitor=False, quiet=False):
+    # read: a query, so it cannot call other canisters. quiet: an update that is not audited.
     def wrap(fn):
-        OPS[fn.__name__] = {"fn": fn, "perm": perm, "at": at, "read": read, "monitor": monitor}
+        OPS[fn.__name__] = {"fn": fn, "perm": perm, "at": at, "read": read, "monitor": monitor, "quiet": quiet}
         return fn
     return wrap
 
@@ -28,7 +29,7 @@ def dispatch(fn, arg):
         if isinstance(out, GENERATOR):
             out = yield from out
         out = out or {}
-        if not spec["read"]:
+        if not (spec["read"] or spec["quiet"]):
             audit(name, principal, args, out)
         return json.dumps({"ok": True, **out})
     except KeyError as e:

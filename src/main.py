@@ -87,6 +87,10 @@ def icrc10_supported_standards() -> text:
 @update
 def alias_set(args: text) -> Async[text]: return (yield from dispatch(orchestra.alias_set, args))
 @update
+def baton_action(args: text) -> Async[text]: return (yield from dispatch(batons.baton_action, args))
+@update
+def baton_get(args: text) -> Async[text]: return (yield from dispatch(batons.baton_get, args))
+@update
 def baton_propose_content(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_content, args))
 @update
 def baton_propose_upgrade(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_upgrade, args))

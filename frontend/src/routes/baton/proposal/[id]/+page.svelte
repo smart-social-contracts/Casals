@@ -4,9 +4,7 @@
   import { candidUiUrl } from '$lib/api';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import {
-    batonGetAction,
-    batonGetConfig,
-    batonListCommanders,
+    batonLoadProposal,
     batonRejectAction,
     batonRunPipeline,
     batonSkipBakeAndComplete,
@@ -125,11 +123,7 @@
         missing = true;
         return;
       }
-      const [row, cfg, cmds] = await Promise.all([
-        batonGetAction(canister, actionId),
-        batonGetConfig(canister),
-        batonListCommanders(canister),
-      ]);
+      const { action: row, config: cfg, commanders: cmds } = await batonLoadProposal(canister, actionId);
       if (token !== loadToken) return;
       config = cfg;
       commanders = cmds;

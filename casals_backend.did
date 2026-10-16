@@ -112,6 +112,8 @@ service : {
   "http_request_update" : (HttpRequest) -> (HttpResponse);
   "icrc10_supported_standards" : () -> (text) query;
   "alias_set" : (text) -> (text);
+  "baton_action" : (text) -> (text);
+  "baton_get" : (text) -> (text);
   "baton_propose_content" : (text) -> (text);
   "baton_propose_upgrade" : (text) -> (text);
   "call_canister" : (text) -> (text);

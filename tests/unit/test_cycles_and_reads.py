@@ -133,6 +133,28 @@ def test_batons_propose_and_vote():
     assert "has no baton" in call("baton_propose_upgrade", stand="d2", targets=[])["error"]
 
 
+def test_batons_read_through_the_conductor():
+    catalog()
+    call("canister_create", stand="d1", name="bt", wasm="app@1", controllers=["conductor"])
+    Canister["bt"].wasm = "orchestration-baton@1"
+    state["replies"].update({("can-1", "get_config"): '{"top_commander": "conductor"}',
+                             ("can-1", "list_commanders"): '[{"principal": "c1-id"}]',
+                             ("can-1", "list_managed_canisters"): '["c1-id"]',
+                             ("can-1", "list_actions"): '[]', ("can-1", "get_commander_policy"): 'null',
+                             ("can-1", "get_action"): lambda a: json.dumps({"action_id": a, "status": "PENDING"})})
+    grant("ann", "stand:d1", "canister.deploy")
+    grant("bob", "stand:d2", "*")
+    events = Event.max_id()
+    out = call("baton_get", "ann", canister_id="can-1")
+    assert out["config"]["top_commander"] == "conductor" and out["managed"] == ["c1-id"] and out["policy"] is None
+    assert call("baton_action", "mon", canister_id="can-1", action_id="a1")["action"]["status"] == "PENDING"
+    assert Event.max_id() == events
+    assert "no readable baton" in call("baton_get", "bob", canister_id="can-1")["error"]
+    assert "no readable baton" in call("baton_get", "ann", canister_id="c1-id")["error"]
+    state["replies"][("can-1", "list_actions")] = '{"ok": false, "error": "unauthorized: nope"}'
+    assert call("baton_get", "ann", canister_id="can-1")["error"] == "baton bt: unauthorized: nope"
+
+
 def test_call_canister_and_browse():
     catalog()
     state["replies"][("c1-id", "ping")] = "x" * 5000

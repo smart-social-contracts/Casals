@@ -5,6 +5,7 @@ import { Actor, HttpAgent, type Identity } from '@dfinity/agent';
 import { get } from 'svelte/store';
 import { createHttpAgent } from './asyncAgent';
 import { identity } from './auth';
+import type { BatonActionRecord, BatonSnapshot } from './batonClient';
 import { idlFactory } from './conductor';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
@@ -302,6 +303,14 @@ export const grantRemove = (scope: string, principal: string) => update('grant_r
 export const grantClaim = (code: string, as?: Identity) =>
   _call<{ claimed: string[] }>('grant_claim', { code }, true, as).then((r) => r.claimed);
 
+/** A Baton's state read by Casals for whoever can read its stand (update calls). */
+export const batonGet = (canister_id: string) =>
+  update<{ canister_id: string; stand: string } & BatonSnapshot>('baton_get', { canister_id });
+export const batonAction = (canister_id: string, action_id: string) =>
+  update<{ canister_id: string; action: (BatonActionRecord & { ok?: boolean }) | null }>('baton_action', {
+    canister_id,
+    action_id,
+  });
 export const batonProposeUpgrade = (stand: string, targets: { canister: string; wasm: string }[]) =>
   update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_upgrade', { stand, targets });
 export const batonProposeContent = (stand: string, targets: { canister: string; namespace: string }[]) =>

@@ -3,6 +3,7 @@ import { createHttpAgent } from './asyncAgent';
 import { IDL } from '@dfinity/candid';
 import { Principal } from '@dfinity/principal';
 import { get } from 'svelte/store';
+import { batonAction, batonGet } from './api';
 import { identity as sessionIdentity } from './auth';
 import { icHost, isLocalHost } from './ic-host';
 import { isBatonTerminal } from './batonPipelineLog';
@@ -437,13 +438,49 @@ export function batonDisplayCommanders(
   return out;
 }
 
-export async function batonLoadSnapshot(canisterId: string) {
-  const [config, commanders, managed, actions, policy] = await Promise.all([
-    batonGetConfig(canisterId),
-    batonListCommanders(canisterId),
-    batonListManaged(canisterId),
-    batonListActions(canisterId),
-    batonGetCommanderPolicy(canisterId),
-  ]);
-  return { config, commanders, managed, actions, policy };
+function refused(e: unknown): boolean {
+  return e instanceof Error && e.message.startsWith('unauthorized');
+}
+
+export interface BatonSnapshot {
+  config: BatonConfig;
+  commanders: BatonCommander[];
+  managed: string[];
+  actions: BatonActionRecord[];
+  policy: unknown | null;
+}
+
+/** Straight from the baton when it lets the caller read; otherwise through
+ * Casals (its top commander), for anyone who can read the baton's stand. */
+export async function batonLoadSnapshot(canisterId: string): Promise<BatonSnapshot> {
+  try {
+    const [config, commanders, managed, actions, policy] = await Promise.all([
+      batonGetConfig(canisterId),
+      batonListCommanders(canisterId),
+      batonListManaged(canisterId),
+      batonListActions(canisterId),
+      batonGetCommanderPolicy(canisterId),
+    ]);
+    return { config, commanders, managed, actions, policy };
+  } catch (e) {
+    if (!refused(e)) throw e;
+    const { config, commanders, managed, actions, policy } = await batonGet(canisterId);
+    return { config, commanders, managed, actions, policy };
+  }
+}
+
+export async function batonLoadProposal(canisterId: string, actionId: string) {
+  try {
+    const [action, config, commanders] = await Promise.all([
+      batonGetAction(canisterId, actionId),
+      batonGetConfig(canisterId),
+      batonListCommanders(canisterId),
+    ]);
+    return { action, config, commanders };
+  } catch (e) {
+    if (!refused(e)) throw e;
+    const [snap, one] = await Promise.all([batonGet(canisterId), batonAction(canisterId, actionId)]);
+    const action = one.action && !('ok' in one.action && one.action.ok === false) ? one.action : null;
+    return { action, config: snap.config, commanders: snap.commanders };
+  }
 }
