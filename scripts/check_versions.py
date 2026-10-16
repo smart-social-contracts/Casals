@@ -31,9 +31,14 @@ def copies() -> dict[str, str]:
     }
 
 
+def normalized(version: str) -> str:
+    """PEP 440 spelling: the Python copies say 0.7.0rc8 for version.txt's 0.7.0-rc8."""
+    return re.sub(r"[-_.]?(a|b|rc)[-_.]?(\d+)$", r"\1\2", version.strip().lower())
+
+
 def main() -> int:
     want = (ROOT / "version.txt").read_text(encoding="utf-8").strip()
-    wrong = {path: got for path, got in copies().items() if got != want}
+    wrong = {path: got for path, got in copies().items() if normalized(got) != normalized(want)}
     for path, got in wrong.items():
         print(f"{path}: {got or 'no version'} (version.txt says {want})", file=sys.stderr)
     if not wrong:

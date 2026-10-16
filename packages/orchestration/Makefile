@@ -4,6 +4,8 @@ CASALS_ROOT := $(abspath ../..)
 BATON_DIR := $(abspath baton)
 MULTISIG_DIR := $(abspath multisig)
 PYTEST_FLAGS ?= -v
+# The root pyproject.toml's coverage addopts need pytest-cov, which these jobs do not install.
+PYTEST := python3 -m pytest -o addopts=""
 
 build: build-baton build-multisig
 
@@ -21,7 +23,7 @@ test: test-unit
 # Run each package from its own directory (avoids pytest module-name clashes:
 # both baton/ and multisig/ ship a tests/test_unit.py).
 test-unit:
-	cd $(BATON_DIR) && python3 -m pytest \
+	cd $(BATON_DIR) && $(PYTEST) \
 		tests/test_unit.py \
 		tests/test_policy_unit.py \
 		tests/test_approval_policy_unit.py \
@@ -29,11 +31,11 @@ test-unit:
 		tests/test_assets_unit.py \
 		tests/test_registry_unit.py \
 		$(PYTEST_FLAGS)
-	cd $(MULTISIG_DIR) && python3 -m pytest tests/test_unit.py $(PYTEST_FLAGS)
+	cd $(MULTISIG_DIR) && $(PYTEST) tests/test_unit.py $(PYTEST_FLAGS)
 
 test-integration:
-	cd $(BATON_DIR) && python3 -m pytest tests/test_integration.py $(PYTEST_FLAGS)
-	cd $(MULTISIG_DIR) && python3 -m pytest tests/test_integration.py $(PYTEST_FLAGS)
+	cd $(BATON_DIR) && $(PYTEST) tests/test_integration.py $(PYTEST_FLAGS)
+	cd $(MULTISIG_DIR) && $(PYTEST) tests/test_integration.py $(PYTEST_FLAGS)
 
 clean:
 	rm -rf $(BATON_DIR)/.basilisk $(BATON_DIR)/.icp $(MULTISIG_DIR)/.icp
