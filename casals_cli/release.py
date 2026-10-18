@@ -31,7 +31,7 @@ import time
 
 from casals_cli import __version__
 from casals_cli import bundle as _bundle
-from casals_cli.registry import LOCAL_ROOTS_ENV, RELEASE_RE, _http_get, release_asset_url, resolve_bundle, resolve_source, sha256_hex
+from casals_cli.registry import LOCAL_ROOTS_ENV, RELEASE_RE, _http_get, release_asset_url, resolve_source, sha256_hex
 from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, validate, wasm_ref
 from casals_cli.util import emit_error, load_json_file
 
