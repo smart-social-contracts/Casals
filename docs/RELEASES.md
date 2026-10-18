@@ -13,9 +13,8 @@ family across many stands.
 ## Requirements
 
 - The stand has a baton running `orchestration-baton@2.0.0` or later.
-- The baton manages every member of the stand (`baton.manages`, with
-  `hand_off: true` or `"sole"`), frontends included: it snapshots and installs
-  them.
+- The baton is a controller of every member of the stand, frontends
+  included: it snapshots and installs them.
 - The conductor's catalog holds `casals-maintenance@1.0.0`. `casals upgrade
   --release` uploads and authorizes it; a sheet can pin its own
   `registry.wasms` row for it.
