@@ -62,8 +62,8 @@ _PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
 # also list $deployer, as this demo orchestra does).
 HAND_OFF_SOLE = "sole"
 # The hosted monitor an `ic` environment uses unless its sheet names another or `"monitor": false`.
-HOSTED_MONITOR = {"principal": "wdtda-uafrj-6down-pxxwi-emhpc-uivwv-zdi3c-szrq7-hxodh-wlvas-iqe",
-                  "url": "https://service.ic-casals.tech"}
+# `casals up` reads its principal from `<url>/v1/service`.
+HOSTED_MONITOR_URL = "https://service.ic-casals.tech"
 
 
 def _is_wasm_ref(value: str) -> bool:
@@ -255,10 +255,11 @@ def env_block(sheet: dict, env: str) -> dict:
 
 def env_monitor(sheet: dict, env: str) -> dict | None:
     """``environments.<env>.monitor`` as ``{"principal", "url"}`` (the
-    monitor's base URL, no trailing slash): the sheet's, else ``HOSTED_MONITOR``
-    on ``ic``. ``None`` for ``"monitor": false`` or a local network."""
+    monitor's base URL, no trailing slash): the sheet's, else the hosted one on
+    ``ic`` with an empty principal. ``None`` for ``"monitor": false`` or a local network."""
     env_cfg = env_block(sheet, env)
-    block = env_cfg.get("monitor", HOSTED_MONITOR if env_cfg.get("network") == "ic" else None)
+    hosted = {"url": HOSTED_MONITOR_URL} if env_cfg.get("network") == "ic" else None
+    block = env_cfg.get("monitor", hosted)
     if not isinstance(block, dict):
         return None
     return {

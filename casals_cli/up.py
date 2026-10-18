@@ -305,6 +305,19 @@ def adopt(ic, doc: dict, backend_id: str, deployer: str) -> None:
                     ic.settings_update(c["canister_id"], add_controllers=[backend_id])
 
 
+def monitor_principal(monitor: dict) -> dict:
+    """Fill an empty monitor principal from `<url>/v1/service`; no monitor when the service cannot say."""
+    if not monitor or monitor.get("principal"):
+        return monitor
+    try:
+        with urllib.request.urlopen(f"{monitor['url']}/v1/service", timeout=15) as res:
+            principal = json.load(res).get("principal") or ""
+    except (OSError, ValueError) as e:
+        summary(f"Monitor: {monitor['url']} did not report its principal ({e}); building without a monitor")
+        return {}
+    return {**monitor, "principal": principal} if principal else {}
+
+
 def register_monitor(view: dict, backend_id: str) -> str:
     """POST the conductor to its monitor's `/v1/instances`; the service checks the conductor's settings itself."""
     url = (view.get("monitor") or {}).get("url", "")
@@ -364,6 +377,7 @@ def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_ov
     _summary_step(4, "Uploading artifacts")
     ids = {**bindings.conductor, CONDUCTOR_NAMES["backend"]: backend_id}
     doc = normalize(sheet, env, deployer=deployer, ids=ids, uploads=[u for u in uploads if u.get("kind") == "wasm"])
+    doc["monitor"] = monitor_principal(doc["monitor"])
     if not dry_run:
         adopt(ic, doc, backend_id, deployer)
     res = ic.call_update(backend_id, "orchestra_up", json.dumps({**doc, "dry_run": dry_run}), timeout=900)
