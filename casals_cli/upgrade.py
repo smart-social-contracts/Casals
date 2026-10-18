@@ -123,20 +123,29 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
             "type": entry.get("wasm_type", ""), "memory_keep": "true" if entry.get("memory_keep") else ""}))
         if not _ok(res):
             raise RuntimeError(f"wasm_authorize {key}: {_err_text(res)}")
+        path = store_key(WASM_NAMESPACE, registry_path(family, target))
+        multisig_id = view.get("multisig_id", "")
         if family == wasm_ref(((sheet.get("conductor") or {}).get("backend") or {}).get("wasm") or "")[0]:
-            path = store_key(WASM_NAMESPACE, registry_path(family, target))
-            rows.append(_upgrade_conductor(ic, backend_id, view.get("multisig_id", ""), store_id, key, path, sha))
+            rows.append(_upgrade_via_multisig(ic, backend_id, CONDUCTOR_NAMES["backend"], multisig_id, store_id,
+                                              key, path, sha))
             _progress(f"  {rows[-1]['result']:9} {rows[-1]['canister']}: {rows[-1]['detail']}")
             continue
         targets = [c for c in canisters.values() if wasm_ref(c.get("wasm") or "")[0] == family]
         if not targets:
             rows.append({"wasm": family, "canister": "-", "result": "skipped", "detail": "no canister runs this family"})
         batons: dict[str, list[dict]] = {}
+        stand_batons = {c["stand"]: c["canister_id"] for c in view["canisters"]
+                        if c.get("canister_id") and (c.get("wasm") or "").startswith("orchestration-baton@")}
         for c in sorted(targets, key=lambda t: (t["section"], t["stand"], t["name"])):
             row = _ship_wasm(ic, backend_id, c, key, sha)
             if row is None:
-                batons.setdefault(c["stand"], []).append(c)
-                continue
+                controllers = ic.read_controllers(c["canister_id"]) or []
+                if multisig_id in controllers and stand_batons.get(c["stand"]) not in controllers:
+                    row = _upgrade_via_multisig(ic, c["canister_id"], c["name"], multisig_id, store_id, key, path,
+                                                sha, memory_keep=bool(entry.get("memory_keep")))
+                else:
+                    batons.setdefault(c["stand"], []).append(c)
+                    continue
             rows.append(row)
             _progress(f"  {row['result']:9} {c['name']}: {row['detail']}")
         for stand, members in batons.items():
@@ -183,22 +192,24 @@ def _propose(ic, backend_id: str, stand: str, members: list[dict], key: str) -> 
              "action_id": res["action_id"], "baton_id": res["baton_id"]} for c in members]
 
 
-def _upgrade_conductor(ic, backend_id: str, multisig_id: str, store_id: str, key: str, path: str, sha: str) -> dict:
-    """The conductor cannot upgrade itself: its multisig installs the module from the store."""
-    row = {"wasm": key, "canister": CONDUCTOR_NAMES["backend"]}
-    if (ic.read_module_hash(backend_id) or "").lower() == sha:
+def _upgrade_via_multisig(ic, canister_id: str, name: str, multisig_id: str, store_id: str, key: str, path: str,
+                          sha: str, memory_keep: bool = False) -> dict:
+    """For canisters the conductor cannot upgrade (itself, a stand's baton): the multisig installs the module
+    from the store."""
+    row = {"wasm": key, "canister": name}
+    if (ic.read_module_hash(canister_id) or "").lower() == sha:
         return {**row, "result": "skipped", "detail": "already at this hash"}
     if not multisig_id or not sha:
         return {**row, "result": "failed", "detail": "needs the orchestra's multisig and a pinned sha256"}
     digest = "".join(f"\\{sha[i:i + 2]}" for i in range(0, len(sha), 2))
-    action = (f'variant {{ UpgradeCanister = record {{ canister_id = principal "{backend_id}"; '
+    action = (f'variant {{ UpgradeCanister = record {{ canister_id = principal "{canister_id}"; '
               f'store = principal "{store_id}"; key = "{path}"; sha256 = blob "{digest}"; '
-              f'arg = blob "DIDL\\00\\00"; wasm_memory_keep = false }} }}')
+              f'arg = blob "DIDL\\00\\00"; wasm_memory_keep = {"true" if memory_keep else "false"} }} }}')
     try:
         pid, status = propose(ic, multisig_id, action)
     except Exception as exc:
         return {**row, "result": "failed", "detail": str(exc)[:300]}
-    done = status == "executed" and (ic.read_module_hash(backend_id) or "").lower() == sha
+    done = status == "executed" and (ic.read_module_hash(canister_id) or "").lower() == sha
     return {**row, "result": "upgraded" if done else "pending" if status == "pending" else "failed",
             "detail": f"multisig proposal #{pid} {status}"}
 

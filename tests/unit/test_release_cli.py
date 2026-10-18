@@ -106,3 +106,6 @@ def test_a_stand_release_needs_a_new_enough_baton():
     assert release._check_baton(view, "t")["wasm"].endswith("2.0.0")
     with pytest.raises(RuntimeError, match="no baton"):
         release._check_baton(view, "u")
+    assert release._check_baton(view, "s", lambda b: "2.0.0")["stand"] == "s"
+    with pytest.raises(RuntimeError, match="need"):
+        release._check_baton(view, "s", lambda b: None)

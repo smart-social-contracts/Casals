@@ -319,13 +319,15 @@ def _stands(view: dict, stands: list[str], sections: list[str]) -> list[str]:
     return picked
 
 
-def _check_baton(view: dict, stand: str) -> dict:
+def _check_baton(view: dict, stand: str, running_version=None) -> dict:
+    """`running_version(baton)` maps the module the baton actually runs to a version: the conductor's row
+    lags behind an upgrade it did not run itself (the multisig upgrades batons)."""
     batons = [c for c in view["canisters"] if c["stand"] == stand and (c.get("wasm") or "").startswith("orchestration-baton@")]
     if not batons:
         raise RuntimeError(f"stand {stand} has no baton; a stand release needs one")
-    version = wasm_ref(batons[0]["wasm"])[1] or ""
+    version = (running_version(batons[0]) if running_version else None) or wasm_ref(batons[0]["wasm"])[1] or ""
     if _version_tuple(version) < MIN_BATON:
-        raise RuntimeError(f"stand {stand}: its baton runs {batons[0]['wasm']}; stand releases need "
+        raise RuntimeError(f"stand {stand}: its baton runs orchestration-baton@{version}; stand releases need "
                            f"orchestration-baton@{'.'.join(map(str, MIN_BATON))} or later (casals upgrade --wasm orchestration-baton@…)")
     return batons[0]
 
@@ -374,8 +376,11 @@ def run_release_upgrade(ic, sheet_path: str, env: str, *, release: str, stands: 
     if not _ok(view):
         raise RuntimeError(f"orchestra_get failed: {view}")
     targets = _stands(view, stands, sections)
+    baton_versions = {(e.get("sha256") or "").strip().lower(): (e.get("version") or "").strip()
+                      for e in (sheet.get("registry") or {}).get("wasms") or []
+                      if isinstance(e, dict) and (e.get("family") or "").strip() == "orchestration-baton"}
     for stand in targets:
-        _check_baton(view, stand)
+        _check_baton(view, stand, lambda b: baton_versions.get((ic.read_module_hash(b["canister_id"]) or "").lower()))
     members = conductor_members(manifest)
     request = {"release": {"label": name, "product": manifest["product"], "version": manifest["version"],
                            "manifest_sha256": manifest_sha}, "members": members}
