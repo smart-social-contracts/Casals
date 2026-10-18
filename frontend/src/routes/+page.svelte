@@ -17,7 +17,9 @@
     canisterSet,
     canisterUpgrade,
     canisterSnapshot,
+    canisterSnapshots,
     canisterRestore,
+    batonProposeRestore,
     canisterStop,
     canisterStart,
     canisterDelete,
@@ -33,8 +35,9 @@
   } from '$lib/api';
   import type {
     OrchestraView, SectionView, StandView, CanisterRow, OrchestraEvent,
-    CanisterLogRecord, Wasm, CanisterCycles, ExportDoc,
+    CanisterLogRecord, Wasm, CanisterCycles, ExportDoc, CanisterSnapshots, SnapshotRow,
   } from '$lib/api';
+  import { formatBytes } from '$lib/wasmStorePath';
   import { installArgPayload, sheetInstallArgFor } from '$lib/installArg';
   import { batonConsoleUrl, batonIdInStand, governanceConsoleUrl } from '$lib/orchestrationNav';
   import { browserTreeStorage, orchestraOpenPlan, readCachedTree, writeCachedTree } from '$lib/treeCache';
@@ -53,7 +56,7 @@
   import { familyOf, versionOptions } from '$lib/createCanisterForm';
   import { buildPrincipalLabels, controllerLabel } from '$lib/controllerLabels';
   import { sortCanistersForDisplay, isCasalsCanister } from '$lib/orchestraGovernance';
-  import { canActOnStand } from '$lib/commanderPermissions';
+  import { canActOnCanister, canActOnStand } from '$lib/commanderPermissions';
   import { createOrchestrationLogPoll } from '$lib/orchestrationLogPoll';
   import {
     flattenTreeRows,
@@ -93,6 +96,8 @@
   let canisterLoading = $state<Record<string, boolean>>({});
   let canisterCycles = $state<Record<string, CanisterCycles>>({});
   let canisterDetailsErr = $state<Record<string, string>>({});
+  let canisterSnaps = $state<Record<string, CanisterSnapshots>>({});
+  let canisterSnapsErr = $state<Record<string, string>>({});
 
   let browseData = $state<Record<string, unknown>>({});
   let browseErr = $state<Record<string, string>>({});
@@ -283,10 +288,19 @@
     if (!cid) return;
     const open = !expandedCanisters[cid];
     expandedCanisters[cid] = open;
-    if (open) await loadCanisterDetails(cid);
+    if (open) await loadCanisterDetails(cid, canister.name);
   }
 
-  async function loadCanisterDetails(cid: string) {
+  async function loadSnapshots(cid: string, name: string) {
+    canisterSnapsErr[cid] = '';
+    try {
+      canisterSnaps[cid] = await canisterSnapshots(name);
+    } catch (e: any) {
+      canisterSnapsErr[cid] = e?.message ?? String(e);
+    }
+  }
+
+  async function loadCanisterDetails(cid: string, name: string) {
     canisterLoading[cid] = true;
     canisterLogErr[cid] = '';
     canisterDetailsErr[cid] = '';
@@ -297,6 +311,7 @@
           canisterLogErr[cid] = e?.message ?? String(e);
           return [] as CanisterLogRecord[];
         }),
+        $isAuthenticated ? loadSnapshots(cid, name) : Promise.resolve(),
       ]);
       canisterEvents[cid] = evs;
       canisterLogs[cid] = logs;
@@ -305,6 +320,52 @@
     } finally {
       canisterLoading[cid] = false;
     }
+  }
+
+  function canRevert(canister: CanisterRow, via: CanisterSnapshots['via']): boolean {
+    if ($isController === true) return true;
+    return canActOnCanister(tree, $principal, canister, via === 'baton' ? 'canister.deploy' : 'canister.lifecycle');
+  }
+
+  function snapTime(ns: number): string {
+    return new Date(Math.floor(ns / 1e6)).toLocaleString();
+  }
+
+  function openRevert(canister: CanisterRow, listing: CanisterSnapshots, snap: SnapshotRow) {
+    const names = snap.restores.map((r) => r.canister).join(', ');
+    const when = snapTime(snap.taken_at);
+    if (listing.via === 'conductor') {
+      openModal({
+        title: `Revert ${canister.name}`,
+        description: `Load the snapshot from ${when}${snap.label ? ` (${snap.label})` : ''}. Everything the canister stored since is lost.`,
+        fields: [],
+        submitLabel: 'Revert',
+        danger: true,
+        onsubmit: async () => {
+          await canisterRestore(canister.name, snap.id);
+          await loadSnapshots(canister.canister_id, canister.name);
+        },
+      });
+      return;
+    }
+    openModal({
+      title: `Revert ${snap.restores.length > 1 ? 'the stand' : canister.name}`,
+      description:
+        `Propose to baton ${listing.baton} putting ${names} back on the snapshot${snap.restores.length > 1 ? 's' : ''} from ${when}` +
+        `${snap.label ? ` (${snap.label})` : ''}. Once approved, the baton stops them, snapshots them again, loads these and starts them. ` +
+        'Everything they stored since is lost.',
+      fields: [],
+      submitLabel: 'Propose revert',
+      danger: true,
+      onsubmit: async () => {
+        const filed = await batonProposeRestore(
+          canister.stand,
+          snap.restores.map((r) => ({ canister: r.canister, snapshot_id: r.snapshot_id })),
+          `reverting to ${when}`,
+        );
+        void goto(batonConsoleUrl(filed.baton_id));
+      },
+    });
   }
 
   async function runBrowse(canister: CanisterRow, query?: Record<string, unknown>) {
@@ -1059,10 +1120,45 @@
           {/if}
         </div>
 
+        {#if $isAuthenticated}
+          {@const listing = canisterSnaps[canister.canister_id]}
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">
+                Snapshots{#if listing}<span class="normal-case font-normal tracking-normal"> · keeps the newest {listing.keep}{#if listing.via === 'baton'}, through baton {listing.baton}{/if}</span>{/if}
+              </div>
+            </div>
+            {#if canisterSnapsErr[canister.canister_id]}
+              <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                Couldn't list snapshots: {canisterSnapsErr[canister.canister_id]}
+              </div>
+            {:else if !listing || listing.snapshots.length === 0}
+              <div class="text-xs text-primary-400">No snapshots.</div>
+            {:else}
+              <ul class="divide-y divide-[var(--color-border-primary)] text-xs">
+                {#each listing.snapshots as s (s.id)}
+                  <li class="flex items-center gap-3 py-1.5">
+                    <span class="text-primary-800 shrink-0">{snapTime(s.taken_at)}</span>
+                    <span class="text-primary-600 min-w-0 truncate" title={s.label}>{s.label || '—'}</span>
+                    {#if s.restores.length > 1}
+                      <span class="text-primary-400 shrink-0" title={s.restores.map((r) => r.canister).join(', ')}>with {s.restores.length - 1} other{s.restores.length === 2 ? '' : 's'}</span>
+                    {/if}
+                    <span class="font-mono text-primary-400 shrink-0" title={s.id}>{shortHash(s.id)}</span>
+                    <span class="text-primary-400 shrink-0 ml-auto">{formatBytes(s.size)}</span>
+                    {#if canRevert(canister, listing.via)}
+                      <button class="text-xs text-primary-500 hover:text-primary-800 shrink-0" onclick={() => openRevert(canister, listing, s)}>Revert</button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
         <div>
           <div class="flex items-center justify-between mb-1.5">
             <div class="text-xs font-semibold text-primary-400 uppercase tracking-wider">Canister logs</div>
-            <button class="text-xs text-primary-500 hover:text-primary-800" onclick={() => loadCanisterDetails(canister.canister_id)}>Reload</button>
+            <button class="text-xs text-primary-500 hover:text-primary-800" onclick={() => loadCanisterDetails(canister.canister_id, canister.name)}>Reload</button>
           </div>
           {#if canisterLogErr[canister.canister_id]}
             <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">

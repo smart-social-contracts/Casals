@@ -28,6 +28,7 @@ corpus under [`tests/e2e/orchestras/`](../tests/e2e/orchestras).
 | `sections` | yes | List of sections (may be empty). |
 | `domains` | no | Custom domains for frontends. |
 | `cycles` | yes | Orchestra-wide cycle policy (may be `{}`). |
+| `snapshots` | no | `{"keep": N}`: snapshots each canister keeps, newest first, 1 to 9 (default 2). See [RELEASES.md](RELEASES.md#snapshots). |
 
 ## `environments.<env>`
 

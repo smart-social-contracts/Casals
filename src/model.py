@@ -38,6 +38,7 @@ class Orchestra(Entity):
     monitor = Json({})
     aliases = Json({})
     contacts = Json({})
+    snapshots_keep = Integer(default=2)
 
 
 class Section(Entity):
@@ -86,6 +87,7 @@ class Canister(Entity):
     tags = Json([])
     cycles = Integer(default=0)
     snapshot = String(default="")
+    snapshot_labels = Json({})  # snapshot id → what took it, for the snapshots the conductor took
 
 
 class Wasm(Entity):

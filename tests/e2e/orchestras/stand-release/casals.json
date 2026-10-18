@@ -87,8 +87,8 @@
       },
       {
         "family": "orchestration-baton",
-        "version": "2.0.0",
-        "source": "local:seed/templates/orchestration-baton@2.0.0.wasm.gz"
+        "version": "2.0.1",
+        "source": "local:seed/templates/orchestration-baton@2.0.1.wasm.gz"
       },
       {
         "family": "casals-maintenance",
@@ -135,7 +135,7 @@
               "name": "hello-baton",
               "mode": "managed",
               "kind": "backend",
-              "wasm": "orchestration-baton@2.0.0",
+              "wasm": "orchestration-baton@2.0.1",
               "install_arg": {
                 "top_commander": "$self"
               },

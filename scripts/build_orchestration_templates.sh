@@ -41,7 +41,7 @@ echo "==> Baton orchestrator"
 python3 "$REPO_ROOT/scripts/fix_asset_permission_did.py" "$BATON_DIR/baton.did"
 BATON_WASM="$BATON_DIR/.basilisk/baton/baton.wasm"
 embed_candid "$BATON_WASM" "$BATON_DIR/baton.did"
-emit "orchestration-baton@2.0.0" "$BATON_WASM"
+emit "orchestration-baton@2.0.1" "$BATON_WASM"
 
 echo "==> Multisig"
 ( cd "$MULTISIG_DIR" && mops install >/dev/null 2>&1 && \

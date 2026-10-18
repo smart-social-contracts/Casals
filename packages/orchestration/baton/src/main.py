@@ -54,9 +54,11 @@ from models import (
     ACTION_TYPE_ASSET_PROVISION,
     ACTION_TYPE_MANAGED_UPGRADE,
     ACTION_TYPE_RELEASE,
+    ACTION_TYPE_SNAPSHOT_RESTORE,
     STATUS_ABORTED,
     STATUS_FAILED_STAGING,
     STATUS_NEEDS_ATTENTION,
+    STATUS_RESTORING,
     STATUS_ROLLED_BACK,
     ALL_CAPABILITIES,
     CAP_MANAGE_MANAGED,
@@ -118,7 +120,6 @@ from pipeline import (
     accelerant_eligible,
     action_expired,
     check_test_trap,
-    delete_snapshots_gen,
     finalize_hook_log,
     full_revert_and_restart_gen,
     phase_pre_flight_gen,
@@ -133,6 +134,14 @@ from pipeline import (
     action_bake_window_seconds,
     validate_targets_in_managed,
 )
+from snapshots import (
+    list_snapshots_gen,
+    parse_snapshots_keep,
+    prune_snapshots_gen,
+    restore_gen,
+    snapshots_keep,
+    validate_restore_payload,
+)
 
 _log = get_logger("baton")
 
@@ -141,6 +150,8 @@ _commanders = StableBTreeMap[str, str](memory_id=1, max_key_size=64, max_value_s
 _actions = StableBTreeMap[str, str](memory_id=2, max_key_size=128, max_value_size=500_000)
 _managed = StableBTreeMap[str, str](memory_id=3, max_key_size=64, max_value_size=256)
 _config = StableBTreeMap[str, str](memory_id=4, max_key_size=64, max_value_size=4096)
+# snapshot id (hex) → JSON {canister_id, action_id, action_type, label}: which action took a kept snapshot.
+_snapshot_origins = StableBTreeMap[str, str](memory_id=5, max_key_size=128, max_value_size=1024)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -327,6 +338,8 @@ def _run_phase_gen(action_id: str, record: dict) -> Async[text]:
         return (yield from _execute_asset_provision_gen(action_id, record))
     if action_type == ACTION_TYPE_RELEASE:
         return (yield from _execute_release_gen(action_id, record))
+    if action_type == ACTION_TYPE_SNAPSHOT_RESTORE:
+        return (yield from _execute_restore_gen(action_id, record))
 
     status = record.get("status", "")
     if status == STATUS_APPROVED:
@@ -438,9 +451,8 @@ def _run_phase_gen(action_id: str, record: dict) -> Async[text]:
                 record["status"] = STATUS_REVERTED_FAILED_VERIFY
                 _save_action(record)
                 return _err("post-upgrade validation hook failed")
-            yield from delete_snapshots_gen(record)
+            yield from _keep_newest_snapshots_gen(record, record["affected_canisters"], record.get("snapshot_refs"))
             record["status"] = STATUS_COMPLETE
-            record["snapshot_refs"] = {}
             _save_action(record)
             return _ok(action_id=action_id, status=STATUS_COMPLETE)
 
@@ -510,6 +522,9 @@ def _execute_release_gen(action_id: str, record: dict) -> Async[text]:
         _save_action(record)
         return _err(record.get("release_error") or "release failed")
     if result == "done":
+        _remember_snapshots(record, rel.get("snapshots"))
+        for ids in (rel.get("pruned") or {}).values():
+            _forget_snapshots(ids)
         record["status"] = STATUS_COMPLETE
         _save_action(record)
         return _ok(action_id=action_id, status=STATUS_COMPLETE)
@@ -520,6 +535,85 @@ def _execute_release_gen(action_id: str, record: dict) -> Async[text]:
         delay = max(1, (int(rel["wait_until"]) - _now()) // 1_000_000_000)
     _arm_resume_timer(action_id, delay)
     return _ok(action_id=action_id, status=record["status"], step=int(rel["cursor"]), steps=len(rel["plan"]))
+
+
+def _snapshot_label(record: dict) -> str:
+    if record.get("action_type") == ACTION_TYPE_RELEASE:
+        return f"before {record.get('release_label') or 'a release'}"
+    if record.get("action_type") == ACTION_TYPE_SNAPSHOT_RESTORE:
+        label = record["payload"].get("label")
+        return f"before {label}" if label else "before restoring snapshots"
+    targets = (record.get("payload") or {}).get("targets") or []
+    names = sorted({(t.get("registry_path") or "").rsplit("/", 1)[-1].removesuffix(".gz").removesuffix(".wasm")
+                    for t in targets} - {""})
+    return f"before upgrading to {', '.join(names)}" if names else "before an upgrade"
+
+
+def _remember_snapshots(record: dict, refs: dict | None) -> None:
+    label = _snapshot_label(record)
+    for cid, snap in (refs or {}).items():
+        if snap:
+            _snapshot_origins.insert(snap, json.dumps({
+                "canister_id": cid, "action_id": record["action_id"],
+                "action_type": record.get("action_type") or ACTION_TYPE_MANAGED_UPGRADE, "label": label,
+            }))
+
+
+def _forget_snapshots(ids) -> None:
+    for snap in ids or []:
+        if _snapshot_origins.contains_key(snap):
+            _snapshot_origins.remove(snap)
+
+
+def _keep_newest_snapshots_gen(record: dict, canister_ids: list[str], refs: dict | None) -> Async[None]:
+    """After a successful action: remember what it took, keep each canister's newest N."""
+    from basilisk.canisters.management import management_canister
+
+    _remember_snapshots(record, refs)
+    keep = snapshots_keep(record.get("payload"), _config)
+    deleted = 0
+    for cid in canister_ids:
+        try:
+            ids = yield from prune_snapshots_gen(management_canister, cid, keep)
+        except Exception as exc:
+            append_phase_log(record, phase_entry("FINALIZE", _now(), "failed", f"{cid}: could not prune its snapshots: {exc}"))
+            continue
+        _forget_snapshots(ids)
+        deleted += len(ids)
+    append_phase_log(record, phase_entry(
+        "FINALIZE", _now(), "ok",
+        f"each canister keeps its newest {keep} snapshot{'s' * (keep != 1)}{f' ({deleted} older deleted)' if deleted else ''}",
+    ))
+
+
+def _execute_restore_gen(action_id: str, record: dict) -> Async[text]:
+    """A snapshot restore runs in one go once approved. One found RESTORING was
+    interrupted part-way; it is not re-run blindly."""
+    from basilisk.canisters.management import management_canister
+
+    if record.get("status") == STATUS_RESTORING:
+        record["status"] = STATUS_NEEDS_ATTENTION
+        append_phase_log(record, phase_entry("RESTORE", _now(), "failed", "interrupted; check the canisters"))
+        _save_action(record)
+        return _err("restore was interrupted")
+    if record.get("status") != STATUS_APPROVED:
+        return _err(f"unexpected status: {record.get('status')}")
+    record["status"] = STATUS_RESTORING
+    _save_action(record)
+
+    def log(phase, detail, result="ok"):
+        append_phase_log(record, phase_entry(phase, _now(), result, detail))
+
+    outcome = yield from restore_gen(management_canister, record, log)
+    if outcome == "done":
+        yield from _keep_newest_snapshots_gen(record, record["affected_canisters"], record.get("snapshot_refs"))
+        record["status"] = STATUS_COMPLETE
+    else:
+        record["status"] = STATUS_ROLLED_BACK if outcome == "undone" else STATUS_NEEDS_ATTENTION
+    _save_action(record)
+    if outcome == "done":
+        return _ok(action_id=action_id, status=STATUS_COMPLETE)
+    return _err("; ".join(record.get("problems") or []) or "restore failed")
 
 
 def _scan_and_resume() -> None:
@@ -724,12 +818,14 @@ def list_managed_canisters() -> text:
 @update
 def set_config(args: text) -> text:
     """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, action_expiry_days?,
-    install_cycles_buffer?, wasm_store_canister_id?, upgrade_approval_policy?, public_read?, readers?}.
+    install_cycles_buffer?, snapshots_keep?, wasm_store_canister_id?, upgrade_approval_policy?,
+    public_read?, readers?}.
 
     ``wasm_store_canister_id`` is Casals' `casals-store` certified-assets store,
-    the source of every WASM / bundle Baton installs. ``public_read`` (bool)
-    lets anyone read the baton's state; ``readers`` (principals, replacing the
-    list) lets those read it while it is private."""
+    the source of every WASM / bundle Baton installs. ``snapshots_keep`` is how
+    many snapshots each managed canister keeps when a proposal does not say.
+    ``public_read`` (bool) lets anyone read the baton's state; ``readers``
+    (principals, replacing the list) lets those read it while it is private."""
     try:
         require_top_commander(_caller(), _config)
         params = json.loads(args)
@@ -739,6 +835,8 @@ def set_config(args: text) -> text:
                 if value < 0:
                     return _err(f"{key} must be non-negative")
                 _config.insert(key, str(value))
+        if "snapshots_keep" in params:
+            _config.insert("snapshots_keep", str(parse_snapshots_keep(params["snapshots_keep"])))
         if "public_read" in params:
             if not isinstance(params["public_read"], bool):
                 return _err("public_read must be true or false")
@@ -785,6 +883,7 @@ def get_config() -> text:
         "accelerant_days": _cfg_int("accelerant_days", DEFAULT_ACCELERANT_DAYS),
         "action_expiry_days": _cfg_int("action_expiry_days", DEFAULT_ACTION_EXPIRY_DAYS),
         "install_cycles_buffer": _cfg_int("install_cycles_buffer", DEFAULT_INSTALL_CYCLES_BUFFER),
+        "snapshots_keep": snapshots_keep(None, _config),
         "wasm_store_canister_id": _config.get("wasm_store_canister_id"),
         "upgrade_approval_policy": approval_policy,
         "public_read": _public_read(),
@@ -914,6 +1013,76 @@ def propose_release(args: text) -> Async[text]:
         return _err(str(e))
     except Exception as e:
         return _err(str(e))
+
+
+@update
+def propose_snapshot_restore(args: text) -> Async[text]:
+    """Requires propose:managed_upgrade. JSON: {payload, action_id?}.
+
+    payload: {targets: [{canister_id, snapshot_id}], label?, snapshots_keep?}.
+    Once approved (same policy as upgrades) every target is stopped, snapshotted,
+    loaded from its chosen snapshot and started; a failure puts them back."""
+    from basilisk.canisters.management import management_canister
+
+    try:
+        caller = _caller()
+        require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        if _active_action_id():
+            return _err("another action is in progress")
+        params = json.loads(args)
+        payload = params["payload"]
+        affected = validate_restore_payload(payload, set(_managed.keys()))
+        effective_approval_policy({"payload": payload}, _config)
+        action_id = _new_action_id(params)
+        for t in payload["targets"]:
+            ids = {s["id"] for s in (yield from list_snapshots_gen(management_canister, t["canister_id"]))}
+            if t["snapshot_id"] not in ids:
+                return _err(f"{t['canister_id']} has no snapshot {t['snapshot_id']}")
+        if _active_action_id() or _actions.contains_key(action_id):
+            return _err("another action was filed meanwhile")
+        record = new_action_record(
+            action_id=action_id,
+            proposed_by=caller,
+            proposed_at=_now(),
+            affected_canisters=affected,
+            payload=payload,
+            action_type=ACTION_TYPE_SNAPSHOT_RESTORE,
+        )
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_PENDING, action_type=ACTION_TYPE_SNAPSHOT_RESTORE)
+    except AuthError as e:
+        return _err(str(e))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def list_snapshots(args: text) -> Async[text]:
+    """Readers only (an update: the IC lists snapshots for controllers). JSON:
+    {canister_id?}. {snapshots: {cid: [{id, taken_at, size, origin}]}, errors:
+    {cid: msg}}, newest first; ``origin`` names the action that took a snapshot
+    ({action_id, action_type, label}) or is null for one taken elsewhere."""
+    from basilisk.canisters.management import management_canister
+
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
+    params = json.loads(args) if (args or "").strip() else {}
+    wanted = str(params.get("canister_id") or "").strip()
+    if wanted and not _managed.contains_key(wanted):
+        return _err(f"canister not managed: {wanted}")
+    out, errors = {}, {}
+    for cid in [wanted] if wanted else sorted(_managed.keys()):
+        try:
+            snaps = yield from list_snapshots_gen(management_canister, cid)
+        except Exception as exc:
+            errors[cid] = str(exc)
+            continue
+        for s in snaps:
+            raw = _snapshot_origins.get(s["id"])
+            s["origin"] = json.loads(raw) if raw else None
+        out[cid] = snaps
+    return _ok(snapshots=out, errors=errors)
 
 
 @update

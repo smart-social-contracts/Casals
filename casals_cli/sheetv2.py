@@ -609,6 +609,7 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
     _validate_environments(sheet, env_targets, errors)
     _validate_registry(sheet, env, errors)
     _validate_cycles_block(sheet.get("cycles"), "cycles", errors)
+    _validate_snapshots_block(sheet.get("snapshots"), errors)
     conductor = sheet.get("conductor")
     if not isinstance(conductor, dict):
         errors.append("conductor must be an object")
@@ -1219,6 +1220,21 @@ def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
             errors.append(f"{path}.{key} must be a number")
     if "reuse_pool" in value and not isinstance(value["reuse_pool"], bool):
         errors.append(f"{path}.reuse_pool must be a boolean")
+
+
+SNAPSHOTS_KEEP_MAX = 9  # the IC holds 10 per canister; an upgrade takes one before pruning
+
+
+def _validate_snapshots_block(value: Any, errors: list[str]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        errors.append("snapshots must be an object")
+        return
+    keep = value.get("keep")
+    if keep is not None and (isinstance(keep, bool) or not isinstance(keep, int)
+                             or not 1 <= keep <= SNAPSHOTS_KEEP_MAX):
+        errors.append(f"snapshots.keep must be a whole number from 1 to {SNAPSHOTS_KEEP_MAX}")
 
 
 def _validate_domains(value: Any, names: dict[str, str], errors: list[str]) -> None:

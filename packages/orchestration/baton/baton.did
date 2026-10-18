@@ -137,6 +137,8 @@ service : (InitArgs) -> {
   "propose_managed_upgrade" : (text) -> (text);
   "propose_asset_provision" : (text) -> (text);
   "propose_release" : (text) -> (text);
+  "propose_snapshot_restore" : (text) -> (text);
+  "list_snapshots" : (text) -> (text);
   "abort_action" : (text) -> (text);
   "maintenance_status" : () -> (text) query;
   "submit_approval" : (text) -> (text);

@@ -113,10 +113,17 @@ def install_code(cid, wasm):
 
 
 @gen
+def snapshots(cid):
+    c = canister(cid)
+    return [{"id": s, "taken_at": i, "size": 1} for i, s in reversed(list(enumerate(c["snapshots"])))]
+
+
+@gen
 def snapshot(cid, action, snap=""):
     c = canister(cid)
     if action == "take":
-        snap = f"snap-{len(c['snapshots']) + 1}"
+        state["snap_seq"] = state.get("snap_seq", 0) + 1
+        snap = f"snap-{state['snap_seq']}"
         c["snapshots"][snap] = c["module_hash"]
         return snap
     if action == "load":

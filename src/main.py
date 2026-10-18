@@ -16,6 +16,7 @@ import canisters  # noqa: E402
 import content  # noqa: E402
 import grants  # noqa: E402
 import orchestra  # noqa: E402
+import snapshots  # noqa: E402
 import stands  # noqa: E402
 import up  # noqa: E402
 import wasms  # noqa: E402
@@ -97,6 +98,8 @@ def baton_propose_content(args: text) -> Async[text]: return (yield from dispatc
 @update
 def baton_propose_release(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_release, args))
 @update
+def baton_propose_restore(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_restore, args))
+@update
 def baton_propose_upgrade(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_upgrade, args))
 @update
 def baton_release_settle(args: text) -> Async[text]: return (yield from dispatch(batons.baton_release_settle, args))
@@ -122,6 +125,8 @@ def canister_restore(args: text) -> Async[text]: return (yield from dispatch(can
 def canister_set(args: text) -> Async[text]: return (yield from dispatch(canisters.canister_set, args))
 @update
 def canister_snapshot(args: text) -> Async[text]: return (yield from dispatch(canisters.canister_snapshot, args))
+@update
+def canister_snapshots(args: text) -> Async[text]: return (yield from dispatch(snapshots.canister_snapshots, args))
 @update
 def canister_start(args: text) -> Async[text]: return (yield from dispatch(canisters.canister_start, args))
 @update

@@ -69,6 +69,7 @@ NON_TERMINAL_STATUSES = frozenset({
 ACTION_TYPE_MANAGED_UPGRADE = "managed_upgrade"
 ACTION_TYPE_ASSET_PROVISION = "managed_asset_provision"
 ACTION_TYPE_RELEASE = "stand_release"
+ACTION_TYPE_SNAPSHOT_RESTORE = "snapshot_restore"
 
 # Capability strings (stored on Commander records).
 CAP_PROPOSE = "propose:managed_upgrade"

@@ -150,6 +150,14 @@ def install_code(cid, wasm):
                                  "wasm_module": wasm, "arg": b""})))
 
 
+def snapshots(cid):
+    """Newest first: [{id, taken_at, size}]."""
+    rows = ok((yield mgmt.list_canister_snapshots(target(cid)))) or []
+    out = [{"id": bytes(r["id"]).hex(), "taken_at": int(r["taken_at_timestamp"]), "size": int(r["total_size"])}
+           for r in rows]
+    return sorted(out, key=lambda s: s["taken_at"], reverse=True)
+
+
 def snapshot(cid, action, snap=""):
     if action == "take":
         return bytes(ok((yield mgmt.take_canister_snapshot(target(cid))))["id"]).hex()

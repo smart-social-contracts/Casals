@@ -32,6 +32,7 @@ class _HealthSvc(Service):
 
 from registry import registry_install_step_gen
 from smoke import run_smoke_test_gen, validate_smoke_test
+from snapshots import parse_snapshots_keep
 
 
 def resume_status_for_execute(status: str) -> str:
@@ -64,6 +65,8 @@ def validate_payload_targets(payload: dict[str, Any], affected: list[str]) -> No
         smoke = target.get("smoke_test")
         if smoke is not None:
             validate_smoke_test(smoke)
+    if payload.get("snapshots_keep") is not None:
+        parse_snapshots_keep(payload["snapshots_keep"])
     validate_payload_bake_window(payload)
     validate_payload_approval_policy(payload)
 
@@ -461,20 +464,6 @@ def full_revert_and_restart_gen(record: dict[str, Any]) -> Async[None]:
     for cid in record["affected_canisters"]:
         try:
             yield management_canister.start_canister({"canister_id": _principal(cid)})
-        except Exception:
-            pass
-
-
-def delete_snapshots_gen(record: dict[str, Any]) -> Async[None]:
-    refs = record.get("snapshot_refs") or {}
-    for cid, snap_hex in refs.items():
-        if not snap_hex:
-            continue
-        try:
-            yield management_canister.delete_canister_snapshot({
-                "canister_id": _principal(cid),
-                "snapshot_id": bytes.fromhex(snap_hex),
-            })
         except Exception:
             pass
 

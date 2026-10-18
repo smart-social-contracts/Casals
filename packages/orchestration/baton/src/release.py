@@ -18,7 +18,8 @@ steps run one per message by ``release_step_gen``:
   RESTORING    each frontend loads its snapshot and applies its release
                (commit the staged batch, or upgrade the wasm and ship the bundle)
   VERIFYING    frontends: module hash, bundle hashes, HTTP checks           -> window ends
-  FINALIZING   optional bake window, then snapshots and chunk stores are cleared
+  FINALIZING   optional bake window, then each member keeps only its newest
+               snapshots_keep snapshots and the chunk stores are cleared
 
 A failure before the window cleans up the staging and ends FAILED_STAGING. A
 failure inside it reloads every snapshot taken and restarts everything
@@ -67,6 +68,7 @@ from models import (
 from assets import AssetCanisterService
 from registry import AssetStoreService, ListArgs, list_registry_files_gen, store_canister_id, store_key
 from smoke import run_smoke_test_gen, validate_smoke_test
+from snapshots import parse_snapshots_keep, prune_snapshots_gen, snapshots_keep
 
 KINDS = ("backend", "frontend")
 DEFAULT_COPY_PATHS = ["/.well-known/ic-domains", "/.well-known/ii-alternative-origins"]
@@ -363,6 +365,8 @@ def validate_release_payload(payload: dict[str, Any], managed: set) -> list[str]
     nb = payload.get("not_before")
     if nb is not None and int(nb) < 0:
         raise ValueError("not_before must be a timestamp in nanoseconds")
+    if payload.get("snapshots_keep") is not None:
+        parse_snapshots_keep(payload["snapshots_keep"])
     validate_payload_bake_window(payload)
     validate_payload_approval_policy(payload)
     return [m["canister_id"].strip() for m in members]
@@ -952,9 +956,18 @@ def _step_bake(config, record, rel, step) -> bool:
 
 
 def _step_cleanup(config, record, rel, step) -> Async[bool]:
-    yield from _delete_snapshots_gen(rel)
+    keep = snapshots_keep(record["payload"], config)
+    pruned = rel.setdefault("pruned", {})
+    for m in record["payload"]["members"]:
+        cid = m["canister_id"]
+        try:
+            pruned[cid] = yield from prune_snapshots_gen(_mgmt(), cid, keep)
+        except Exception as exc:
+            _log(record, "FINALIZE", f"{cid}: could not prune its snapshots: {exc}", "failed")
     yield from _clear_chunk_stores_gen(record)
-    _log(record, "FINALIZE", "snapshots deleted, chunk stores cleared")
+    deleted = sum(len(v) for v in pruned.values())
+    _log(record, "FINALIZE", f"each member keeps its newest {keep} snapshot{'s' * (keep != 1)}"
+                             f"{f' ({deleted} older deleted)' if deleted else ''}; chunk stores cleared")
     return True
 
 

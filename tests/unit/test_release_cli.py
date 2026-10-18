@@ -30,7 +30,7 @@ def build(artifacts, **over):
 
 def test_build_pins_module_and_bundle_hashes(artifacts):
     m = build(artifacts)
-    assert m["casals_release"] == 1 and m["requires"]["baton"] == "2.0.0"
+    assert m["casals_release"] == 1 and m["requires"]["baton"] == "2.0.1"
     be, fe = m["members"]["backend"], m["members"]["frontend"]
     assert be == {"kind": "backend", "wasm": {"source": "realm_backend.wasm.gz", "sha256": hashlib.sha256(WASM).hexdigest(),
                                               "family": "realm-backend", "memory_keep": True}}
@@ -100,12 +100,12 @@ def test_the_pinned_maintenance_hash_is_the_seed_template():
 
 
 def test_a_stand_release_needs_a_new_enough_baton():
-    view = {"canisters": [{"stand": "s", "wasm": "orchestration-baton@1.6.1"}, {"stand": "t", "wasm": "orchestration-baton@2.0.0"}]}
+    view = {"canisters": [{"stand": "s", "wasm": "orchestration-baton@1.6.1"}, {"stand": "t", "wasm": "orchestration-baton@2.0.1"}]}
     with pytest.raises(RuntimeError, match="need"):
         release._check_baton(view, "s")
-    assert release._check_baton(view, "t")["wasm"].endswith("2.0.0")
+    assert release._check_baton(view, "t")["wasm"].endswith("2.0.1")
     with pytest.raises(RuntimeError, match="no baton"):
         release._check_baton(view, "u")
-    assert release._check_baton(view, "s", lambda b: "2.0.0")["stand"] == "s"
+    assert release._check_baton(view, "s", lambda b: "2.0.1")["stand"] == "s"
     with pytest.raises(RuntimeError, match="need"):
         release._check_baton(view, "s", lambda b: None)

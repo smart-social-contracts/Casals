@@ -46,6 +46,7 @@
   let minTc = $state('');
   let topupTc = $state('');
   let reserveTc = $state('');
+  let snapshotsKeep = $state(2);
   let hostedBase = $state('');
   let monitorUrl = $state('');
   let monitorPrincipal = $state('');
@@ -76,6 +77,7 @@
       const x = view.orchestra;
       [name, description, currency] = [x.name, x.description, x.currency || 'USD'];
       [minTc, topupTc, reserveTc] = [tc(x.policy.min), tc(x.policy.topup), tc(x.reserve)];
+      snapshotsKeep = x.snapshots_keep ?? 2;
       [monitorUrl, monitorPrincipal] = [x.monitor.url ?? '', x.monitor.principal ?? ''];
       hostedBase = monitorBaseFromInstanceUrl(monitorUrl);
       email = x.email;
@@ -114,7 +116,10 @@
     saving = true;
     try {
       const policy = { min: cyclesOf(minTc), topup: cyclesOf(topupTc) };
-      await orchestraSet({ name: name.trim(), description: description.trim(), currency, policy, reserve: cyclesOf(reserveTc) });
+      await orchestraSet({
+        name: name.trim(), description: description.trim(), currency, policy, reserve: cyclesOf(reserveTc),
+        snapshots_keep: Number(snapshotsKeep),
+      });
       const monitorChanged = monitorUrl !== (o.monitor.url ?? '') || monitorPrincipal !== (o.monitor.principal ?? '');
       if ($isController === true && monitorChanged) {
         await orchestraSet({ monitor: monitorUrl ? { principal: monitorPrincipal.trim(), url: monitorUrl.trim() } : {} });
@@ -254,6 +259,11 @@
             <label class="label" for="reserve">Treasury reserve (TC)</label>
             <input id="reserve" class="input" placeholder="2" bind:value={reserveTc} />
             <p class="text-xs text-primary-400 mt-1">Top-ups and sends never take the treasury below this. Sections, stands and canisters can override the top-up policy.</p>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="label" for="snapshots-keep">Snapshots to keep per canister</label>
+            <input id="snapshots-keep" type="number" min="1" max="9" step="1" class="input w-24" bind:value={snapshotsKeep} />
+            <p class="text-xs text-primary-400 mt-1">After each upgrade, release or snapshot, every canister keeps only its newest snapshots, whatever took them. Each one is billed as storage for the canister's full memory.</p>
           </div>
         </fieldset>
         <fieldset class="space-y-3 pt-4 border-t border-[var(--color-border-primary)]" disabled={$isController !== true}>

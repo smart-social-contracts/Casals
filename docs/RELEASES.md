@@ -12,7 +12,7 @@ family across many stands.
 
 ## Requirements
 
-- The stand has a baton running `orchestration-baton@2.0.0` or later.
+- The stand has a baton running `orchestration-baton@2.0.1` or later.
 - The baton is a controller of every member of the stand, frontends
   included: it snapshots and installs them.
 - The conductor's catalog holds `casals-maintenance@1.0.0`. `casals upgrade
@@ -29,7 +29,7 @@ GitHub release, and lists it in the signed `checksums.txt`.
   "casals_release": 1,
   "product": "realm",
   "version": "0.7.0",
-  "requires": {"casals": "0.7.0", "baton": "2.0.0"},
+  "requires": {"casals": "0.7.0", "baton": "2.0.1"},
   "members": {
     "backend": {
       "kind": "backend",
@@ -100,7 +100,7 @@ casals -e staging upgrade casals.staging.json --release release:acme/realm@v0.7.
 | Staging | wasms are streamed into each member's chunk store; each bundle is uploaded as a proposed batch with computed evidence; files a frontend must keep serving (`/.well-known/ic-domains`, `/.well-known/ii-alternative-origins`) are copied | serving the old release |
 | Window | frontends: snapshot, then the maintenance canister is installed. Backends: stop, snapshot, install, start, verify. Frontends: snapshot restored, staged batch committed (or the frontend wasm installed and the bundle shipped), verify | maintenance page (HTTP 503 with `Retry-After`) |
 | Bake | snapshots kept for `--bake` seconds; an abort meanwhile rolls back | serving the new release |
-| Cleanup | snapshots and chunk stores cleared | |
+| Cleanup | each member keeps its newest snapshots (see [Snapshots](#snapshots)); chunk stores cleared | |
 
 `--wait` follows the action. On `COMPLETE` it calls `baton_release_settle`, and
 the conductor records each member's new wasm and content, plus the stand's
@@ -128,7 +128,34 @@ completed baton upgrade.
 
 Abort with the conductor's `baton_abort` op, or with *Cancel release* /
 *Roll back* on the proposal page. Rolling back during bake discards whatever
-the stand wrote since the window.
+the stand wrote since the window. A rolled-back or abandoned release deletes
+the snapshots it took.
+
+## Snapshots
+
+Every canister keeps its newest `snapshots_keep` snapshots (2 by default,
+at most 9: the IC holds 10 per canister and an upgrade takes one before
+pruning). The count covers every snapshot, whatever took it: a release, a
+baton upgrade, a conductor upgrade or *Snapshot* in the console. Each one is
+billed as storage for the canister's full memory.
+
+Set it in the sheet (`"snapshots": {"keep": 3}`), with `orchestra_set
+{"snapshots_keep": 3}`, or under *Settings*. Casals sends it with every baton
+proposal; a baton given none uses its own `set_config` `snapshots_keep`,
+then 2.
+
+The canister's details on the orchestra page list its snapshots (time, what
+took it, size). *Revert*:
+
+- on a canister the conductor controls, loads the snapshot (`canister_restore`);
+- on a stand member, proposes `snapshot_restore` to the stand's baton
+  (`baton_propose_restore`), naming every member that same release
+  snapshotted, so the stand goes back together. Once approved, the baton stops
+  them, snapshots them again, loads the chosen snapshots and starts them. If a
+  load fails, the members already loaded go back on the fresh snapshot.
+  `baton_sync` then records the modules they run.
+
+Reverting discards whatever the canisters stored since the snapshot.
 
 ## In the console
 

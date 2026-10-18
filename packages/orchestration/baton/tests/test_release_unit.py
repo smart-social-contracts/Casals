@@ -100,9 +100,18 @@ class World:
     def take_canister_snapshot(self, a):
         cid = a["canister_id"].to_str()
         self.check("snapshot", cid)
-        sid = hashlib.sha256(f"{cid}{len(self.snaps)}".encode()).digest()[:8]
-        self.snaps[sid.hex()] = {"cid": cid, "state": self.cans[cid].state()}
-        return {"id": sid, "taken_at_timestamp": 0, "total_size": 0}
+        self.snap_seq = getattr(self, "snap_seq", 0) + 1
+        sid = hashlib.sha256(f"{cid}{self.snap_seq}".encode()).digest()[:8]
+        self.snaps[sid.hex()] = {"cid": cid, "state": self.cans[cid].state(), "taken_at": self.now + self.snap_seq}
+        return {"id": sid, "taken_at_timestamp": self.now + self.snap_seq, "total_size": 0}
+
+    def list_canister_snapshots(self, a):
+        cid = a["canister_id"].to_str()
+        return [{"id": bytes.fromhex(k), "taken_at_timestamp": s["taken_at"], "total_size": 0}
+                for k, s in self.snaps.items() if s["cid"] == cid]
+
+    def snaps_of(self, cid):
+        return sorted((s["taken_at"], k) for k, s in self.snaps.items() if s["cid"] == cid)
 
     def load_canister_snapshot(self, a):
         cid = a["canister_id"].to_str()
@@ -357,7 +366,40 @@ class TestHappyPath:
         assert {k: v for k, v in fe.assets.items() if k != "/.well-known/ic-domains"} == {
             f"/{p}": H(c) for p, c in BUNDLE.items()}
         assert world.cans[BE2].status == "running"
-        assert world.snaps == {} and fe.batches == {} and be.chunks == {}
+        assert fe.batches == {} and be.chunks == {}
+        assert {c: len(world.snaps_of(c)) for c in (BE, FE, BE2)} == {BE: 1, FE: 1, BE2: 1}, \
+            "each member keeps the snapshot the release took"
+        assert set(record["release_state"]["snapshots"].values()) == set(world.snaps)
+
+    def test_each_member_keeps_its_newest_snapshots(self, world):
+        for _ in range(3):
+            for cid in (BE, FE, BE2):
+                world.take_canister_snapshot({"canister_id": release.Principal.from_str(cid)})
+        record = record_for(payload())
+        assert run(record) == "done", record.get("release_error")
+        taken = record["release_state"]["snapshots"]
+        for cid in (BE, FE, BE2):
+            kept = [k for _, k in world.snaps_of(cid)]
+            assert len(kept) == 2 and kept[-1] == taken[cid], cid
+        assert sum(len(v) for v in record["release_state"]["pruned"].values()) == 6
+
+    def test_the_proposal_says_how_many_to_keep(self, world):
+        world.take_canister_snapshot({"canister_id": release.Principal.from_str(BE)})
+        record = record_for(payload(snapshots_keep=1))
+        assert run(record) == "done", record.get("release_error")
+        assert [k for _, k in world.snaps_of(BE)] == [record["release_state"]["snapshots"][BE]]
+
+    def test_the_baton_config_says_how_many_to_keep(self, world):
+        for _ in range(4):
+            world.take_canister_snapshot({"canister_id": release.Principal.from_str(BE)})
+        record = record_for(payload())
+        out = None
+        for _ in range(500):
+            out = _drive(release_step_gen({"snapshots_keep": "3"}, record))
+            if out in ("done", "failed"):
+                break
+        assert out == "done", record.get("release_error")
+        assert len(world.snaps_of(BE)) == 3
 
     def test_bundle_replaces_the_served_files_with_their_properties(self, world):
         world.cans[FE].assets["/old.js"] = H(b"old")
@@ -405,7 +447,7 @@ class TestHappyPath:
         assert world.snaps, "snapshots are kept while baking"
         world.now += 61 * 10**9
         assert run(record) == "done"
-        assert world.snaps == {}
+        assert len(world.snaps) == 3
 
 
 class TestFailures:

@@ -1,6 +1,7 @@
 import json
 
 import chain
+import snapshots
 import store
 from auth import Unauthorized, find, holds
 import sweeper
@@ -140,10 +141,12 @@ def canister_upgrade(principal, args):
     except Exception as e:
         for c, wasm, wasm_hash, snap in taken:
             yield from chain.snapshot(c.canister_id, "load", snap)
+            yield from chain.snapshot(c.canister_id, "delete", snap)
             c.wasm, c.wasm_hash = wasm, wasm_hash
         raise Exception(f"rolled back: {e}")
     for c, _, _, snap in taken:
-        yield from chain.snapshot(c.canister_id, "delete", snap)
+        snapshots.taken(c, snap, f"before upgrading to {w.key}")
+        yield from snapshots.keep_newest(c)
     return {"upgraded": [c.name for c in targets], "wasm_hash": w.sha256}
 
 
@@ -176,8 +179,11 @@ def canister_stop(principal, args):
 @op("canister.lifecycle", at="canister")
 def canister_snapshot(principal, args):
     c = find(Canister, args["canister"])
-    c.snapshot = yield from chain.snapshot(c.canister_id, "take")
-    return {"canister_id": c.canister_id, "snapshot_id": c.snapshot}
+    snap = yield from chain.snapshot(c.canister_id, "take")
+    c.snapshot = snap
+    snapshots.taken(c, snap, "taken from Casals")
+    yield from snapshots.keep_newest(c)
+    return {"canister_id": c.canister_id, "snapshot_id": snap}
 
 
 @op("canister.lifecycle", at="canister")

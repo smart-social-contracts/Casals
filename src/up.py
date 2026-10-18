@@ -4,10 +4,11 @@ from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, orchestra, resolve, rows
 from op import op
 from rounds import schedule, step
+from snapshots import check_keep
 from stands import build, build_failed
 
 SETTINGS = ("name", "description", "env", "network", "vars", "store_id", "frontend_id", "multisig_id",
-            "reserve", "policy", "currency", "subnets", "monitor")
+            "reserve", "policy", "currency", "subnets", "monitor", "snapshots_keep")
 FIELDS = {
     Wasm: ("path", "sha256", "kind", "type", "memory_keep"),
     Grant: ("scope", "principal", "permissions", "calls"),
@@ -47,6 +48,8 @@ def orchestra_up(principal, args):
     unknown = {k for g in args.get("grants", []) for k in g["permissions"]} - KEYS - {"*"}
     if unknown:
         raise ValueError(f"unknown permissions: {', '.join(sorted(unknown))}")
+    if "snapshots_keep" in args:
+        check_keep(args["snapshots_keep"])
     todo = plan(args)
     if args.get("dry_run"):
         return {"plan": todo}

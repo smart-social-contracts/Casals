@@ -77,10 +77,6 @@ def _http(cid: str, path: str) -> tuple[int, bytes]:
     return status, body
 
 
-def _snapshots(cid: str) -> str:
-    return icp(["canister", "snapshot", "list", cid, "-n", "local"], check=False).stdout
-
-
 @pytest.fixture(scope="module")
 def stand(baton_env):  # noqa: F811
     baton = baton_env["baton_id"]
@@ -165,11 +161,37 @@ class TestStandRelease:
         assert _http(fe, "/.well-known/ic-domains")[1] == b"stand.example.org"
         phases = [e["phase"] for e in action["phase_log"]]
         assert "MAINTENANCE" in phases and "RESTORE" in phases
-        assert "No snapshots" in _snapshots(be) or "snapshot" not in _snapshots(be).lower().replace("snapshots", "")
+        kept = ok(call(stand["baton"], "list_snapshots", "{}"))["snapshots"]
+        for cid in (be, fe):
+            assert [s["origin"]["action_id"] for s in kept[cid]] == [action["action_id"]], kept[cid]
+            assert kept[cid][0]["origin"]["label"] == "before stand@2.0.0"
         status = call(stand["baton"], "maintenance_status")
         assert status["state"] == "none"
+        stand["released"] = (be, fe, {cid: kept[cid][0]["id"] for cid in (be, fe)})
         if not seen:
             pytest.skip("the window passed between polls; maintenance page not observed")
+
+    def test_revert_the_release_from_its_snapshots(self, stand):
+        if "released" not in stand:
+            pytest.skip("needs test_lockstep_upgrade")
+        baton = stand["baton"]
+        be, fe, snaps = stand["released"]
+        action_id = f"restore-{uuid.uuid4().hex[:8]}"
+        payload = {"targets": [{"canister_id": cid, "snapshot_id": snaps[cid]} for cid in (be, fe)],
+                   "label": "reverting to stand@1", "snapshots_keep": 2}
+        res = ok(call(baton, "propose_snapshot_restore", json.dumps({"action_id": action_id, "payload": payload})))
+        assert res["action_type"] == "snapshot_restore"
+        ok(call(baton, "submit_approval", action_id))
+        deadline = time.time() + 300
+        while (action := call(baton, "get_action", action_id)).get("status") not in (
+                "COMPLETE", "ROLLED_BACK", "NEEDS_ATTENTION") and time.time() < deadline:
+            time.sleep(0.5)
+        assert action["status"] == "COMPLETE", json.dumps(action["phase_log"][-6:], indent=1)
+        assert module_hash(be) == wasm_file_hash(MANAGED_V1)
+        assert action["restored"][be] == wasm_file_hash(MANAGED_V1)
+        assert _http(fe, "/index.html") == (200, V1_INDEX)
+        kept = ok(call(baton, "list_snapshots", json.dumps({"canister_id": be})))["snapshots"][be]
+        assert [s["origin"]["label"] for s in kept] == ["before reverting to stand@1", "before stand@2.0.0"]
 
     def test_failed_frontend_check_rolls_back(self, stand):
         be, fe = _new_members(stand)

@@ -93,10 +93,12 @@ def test_upgrade_all_or_nothing():
     other = call("canister_create", stand="d1", name="api2", wasm="app@1", controllers=["conductor"])["canister_id"]
     good = call("canister_upgrade", canister="api", wasm="app@2")
     assert good["upgraded"] == ["api"] and state["canisters"][cid]["module_hash"] == Canister["api"].wasm_hash
-    assert state["canisters"][cid]["snapshots"] == {}
+    assert list(state["canisters"][cid]["snapshots"]) == ["snap-1"], "the upgrade keeps its snapshot"
+    assert Canister["api"].snapshot_labels == {"snap-1": "before upgrading to app@2"}
     state["store"]["/wasm/app@1"] = b"corrupt"
     bad = call("canister_upgrade", stand="d1", wasm="app@1")
     assert bad["error"].startswith("rolled back")
+    assert list(state["canisters"][cid]["snapshots"]) == ["snap-1"], "a rolled-back upgrade drops its snapshot"
     assert Canister["api"].wasm == "app@2" and state["canisters"][other]["module_hash"] == Canister["api2"].wasm_hash
     Wasm["app@2"].memory_keep = "true"
     call("canister_upgrade", canister="api2", wasm="app@2")

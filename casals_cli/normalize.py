@@ -186,5 +186,6 @@ def normalize(sheet: dict, env: str, *, deployer: str, ids: dict, uploads: list[
         "multisig_id": f"$canister:{MULTISIG_NAME}" if (resolved.get("governance") or {}).get("multisig") else "",
         "reserve": int(float(cycles.get("conductor_min_balance_tc") or 0) * TC),
         "policy": {"min": min_cycles, "topup": min_cycles}, "monitor": env_monitor(resolved, env) or {},
+        "snapshots_keep": int((resolved.get("snapshots") or {}).get("keep") or 2),
         "wasms": wasms, "sections": sections, "grants": doc_grants,
     }

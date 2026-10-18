@@ -117,6 +117,7 @@ service : {
   "baton_get" : (text) -> (text);
   "baton_propose_content" : (text) -> (text);
   "baton_propose_release" : (text) -> (text);
+  "baton_propose_restore" : (text) -> (text);
   "baton_propose_upgrade" : (text) -> (text);
   "baton_release_settle" : (text) -> (text);
   "baton_sync" : (text) -> (text);
@@ -130,6 +131,7 @@ service : {
   "canister_restore" : (text) -> (text);
   "canister_set" : (text) -> (text);
   "canister_snapshot" : (text) -> (text);
+  "canister_snapshots" : (text) -> (text);
   "canister_start" : (text) -> (text);
   "canister_stop" : (text) -> (text);
   "canister_upgrade" : (text) -> (text);

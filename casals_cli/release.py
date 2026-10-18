@@ -43,7 +43,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 SCHEMES = ("local:", "release:", "https://", "http://")
 MAINTENANCE_FAMILY, MAINTENANCE_VERSION = "casals-maintenance", "1.0.0"
 MAINTENANCE_SHA256 = "7a3e471c7c6d6ff136946dfd89ae770ce7cc98d37e4b4ad7f2a8107d8349b76f"
-MIN_BATON = (2, 0, 0)
+MIN_BATON = (2, 0, 1)
 TERMINAL = {"COMPLETE", "ROLLED_BACK", "NEEDS_ATTENTION", "ABORTED", "FAILED_STAGING", "REJECTED", "REJECTED_PREFLIGHT",
             "EXPIRED"}
 

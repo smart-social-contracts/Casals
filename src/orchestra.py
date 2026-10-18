@@ -2,10 +2,11 @@ import chain
 from auth import Unauthorized, grants, holds, is_monitor, reader_scopes, readable
 from model import Canister, Event, Section, Stand, orchestra, rows
 from op import op
+from snapshots import check_keep
 
-SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor")
+SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor", "snapshots_keep")
 SHOWN = ("name", "description", "currency", "reserve", "policy", "subnets", "creatable_subnets", "subnets_at",
-         "monitor", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id")
+         "monitor", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id", "snapshots_keep")
 CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "public", "tags", "controllers", "cycles",
             "content", "snapshot")
 EVENTS_MAX = 2000
@@ -70,6 +71,8 @@ def orchestra_resolve(principal, args):
 def orchestra_set(principal, args):
     if "monitor" in args and not chain.is_controller(principal):
         raise Unauthorized("only a controller sets the monitor")
+    if "snapshots_keep" in args:
+        check_keep(args["snapshots_keep"])
     o = orchestra()
     for key in SETTABLE:
         if key in args:

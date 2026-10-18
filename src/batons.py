@@ -4,7 +4,7 @@ import json
 import chain
 from auth import find, reader_scopes, readable
 from content import bundle_hash, wanted
-from model import Canister, Stand, Wasm, resolve, rows
+from model import Canister, Stand, Wasm, orchestra, resolve, rows
 from op import op
 
 BATON = "orchestration-baton@"
@@ -31,7 +31,7 @@ def members(args):
 def propose(baton, method, payload):
     ids = [t["canister_id"] for t in payload]
     reply = json.loads((yield from chain.call_text(baton.canister_id, method, json.dumps(
-        {"affected_canisters": ids, "payload": {"targets": payload}}))))
+        {"affected_canisters": ids, "payload": {"targets": payload, "snapshots_keep": orchestra().snapshots_keep}}))))
     if not reply.get("action_id"):
         raise Exception(f"baton {baton.name}: {reply}")
     action = str(reply["action_id"])
@@ -195,7 +195,7 @@ def baton_propose_release(principal, args):
             m["checks"] = spec["checks"]
         out.append(m)
     payload = {"release": {k: release[k] for k in ("label", "product", "version", "manifest_sha256") if release.get(k)},
-               "members": out}
+               "members": out, "snapshots_keep": orchestra().snapshots_keep}
     if any(m["kind"] == "frontend" for m in out):
         maint = dict(args.get("maintenance") or {})
         payload["maintenance"] = {**{k: maint[k] for k in ("message", "title", "duration_seconds", "copy_paths") if k in maint},
@@ -210,6 +210,27 @@ def baton_propose_release(principal, args):
     vote = yield from chain.call_text(baton.canister_id, "submit_approval", action)
     return {"action_id": action, "baton": baton.name, "baton_id": baton.canister_id, "steps": reply.get("steps"),
             "vote": vote[:200], "members": [m["role"] for m in out]}
+
+
+@op("canister.deploy", at="stand")
+def baton_propose_restore(principal, args):
+    """Propose putting stand members back on their snapshots: {stand, targets: [{canister, snapshot_id}], label?}."""
+    stand = find(Stand, args["stand"])
+    baton = baton_of(stand)
+    targets = []
+    for t in args["targets"]:
+        c = find(Canister, t["canister"])
+        if c.stand.name != stand.name:
+            raise ValueError(f"every target must be on stand '{stand.name}'")
+        targets.append({"canister_id": c.canister_id, "snapshot_id": str(t["snapshot_id"])})
+    payload = {"targets": targets, "label": str(args.get("label") or ""), "snapshots_keep": orchestra().snapshots_keep}
+    reply = json.loads((yield from chain.call_text(baton.canister_id, "propose_snapshot_restore",
+                                                   json.dumps({"payload": payload}))))
+    if not reply.get("action_id"):
+        raise Exception(f"baton {baton.name}: {reply.get('error') or reply}")
+    action = str(reply["action_id"])
+    vote = yield from chain.call_text(baton.canister_id, "submit_approval", action)
+    return {"action_id": action, "baton": baton.name, "baton_id": baton.canister_id, "vote": vote[:200]}
 
 
 @op("canister.deploy", at="stand")
@@ -292,5 +313,14 @@ def sync_from_baton(stand):
                 c.wasm, c.wasm_hash = (w.key if w else c.wasm), sha
                 updated[c.name] = c.wasm if w else f"module {sha[:12]} (not in the catalog)"
                 stand.release = ""
+        elif a.get("action_type") == "snapshot_restore":
+            for cid, sha in sorted((a.get("restored") or {}).items()):
+                c = by_id.get(cid)
+                if c is None or not sha or c.wasm_hash == sha:
+                    continue
+                w = wasm_for(sha)
+                c.wasm, c.wasm_hash = (w.key if w else c.wasm), sha
+                updated[c.name] = c.wasm if w else f"module {sha[:12]} (not in the catalog)"
+            stand.release = ""
         stand.baton_synced = a.get("proposed_at") or stand.baton_synced
     return updated

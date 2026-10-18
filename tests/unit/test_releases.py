@@ -17,7 +17,7 @@ def stand():
     d1 = Stand["d1"]
     for name, cid, kind, wasm, content in (("d1-backend", "be-id", "backend", "app@1", ""),
                                            ("d1-frontend", "fe-id", "frontend", "certified-assets@1", "rel/v1"),
-                                           ("bt", "bt-id", "backend", "orchestration-baton@2.0.0", "")):
+                                           ("bt", "bt-id", "backend", "orchestration-baton@2.0.1", "")):
         c = Canister(name=name, canister_id=cid, kind=kind, wasm=wasm, content=content,
                      wasm_hash=Wasm["app@1"].sha256 if wasm == "app@1" else H(wasm.encode()))
         c.stand = d1
@@ -28,7 +28,7 @@ def stand():
     seen = []
     state["replies"][("bt-id", "propose_release")] = lambda a: seen.append(json.loads(a)["payload"]) or '{"action_id": 9, "steps": 20}'
     state["replies"][("bt-id", "submit_approval")] = '{"ok": true}'
-    state["replies"][("bt-id", "get_config")] = '{"version": "2.0.0"}'
+    state["replies"][("bt-id", "get_config")] = '{"version": "2.0.1"}'
     state["replies"][("bt-id", "list_actions")] = "[]"
     return seen
 
@@ -118,7 +118,7 @@ def test_a_per_deployment_file_replaces_the_bundles_copy_without_changing_its_ha
 def test_sync_follows_what_the_baton_did():
     stand()
     Canister["bt"].wasm = "orchestration-baton@1.6.0"
-    Wasm(key="orchestration-baton@2.0.0", path="/wasm/orchestration-baton@2.0.0", sha256="b2" * 32)
+    Wasm(key="orchestration-baton@2.0.1", path="/wasm/orchestration-baton@2.0.1", sha256="b2" * 32)
     Stand["d1"].release = "app@1"
     app2 = Wasm["app@2"].sha256
     upgrade = lambda at, sha, path: {"action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": at,  # noqa: E731
@@ -127,9 +127,9 @@ def test_sync_follows_what_the_baton_did():
                {**upgrade(30, "ff" * 32, "y"), "status": "REJECTED_PREFLIGHT"}]
     state["replies"][("bt-id", "list_actions")] = lambda a: json.dumps(actions)
     out = call("baton_sync", stand="d1")
-    assert out["updated"] == {"bt": "orchestration-baton@2.0.0", "d1-backend": "app@2"}, out
+    assert out["updated"] == {"bt": "orchestration-baton@2.0.1", "d1-backend": "app@2"}, out
     be, bt = Canister["d1-backend"], Canister["bt"]
-    assert (be.wasm, be.wasm_hash) == ("app@2", app2) and (bt.wasm, bt.wasm_hash) == ("orchestration-baton@2.0.0", "b2" * 32)
+    assert (be.wasm, be.wasm_hash) == ("app@2", app2) and (bt.wasm, bt.wasm_hash) == ("orchestration-baton@2.0.1", "b2" * 32)
     assert Stand["d1"].release == "" and Stand["d1"].baton_synced == 20
     be.wasm, be.wasm_hash = "app@1", Wasm["app@1"].sha256
     assert call("baton_sync", stand="d1")["updated"] == {}, "an action is applied once"

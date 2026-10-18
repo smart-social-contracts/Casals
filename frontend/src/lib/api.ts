@@ -71,6 +71,8 @@ export interface Orchestra {
   creatable_subnets: string[];
   subnets_at: number;
   monitor: { principal?: string; url?: string };
+  /** snapshots each canister keeps, newest first (1–9) */
+  snapshots_keep: number;
   aliases: Record<string, string>;
   built_at: number;
   balances_at: number;
@@ -155,6 +157,31 @@ export interface ContentDeploy {
 
 export interface Ok {
   ok: true;
+}
+
+export interface SnapshotRow {
+  id: string;
+  /** nanoseconds since the epoch */
+  taken_at: number;
+  /** bytes */
+  size: number;
+  /** what took it, e.g. "before upgrading to app@2"; empty when unknown */
+  label: string;
+  /** the baton action that took it, when a baton did */
+  action_id: string | null;
+  /** every snapshot reverting to this row loads: one per member the same action snapshotted */
+  restores: { canister: string; canister_id: string; snapshot_id: string }[];
+}
+
+export interface CanisterSnapshots {
+  canister: string;
+  canister_id: string;
+  /** the orchestra's snapshots_keep */
+  keep: number;
+  via: 'conductor' | 'baton';
+  baton?: string;
+  baton_id?: string;
+  snapshots: SnapshotRow[];
 }
 
 /** `orchestra_export`: the orchestra as an `orchestra_up` document. */
@@ -244,7 +271,7 @@ export const orchestraResolve = (args: { name: string } | { path: string }) =>
   query<{ name: string; canister_id: string; stand: string; section: string }>('orchestra_resolve', args);
 /** The whole orchestra as an `orchestra_up` document (readers of everything only). */
 export const orchestraExport = () => query<ExportDoc>('orchestra_export');
-export const orchestraSet = (patch: Partial<Pick<Orchestra, 'name' | 'description' | 'currency' | 'subnets' | 'reserve' | 'policy' | 'monitor'>>) =>
+export const orchestraSet = (patch: Partial<Pick<Orchestra, 'name' | 'description' | 'currency' | 'subnets' | 'reserve' | 'policy' | 'monitor' | 'snapshots_keep'>>) =>
   update('orchestra_set', patch);
 export const aliasSet = (principal: string, name: string | null) => update('alias_set', { principal, name });
 export const meSet = (email: string) => update('me_set', { email });
@@ -276,6 +303,8 @@ export const canisterStart = (canister: string) => update('canister_start', { ca
 export const canisterStop = (canister: string) => update('canister_stop', { canister });
 export const canisterSnapshot = (canister: string) => update<{ snapshot_id: string }>('canister_snapshot', { canister });
 export const canisterRestore = (canister: string, snapshot_id: string) => update('canister_restore', { canister, snapshot_id });
+/** A canister's snapshots, newest first. `via: "baton"` rows revert through a baton proposal. */
+export const canisterSnapshots = (canister: string) => update<CanisterSnapshots>('canister_snapshots', { canister });
 export const canisterDelete = (canister: string) => update('canister_delete', { canister });
 export const canisterDestroy = (canister: string) => update<{ swept: number }>('canister_destroy', { canister });
 /** Basilisk `__browse__` relayed by the conductor; `query` defaults to `{action: "schema"}`. */
@@ -315,6 +344,9 @@ export const batonAction = (canister_id: string, action_id: string) =>
   });
 export const batonProposeUpgrade = (stand: string, targets: { canister: string; wasm: string }[]) =>
   update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_upgrade', { stand, targets });
+/** Put stand members back on their snapshots; the baton stops, loads and restarts them once approved. */
+export const batonProposeRestore = (stand: string, targets: { canister: string; snapshot_id: string }[], label = '') =>
+  update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_restore', { stand, targets, label });
 export const batonProposeContent = (stand: string, targets: { canister: string; namespace: string }[]) =>
   update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_content', { stand, targets });
 
