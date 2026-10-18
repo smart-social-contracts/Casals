@@ -26,7 +26,7 @@ CORPUS = os.path.join(REPO, "tests", "e2e", "orchestras")
 ENV = "local"
 IDENTITY = os.environ.get("CASALS_E2E_IDENTITY", "local-dev")
 KEEP = os.environ.get("KEEP") == "1"
-ORDER = ["minimal", "governed", "baton-stand", "adopted", "demo", "dynamic-stands"]
+ORDER = ["minimal", "governed", "baton-stand", "adopted", "demo", "dynamic-stands", "stand-release"]
 
 
 class Fail(Exception):
