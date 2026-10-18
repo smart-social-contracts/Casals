@@ -11,6 +11,8 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 
 from casals_cli.bindings import Bindings, load_bindings, resolve_new_access_codes, resolve_orchestra_refs
@@ -303,6 +305,23 @@ def adopt(ic, doc: dict, backend_id: str, deployer: str) -> None:
                     ic.settings_update(c["canister_id"], add_controllers=[backend_id])
 
 
+def register_monitor(view: dict, backend_id: str) -> str:
+    """POST the conductor to its monitor's `/v1/instances`; the service checks the conductor's settings itself."""
+    url = (view.get("monitor") or {}).get("url", "")
+    if "/v1/" not in url:
+        return "no monitor"
+    req = urllib.request.Request(url.split("/v1/")[0] + "/v1/instances", method="POST",
+                                 data=json.dumps({"canister_id": backend_id}).encode(),
+                                 headers={"content-type": "application/json", "accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            return f"registered with {url.split('/v1/')[0]} ({res.status})"
+    except urllib.error.HTTPError as e:
+        return f"{url.split('/v1/')[0]} answered {e.code}: {e.read()[:300].decode(errors='replace')}"
+    except OSError as e:
+        return f"{url.split('/v1/')[0]} unreachable: {e}"
+
+
 def _print_ui_url(ic, bindings) -> None:
     frontend = bindings.conductor.get(CONDUCTOR_NAMES["frontend"], "")
     if not frontend:
@@ -357,6 +376,7 @@ def _execute_up(ic, sheet, sheet_path, sheet_name, env, *, dry_run, conductor_ov
     changed = hand_off_conductor(ic, sheet, bindings, deployer, view)
     bindings.save()
     _summary_step(6, "Handed off " + (", ".join(changed) or "nothing") + "; bindings saved")
+    summary(f"Monitor: {register_monitor(view, backend_id)}")
     summary(f"Done in {_elapsed()}.")
     _print_ui_url(ic, bindings)
     return {"ok": True, "sheet_name": sheet_name, "env": env, "backend_id": backend_id, "plan": res["plan"],

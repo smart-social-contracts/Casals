@@ -61,6 +61,9 @@ _PREFIXED_PLACEHOLDERS = ("$canister:", "$principal:", "$stand.", "$env.")
 # managed members; a member may list $this to keep its exit key; a sheet may
 # also list $deployer, as this demo orchestra does).
 HAND_OFF_SOLE = "sole"
+# The hosted monitor an `ic` environment uses unless its sheet names another or `"monitor": false`.
+HOSTED_MONITOR = {"principal": "wdtda-uafrj-6down-pxxwi-emhpc-uivwv-zdi3c-szrq7-hxodh-wlvas-iqe",
+                  "url": "https://service.ic-casals.tech"}
 
 
 def _is_wasm_ref(value: str) -> bool:
@@ -252,9 +255,10 @@ def env_block(sheet: dict, env: str) -> dict:
 
 def env_monitor(sheet: dict, env: str) -> dict | None:
     """``environments.<env>.monitor`` as ``{"principal", "url"}`` (the
-    monitor's base URL, no trailing slash), or ``None`` when the environment
-    names no off-chain monitor."""
-    block = env_block(sheet, env).get("monitor")
+    monitor's base URL, no trailing slash): the sheet's, else ``HOSTED_MONITOR``
+    on ``ic``. ``None`` for ``"monitor": false`` or a local network."""
+    env_cfg = env_block(sheet, env)
+    block = env_cfg.get("monitor", HOSTED_MONITOR if env_cfg.get("network") == "ic" else None)
     if not isinstance(block, dict):
         return None
     return {
@@ -1146,9 +1150,12 @@ def _is_principal_text(text: str) -> bool:
 
 def _validate_monitor_block(block, path: str, errors: list[str]) -> None:
     """``{"principal": <monitor principal>, "url": <monitor base URL>}``. The
-    conductor's ``monitor_service_url`` is ``<url>/v1/<conductor id>``."""
+    conductor's ``monitor_service_url`` is ``<url>/v1/<conductor id>``. ``false``
+    turns off the hosted default."""
+    if block is False:
+        return
     if not isinstance(block, dict):
-        errors.append(f"{path} must be an object")
+        errors.append(f"{path} must be an object or false")
         return
     unknown = sorted(k for k in block if k not in ("principal", "url") and not k.startswith("$"))
     if unknown:

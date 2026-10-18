@@ -1,5 +1,6 @@
 import chain
-from auth import Unauthorized, grants, holds, is_monitor, reader_scopes, readable
+from auth import grants, holds, is_monitor, reader_scopes, readable
+from canisters import share_status
 from model import Canister, Event, Section, Stand, orchestra, rows
 from op import op
 from snapshots import check_keep
@@ -67,16 +68,25 @@ def orchestra_resolve(principal, args):
     return {"name": c.name, "canister_id": c.canister_id, "stand": c.stand.name, "section": c.stand.section.name}
 
 
+def monitor_setting(m):
+    """`{principal, url}` with `url` as the monitor's `<base>/v1/<this conductor>`; `{}` for no monitor."""
+    principal, url = (m or {}).get("principal", "").strip(), (m or {}).get("url", "").strip().rstrip("/")
+    if url and "/v1/" not in url:
+        url = f"{url}/v1/{chain.self_id()}"
+    return {"principal": principal, "url": url} if principal else {}
+
+
 @op("orchestra.settings")
 def orchestra_set(principal, args):
-    if "monitor" in args and not chain.is_controller(principal):
-        raise Unauthorized("only a controller sets the monitor")
     if "snapshots_keep" in args:
         check_keep(args["snapshots_keep"])
     o = orchestra()
+    before = o.monitor.get("principal")
     for key in SETTABLE:
         if key in args:
-            setattr(o, key, args[key])
+            setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])
+    if o.monitor.get("principal") != before:
+        return {"monitor": o.monitor, "unreachable": (yield from share_status())}
 
 
 @op("alias.manage")

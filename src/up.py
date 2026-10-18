@@ -3,6 +3,7 @@ from auth import KEYS
 from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, orchestra, resolve, rows
 from op import op
+from orchestra import monitor_setting
 from rounds import schedule, step
 from snapshots import check_keep
 from stands import build, build_failed
@@ -55,7 +56,7 @@ def orchestra_up(principal, args):
         return {"plan": todo}
     for key in SETTINGS:
         if key in args:
-            setattr(o, key, args[key])
+            setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])
     o.deployer, o.vars = principal, {**o.vars, "$self": chain.self_id()}
     for cls, key, fields, parent in items(args):
         if cls[key] is None:

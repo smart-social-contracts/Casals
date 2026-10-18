@@ -13,6 +13,7 @@
     describeMonitorState,
     fetchMonitorInstanceStatus,
     fetchMonitorService,
+    HOSTED_MONITOR_BASE,
     instanceUrlFor,
     monitorBaseFromInstanceUrl,
     notificationEmailConfirmed,
@@ -79,7 +80,7 @@
       [minTc, topupTc, reserveTc] = [tc(x.policy.min), tc(x.policy.topup), tc(x.reserve)];
       snapshotsKeep = x.snapshots_keep ?? 2;
       [monitorUrl, monitorPrincipal] = [x.monitor.url ?? '', x.monitor.principal ?? ''];
-      hostedBase = monitorBaseFromInstanceUrl(monitorUrl);
+      hostedBase = monitorBaseFromInstanceUrl(monitorUrl) || HOSTED_MONITOR_BASE;
       email = x.email;
       if (monitorUrl) monitorStatus = await fetchMonitorInstanceStatus(monitorUrl).catch(() => null);
       await checkEmail();
@@ -121,7 +122,7 @@
         snapshots_keep: Number(snapshotsKeep),
       });
       const monitorChanged = monitorUrl !== (o.monitor.url ?? '') || monitorPrincipal !== (o.monitor.principal ?? '');
-      if ($isController === true && monitorChanged) {
+      if (monitorChanged) {
         await orchestraSet({ monitor: monitorUrl ? { principal: monitorPrincipal.trim(), url: monitorUrl.trim() } : {} });
         const base = monitorBaseFromInstanceUrl(monitorUrl);
         if (base) {
@@ -266,8 +267,9 @@
             <p class="text-xs text-primary-400 mt-1">After each upgrade, release or snapshot, every canister keeps only its newest snapshots, whatever took them. Each one is billed as storage for the canister's full memory.</p>
           </div>
         </fieldset>
-        <fieldset class="space-y-3 pt-4 border-t border-[var(--color-border-primary)]" disabled={$isController !== true}>
-          <h3 class="text-sm font-semibold text-primary-800">Monitor <span class="font-normal text-xs text-primary-400">(controllers only)</span></h3>
+        <fieldset class="space-y-3 pt-4 border-t border-[var(--color-border-primary)]" disabled={!canEdit}>
+          <h3 class="text-sm font-semibold text-primary-800">Monitor</h3>
+          <p class="text-xs text-primary-400">Saving grants the monitor read access to the status of every canister the conductor controls.</p>
           <div class="flex gap-2">
             <input class="input" placeholder="https://service.ic-casals.tech" bind:value={hostedBase} />
             <button type="button" class="btn-secondary btn-sm shrink-0" onclick={lookUpService} disabled={!hostedBase.trim()}>Look up</button>

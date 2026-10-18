@@ -5,7 +5,7 @@ import snapshots
 import store
 from auth import Unauthorized, find, holds
 import sweeper
-from model import Canister, Stand, Wasm, orchestra, rename, resolve
+from model import Canister, Stand, Wasm, orchestra, rename, resolve, rows
 from op import op
 
 CREATE_CYCLES = 2_000_000_000_000
@@ -22,6 +22,23 @@ def install(c, w, mode):
     c.wasm, c.wasm_hash = w.key, actual
 
 
+def viewers():
+    monitor = orchestra().monitor.get("principal")
+    return [chain.self_id()] + [monitor] * bool(monitor)
+
+
+def share_status():
+    """Give every canister the conductor still controls the current viewer list; name the ones it cannot change."""
+    unreachable = []
+    for c in rows(Canister):
+        if c.canister_id and c.canister_id != chain.self_id():
+            try:
+                yield from chain.update_settings(c.canister_id, viewers=viewers())
+            except Exception:
+                unreachable.append(c.name)
+    return unreachable
+
+
 def provision(c):
     o = orchestra()
     if not c.canister_id:
@@ -30,9 +47,7 @@ def provision(c):
             raise ValueError(f"subnet '{subnet}' is not in the whitelist")
         c.canister_id = yield from chain.create([chain.self_id()], CREATE_CYCLES, subnet)
     yield from install(c, find(Wasm, c.wasm), "reinstall" if c.wasm_hash else "install")
-    monitor = o.monitor.get("principal")
-    yield from chain.update_settings(c.canister_id, viewers=[chain.self_id()] + [monitor] * bool(monitor),
-                                     public_logs=True)
+    yield from chain.update_settings(c.canister_id, viewers=viewers(), public_logs=True)
     c.status = "installed"
 
 

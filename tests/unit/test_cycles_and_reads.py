@@ -85,7 +85,6 @@ def test_orchestra_reads_settings_and_scopes():
     grant("ann", "stand:d1", "canister.deploy")
     grant("ops", "orchestra", "orchestra.settings", "alias.manage")
     assert call("orchestra_set", "ops", name="Demo", currency="EUR")["ok"]
-    assert "only a controller" in call("orchestra_set", "ops", monitor={"principal": "x"})["error"]
     call("alias_set", "ops", principal="ann", name="Ann")
     call("me_set", "ann", email="ann@example.org")
     mine = call("orchestra_get", "ann")
@@ -97,6 +96,21 @@ def test_orchestra_reads_settings_and_scopes():
     call("alias_set", "ops", principal="ann", name=None)
     call("me_set", "ann", email="")
     assert orchestra().aliases == {} and orchestra().contacts == {}
+
+
+def test_settings_holders_set_the_monitor_and_it_sees_every_status():
+    cid = funded()
+    orchestra().monitor = {}
+    call("canister_register", stand="d1", name="foreign", canister_id="nobody-controls-this")
+    grant("ops", "orchestra", "orchestra.settings")
+    grant("ann", "stand:d1", "orchestra.settings")
+    assert "needs orchestra.settings" in call("orchestra_set", "ann", monitor={"principal": "mon"})["error"]
+    out = call("orchestra_set", "ops", monitor={"principal": "mon", "url": "https://mon.example/"})
+    assert out["monitor"] == {"principal": "mon", "url": "https://mon.example/v1/conductor"}
+    assert out["unreachable"] == ["foreign"] and state["canisters"][cid]["viewers"] == ["conductor", "mon"]
+    assert "unreachable" not in call("orchestra_set", "ops", monitor={"principal": "mon", "url": "https://mon.example"})
+    assert call("orchestra_set", "ops", monitor={})["monitor"] == {}
+    assert orchestra().monitor == {}
 
 
 def test_events_are_filtered_and_scoped():

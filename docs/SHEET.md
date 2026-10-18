@@ -40,7 +40,7 @@ placeholder can read (`$env.website_host`, `$env.flags.x`).
 | `network` | Required. `"local"` for a local replica, `"ic"` for mainnet. |
 | `public_read` | `true` lets anyone read the orchestra (tree, sheet, events, cycles) and its Batons and multisig. Default `false`: only controllers, commanders and the enabled monitor. |
 | `principals` | Alias → principal text, `"$deployer"`, `"sha256:<hex>"` (an access-code slot, see below), or `"$new_access_code"`: `casals up` mints a code, stores only its checksum, and prints the code once at the end of that run; later runs reuse the checksum the conductor holds. Referenced as `$principal:<alias>`. |
-| `monitor` | `{"principal": …, "url": …}`: the off-chain cycle monitor. `url` is the service base, without `/v1/…`. |
+| `monitor` | `{"principal": …, "url": …}`: the off-chain cycle monitor. `url` is the service base, without `/v1/…`; the conductor stores `<url>/v1/<its id>`. On `ic` the default is the hosted service, `https://service.ic-casals.tech`; `false` runs without a monitor. |
 | `cycles` | `{"budget_tc": …}`: what `casals up` refills the conductor treasury to (see `cycles` below). |
 | `bindings` | Canister name → id, for `adopted` canisters only. |
 | `dns` | `{"provider": "none" \| "cloudflare", "zone", "token_env", "ttl"}`. Read by product CLIs; `casals up` reports domains as unverifiable. |

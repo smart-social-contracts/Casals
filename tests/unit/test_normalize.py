@@ -15,6 +15,21 @@ def test_template_creator_gets_stand_create_on_its_section():
             "calls": []} in doc["grants"]
 
 
+def test_mainnet_defaults_to_the_hosted_monitor():
+    from casals_cli.sheetv2 import HOSTED_MONITOR, validate
+
+    def monitor(env_cfg):
+        sheet = {"version": 2, "name": "t", "environments": {"e": env_cfg}, "sections": []}
+        assert not any("monitor" in e for e in validate(sheet, "e"))
+        return normalize(sheet, "e", deployer="2vxsx-fae", ids={}, uploads=[])["monitor"]
+
+    assert monitor({"network": "ic"}) == HOSTED_MONITOR
+    assert monitor({"network": "ic", "monitor": False}) == {}
+    assert monitor({"network": "local"}) == {}
+    own = {"principal": "aaaaa-aa", "url": "https://mon.example"}
+    assert monitor({"network": "ic", "monitor": own}) == own
+
+
 def test_the_sheet_sets_how_many_snapshots_to_keep():
     from casals_cli.sheetv2 import validate
 
