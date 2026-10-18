@@ -61,6 +61,7 @@ class Stand(Entity):
     policy = Json({})
     subnet = String(default="")
     release = String(default="")
+    baton_synced = Integer(default=0)  # proposed_at of the last baton action baton_sync applied
     canisters = OneToMany("Canister", "stand")
 
 

@@ -180,6 +180,7 @@ def wasm_ref(w):
 
 @op("canister.deploy", at="stand")
 def baton_propose_release(principal, args):
+    yield from sync_from_baton(find(Stand, args["stand"]))
     stand, baton, plan = release_plan(args)
     release = args["release"]
     out = []
@@ -229,9 +230,14 @@ def baton_release_settle(principal, args):
         raise ValueError(f"action {args['action_id']} is not a stand release")
     if action.get("status") != "COMPLETE":
         return {"status": action.get("status"), "updated": []}
+    updated = apply_release(stand, action["payload"])
+    return {"status": "COMPLETE", "release": stand.release, "updated": updated}
+
+
+def apply_release(stand, payload):
     updated = []
     by_id = {c.canister_id: c for c in release_members(stand)}
-    for m in action["payload"]["members"]:
+    for m in payload["members"]:
         c = by_id.get(m["canister_id"])
         if c is None:
             continue
@@ -242,5 +248,49 @@ def baton_release_settle(principal, args):
             c.assets_props = m["bundle"].get("props") or {}
         if m.get("wasm") or m.get("bundle"):
             updated.append(c.name)
-    stand.release = action["payload"]["release"]["label"]
-    return {"status": "COMPLETE", "release": stand.release, "updated": updated}
+    stand.release = payload["release"]["label"]
+    return updated
+
+
+def wasm_for(sha, hint=""):
+    """The catalog row for a module hash, the one named `hint` first."""
+    found = sorted((w for w in rows(Wasm) if w.sha256 == sha), key=lambda w: w.key)
+    return next((w for w in found if w.key == hint), found[0] if found else None)
+
+
+@op("canister.deploy", at="stand")
+def baton_sync(principal, args):
+    """The conductor's rows follow what the stand's baton did: upgrades Casals did not run itself
+    (a proposal approved on the baton, the baton's own upgrade by the multisig)."""
+    stand = find(Stand, args["stand"])
+    return {"stand": stand.name, "updated": (yield from sync_from_baton(stand))}
+
+
+def sync_from_baton(stand):
+    baton = baton_of(stand)
+    updated = {}
+    version = ((yield from read(baton, "get_config")) or {}).get("version") or ""
+    w = Wasm[BATON + version] if version else None
+    if w and baton.wasm != w.key:
+        baton.wasm, baton.wasm_hash = w.key, w.sha256
+        updated[baton.name] = w.key
+    by_id = {c.canister_id: c for c in stand.canisters if c.canister_id}
+    done = [a for a in (yield from read(baton, "list_actions"))
+            if a.get("status") == "COMPLETE" and (a.get("proposed_at") or 0) > stand.baton_synced]
+    for a in sorted(done, key=lambda a: a.get("proposed_at") or 0):
+        payload = a.get("payload") or {}
+        if a.get("action_type") == "stand_release" and payload.get("release"):
+            for name in apply_release(stand, payload):
+                updated[name] = Canister[name].wasm
+        elif a.get("action_type") == "managed_upgrade":
+            for t in payload.get("targets") or []:
+                c, sha = by_id.get(t.get("canister_id")), (t.get("wasm_hash") or "").lower()
+                if c is None or not sha or c.wasm_hash == sha:
+                    continue
+                hint = (t.get("registry_path") or "").removesuffix(".gz").removesuffix(".wasm")
+                w = wasm_for(sha, hint)
+                c.wasm, c.wasm_hash = (w.key if w else c.wasm), sha
+                updated[c.name] = c.wasm if w else f"module {sha[:12]} (not in the catalog)"
+                stand.release = ""
+        stand.baton_synced = a.get("proposed_at") or stand.baton_synced
+    return updated

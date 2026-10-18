@@ -28,6 +28,8 @@ def stand():
     seen = []
     state["replies"][("bt-id", "propose_release")] = lambda a: seen.append(json.loads(a)["payload"]) or '{"action_id": 9, "steps": 20}'
     state["replies"][("bt-id", "submit_approval")] = '{"ok": true}'
+    state["replies"][("bt-id", "get_config")] = '{"version": "2.0.0"}'
+    state["replies"][("bt-id", "list_actions")] = "[]"
     return seen
 
 
@@ -111,6 +113,39 @@ def test_a_per_deployment_file_replaces_the_bundles_copy_without_changing_its_ha
     assert bundle["manifest"] == {"index.html": H(INDEX)}
     assert [(f["key"], base64.b64decode(f["content_b64"])) for f in bundle["extra_files"]] == [
         ("/canister_ids.js", b"window.backend = 'be-id';")]
+
+
+def test_sync_follows_what_the_baton_did():
+    stand()
+    Canister["bt"].wasm = "orchestration-baton@1.6.0"
+    Wasm(key="orchestration-baton@2.0.0", path="/wasm/orchestration-baton@2.0.0", sha256="b2" * 32)
+    Stand["d1"].release = "app@1"
+    app2 = Wasm["app@2"].sha256
+    upgrade = lambda at, sha, path: {"action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": at,  # noqa: E731
+                                     "payload": {"targets": [{"canister_id": "be-id", "wasm_hash": sha, "registry_path": path}]}}
+    actions = [upgrade(20, app2, "app@2.wasm.gz"), upgrade(10, "ee" * 32, "x"),
+               {**upgrade(30, "ff" * 32, "y"), "status": "REJECTED_PREFLIGHT"}]
+    state["replies"][("bt-id", "list_actions")] = lambda a: json.dumps(actions)
+    out = call("baton_sync", stand="d1")
+    assert out["updated"] == {"bt": "orchestration-baton@2.0.0", "d1-backend": "app@2"}, out
+    be, bt = Canister["d1-backend"], Canister["bt"]
+    assert (be.wasm, be.wasm_hash) == ("app@2", app2) and (bt.wasm, bt.wasm_hash) == ("orchestration-baton@2.0.0", "b2" * 32)
+    assert Stand["d1"].release == "" and Stand["d1"].baton_synced == 20
+    be.wasm, be.wasm_hash = "app@1", Wasm["app@1"].sha256
+    assert call("baton_sync", stand="d1")["updated"] == {}, "an action is applied once"
+    actions.append(upgrade(40, "dd" * 32, "z"))
+    assert call("baton_sync", stand="d1")["updated"] == {"d1-backend": "module dddddddddddd (not in the catalog)"}
+    assert (be.wasm, be.wasm_hash) == ("app@1", "dd" * 32)
+    assert "unauthorized" in call("baton_sync", "bob", stand="d1")["error"]
+
+
+def test_a_release_proposal_syncs_first():
+    seen = stand()
+    actions = [{"action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": 5,
+                "payload": {"targets": [{"canister_id": "be-id", "wasm_hash": "ee" * 32}]}}]
+    state["replies"][("bt-id", "list_actions")] = lambda a: json.dumps(actions)
+    call("baton_propose_release", **RELEASE)
+    assert seen[0]["members"][0]["expected_module_hash"] == "ee" * 32
 
 
 def test_abort_goes_through_the_baton():

@@ -11,7 +11,7 @@ const UPDATES = [
   'canister_snapshot', 'canister_restore', 'canister_delete', 'canister_destroy', 'canister_browse',
   'content_deploy', 'wasm_upload_begin', 'wasm_upload_end', 'wasm_authorize', 'wasm_revoke', 'grant_set',
   'grant_remove', 'grant_claim', 'call_canister', 'baton_get', 'baton_action', 'baton_propose_upgrade', 'baton_propose_content',
-  'baton_propose_release', 'baton_release_settle', 'baton_abort',
+  'baton_propose_release', 'baton_release_settle', 'baton_abort', 'baton_sync',
   'cycles_refresh', 'cycles_top_up', 'cycles_send',
 ];
 

@@ -376,6 +376,12 @@ def run_release_upgrade(ic, sheet_path: str, env: str, *, release: str, stands: 
     if not _ok(view):
         raise RuntimeError(f"orchestra_get failed: {view}")
     targets = _stands(view, stands, sections)
+    for stand in targets:
+        synced = ic.call_update(backend_id, "baton_sync", json.dumps({"stand": stand}))
+        if _ok(synced) and synced.get("updated"):
+            _progress(f"  synced {stand} from its baton: "
+                      + ", ".join(f"{k} → {v}" for k, v in synced["updated"].items()))
+    view = ic.query(backend_id, "orchestra_get", "{}")
     baton_versions = {(e.get("sha256") or "").strip().lower(): (e.get("version") or "").strip()
                       for e in (sheet.get("registry") or {}).get("wasms") or []
                       if isinstance(e, dict) and (e.get("family") or "").strip() == "orchestration-baton"}

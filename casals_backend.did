@@ -119,6 +119,7 @@ service : {
   "baton_propose_release" : (text) -> (text);
   "baton_propose_upgrade" : (text) -> (text);
   "baton_release_settle" : (text) -> (text);
+  "baton_sync" : (text) -> (text);
   "call_canister" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_controllers" : (text) -> (text);

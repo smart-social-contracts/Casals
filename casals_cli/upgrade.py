@@ -143,6 +143,8 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
                 if multisig_id in controllers and stand_batons.get(c["stand"]) not in controllers:
                     row = _upgrade_via_multisig(ic, c["canister_id"], c["name"], multisig_id, store_id, key, path,
                                                 sha, memory_keep=bool(entry.get("memory_keep")))
+                    if row["result"] == "upgraded" and c["canister_id"] == stand_batons.get(c["stand"]):
+                        ic.call_update(backend_id, "baton_sync", json.dumps({"stand": c["stand"]}))
                 else:
                     batons.setdefault(c["stand"], []).append(c)
                     continue

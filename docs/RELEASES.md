@@ -106,6 +106,16 @@ casals -e staging upgrade casals.staging.json --release release:acme/realm@v0.7.
 the conductor records each member's new wasm and content, plus the stand's
 release label (shown as a badge on the stand).
 
+A release states, per member, the module it expects the member to run now;
+the baton refuses the release (`REJECTED_PREFLIGHT`) when a member runs
+something else. Casals takes those hashes from its own rows, so they must
+follow upgrades Casals did not run itself: a proposal approved on the baton,
+or the baton's own upgrade by the multisig. `baton_sync` replays the baton's
+completed actions (each once) and its reported version into the rows.
+`baton_propose_release`, `casals upgrade --release` and the console's
+release form run it first; the console also runs it when it shows a
+completed baton upgrade.
+
 ## When something fails
 
 | Status | Meaning |

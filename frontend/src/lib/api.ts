@@ -341,6 +341,9 @@ export const batonReleaseSettle = (stand: string, action_id: string) =>
   update<{ status: string; release?: string; updated: string[] }>('baton_release_settle', { stand, action_id });
 export const batonAbort = (stand: string, action_id: string) =>
   update<{ action_id: string; status: string }>('baton_abort', { stand, action_id });
+/** Casals' rows catch up with what the stand's baton did (upgrades Casals did not run itself). */
+export const batonSync = (stand: string) =>
+  update<{ stand: string; updated: Record<string, string> }>('baton_sync', { stand });
 
 export const cyclesGet = () => query<Cycles>('cycles_get');
 /** Converts the treasury's ICP and reads every balance live. */

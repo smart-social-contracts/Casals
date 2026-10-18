@@ -101,6 +101,12 @@ def baton_upgrade(o) -> None:
         o.wait(f"baton upgrade to {version}", lambda: all(o.hashes()[n] != before[n] for n in names), 10)
         for baton_id, action_id in {(r["baton_id"], r["action_id"]) for r in res["rows"]}:
             o.wait(f"baton action {action_id}", lambda: baton_done(o, baton_id, action_id), 10)
+        for stand in {m["stand"] for m in members}:
+            o.call("baton_sync", {"stand": stand})
+        rows = {c["name"]: c for c in o.view()["canisters"]}
+        stale = [n for n in names if rows[n]["wasm"] != f"hello-world-rust@{version}"]
+        if stale:
+            raise Fail(f"baton_sync left Casals' rows behind the baton's upgrade to {version}: {stale}")
 
 
 def baton_done(o, baton_id: str, action_id: str) -> bool:

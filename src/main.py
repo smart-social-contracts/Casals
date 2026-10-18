@@ -101,6 +101,8 @@ def baton_propose_upgrade(args: text) -> Async[text]: return (yield from dispatc
 @update
 def baton_release_settle(args: text) -> Async[text]: return (yield from dispatch(batons.baton_release_settle, args))
 @update
+def baton_sync(args: text) -> Async[text]: return (yield from dispatch(batons.baton_sync, args))
+@update
 def call_canister(args: text) -> Async[text]: return (yield from dispatch(grants.call_canister, args))
 @update
 def canister_browse(args: text) -> Async[text]: return (yield from dispatch(grants.canister_browse, args))

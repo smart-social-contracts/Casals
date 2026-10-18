@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
-  import { batonAbort, batonReleaseSettle, candidUiUrl, loadView } from '$lib/api';
+  import { batonAbort, batonReleaseSettle, batonSync, candidUiUrl, loadView } from '$lib/api';
   import {
     isStandRelease,
     nsToLocal,
@@ -184,7 +184,7 @@
   });
 
   $effect(() => {
-    if (!isRelease || !canisterId) return;
+    if (!canisterId) return;
     void loadView().then((view) => {
       const row = view.orchestra.canisters.find((c) => c.canister_id === canisterId);
       releaseStand = row?.stand ?? '';
@@ -203,6 +203,14 @@
         toasts.success(`Casals records ${releaseStand} on ${res.release}`);
       }
     }).catch((e: unknown) => toasts.error(e instanceof Error ? e.message : String(e)));
+  });
+
+  // An upgrade the baton ran on its own: Casals' rows catch up (needs canister.deploy; quiet otherwise).
+  let synced = false;
+  $effect(() => {
+    if (!action || isRelease || action.status !== 'COMPLETE' || !releaseStand || !$isAuthenticated || synced) return;
+    synced = true;
+    void batonSync(releaseStand).catch(() => {});
   });
 
   async function abortRelease() {

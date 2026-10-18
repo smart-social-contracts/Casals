@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     batonProposeRelease,
+    batonSync,
     standReleasePreview,
     wasmList,
     type CanisterRow,
@@ -84,6 +85,7 @@
     busy = true;
     error = '';
     try {
+      await batonSync(stand).catch(() => {});
       preview = await standReleasePreview(request());
     } catch (e: unknown) {
       preview = null;
