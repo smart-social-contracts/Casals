@@ -50,6 +50,8 @@ export interface StandRow {
   built_at: number;
   build_error: string;
   members: string[];
+  /** The stand release the stand's members last moved to together (`baton_release_settle`). */
+  release?: string;
 }
 
 export interface SectionRow {
@@ -315,6 +317,30 @@ export const batonProposeUpgrade = (stand: string, targets: { canister: string; 
   update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_upgrade', { stand, targets });
 export const batonProposeContent = (stand: string, targets: { canister: string; namespace: string }[]) =>
   update<{ action_id: string; baton: string; baton_id: string }>('baton_propose_content', { stand, targets });
+
+export interface StandReleaseMemberSpec { wasm?: string; content?: string; bundle_sha256?: string; checks?: Record<string, unknown> }
+export interface StandReleaseRequest {
+  stand: string;
+  release: { label: string; product?: string; version?: string };
+  members: Record<string, StandReleaseMemberSpec>;
+  maintenance?: { message?: string; title?: string; duration_seconds?: number };
+  not_before?: number;
+  bake_window_seconds?: number;
+}
+export interface StandReleasePreview {
+  stand: string;
+  baton: string;
+  current: string;
+  members: { role: string; canister: string; canister_id: string; kind: string; change: 'upgrade' | 'unchanged';
+             wasm: { from: string; to: string } | null; content: { from: string; to: string } | null }[];
+}
+export const standReleasePreview = (req: StandReleaseRequest) => query<StandReleasePreview>('stand_release_preview', req);
+export const batonProposeRelease = (req: StandReleaseRequest) =>
+  update<{ action_id: string; baton: string; baton_id: string; steps: number; members: string[] }>('baton_propose_release', req);
+export const batonReleaseSettle = (stand: string, action_id: string) =>
+  update<{ status: string; release?: string; updated: string[] }>('baton_release_settle', { stand, action_id });
+export const batonAbort = (stand: string, action_id: string) =>
+  update<{ action_id: string; status: string }>('baton_abort', { stand, action_id });
 
 export const cyclesGet = () => query<Cycles>('cycles_get');
 /** Converts the treasury's ICP and reads every balance live. */

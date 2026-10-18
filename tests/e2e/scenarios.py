@@ -9,7 +9,7 @@ import urllib.request
 
 from casals_cli.multisig import propose
 from casals_cli.replica import canister_http_url
-from run_e2e import Fail, sh
+from run_e2e import REPO, Fail, sh
 
 ACCESS_CODE_ALIAS, ACCESS_CODE, CLAIMER = "invited_operator", "casals", "casals-e2e-claimer"
 
@@ -100,6 +100,74 @@ def baton_upgrade(o) -> None:
         o.wait(f"baton upgrade to {version}", lambda: all(o.hashes()[n] != before[n] for n in names), 10)
 
 
+def release_stand(o) -> str | None:
+    """The stand whose baton runs stand releases (orchestration-baton 2.x)."""
+    for sec in o.sheet["sections"]:
+        for st in sec.get("stands") or []:
+            if any(c["wasm"].startswith("orchestration-baton@2.") for c in st["canisters"]):
+                return st["name"]
+    return None
+
+
+def stand_release(o) -> None:
+    stand = release_stand(o)
+    if stand is None:
+        return
+    rows = {c["name"]: c for c in o.view()["canisters"] if c["stand"] == stand}
+    backend, frontend = f"{stand}-backend", f"{stand}-frontend"
+    rel = os.path.join(o.home, "release")
+    os.makedirs(rel, exist_ok=True)
+    shutil.copy(os.path.join(REPO, "seed", "templates", "hello-world-rust@1.0.1.wasm.gz"),
+                os.path.join(rel, "hello_backend.wasm.gz"))
+    dist = os.path.join(o.home, "release-dist")
+    src = next(b for b in o.sheet["registry"]["bundles"])["source"].removeprefix("local:")
+    shutil.copytree(src, dist, dirs_exist_ok=True)
+    open(os.path.join(dist, "release.txt"), "w").write("hello 2.0.0\n")
+    o.casals("bundle", dist, "-o", os.path.join(rel, "hello_frontend.tgz"))
+    checks = os.path.join(o.home, "checks.json")
+
+    def build(version: str, contains: str) -> str:
+        json.dump({"frontend": {"http": [{"path": "/release.txt", "contains": contains}]}}, open(checks, "w"))
+        out = os.path.join(rel, f"casals-release-{version}.json")
+        o.casals("release", "build", "--product", "hello", "--version", version,
+                 "--wasm", f"backend={rel}/hello_backend.wasm.gz", "--family", "backend=hello-world-rust",
+                 "--bundle", f"frontend={rel}/hello_frontend.tgz", "--checks", checks, "-o", out, check=False)
+        if not o.casals("release", "verify", out)["ok"]:
+            raise Fail(f"release verify {out} failed")
+        return out
+
+    good, bad = build("2.0.0", "hello 2.0.0"), build("2.0.1", "NOT SERVED")
+    preview = o.casals("upgrade", o.sheet_path, "--release", good, "--stand", stand, "--dry-run")["stands"][0]
+    if {m["role"]: m["change"] for m in preview["members"]} != {"backend": "upgrade", "frontend": "upgrade"}:
+        raise Fail(f"dry run: {preview}")
+
+    before = o.hashes()
+    res = o.casals("upgrade", o.sheet_path, "--release", good, "--stand", stand, "--wait",
+                   "--message", "Upgrading to hello 2.0.0", "--duration", "5", "--bake", "0")
+    if res["stands"][0]["result"] != "complete":
+        raise Fail(f"release {good}: {res}")
+    after = o.hashes()
+    if after[backend] == before[backend] or after[frontend] != before[frontend]:
+        raise Fail(f"the backend must move and the frontend keep its module: {before} → {after}")
+    if b"hello 2.0.0" not in (o.serves(frontend, "/release.txt") or b"") or not o.serves(frontend, "/canister_ids.js"):
+        raise Fail("the frontend does not serve the release bundle with its per-deployment files")
+    view = o.view()
+    rows = {c["name"]: c for c in view["canisters"]}
+    if rows[backend]["wasm"] != "hello-world-rust@2.0.0" or not rows[frontend]["content"].startswith("release/hello/2.0.0/"):
+        raise Fail(f"the conductor did not record the release: {rows[backend]['wasm']}, {rows[frontend]['content']}")
+    if next(s for s in view["stands"] if s["name"] == stand)["release"] != "hello@2.0.0":
+        raise Fail("the stand does not show its release")
+
+    res = o.casals("upgrade", o.sheet_path, "--release", bad, "--stand", stand, "--wait", "--bake", "0", check=False)
+    if res.get("stands", [{}])[0].get("result") != "rolled_back":
+        raise Fail(f"a failing frontend check must roll the stand back: {res}")
+    if o.hashes() != after or b"hello 2.0.0" not in (o.serves(frontend, "/release.txt") or b""):
+        raise Fail("after the rollback the stand does not run 2.0.0 again")
+    if "already runs" not in o.casals("upgrade", o.sheet_path, "--release", good, "--stand", stand, "--dry-run",
+                                      check=False)["stands"][0].get("error", ""):
+        raise Fail("a stand on 2.0.0 must report that it already runs it")
+
+
 def content_change(o) -> None:
     bundles = o.sheet["registry"].get("bundles") or []
     if not bundles:
@@ -182,5 +250,5 @@ def cycles_and_snapshot(o) -> None:
         raise Fail("restoring the last snapshot changed the module")
 
 
-SCENARIOS = [fresh, idempotent, content_change, runtime_stand, baton_upgrade, access_code, cycles_and_snapshot,
-             export_roundtrip]
+SCENARIOS = [fresh, idempotent, stand_release, content_change, runtime_stand, baton_upgrade, access_code,
+             cycles_and_snapshot, export_roundtrip]

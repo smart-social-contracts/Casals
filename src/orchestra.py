@@ -33,7 +33,7 @@ def orchestra_get(principal, args):
             "sections": [{"name": s.name, "description": s.description, "template": s.template} for s in rows(Section)
                          if scopes is None or any(readable(scopes, f"stand:{st.name}") for st in s.stands)],
             "stands": [{"name": s.name, "section": s.section.name, "description": s.description, "built_at": s.built_at,
-                        "build_error": s.build_error, "members": s.members}
+                        "build_error": s.build_error, "members": s.members, "release": s.release}
                        for s in rows(Stand) if readable(scopes, f"stand:{s.name}")],
             "email": o.contacts.get(principal, ""), "contacts": o.contacts if sees_contacts(principal) else {}}
 

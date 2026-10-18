@@ -52,6 +52,10 @@ def principals(items):
     return "vec { " + "; ".join(f'principal "{p}"' for p in items) + " }"
 
 
+def encode(candid):
+    return bytes(ic.candid_encode(candid))
+
+
 def call(cid, method, candid="()", cycles=0):
     res = yield ic.call_raw(Principal.from_str(cid), method, ic.candid_encode(candid), cycles)
     return ic.candid_decode(ok(res))

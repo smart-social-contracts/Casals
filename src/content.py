@@ -24,9 +24,10 @@ def bundle_hash(want):
     return sha(text.encode())
 
 
-def wanted(c):
-    prefix = f"/{c.content}"
-    published = (yield from store.files(orchestra().store_id, prefix + "/")) if c.content else {}
+def wanted(c, content=None):
+    content = c.content if content is None else content
+    prefix = f"/{content}"
+    published = (yield from store.files(orchestra().store_id, prefix + "/")) if content else {}
     props = {}
     if prefix + "/" + PROPERTIES in published:
         props = json.loads((yield from store.read(orchestra().store_id, prefix + "/" + PROPERTIES)))

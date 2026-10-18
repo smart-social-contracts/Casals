@@ -1,0 +1,180 @@
+{
+  "version": 2,
+  "name": "stand-release",
+  "description": "one stand whose baton (2.0) co-controls its backend and frontend: `casals upgrade --release` moves both in lockstep, behind the Casals maintenance page, and rolls both back when a check fails",
+  "environments": {
+    "local": {
+      "network": "local",
+      "dns": {
+        "provider": "none"
+      },
+      "flags": {
+        "test_mode": true,
+        "ii_bypass": true
+      },
+      "principals": {
+        "operator": "$deployer"
+      },
+      "cycles": {
+        "min_balance_tc": 0.5,
+        "budget_tc": 100
+      }
+    }
+  },
+  "conductor": {
+    "backend": {
+      "wasm": "casals-backend",
+      "kind": "backend",
+      "mode": "managed",
+      "controllers": [
+        "$multisig"
+      ]
+    },
+    "frontend": {
+      "wasm": "casals-frontend",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": [
+        "$multisig"
+      ]
+    },
+    "store": {
+      "wasm": "certified-assets@0.3.0",
+      "kind": "frontend",
+      "mode": "managed",
+      "controllers": [
+        "$self",
+        "$deployer"
+      ]
+    },
+    "commanders": [
+      {
+        "principal": "$principal:operator",
+        "permissions": "*"
+      }
+    ]
+  },
+  "governance": {
+    "multisig": {
+      "wasm": "orchestration-multisig@1.7.0",
+      "kind": "backend",
+      "mode": "managed",
+      "signers": [
+        "$principal:operator"
+      ],
+      "threshold": 1,
+      "controllers": [
+        "$multisig"
+      ]
+    }
+  },
+  "registry": {
+    "wasms": [
+      {
+        "family": "casals-backend",
+        "version": "main",
+        "source": "build:casals_backend"
+      },
+      {
+        "family": "certified-assets",
+        "version": "0.3.0",
+        "source": "local:seed/templates/certified-assets@0.3.0.wasm.gz"
+      },
+      {
+        "family": "orchestration-multisig",
+        "version": "1.7.0",
+        "source": "local:seed/templates/orchestration-multisig@1.7.0.wasm.gz"
+      },
+      {
+        "family": "orchestration-baton",
+        "version": "2.0.0",
+        "source": "local:seed/templates/orchestration-baton@2.0.0.wasm.gz"
+      },
+      {
+        "family": "casals-maintenance",
+        "version": "1.0.0",
+        "source": "local:seed/templates/casals-maintenance@1.0.0.wasm.gz"
+      },
+      {
+        "family": "hello-world-rust",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-rust.wasm.gz"
+      },
+      {
+        "family": "hello-world-frontend",
+        "version": "1.0.0",
+        "source": "local:seed/templates/hello-world-frontend.wasm.gz"
+      }
+    ],
+    "bundles": [
+      {
+        "path": "frontend/hello/1.0.0",
+        "source": "local:../baton-stand/dist"
+      }
+    ]
+  },
+  "sections": [
+    {
+      "name": "Apps",
+      "stands": [
+        {
+          "name": "hello",
+          "baton": {
+            "commanders": [
+              "$self"
+            ],
+            "threshold": 1,
+            "manages": [
+              "backend",
+              "frontend"
+            ],
+            "hand_off": true
+          },
+          "canisters": [
+            {
+              "name": "hello-baton",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "orchestration-baton@2.0.0",
+              "install_arg": {
+                "top_commander": "$self"
+              },
+              "controllers": [
+                "$multisig"
+              ]
+            },
+            {
+              "name": "hello-backend",
+              "mode": "managed",
+              "kind": "backend",
+              "wasm": "hello-world-rust@1.0.0",
+              "controllers": [
+                "$self",
+                "$stand.baton"
+              ]
+            },
+            {
+              "name": "hello-frontend",
+              "mode": "managed",
+              "kind": "frontend",
+              "wasm": "hello-world-frontend@1.0.0",
+              "controllers": [
+                "$self",
+                "$stand.baton"
+              ],
+              "content": "frontend/hello/1.0.0",
+              "files": {
+                "/canister_ids.js": "globalThis.__CANISTER_IDS = {\"backend\": \"$stand.backend\"};\n"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "cycles": {
+    "min_balance_tc": 0.5,
+    "top_up_from": "$self",
+    "conductor_min_balance_tc": 2.0
+  }
+}

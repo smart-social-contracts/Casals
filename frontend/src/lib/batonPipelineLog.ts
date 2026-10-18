@@ -124,6 +124,10 @@ export const BATON_TERMINAL_STATUSES = new Set([
   'REVERTED_FAILED_VERIFY',
   'FAILED_PROVISION',
   'EXPIRED',
+  'FAILED_STAGING',
+  'ROLLED_BACK',
+  'NEEDS_ATTENTION',
+  'ABORTED',
 ]);
 
 export function isBatonTerminal(status?: string): boolean {

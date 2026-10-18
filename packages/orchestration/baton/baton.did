@@ -101,9 +101,25 @@ type ChunkContent = record { content : blob };
 type ListArgs = record { start : opt nat; length : opt nat };
 type AssetEncoding = record { content_encoding : text; sha256 : opt blob; length : nat; modified : int };
 type AssetEntry = record { key : text; content_type : text; encodings : vec AssetEncoding };
+type Header = record { 0 : text; 1 : text };
+type HttpRequestArg = record { url : text; method : text; body : blob; headers : vec Header; certificate_version : opt nat16 };
+type HttpReply = record { status_code : nat16; headers : vec Header; body : blob };
+type CreateChunkArg = record { batch_id : nat; content : blob };
+type CreateChunkReply = record { chunk_id : nat };
+type CreateAssetOp = record { key : text; content_type : text; max_age : opt nat64; headers : opt vec Header; enable_aliasing : opt bool; allow_raw_access : opt bool };
+type SetAssetContentOp = record { key : text; content_encoding : text; chunk_ids : vec nat; sha256 : opt blob };
+type DeleteAssetOp = record { key : text };
+type BatchOperation = variant { CreateAsset : CreateAssetOp; SetAssetContent : SetAssetContentOp; DeleteAsset : DeleteAssetOp };
+type CommitBatchArg = record { batch_id : nat; operations : vec BatchOperation };
+type ComputeEvidenceArg = record { batch_id : nat; max_iterations : opt nat16 };
+type CommitProposedBatchArg = record { batch_id : nat; evidence : blob };
+type DeleteBatchArg = record { batch_id : nat };
+type AssetEncodingLite = record { content_encoding : text; sha256 : opt blob };
+type AssetEntryLite = record { key : text; content_type : text; encodings : vec AssetEncodingLite };
 type AssetCanisterService = service { grant_permission : (GrantPermissionArg) -> (); store : (StoreArg) -> () };
 type _HealthSvc = service { health_check : () -> (text) query };
 type AssetStoreService = service { get : (GetArg) -> (EncodedAsset) query; get_chunk : (GetChunkArg) -> (ChunkContent) query; list : (ListArgs) -> (vec AssetEntry) query };
+type FrontendService = service { http_request : (HttpRequestArg) -> (HttpReply) query; propose_commit_batch : (CommitBatchArg) -> (); create_chunk : (CreateChunkArg) -> (CreateChunkReply); compute_evidence : (ComputeEvidenceArg) -> (opt blob); commit_proposed_batch : (CommitProposedBatchArg) -> (); delete_batch : (DeleteBatchArg) -> (); list : (ListArgs) -> (vec AssetEntryLite) query };
 
 service : (InitArgs) -> {
   "set_commander_policy" : (text) -> (text);
@@ -120,6 +136,9 @@ service : (InitArgs) -> {
   "get_config" : () -> (text) query;
   "propose_managed_upgrade" : (text) -> (text);
   "propose_asset_provision" : (text) -> (text);
+  "propose_release" : (text) -> (text);
+  "abort_action" : (text) -> (text);
+  "maintenance_status" : () -> (text) query;
   "submit_approval" : (text) -> (text);
   "submit_multisig_accelerant" : (text) -> (text);
   "reject_action" : (text) -> (text);

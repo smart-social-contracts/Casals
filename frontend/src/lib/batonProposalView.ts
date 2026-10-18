@@ -37,12 +37,17 @@ export function batonPagePath(canisterId?: string): string {
 export function batonStatusClass(status?: string): string {
   if (!status) return 'badge-neutral';
   if (status === 'COMPLETE') return 'badge-ok';
-  if (status.startsWith('FAILED') || status.startsWith('REJECTED')) return 'badge-err';
+  if (status.startsWith('FAILED') || status.startsWith('REJECTED') || status === 'NEEDS_ATTENTION') return 'badge-err';
+  if (status === 'ROLLED_BACK' || status === 'MAINTENANCE') return 'badge-warn';
   if (status.includes('AWAIT') || status === 'BAKING' || status === 'PENDING' || status === 'FINALIZING') return 'badge-warn';
   return 'badge-neutral';
 }
 
 export function batonActionSummary(action: BatonActionView): string {
+  if (action.action_type === 'stand_release') {
+    const label = text(asRecord(asRecord(action.payload)?.release)?.label);
+    return label ? `Release ${label}` : 'Stand release';
+  }
   const targets = targetRecords(action);
   if (targets.length === 1) return oneTargetSummary(targets[0]);
   if (targets.length > 1) {
@@ -73,6 +78,10 @@ export function batonActionBlurb(action: BatonActionView): string {
   }
   if (kind === 'managed_upgrade') {
     return 'Install sha256-pinned WASMs from the store onto canisters this Baton controls, after the stand approves.';
+  }
+  if (kind === 'stand_release') {
+    return 'Move every member of the stand to one release, or none: frontends show the Casals maintenance page while '
+      + 'the backends change, and any failed step rolls the whole stand back to its snapshots.';
   }
   return '';
 }

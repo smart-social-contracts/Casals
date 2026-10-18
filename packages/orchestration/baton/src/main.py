@@ -53,6 +53,11 @@ from config import (
 from models import (
     ACTION_TYPE_ASSET_PROVISION,
     ACTION_TYPE_MANAGED_UPGRADE,
+    ACTION_TYPE_RELEASE,
+    STATUS_ABORTED,
+    STATUS_FAILED_STAGING,
+    STATUS_NEEDS_ATTENTION,
+    STATUS_ROLLED_BACK,
     ALL_CAPABILITIES,
     CAP_MANAGE_MANAGED,
     CAP_PROPOSE,
@@ -95,8 +100,19 @@ from policy import (
 )
 from assets import (
     asset_provision_step_gen,
+    manifest_from_listing,
     pin_manifests_gen,
     validate_asset_payload,
+)
+from registry import list_registry_files_gen
+from release import (
+    abandon_staging_gen,
+    current_status,
+    maintenance_view,
+    new_release_state,
+    release_step_gen,
+    rollback_gen,
+    validate_release_payload,
 )
 from pipeline import (
     accelerant_eligible,
@@ -309,6 +325,8 @@ def _run_phase_gen(action_id: str, record: dict) -> Async[text]:
     action_type = record.get("action_type") or ACTION_TYPE_MANAGED_UPGRADE
     if action_type == ACTION_TYPE_ASSET_PROVISION:
         return (yield from _execute_asset_provision_gen(action_id, record))
+    if action_type == ACTION_TYPE_RELEASE:
+        return (yield from _execute_release_gen(action_id, record))
 
     status = record.get("status", "")
     if status == STATUS_APPROVED:
@@ -465,6 +483,43 @@ def _execute_asset_provision_gen(action_id: str, record: dict) -> Async[text]:
         target_index=int(state.get("target_index") or 0),
         file_index=int(state.get("file_index") or 0),
     )
+
+
+RELEASE_OUTCOME_STATUS = {
+    "rejected": STATUS_REJECTED_PREFLIGHT,
+    "abandoned": STATUS_FAILED_STAGING,
+    "rolled_back": STATUS_ROLLED_BACK,
+    "needs_attention": STATUS_NEEDS_ATTENTION,
+}
+
+
+def _execute_release_gen(action_id: str, record: dict) -> Async[text]:
+    """One step of a stand release; re-arms itself until the release ends."""
+    rel = record["release_state"]
+    not_before = int(record["payload"].get("not_before") or 0)
+    if record.get("status") == STATUS_APPROVED and not_before > _now():
+        _arm_resume_timer(action_id, max(1, (not_before - _now()) // 1_000_000_000))
+        return _ok(action_id=action_id, status=STATUS_APPROVED, scheduled_at=not_before)
+    try:
+        result = yield from release_step_gen(_config, record)
+    except Exception as exc:
+        _log.error(f"release {action_id} error: {exc}")
+        return _err(f"{exc} :: {traceback.format_exc()[-400:]}")
+    if result == "failed":
+        record["status"] = RELEASE_OUTCOME_STATUS[rel["outcome"]]
+        _save_action(record)
+        return _err(record.get("release_error") or "release failed")
+    if result == "done":
+        record["status"] = STATUS_COMPLETE
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_COMPLETE)
+    record["status"] = current_status(rel)
+    _save_action(record)
+    delay = 0
+    if result == "wait":
+        delay = max(1, (int(rel["wait_until"]) - _now()) // 1_000_000_000)
+    _arm_resume_timer(action_id, delay)
+    return _ok(action_id=action_id, status=record["status"], step=int(rel["cursor"]), steps=len(rel["plan"]))
 
 
 def _scan_and_resume() -> None:
@@ -811,6 +866,108 @@ def propose_asset_provision(args: text) -> Async[text]:
         return _err(str(e))
     except Exception as e:
         return _err(str(e))
+
+
+@update
+def propose_release(args: text) -> Async[text]:
+    """Requires propose:managed_upgrade. JSON: {payload, action_id?}.
+
+    payload: {release: {label, ...}, members: [{role, canister_id, kind,
+    expected_module_hash, wasm?, bundle?, checks?}], maintenance: {wasm,
+    message?, title?, duration_seconds?, copy_paths?}, not_before?,
+    bake_window_seconds?, approval_policy?}. Every member moves in lockstep
+    (see release.py). A bundle without ``manifest`` is pinned to the store's
+    current hashes now, so approvers approve fixed content."""
+    try:
+        caller = _caller()
+        require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        if _active_action_id():
+            return _err("another action is in progress")
+        params = json.loads(args)
+        payload = params["payload"]
+        affected = validate_release_payload(payload, set(_managed.keys()))
+        effective_approval_policy({"payload": payload}, _config)
+        action_id = _new_action_id(params)
+        for m in payload["members"]:
+            bundle = m.get("bundle")
+            if bundle and bundle.get("manifest") is None:
+                files = yield from list_registry_files_gen(_config, bundle["namespace"])
+                bundle["manifest"] = manifest_from_listing(bundle["namespace"], files)
+        if _active_action_id() or _actions.contains_key(action_id):
+            return _err("another action was filed meanwhile")
+        record = new_action_record(
+            action_id=action_id,
+            proposed_by=caller,
+            proposed_at=_now(),
+            affected_canisters=affected,
+            payload=payload,
+            action_type=ACTION_TYPE_RELEASE,
+        )
+        record["release_label"] = payload["release"]["label"]
+        record["bake_window_seconds"] = action_bake_window_seconds(
+            record, _cfg_int("bake_window_seconds", DEFAULT_BAKE_WINDOW_SECONDS))
+        record["release_state"] = new_release_state(payload)
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_PENDING, action_type=ACTION_TYPE_RELEASE,
+                   steps=len(record["release_state"]["plan"]))
+    except AuthError as e:
+        return _err(str(e))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def abort_action(action_id: text) -> Async[text]:
+    """Requires execute:managed_upgrade. Stop a stand release.
+
+    Before its window opens nothing was installed: the staging is undone and
+    the action ends ABORTED. Inside the window, or while baking afterwards,
+    every member goes back to its snapshot (ROLLED_BACK); while baking that
+    discards whatever the stand wrote since the window."""
+    try:
+        require_capability(_caller(), CAP_EXECUTE, _commanders, _config)
+    except AuthError as e:
+        return _err(str(e))
+    aid = action_id.strip()
+    record = _load_action(aid)
+    if record is None:
+        return _err("unknown action")
+    if record.get("action_type") != ACTION_TYPE_RELEASE:
+        return _err("only stand releases can be aborted; reject a pending action instead")
+    if is_terminal(record.get("status", "")) or record.get("status") == STATUS_PENDING:
+        return _err(f"action is {record.get('status')}")
+    if not _phase_begin(aid):
+        return _err("a step of this action is running; try again in a few seconds")
+    try:
+        rel = record["release_state"]
+        if rel.get("window_ended_at") and int(rel["cursor"]) >= len(rel["plan"]) - 1:
+            return _err("the release is cleaning up; it can no longer be rolled back")
+        if int(rel["cursor"]) < int(rel["window_from"]) and not rel.get("touched") and not rel.get("stopped"):
+            yield from abandon_staging_gen(record)
+            record["status"] = STATUS_ABORTED
+        else:
+            problems = yield from rollback_gen(record)
+            rel["problems"] = problems
+            record["status"] = STATUS_NEEDS_ATTENTION if problems else STATUS_ROLLED_BACK
+        record["aborted_by"] = _caller()
+        append_phase_log(record, phase_entry("ABORT", _now(), "ok", f"aborted by {_caller()}"))
+        _save_action(record)
+        return _ok(action_id=aid, status=record["status"])
+    finally:
+        _phase_end(aid)
+
+
+@query
+def maintenance_status() -> text:
+    """Public: the stand's upcoming or running maintenance window, if any.
+    {state: none|scheduled|starting|in_progress|done, release, scheduled_at,
+    started_at, until_ns, message, title}. Pending proposals are not shown."""
+    for aid in _actions.keys():
+        rec = _load_action(aid)
+        if (rec and rec.get("action_type") == ACTION_TYPE_RELEASE
+                and is_non_terminal(rec.get("status", "")) and rec.get("status") != STATUS_PENDING):
+            return json.dumps(maintenance_view(rec, _now()))
+    return json.dumps(maintenance_view(None, _now()))
 
 
 @update

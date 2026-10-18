@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from casals_cli import __version__, commands, init, up, upgrade
+from casals_cli import __version__, commands, init, release, up, upgrade
 from casals_cli.catalog import resolve_sheet
 from casals_cli.ic import IcClient
 from casals_cli.util import emit_error, emit_json
@@ -93,6 +93,34 @@ def _build_parser() -> argparse.ArgumentParser:
     upg_p.add_argument("--stand", action="append", default=[], metavar="NAME", help="only canisters on this stand (repeatable)")
     upg_p.add_argument("--section", action="append", default=[], metavar="NAME", help="only canisters in this section (repeatable)")
     upg_p.add_argument("--yes", "-y", action="store_true", help="reserved; upgrades never ask")
+    upg_p.add_argument("--release", metavar="MANIFEST",
+                       help="move whole stands (--stand/--section) to this casals-release.json, every member in "
+                            "lockstep through the stand's baton: a path, https:// URL or release:owner/repo@tag")
+    upg_p.add_argument("--dry-run", action="store_true", help="with --release: show what each member would move to")
+    upg_p.add_argument("--not-before", metavar="WHEN", help="with --release: start no earlier than WHEN "
+                       "(ISO-8601, +30m, +2h, or epoch nanoseconds)")
+    upg_p.add_argument("--message", help="with --release: what the maintenance page tells visitors")
+    upg_p.add_argument("--title", help="with --release: the maintenance page's heading")
+    upg_p.add_argument("--duration", type=int, metavar="MINUTES", help="with --release: expected maintenance length")
+    upg_p.add_argument("--bake", type=int, metavar="SECONDS", help="with --release: keep snapshots this long after "
+                       "the release before cleaning up (an abort meanwhile rolls back)")
+    upg_p.add_argument("--wait", action="store_true", help="with --release: follow the baton action to its end")
+
+    rel_p = sub.add_parser("release", help="casals-release.json manifests for stand releases — see docs/RELEASES.md")
+    rel_sub = rel_p.add_subparsers(dest="release_command", required=True)
+    rel_build = rel_sub.add_parser("build", help="write a release manifest from built artifacts")
+    rel_build.add_argument("--product", required=True)
+    rel_build.add_argument("--version", required=True)
+    rel_build.add_argument("--wasm", action="append", metavar="ROLE=PATH", help="a member's wasm (.wasm or .wasm.gz)")
+    rel_build.add_argument("--bundle", action="append", metavar="ROLE=PATH", help="a frontend member's bundle (.tgz or dist dir)")
+    rel_build.add_argument("--frontend", action="append", metavar="ROLE", help="a role whose wasm is a frontend's")
+    rel_build.add_argument("--family", action="append", metavar="ROLE=FAMILY", help="wasm family (default <product>-<role>)")
+    rel_build.add_argument("--memory-keep", action="append", metavar="ROLE", help="upgrade this role with wasm_memory_persistence keep")
+    rel_build.add_argument("--checks", metavar="FILE", help="JSON {role: {smoke_test?, health?, http?}}")
+    rel_build.add_argument("-o", "--output", default="casals-release.json")
+    rel_verify = rel_sub.add_parser("verify", help="validate a manifest; recompute the hashes of artifacts beside it")
+    rel_verify.add_argument("manifest", help="path, https:// URL or release:owner/repo@tag")
+    rel_verify.add_argument("--dir", default=None, help="directory holding the artifacts")
 
     for name, help_text in (
         ("export", "the orchestra as a document (orchestra_export)"),
@@ -222,8 +250,12 @@ def main(argv: list[str] | None = None) -> None:
             result = up.run_up(ic, sheet_path, args.env, dry_run=args.dry_run, conductor_override=args.conductor,
                                project_root=root, bootstrap=args.bootstrap, verbose=args.verbose, sheet=sheet)
             emit_json(result)
+        elif cmd == "upgrade" and args.release:
+            release.cmd_upgrade_release(ic, args, root)
         elif cmd == "upgrade":
             upgrade.cmd_upgrade(ic, args, root)
+        elif cmd == "release":
+            release.cmd_release(args)
         elif cmd == "bundle":
             commands.cmd_bundle(args)
         elif cmd == "export":

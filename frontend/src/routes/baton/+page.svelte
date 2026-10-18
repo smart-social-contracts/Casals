@@ -12,6 +12,7 @@
   } from '$lib/batonClient';
   import BatonAdminPanel from '$lib/components/BatonAdminPanel.svelte';
   import BatonProposeUpgradeForm from '$lib/components/BatonProposeUpgradeForm.svelte';
+  import StandReleaseForm from '$lib/components/StandReleaseForm.svelte';
   import { formatActionTimestamp, isBatonTerminal } from '$lib/batonPipelineLog';
   import { batonSupportsQuorumApproval } from '$lib/batonApproval';
   import { batonActionSummary, batonProposalPath, batonStatusClass } from '$lib/batonProposalView';
@@ -46,6 +47,16 @@
     const c = tree.orchestra.canisters.find((x) => x.canister_id === canisterId);
     return !!c && canActOnCanister(tree, $principal, c, 'canister.deploy');
   });
+
+  const batonRow = $derived(tree?.orchestra.canisters.find((x) => x.canister_id === canisterId) ?? null);
+  const releaseStand = $derived(
+    batonRow && /^orchestration-baton@([2-9]|\d{2,})\./.test(batonRow.wasm) ? batonRow.stand : '',
+  );
+  const releaseMembers = $derived(
+    tree && releaseStand
+      ? tree.orchestra.canisters.filter((x) => x.stand === releaseStand && x.canister_id && !x.wasm.startsWith('orchestration-'))
+      : [],
+  );
 
   function isTerminal(status?: string): boolean {
     return isBatonTerminal(status);
@@ -282,6 +293,19 @@
           <span class="text-xs font-mono text-primary-400" title={$principal}>{$principal.slice(0, 5)}…{$principal.slice(-5)}</span>
         {/if}
       </div>
+
+      {#if releaseStand && casalsDeploy && tree}
+        <StandReleaseForm
+          stand={releaseStand}
+          members={releaseMembers}
+          allCanisters={tree.orchestra.canisters}
+          current={tree.orchestra.stands.find((s) => s.name === releaseStand)?.release ?? ''}
+          busyElsewhere={!!blockingAction}
+          onsuccess={async (actionId) => {
+            await goto(batonProposalPath(actionId, canisterId));
+          }}
+        />
+      {/if}
 
       {#if config}
         <BatonProposeUpgradeForm

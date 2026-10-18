@@ -90,6 +90,10 @@ export interface BatonActionRecord {
   snapshot_refs?: Record<string, string>;
   upgrade_index?: number;
   bake_until?: number;
+  /** Stand releases: the pipeline's plan, cursor and outcome. */
+  release_state?: unknown;
+  release_label?: string;
+  release_error?: string;
 }
 
 function asText(raw: unknown): string {

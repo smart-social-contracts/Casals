@@ -60,6 +60,7 @@ class Stand(Entity):
     build_error = String(default="")
     policy = Json({})
     subnet = String(default="")
+    release = String(default="")
     canisters = OneToMany("Canister", "stand")
 
 

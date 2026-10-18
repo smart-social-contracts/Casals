@@ -1,7 +1,15 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { get } from 'svelte/store';
-  import { candidUiUrl } from '$lib/api';
+  import { batonAbort, batonReleaseSettle, candidUiUrl, loadView } from '$lib/api';
+  import {
+    isStandRelease,
+    nsToLocal,
+    RELEASE_OUTCOMES,
+    releaseLabel,
+    releaseMembers,
+    releaseSteps,
+  } from '$lib/standRelease';
   import { identity, isAuthenticated, principal, loginInternetIdentity } from '$lib/auth';
   import {
     batonLoadProposal,
@@ -82,6 +90,15 @@
   const canApprove = $derived(
     !!action && !!config && $isAuthenticated && batonCanApproveAction($principal, action, config, commanders),
   );
+  const isRelease = $derived(isStandRelease(action));
+  const relMembers = $derived(action && isRelease ? releaseMembers(action) : []);
+  const relSteps = $derived(action && isRelease ? releaseSteps(action) : []);
+  const relPayload = $derived((action?.payload ?? {}) as { maintenance?: { message?: string; duration_seconds?: number }; not_before?: number });
+  const inWindow = $derived(relSteps.some((s) => s.window && s.state === 'done'));
+  const releaseRunning = $derived(isRelease && !!action?.status && !isBatonTerminal(action.status) && action.status !== 'PENDING');
+  let releaseStand = $state('');
+  let recordedRelease = $state('');
+
   const logLines = $derived(
     pipelineLines.length
       ? pipelineLines
@@ -108,12 +125,14 @@
     else toasts.error('Could not copy the link');
   }
 
-  async function load(canister: string, actionId: string, token: number) {
-    loading = true;
-    error = '';
-    missing = false;
-    action = null;
-    pipelineLines = [];
+  async function load(canister: string, actionId: string, token: number, quiet = false) {
+    if (!quiet) {
+      loading = true;
+      error = '';
+      missing = false;
+      action = null;
+      pipelineLines = [];
+    }
     try {
       if (!canister) {
         error = 'This URL needs the Baton canister id (?id=…). Open the proposal from the Baton page.';
@@ -153,9 +172,53 @@
     void load(canister, actionId, token);
   });
 
-  function reload() {
+  function reload(quiet = false) {
     const token = ++loadToken;
-    return load(canisterId, actionParam, token);
+    return load(canisterId, actionParam, token, quiet);
+  }
+
+  $effect(() => {
+    if (!releaseRunning) return;
+    const timer = setInterval(() => void reload(true), 3000);
+    return () => clearInterval(timer);
+  });
+
+  $effect(() => {
+    if (!isRelease || !canisterId) return;
+    void loadView().then((view) => {
+      const row = view.orchestra.canisters.find((c) => c.canister_id === canisterId);
+      releaseStand = row?.stand ?? '';
+      recordedRelease = view.orchestra.stands.find((s) => s.name === releaseStand)?.release ?? '';
+    }).catch(() => {});
+  });
+
+  let settling = false;
+  $effect(() => {
+    if (!action || !isRelease || action.status !== 'COMPLETE' || !releaseStand || !$isAuthenticated || settling) return;
+    if (recordedRelease === releaseLabel(action)) return;
+    settling = true;
+    void batonReleaseSettle(releaseStand, action.action_id).then((res) => {
+      if (res.release) {
+        recordedRelease = res.release;
+        toasts.success(`Casals records ${releaseStand} on ${res.release}`);
+      }
+    }).catch((e: unknown) => toasts.error(e instanceof Error ? e.message : String(e)));
+  });
+
+  async function abortRelease() {
+    if (!action || !releaseStand) return;
+    const what = inWindow ? 'Roll every member back to its snapshot?' : 'Cancel the release? Nothing has been installed yet.';
+    if (!confirm(what)) return;
+    busy = true;
+    try {
+      const res = await batonAbort(releaseStand, action.action_id);
+      toasts.success(`Release ${res.status === 'ABORTED' ? 'cancelled' : res.status.toLowerCase().replace('_', ' ')}`);
+      await reload(true);
+    } catch (e: unknown) {
+      toasts.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      busy = false;
+    }
   }
 
   async function approve() {
@@ -322,6 +385,56 @@
         {:else if $isAuthenticated}
           <p class="text-xs text-amber-800">Only the top commander can skip the bake window.</p>
         {/if}
+      </section>
+    {:else if isRelease}
+      <section class="rounded-lg border border-[var(--color-border-primary)] bg-white p-4 space-y-3">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="space-y-1 text-sm">
+            {#if action.status && RELEASE_OUTCOMES[action.status]}
+              <p class="text-primary-900">{RELEASE_OUTCOMES[action.status]}</p>
+              {#if action.release_error}<p class="text-xs font-mono text-red-700 break-all">{action.release_error}</p>{/if}
+            {:else if action.status === 'COMPLETE'}
+              <p class="text-primary-900">Every member runs {releaseLabel(action)}.</p>
+              {#if recordedRelease === releaseLabel(action)}<p class="text-xs text-primary-500">Casals records the stand on it.</p>{/if}
+            {:else if action.status === 'APPROVED' && relPayload.not_before}
+              <p class="text-primary-900">Scheduled: starts no earlier than {nsToLocal(relPayload.not_before)}.</p>
+            {:else if releaseRunning}
+              <p class="text-primary-900">{inWindow ? 'In the maintenance window.' : 'Staging: the stand is still serving.'}</p>
+            {/if}
+            {#if relPayload.maintenance?.message}
+              <p class="text-xs text-primary-500">Maintenance page: “{relPayload.maintenance.message}”{#if relPayload.maintenance.duration_seconds} · about {Math.round(relPayload.maintenance.duration_seconds / 60)} min{/if}</p>
+            {/if}
+          </div>
+          {#if releaseRunning && $isAuthenticated && releaseStand}
+            <button class="btn-ghost btn-sm text-red-700" type="button" disabled={busy} onclick={abortRelease}>
+              {inWindow ? 'Roll back' : 'Cancel release'}
+            </button>
+          {/if}
+        </div>
+        <table class="w-full text-xs">
+          <tbody class="divide-y divide-[var(--color-border-primary)]">
+            {#each relMembers as m (m.canisterId)}
+              <tr>
+                <td class="py-1.5 pr-2 font-mono">{m.role}</td>
+                <td class="py-1.5 pr-2 text-primary-500">{m.kind}</td>
+                <td class="py-1.5 pr-2 font-mono break-all">{m.change}</td>
+                <td class="py-1.5 text-primary-500">{m.checks}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        <ol class="space-y-0.5 text-xs">
+          {#each relSteps as step, i (i)}
+            <li class="flex items-center gap-2 {step.window ? 'pl-3 border-l-2 border-amber-300' : 'pl-3.5'}">
+              <span class="w-3 text-center {step.state === 'done' ? 'text-emerald-600' : step.state === 'failed' ? 'text-red-600' : step.state === 'current' ? 'text-amber-600' : 'text-primary-300'}">
+                {step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'current' ? '●' : '○'}
+              </span>
+              <span class={step.state === 'pending' ? 'text-primary-400' : 'text-primary-800'}>{step.label}</span>
+              {#if step.role}<span class="font-mono text-primary-400">{step.role}</span>{/if}
+            </li>
+          {/each}
+        </ol>
+        <p class="text-[10px] text-primary-400">Steps on the amber line run while frontends show the maintenance page.</p>
       </section>
     {:else if $isAuthenticated && action.status && !isBatonTerminal(action.status) && action.status !== 'PENDING'}
       <div>

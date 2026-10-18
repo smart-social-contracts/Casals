@@ -30,6 +30,7 @@ test-unit:
 		tests/test_smoke_unit.py \
 		tests/test_assets_unit.py \
 		tests/test_registry_unit.py \
+		tests/test_release_unit.py \
 		$(PYTEST_FLAGS)
 	cd $(MULTISIG_DIR) && $(PYTEST) tests/test_unit.py $(PYTEST_FLAGS)
 

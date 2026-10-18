@@ -65,6 +65,10 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def encode(candid):
+    return candid.encode()
+
+
 @gen
 def create(controllers, cycles, subnet=""):
     cid = f"can-{len(state['canisters']) + 1}"

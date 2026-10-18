@@ -1,0 +1,26 @@
+type File = record { body : blob; path : text; content_type : text };
+type HttpRequest = record {
+  url : text;
+  method : text;
+  body : blob;
+  headers : vec record { text; text };
+  certificate_version : opt nat16;
+};
+type HttpResponse = record {
+  body : blob;
+  headers : vec record { text; text };
+  upgrade : opt bool;
+  status_code : nat16;
+};
+type InitArg = record { files : vec File; status : Status };
+type Status = record {
+  title : opt text;
+  until_ns : opt nat64;
+  release : opt text;
+  message : text;
+};
+service : (opt InitArg) -> {
+  http_request : (HttpRequest) -> (HttpResponse) query;
+  set_status : (Status) -> ();
+  status : () -> (Status) query;
+}

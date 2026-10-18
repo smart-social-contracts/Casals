@@ -247,7 +247,7 @@ class TestBatonSourceShape:
             assert "_reader_refusal()" in body, name
 
     def test_action_ids_are_never_reused(self):
-        assert self.SRC_MAIN.count("_new_action_id(params)") == 2
+        assert self.SRC_MAIN.count("_new_action_id(params)") == 3
         assert "action_id already used" in self.SRC_MAIN
 
     def test_cycle_reads_are_managed_only(self):
@@ -260,7 +260,7 @@ class TestBatonSourceShape:
         assert "test_hooks: Opt[bool]" in self.SRC_MAIN
 
     def test_overrides_are_checked_when_filed(self):
-        for name in ("propose_managed_upgrade", "propose_asset_provision"):
+        for name in ("propose_managed_upgrade", "propose_asset_provision", "propose_release"):
             body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
             assert 'effective_approval_policy({"payload": payload}, _config)' in body, name
 

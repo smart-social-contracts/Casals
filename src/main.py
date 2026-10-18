@@ -87,13 +87,19 @@ def icrc10_supported_standards() -> text:
 @update
 def alias_set(args: text) -> Async[text]: return (yield from dispatch(orchestra.alias_set, args))
 @update
+def baton_abort(args: text) -> Async[text]: return (yield from dispatch(batons.baton_abort, args))
+@update
 def baton_action(args: text) -> Async[text]: return (yield from dispatch(batons.baton_action, args))
 @update
 def baton_get(args: text) -> Async[text]: return (yield from dispatch(batons.baton_get, args))
 @update
 def baton_propose_content(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_content, args))
 @update
+def baton_propose_release(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_release, args))
+@update
 def baton_propose_upgrade(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_upgrade, args))
+@update
+def baton_release_settle(args: text) -> Async[text]: return (yield from dispatch(batons.baton_release_settle, args))
 @update
 def call_canister(args: text) -> Async[text]: return (yield from dispatch(grants.call_canister, args))
 @update
@@ -166,6 +172,8 @@ def stand_create(args: text) -> Async[text]: return (yield from dispatch(stands.
 def stand_delete(args: text) -> Async[text]: return (yield from dispatch(stands.stand_delete, args))
 @update
 def stand_destroy(args: text) -> Async[text]: return (yield from dispatch(stands.stand_destroy, args))
+@query
+def stand_release_preview(args: text) -> text: return run(dispatch(batons.stand_release_preview, args))
 @update
 def stand_set(args: text) -> Async[text]: return (yield from dispatch(stands.stand_set, args))
 @query

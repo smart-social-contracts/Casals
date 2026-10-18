@@ -112,10 +112,13 @@ service : {
   "http_request_update" : (HttpRequest) -> (HttpResponse);
   "icrc10_supported_standards" : () -> (text) query;
   "alias_set" : (text) -> (text);
+  "baton_abort" : (text) -> (text);
   "baton_action" : (text) -> (text);
   "baton_get" : (text) -> (text);
   "baton_propose_content" : (text) -> (text);
+  "baton_propose_release" : (text) -> (text);
   "baton_propose_upgrade" : (text) -> (text);
+  "baton_release_settle" : (text) -> (text);
   "call_canister" : (text) -> (text);
   "canister_browse" : (text) -> (text);
   "canister_controllers" : (text) -> (text);
@@ -152,6 +155,7 @@ service : {
   "stand_create" : (text) -> (text);
   "stand_delete" : (text) -> (text);
   "stand_destroy" : (text) -> (text);
+  "stand_release_preview" : (text) -> (text) query;
   "stand_set" : (text) -> (text);
   "subnet_list" : (text) -> (text) query;
   "wasm_authorize" : (text) -> (text);

@@ -1,0 +1,24 @@
+[package]
+name = "casals-maintenance"
+version = "1.0.0"
+edition = "2021"
+description = "Maintenance page a baton installs into a stand's frontend canisters during a release upgrade."
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+ic-asset-certification = "4.0"
+ic-http-certification = "4.0"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

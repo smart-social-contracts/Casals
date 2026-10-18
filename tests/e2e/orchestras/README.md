@@ -8,6 +8,7 @@ Each subdirectory holds a full sheet v2 `casals.json` used by the e2e harness
 | `minimal` | conductor + one managed backend |
 | `governed` | multisig-controlled conductor (the deployer hands off on day one), commanders, an access-code commander slot (`invited_operator`) |
 | `baton-stand` | one stand with baton: sole hand-off of the backend (controllers = the baton), weighted commanders (multisig 2 / Casals 1 / `$stand.backend` 1, threshold 2) |
+| `stand-release` | one stand (backend + frontend) moved by `casals upgrade --release`: a good release completes under the maintenance page, a release whose frontend check fails rolls the whole stand back ([RELEASES.md](../../../docs/RELEASES.md)) |
 | `adopted` | adopted backend: Casals takes control and config only, never code |
 | `demo` | three stands, three batons, shared multisig |
 | `retire-and-pool` | retire: true, pool behaviour, reuse_pool |
