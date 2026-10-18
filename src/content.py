@@ -20,7 +20,9 @@ def sha(data):
 
 
 def bundle_hash(want):
-    text = "".join(f"{want[k]['sha256']}  {k[1:]}\n" for k in sorted(want) if "text" not in want[k])
+    """Over the bundle as published: a per-deployment file counts as the bundle's copy it replaces."""
+    text = "".join(f"{want[k].get('bundle_sha256', want[k]['sha256'])}  {k[1:]}\n" for k in sorted(want)
+                   if "text" not in want[k] or "bundle_sha256" in want[k])
     return sha(text.encode())
 
 
@@ -33,7 +35,9 @@ def wanted(c, content=None):
         props = json.loads((yield from store.read(orchestra().store_id, prefix + "/" + PROPERTIES)))
     want = {k[len(prefix):]: v for k, v in published.items() if not k.endswith((MANIFEST, PROPERTIES))}
     for key, text in resolve(c.files, c.stand, c.canister_id).items():
-        want[key] = {"sha256": sha(text.encode()), "type": TYPES.get(key.rsplit(".", 1)[-1], "text/plain"), "text": text}
+        replaced = {"bundle_sha256": want[key]["sha256"]} if key in want else {}
+        want[key] = {"sha256": sha(text.encode()), "type": TYPES.get(key.rsplit(".", 1)[-1], "text/plain"), "text": text,
+                     **replaced}
     return {k: {**v, "props": props.get(k, {})} for k, v in want.items()}
 
 

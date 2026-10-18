@@ -100,6 +100,19 @@ def test_the_bundle_must_be_what_the_release_names():
     assert "is empty" in call("baton_propose_release", **{**RELEASE, "members": {"frontend": {"content": "rel/v3"}}})["error"]
 
 
+def test_a_per_deployment_file_replaces_the_bundles_copy_without_changing_its_hash():
+    seen = stand()
+    shipped = b"window.backend = 'local';"
+    state["store"]["/rel/v2/canister_ids.js"] = shipped
+    full = H(f"{H(shipped)}  canister_ids.js\n{H(INDEX)}  index.html\n".encode())
+    out = call("baton_propose_release", **{**RELEASE, "members": {"frontend": {"content": "rel/v2", "bundle_sha256": full}}})
+    assert out.get("ok", True), out
+    bundle = seen[0]["members"][1]["bundle"]
+    assert bundle["manifest"] == {"index.html": H(INDEX)}
+    assert [(f["key"], base64.b64decode(f["content_b64"])) for f in bundle["extra_files"]] == [
+        ("/canister_ids.js", b"window.backend = 'be-id';")]
+
+
 def test_abort_goes_through_the_baton():
     stand()
     state["replies"][("bt-id", "abort_action")] = lambda a: json.dumps({"ok": True, "status": "ROLLED_BACK"})

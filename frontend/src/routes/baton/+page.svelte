@@ -49,9 +49,9 @@
   });
 
   const batonRow = $derived(tree?.orchestra.canisters.find((x) => x.canister_id === canisterId) ?? null);
-  const releaseStand = $derived(
-    batonRow && /^orchestration-baton@([2-9]|\d{2,})\./.test(batonRow.wasm) ? batonRow.stand : '',
-  );
+  // The baton's own version first: Casals' row lags behind an upgrade the multisig ran.
+  const batonVersion = $derived(config?.version || (batonRow?.wasm.split('@')[1] ?? ''));
+  const releaseStand = $derived(batonRow && /^([2-9]|\d{2,})\./.test(batonVersion) ? batonRow.stand : '');
   const releaseMembers = $derived(
     tree && releaseStand
       ? tree.orchestra.canisters.filter((x) => x.stand === releaseStand && x.canister_id && !x.wasm.startsWith('orchestration-'))
