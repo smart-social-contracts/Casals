@@ -8,6 +8,7 @@ import shutil
 import urllib.request
 
 from casals_cli.multisig import propose
+from casals_cli.release import TERMINAL
 from casals_cli.replica import canister_http_url
 from run_e2e import REPO, Fail, sh
 
@@ -98,6 +99,17 @@ def baton_upgrade(o) -> None:
                 raise Fail(f"multisig proposal #{pid} is {status}")
         names = {r["canister"] for r in res["rows"]}
         o.wait(f"baton upgrade to {version}", lambda: all(o.hashes()[n] != before[n] for n in names), 10)
+        for baton_id, action_id in {(r["baton_id"], r["action_id"]) for r in res["rows"]}:
+            o.wait(f"baton action {action_id}", lambda: baton_done(o, baton_id, action_id), 10)
+
+
+def baton_done(o, baton_id: str, action_id: str) -> bool:
+    """The baton takes one action at a time: the next proposal waits for this one to finish."""
+    res = o.call("baton_action", {"canister_id": baton_id, "action_id": action_id})
+    status = ((res.get("action") or {}) if res.get("ok", True) else {}).get("status")
+    if status in TERMINAL and status != "COMPLETE":
+        raise Fail(f"baton action {action_id} ended {status}")
+    return status == "COMPLETE"
 
 
 def release_stand(o) -> str | None:
