@@ -38,7 +38,13 @@ python3 -m venv "$VENV"
 source "$VENV/bin/activate"
 python -m pip install --upgrade pip
 if [ -n "${CASALS_PIP_SPEC:-}" ]; then
-  python -m pip install "$CASALS_PIP_SPEC"
+  # PyPI's CDN can serve an index page without a fresh upload for a few minutes,
+  # even after another request (release-verify's wait step) already saw it.
+  for i in $(seq 1 10); do
+    python -m pip install --no-cache-dir "$CASALS_PIP_SPEC" && break
+    [ "$i" -lt 10 ] || exit 1
+    echo "retrying pip install ($i/10)"; sleep 30
+  done
 else
   python -m pip install build
   python -m build --outdir "$WORKDIR/dist" "$ROOT"
