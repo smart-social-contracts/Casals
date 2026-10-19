@@ -31,8 +31,10 @@ def test_template_stand_builds_itself():
     assert Stand["t1"].built_at and Canister["t1-worker-1"].status == "ready"
     assert Canister["t1-worker-1"].policy == {"min": 5, "topup": 6} and Canister["t1-backend"].policy == {}
     assert backend.install_arg == '("c1-id")' and state["canisters"][front.canister_id]["arg"] == f'("{backend.canister_id}")'
-    assert state["canisters"][backend.canister_id]["controllers"] == ["conductor", backend.canister_id]
+    assert state["canisters"][backend.canister_id]["controllers"] == ["conductor", backend.canister_id, "msig"]
     assert front.controllers == [backend.canister_id, "msig"]
+    worker = Canister["t1-worker-1"].canister_id
+    assert state["canisters"][worker]["controllers"] == ["conductor", "msig"]
     assert state["canisters"][front.canister_id]["assets"] == {"/ids.js": backend.canister_id.encode()}
     assert Grant[f"stand:t1|{backend.canister_id}"].permissions == ["stand.create"]
     assert [e.type for e in rows(Event)][-1] == "stand_built"

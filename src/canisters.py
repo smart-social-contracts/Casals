@@ -63,12 +63,22 @@ def configure(c, call):
         raise Exception(f"{c.name}.{call['method']}: {reply[:300]}")
 
 
+def stand_controllers(c, stand):
+    """Every stand canister, quarters included, keeps the orchestra's multisig as a controller."""
+    wanted = resolve(c.controllers or [], stand, c.canister_id)
+    multisig = resolve(orchestra().multisig_id, stand, c.canister_id)
+    if stand and multisig and "$" not in multisig and multisig not in wanted:
+        wanted = (wanted or [chain.self_id()]) + [multisig]
+    return wanted
+
+
 def hand_off(c, stand=None):
     for call in resolve(c.config, stand, c.canister_id):
         yield from configure(c, call)
-    if c.controllers:
-        c.controllers = resolve(c.controllers, stand, c.canister_id)
-        yield from chain.update_settings(c.canister_id, controllers=c.controllers)
+    controllers = stand_controllers(c, stand)
+    if controllers:
+        c.controllers = controllers
+        yield from chain.update_settings(c.canister_id, controllers=controllers)
     c.status = "ready"
 
 

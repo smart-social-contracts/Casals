@@ -101,6 +101,10 @@ Rules that span keys:
   as a controller, and its `install_arg.top_commander` must be `$self`.
 - A canister's controllers cannot consist only of itself, and the backend's
   cannot be only `$self`.
+- Every stand canister, quarters and other numbered members included, gets
+  the orchestra's multisig as a controller when it is handed off, whether or
+  not its block lists `$multisig`. A block without `controllers` keeps the
+  conductor and gains the multisig.
 - A raw principal anywhere outside `environments.<env>.principals` (or
   `bindings`) is refused: name it as an alias and use `$principal:<alias>`.
 
