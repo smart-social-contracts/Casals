@@ -57,6 +57,18 @@ def test_top_up_by_commander_and_monitor():
     assert "insufficient treasury" in call("cycles_top_up", canister="api", amount=10**15)["error"]
 
 
+def test_the_conductor_holds_the_treasury_and_has_no_policy():
+    funded()
+    call("canister_register", stand="d1", name="self", canister_id="conductor")
+    rows_ = {c["name"]: c for c in call("cycles_get")["canisters"]}
+    assert rows_["self"]["treasury"] and rows_["self"]["reserve"] == 10**13 and rows_["self"]["min"] == 0
+    assert "treasury" not in rows_["api"] and rows_["api"]["min"] == 3 * 10**12
+    assert "cannot top itself up" in call("cycles_top_up", canister="self", amount=100)["error"]
+    assert [t["canister"] for t in call("cycles_top_up", stand="d1", amount=100)["topped_up"]] == ["api"]
+    assert "its floor is the orchestra's reserve" in call("canister_set", canister="self", policy={"min": 1})["error"]
+    assert call("canister_set", canister="self", tags=["infra"])["ok"]
+
+
 def test_send_moves_treasury_out():
     funded()
     state["canisters"]["dest"] = {"controllers": [], "cycles": 0}
@@ -169,6 +181,32 @@ def test_batons_read_through_the_conductor():
     assert "no readable baton" in call("baton_get", "ann", canister_id="c1-id")["error"]
     state["replies"][("can-1", "list_actions")] = '{"ok": false, "error": "unauthorized: nope"}'
     assert call("baton_get", "ann", canister_id="can-1")["error"] == "baton bt: unauthorized: nope"
+
+
+def test_failed_stand_actions_are_listed_for_the_monitor():
+    catalog()
+    call("canister_create", stand="d1", name="bt", wasm="app@1", controllers=["conductor"])
+    Canister["bt"].wasm = "orchestration-baton@2.0.1"
+    log = [{"phase": "PRE_FLIGHT", "entered_at": 10, "result": "ok", "detail": ""},
+           {"phase": "STAGING", "entered_at": 20, "result": "failed", "detail": "Couldn't send message"}]
+    state["replies"][("can-1", "list_actions")] = json.dumps([
+        {"action_id": "done", "status": "COMPLETE", "proposed_at": 30},
+        {"action_id": "old", "status": "ROLLED_BACK", "proposed_at": 1, "phase_log": log[:1]},
+        {"action_id": "rc3", "status": "FAILED_STAGING", "action_type": "stand_release",
+         "release_label": "realm@0.7.0-rc3", "proposed_at": 5, "phase_log": log},
+        {"action_id": "stuck", "status": "NEEDS_ATTENTION", "proposed_at": 40}])
+    orchestra().monitor = {"principal": "mon"}
+    events = Event.max_id()
+    out = call("baton_failures", "mon", since=15)
+    assert [f["action_id"] for f in out["failures"]] == ["rc3", "stuck"] and out["unread"] == []
+    assert out["failures"][0] == {"stand": "d1", "baton": "bt", "action_id": "rc3", "action_type": "stand_release",
+                                  "label": "realm@0.7.0-rc3", "status": "FAILED_STAGING", "phase": "STAGING",
+                                  "detail": "Couldn't send message", "at": 20}
+    assert Event.max_id() == events
+    grant("bob", "stand:d2", "*")
+    assert call("baton_failures", "bob")["failures"] == []
+    state["replies"][("can-1", "list_actions")] = '{"ok": false, "error": "unauthorized"}'
+    assert call("baton_failures", "mon")["unread"] == [{"baton": "bt", "error": "baton bt: unauthorized"}]
 
 
 def test_call_canister_and_browse():

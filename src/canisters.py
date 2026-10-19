@@ -131,6 +131,8 @@ def canister_register(principal, args):
 @op("canister.config", at="canister")
 def canister_set(principal, args):
     c = find(Canister, args["canister"])
+    if args.get("policy") and c.canister_id == chain.self_id():
+        raise ValueError("the conductor is the treasury: its floor is the orchestra's reserve, not a policy")
     if "stand" in args:
         if not holds(principal, "canister.config", f"stand:{find(Stand, args['stand']).name}"):
             raise Unauthorized("needs canister.config on the new stand")

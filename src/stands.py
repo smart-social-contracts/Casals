@@ -22,7 +22,7 @@ def member_row(stand, raw):
     spec = resolve({k: v for k, v in raw.items() if k not in ("controllers", "config")}, stand)
     c = Canister(name=spec["name"], wasm=spec["wasm"], kind=spec.get("kind", "backend"), public=spec.get("public", False),
                  install_arg=spec.get("install_arg"), content=spec.get("content", ""), files=spec.get("files", {}),
-                 controllers=raw.get("controllers", []), config=raw.get("config", []))
+                 controllers=raw.get("controllers", []), config=raw.get("config", []), policy=spec.get("policy") or {})
     c.stand = stand
     return c
 

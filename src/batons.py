@@ -68,6 +68,34 @@ def baton_action(principal, args):
     return {"canister_id": baton.canister_id, "action": (yield from read(baton, "get_action", args["action_id"]))}
 
 
+FAILED = frozenset({"REJECTED_PREFLIGHT", "FAILED_STOP", "FAILED_SNAPSHOT", "FAILED_PROVISION", "FAILED_STAGING",
+                    "REVERTED_PARTIAL_FAILURE", "REVERTED_FAILED_VERIFY", "ROLLED_BACK", "NEEDS_ATTENTION"})
+
+
+@op("reader", quiet=True)
+def baton_failures(principal, args):
+    """Stand actions that ended badly after `since` (ns), on every stand the caller reads: what the monitor mails."""
+    scopes, since = reader_scopes(principal), int(args.get("since") or 0)
+    out, unread = [], []
+    for c in rows(Canister):
+        if not (c.wasm.startswith(BATON) and c.canister_id and readable(scopes, f"stand:{c.stand.name}")):
+            continue
+        try:
+            actions = yield from read(c, "list_actions")
+        except Exception as e:
+            unread.append({"baton": c.name, "error": str(e)[:300]})
+            continue
+        for a in actions:
+            last = (a.get("phase_log") or [{}])[-1]
+            at = last.get("entered_at") or a.get("proposed_at") or 0
+            if a.get("status") in FAILED and at > since:
+                out.append({"stand": c.stand.name, "baton": c.name, "action_id": a.get("action_id"),
+                            "action_type": a.get("action_type"), "label": a.get("release_label") or "",
+                            "status": a["status"], "phase": last.get("phase", ""),
+                            "detail": str(last.get("detail", ""))[:500], "at": at})
+    return {"failures": out, "unread": unread}
+
+
 @op("canister.deploy", at="stand")
 def baton_propose_upgrade(principal, args):
     baton, targets = members(args)

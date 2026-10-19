@@ -6,7 +6,13 @@ from op import op
 SUBNET_SECS = 3600
 
 
+def is_treasury(c):
+    return c.canister_id == chain.self_id()
+
+
 def policy(c):
+    if is_treasury(c):
+        return {"min": 0, "topup": 0}
     rungs = [c.policy, c.stand.policy, c.stand.section.policy, orchestra().policy]
     return {k: next((r[k] for r in rungs if r.get(k)), 0) for k in ("min", "topup")}
 
@@ -23,8 +29,9 @@ def spend(cid, amount):
 
 
 def row(c):
-    return {"name": c.name, "canister_id": c.canister_id, "stand": c.stand.name, "section": c.stand.section.name,
-            "cycles": c.cycles, **policy(c)}
+    out = {"name": c.name, "canister_id": c.canister_id, "stand": c.stand.name, "section": c.stand.section.name,
+           "cycles": c.cycles, **policy(c)}
+    return {**out, "treasury": True, "reserve": orchestra().reserve} if is_treasury(c) else out
 
 
 @op("reader", read=True)
@@ -51,7 +58,12 @@ def cycles_refresh(principal, args):
 
 @op("cycles.top_up", at=("canister", "stand"), monitor=True)
 def cycles_top_up(principal, args):
-    targets = [find(Canister, args["canister"])] if "canister" in args else find(Stand, args["stand"]).canisters
+    if "canister" in args:
+        targets = [find(Canister, args["canister"])]
+        if is_treasury(targets[0]):
+            raise ValueError("the conductor is the treasury: it cannot top itself up")
+    else:
+        targets = [c for c in find(Stand, args["stand"]).canisters if not is_treasury(c)]
     out = []
     for c in targets:
         p = policy(c)

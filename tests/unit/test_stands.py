@@ -10,7 +10,7 @@ TEMPLATE = {
          "controllers": ["$self", "$this"]},
         {"name": "{stand}-frontend", "wasm": "app@1", "kind": "frontend", "install_arg": '("$stand.backend")',
          "files": {"/ids.js": "$stand.backend"}, "controllers": ["$stand.backend", "$multisig"]},
-        {"name": "{stand}-worker-{n}", "wasm": "app@1", "optional": True},
+        {"name": "{stand}-worker-{n}", "wasm": "app@1", "optional": True, "policy": {"min": 5, "topup": 6}},
     ],
     "commanders": [{"principal": "$stand.backend", "permissions": ["stand.create"]}],
 }
@@ -29,6 +29,7 @@ def test_template_stand_builds_itself():
     run_timers()
     backend, front = Canister["t1-backend"], Canister["t1-frontend"]
     assert Stand["t1"].built_at and Canister["t1-worker-1"].status == "ready"
+    assert Canister["t1-worker-1"].policy == {"min": 5, "topup": 6} and Canister["t1-backend"].policy == {}
     assert backend.install_arg == '("c1-id")' and state["canisters"][front.canister_id]["arg"] == f'("{backend.canister_id}")'
     assert state["canisters"][backend.canister_id]["controllers"] == ["conductor", backend.canister_id]
     assert front.controllers == [backend.canister_id, "msig"]

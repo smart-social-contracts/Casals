@@ -1221,7 +1221,7 @@ def _validate_cycles_block(value: Any, path: str, errors: list[str]) -> None:
         errors.append(f"{path} must be an object")
         return
     numeric_keys = (
-        "min_balance_tc", "budget_tc", "conductor_min_balance_tc",
+        "min_balance_tc", "top_up_tc", "budget_tc", "conductor_min_balance_tc",
     )
     for key in numeric_keys:
         if key in value and not isinstance(value[key], (int, float)):

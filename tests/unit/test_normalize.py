@@ -15,6 +15,22 @@ def test_template_creator_gets_stand_create_on_its_section():
             "calls": []} in doc["grants"]
 
 
+def test_a_canister_cycles_block_becomes_its_policy():
+    baton = {"name": "{stand}-baton", "wasm": "orchestration-baton@2.0.1", "cycles": {"min_balance_tc": 5}}
+    web = {"name": "web", "wasm": "w", "cycles": {"min_balance_tc": 1, "top_up_tc": 2.5}}
+    sheet = {"version": 2, "name": "t", "environments": {"local": {"network": "local"}},
+             "cycles": {"min_balance_tc": 0.5, "top_up_tc": 1},
+             "sections": [{"name": "Deployments", "arrangements": {"stand_template": {"canisters": [baton]}},
+                           "stands": [{"name": "s1", "canisters": [web, {"name": "api", "wasm": "w"}]}]}]}
+    doc = normalize(sheet, "local", deployer="2vxsx-fae", ids={}, uploads=[])
+    TC = 10**12
+    assert doc["policy"] == {"min": TC // 2, "topup": TC}
+    sec = next(s for s in doc["sections"] if s["name"] == "Deployments")
+    assert sec["template"]["canisters"][0]["policy"] == {"min": 5 * TC, "topup": 5 * TC}
+    web_row, api_row = sec["stands"][0]["canisters"]
+    assert web_row["policy"] == {"min": TC, "topup": int(2.5 * TC)} and "policy" not in api_row
+
+
 def test_mainnet_defaults_to_the_hosted_monitor():
     from casals_cli.sheetv2 import HOSTED_MONITOR_URL, validate
 

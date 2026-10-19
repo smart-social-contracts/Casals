@@ -91,7 +91,8 @@
     return rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0) * (sortAsc ? 1 : -1));
   });
   const targets = $derived(canisters.filter((c) => selected.has(c.canister_id)));
-  const allVisibleSelected = $derived(visible.length > 0 && visible.every((c) => selected.has(c.canister_id)));
+  const selectable = $derived(visible.filter((c) => !c.treasury));
+  const allVisibleSelected = $derived(selectable.length > 0 && selectable.every((c) => selected.has(c.canister_id)));
 
   function sortBy(key: SortKey) {
     if (sortKey === key) sortAsc = !sortAsc;
@@ -103,7 +104,7 @@
     selected = next;
   }
   function toggleAll() {
-    selected = allVisibleSelected ? new Set() : new Set(visible.map((c) => c.canister_id));
+    selected = allVisibleSelected ? new Set() : new Set(selectable.map((c) => c.canister_id));
   }
 
   // ── Charts (monitor history) ────────────────────────────────────────────────
@@ -456,10 +457,11 @@
             </thead>
             <tbody class="divide-y divide-primary-50">
               {#each visible as c (c.canister_id)}
-                {@const low = c.min > 0 && c.cycles < c.min}
+                {@const low = c.treasury ? c.cycles < (c.reserve ?? 0) : c.min > 0 && c.cycles < c.min}
                 <tr class="hover:bg-primary-50/40 {selected.has(c.canister_id) ? 'bg-primary-50/70' : ''}">
                   <td class="pl-4 pr-2 py-2.5">
                     <input type="checkbox" class="w-4 h-4 accent-primary-800" aria-label="Select {c.name}"
+                      disabled={c.treasury} title={c.treasury ? 'The conductor holds the treasury: it is not topped up' : undefined}
                       checked={selected.has(c.canister_id)} onchange={() => toggle(c.canister_id)} />
                   </td>
                   <td class="px-2 py-2.5">
@@ -469,10 +471,13 @@
                   <td class="px-2 py-2.5 text-primary-700">{c.section} / {c.stand}</td>
                   <td class="px-2 py-2.5 font-mono">{formatCycles(c.cycles)}<Fiat value={c.cycles} block /></td>
                   <td class="px-2 py-2.5 font-mono text-xs text-primary-600">
-                    {c.min ? formatCycles(c.min) : '—'} / {c.topup ? formatCycles(c.topup) : '—'}
+                    {#if c.treasury}reserve {formatCycles(c.reserve ?? 0)}
+                    {:else}{c.min ? formatCycles(c.min) : '—'} / {c.topup ? formatCycles(c.topup) : '—'}{/if}
                   </td>
                   <td class="px-2 py-2.5">
-                    {#if !c.min}<span class="badge badge-neutral">no policy</span>
+                    {#if c.treasury && low}<span class="badge bg-amber-50 text-amber-800 border border-amber-200">below reserve</span>
+                    {:else if c.treasury}<span class="badge badge-neutral">treasury</span>
+                    {:else if !c.min}<span class="badge badge-neutral">no policy</span>
                     {:else if low}<span class="badge bg-amber-50 text-amber-800 border border-amber-200">low</span>
                     {:else}<span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200">ok</span>{/if}
                   </td>

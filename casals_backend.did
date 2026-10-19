@@ -114,6 +114,7 @@ service : {
   "alias_set" : (text) -> (text);
   "baton_abort" : (text) -> (text);
   "baton_action" : (text) -> (text);
+  "baton_failures" : (text) -> (text);
   "baton_get" : (text) -> (text);
   "baton_propose_content" : (text) -> (text);
   "baton_propose_release" : (text) -> (text);

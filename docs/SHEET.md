@@ -88,7 +88,7 @@ stand-template member.
 | `files` | Frontends only: `"/key": "text"`, rendered with placeholders (e.g. `/canister_ids.js`). |
 | `grants` | Frontends only: `[{"principal", "permission": "Commit" \| "Prepare" \| "ManagePermissions"}]`, granted after each install while Casals still controls the canister. |
 | `commanders` | Commanders of this canister (format below). |
-| `cycles` | Per-canister cycle policy. |
+| `cycles` | This canister's top-up policy, `{"min_balance_tc", "top_up_tc"?}` (see [`cycles`](#cycles)). |
 | `optional` | Template members only: built when `create_stand` asks for it. Required for numbered (`{n}`) members. |
 | `public` | `true` lets any caller look up this canister's id with `resolve`. Without it, only the orchestra's canisters, its controllers and conductor commanders can. |
 
@@ -196,13 +196,25 @@ The conductor writes `/.well-known/ic-domains` on each frontend from this list.
 
 ## `cycles`
 
-Amounts are in trillions of cycles.
+Amounts are in trillions of cycles. The top-level block is the orchestra's
+default top-up policy; a canister block's own `cycles` (a stand template
+member's too) is that canister's policy and wins over the default.
 
 | Key | Meaning |
 |---|---|
-| `min_balance_tc` | A canister below this when the sheet is planned gets that amount deposited from the treasury. A canister block's own `cycles.min_balance_tc` wins. |
-| `conductor_min_balance_tc` | When the conductor's treasury is below this, `casals up` refills it from the deployer to `environments.<env>.cycles.budget_tc`. |
+| `min_balance_tc` | Top a canister up when it drops below this. |
+| `top_up_tc` | How much each top-up adds. Default: `min_balance_tc`. |
+| `conductor_min_balance_tc` | Top-level only. The treasury's reserve: top-ups and sends never take it below this. When the treasury is under it, `casals up` refills it from the deployer to `environments.<env>.cycles.budget_tc`. The conductor itself has no policy: it holds the treasury, so it is never topped up. |
 | `reuse_pool` | `true` lets new canisters come from the conductor's pool before fresh ones are created. |
+
+A stand template's Baton spends cycles on every release it runs (staging a
+frontend bundle costs it about 0.35 TC), so give the `{stand}-baton` member
+a minimum that covers a release with room to spare:
+
+```json
+{"name": "{stand}-baton", "wasm": "orchestration-baton@2.0.1", "controllers": ["$multisig"],
+ "cycles": {"min_balance_tc": 5}}
+```
 
 ## Placeholders
 

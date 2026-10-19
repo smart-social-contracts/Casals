@@ -80,6 +80,14 @@ def baton_config(baton: dict, store_id: str) -> list[dict]:
     return calls + [text_call("set_config", {"upgrade_approval_policy": {"threshold": int(baton.get("threshold") or 1)}})]
 
 
+def policy(cycles: dict | None) -> dict:
+    """`{"min_balance_tc", "top_up_tc"?}` → the conductor's `{"min", "topup"}`; the top-up defaults to the minimum."""
+    low = float((cycles or {}).get("min_balance_tc") or 0)
+    if not low:
+        return {}
+    return {"min": int(low * TC), "topup": int(float((cycles or {}).get("top_up_tc") or low) * TC)}
+
+
 def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_id: str) -> dict:
     name = spec["name"]
     config = [text_call(c["method"], c.get("args", "")) for c in spec.get("config") or []]
@@ -95,6 +103,8 @@ def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_i
            "public": bool(spec.get("public")), "install_arg": install_arg(spec.get("install_arg")),
            "content": spec.get("content", ""), "files": spec.get("files") or {}, "controllers": controllers,
            "config": config, **({"optional": True} if spec.get("optional") else {})}
+    if policy(spec.get("cycles")):
+        out["policy"] = policy(spec["cycles"])
     if spec.get("mode") == "adopted":
         out.update(canister_id=spec["canister_id"], adopted=True, status="installed")
     return out
@@ -178,14 +188,13 @@ def normalize(sheet: dict, env: str, *, deployer: str, ids: dict, uploads: list[
             doc_grants += grants(f"section:{sec['name']}", [{"principal": creator, "permissions": "stand.create"}])
         for st in sec.get("stands") or []:
             doc_grants += grants(f"stand:{st['name']}", st.get("commanders"))
-    min_cycles = int(float(cycles.get("min_balance_tc") or 0) * TC)
     return {
         "name": resolved.get("name", ""), "description": resolved.get("description", ""), "env": env,
         "network": env_block(resolved, env).get("network", ""), "vars": {"$deployer": deployer},
         "store_id": store_id, "frontend_id": ids.get(CONDUCTOR_NAMES["frontend"], ""),
         "multisig_id": f"$canister:{MULTISIG_NAME}" if (resolved.get("governance") or {}).get("multisig") else "",
         "reserve": int(float(cycles.get("conductor_min_balance_tc") or 0) * TC),
-        "policy": {"min": min_cycles, "topup": min_cycles}, "monitor": env_monitor(resolved, env) or {},
+        "policy": policy(cycles) or {"min": 0, "topup": 0}, "monitor": env_monitor(resolved, env) or {},
         "snapshots_keep": int((resolved.get("snapshots") or {}).get("keep") or 2),
         "wasms": wasms, "sections": sections, "grants": doc_grants,
     }

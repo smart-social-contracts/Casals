@@ -92,6 +92,8 @@ def baton_abort(args: text) -> Async[text]: return (yield from dispatch(batons.b
 @update
 def baton_action(args: text) -> Async[text]: return (yield from dispatch(batons.baton_action, args))
 @update
+def baton_failures(args: text) -> Async[text]: return (yield from dispatch(batons.baton_failures, args))
+@update
 def baton_get(args: text) -> Async[text]: return (yield from dispatch(batons.baton_get, args))
 @update
 def baton_propose_content(args: text) -> Async[text]: return (yield from dispatch(batons.baton_propose_content, args))

@@ -137,6 +137,9 @@ export interface CanisterCycles {
   cycles: number;
   min: number;
   topup: number;
+  /** The conductor itself: it holds the treasury, so it has a reserve instead of a policy. */
+  treasury?: boolean;
+  reserve?: number;
 }
 
 export interface Cycles {
