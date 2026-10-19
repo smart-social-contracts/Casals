@@ -247,11 +247,16 @@ def wait_built(ic, backend_id: str) -> dict:
 
 
 def hand_off_conductor(ic, sheet: dict, bindings: Bindings, deployer: str, view: dict) -> list[str]:
-    """The conductor canisters were created by the deployer; give them their declared controllers."""
+    """The conductor canisters were created by the deployer; let the conductor and the monitor read their
+    status while the deployer still controls them, then give them their declared controllers."""
     names = {"$deployer": deployer, "$self": bindings.casals_backend_id, "$multisig": view.get("multisig_id", "")}
+    monitor = (view.get("monitor") or {}).get("principal")
+    viewers = [bindings.casals_backend_id] + [monitor] * bool(monitor)
     changed = []
     for key, name in CONDUCTOR_NAMES.items():
         cid, block = bindings.conductor.get(name, ""), (sheet.get("conductor") or {}).get(key) or {}
+        if cid and deployer in (ic.read_controllers(cid) or []):
+            ic.set_status_viewers(cid, viewers)
         wanted = sorted({names.get(c, c) for c in block.get("controllers") or [] if names.get(c, c)})
         if cid and wanted and sorted(ic.read_controllers(cid) or []) != wanted:
             ic.settings_update(cid, set_controllers=wanted)

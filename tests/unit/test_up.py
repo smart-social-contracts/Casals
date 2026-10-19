@@ -48,6 +48,20 @@ def test_up_builds_in_sheet_order_once():
     assert "already built" in call("orchestra_up", **sheet())["error"]
 
 
+def test_every_canister_lets_the_conductor_and_monitor_read_its_status():
+    setup()
+    state["canisters"]["adopted-id"] = {"controllers": ["conductor"], "cycles": 1, "viewers": []}
+    state["replies"][("can-2", "configure")] = "(variant { ok })"
+    doc = sheet(monitor={"principal": "mon", "url": "https://mon.example"})
+    doc["sections"][1]["stands"][0]["canisters"].append(
+        {"name": "old", "canister_id": "adopted-id", "adopted": True, "status": "ready"})
+    call("orchestra_up", **doc)
+    run_timers()
+    assert orchestra().monitor == {"principal": "mon", "url": "https://mon.example/v1/conductor"}
+    for name in ("multisig", "hello", "old"):
+        assert state["canisters"][Canister[name].canister_id]["viewers"] == ["conductor", "mon"], name
+
+
 def test_failed_up_resumes_on_the_next_up():
     setup()
     state["fail"]["install"] = "trap"

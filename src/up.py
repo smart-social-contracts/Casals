@@ -1,5 +1,6 @@
 import chain
 from auth import KEYS
+from canisters import share_status
 from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, orchestra, resolve, rows
 from op import op
@@ -90,6 +91,7 @@ def build_all(name):
             moved = upsert(g.scope, resolve(g.principal))
             moved.permissions, moved.calls = g.permissions, g.calls
             g.delete()
+    yield from share_status()
     o = orchestra()
     o.multisig_id, o.built_at = resolve(o.multisig_id), chain.now()
     return True

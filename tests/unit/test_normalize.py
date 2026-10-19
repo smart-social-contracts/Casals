@@ -59,6 +59,22 @@ def test_up_asks_the_monitor_for_its_principal_and_registers(monkeypatch):
     assert up.register_monitor({"monitor": {}}, "abc") == "no monitor"
 
 
+def test_conductor_canisters_share_status_before_the_hand_off():
+    from casals_cli.bindings import Bindings
+    from casals_cli.ic import RecordingIc
+    from casals_cli.up import hand_off_conductor
+
+    ic = RecordingIc()
+    ids = {"casals-backend": "be", "casals-frontend": "fe", "casals-store": "st"}
+    ic.controllers = {"be": ["dep"], "fe": ["dep"], "st": ["be"]}
+    bindings = Bindings(sheet_name="t", env="local", network_url="", deployer="dep", conductor=ids)
+    sheet = {"conductor": {"backend": {"controllers": ["$multisig"]}, "frontend": {"controllers": ["$self"]}}}
+    hand_off_conductor(ic, sheet, bindings, "dep", {"multisig_id": "ms", "monitor": {"principal": "mon"}})
+    viewers = [(a[0], k["viewers"]) for op, a, k in ic.calls if op == "set_status_viewers"]
+    assert viewers == [("be", ["be", "mon"]), ("fe", ["be", "mon"])]
+    assert ic.controllers["be"] == ["ms"] and ic.controllers["fe"] == ["be"]
+
+
 def test_the_sheet_sets_how_many_snapshots_to_keep():
     from casals_cli.sheetv2 import validate
 

@@ -124,6 +124,7 @@ class IcAccess(Protocol):
 
     def deployer_principal(self) -> str: ...
     def read_controllers(self, canister_id: str) -> list[str]: ...
+    def set_status_viewers(self, canister_id: str, viewers: list[str]) -> None: ...
     def read_module_hash(self, canister_id: str) -> str | None: ...
     def canister_exists(self, canister_id: str) -> bool: ...
     def query(self, canister_id: str, method: str, text_arg: str | None = None) -> Any: ...
@@ -432,6 +433,13 @@ class IcClient:
                 cmd += [flag, c]
         self.icp(cmd)
 
+    def set_status_viewers(self, canister_id: str, viewers: list[str]) -> None:
+        """Who besides the controllers may read `canister_status` (icp-cli 1.4+)."""
+        cmd = ["canister", "settings", "update", canister_id, "-f"]
+        for v in viewers:
+            cmd += ["--set-status-viewer", v]
+        self.icp(cmd)
+
     def stop_canister(self, canister_id: str) -> None:
         self.icp(["canister", "stop", canister_id])
 
@@ -586,6 +594,9 @@ class RecordingIc:
         if current is not None:
             current += [c for c in add_controllers or [] if c not in current]
             current[:] = [c for c in current if c not in (remove_controllers or [])]
+
+    def set_status_viewers(self, canister_id: str, viewers: list[str]) -> None:
+        self.record("set_status_viewers", canister_id, viewers=list(viewers))
 
     def stop_canister(self, canister_id: str) -> None:
         self.record("stop_canister", canister_id)
