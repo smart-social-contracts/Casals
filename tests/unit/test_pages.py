@@ -58,6 +58,18 @@ def test_export_pages_merge_by_section():
         assert out[key] == whole[key], key
 
 
+def test_one_stand_and_one_canister_are_read_without_paging():
+    many()
+    got = call("orchestra_get", stand="x3")
+    assert [c["name"] for c in got["canisters"]] == ["x3-be"] and [s["name"] for s in got["stands"]] == ["x3"]
+    assert got["sections"] == [] and not any(got["next"].values())
+    assert call("orchestra_get", "p3", stand="x3")["stands"][0]["name"] == "x3"
+    assert call("orchestra_get", "p3", stand="x4")["stands"] == call("orchestra_get", stand="nope")["stands"] == []
+    rows = call("cycles_get", canister="x5-be")
+    assert [c["name"] for c in rows["canisters"]] == ["x5-be"] and rows["treasury"] and rows["next"] == {"canisters": None}
+    assert call("cycles_get", canister="nope")["canisters"] == []
+
+
 def test_lookups_follow_the_index():
     many()
     assert [g.key for g in matching(Grant, "principal", "p3")] == ["stand:x3|p3"]

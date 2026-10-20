@@ -36,9 +36,13 @@ def row(c):
 
 @op("reader", read=True)
 def cycles_get(principal, args):
-    """The treasury and one page of canisters (``canisters_from``, ``count``); ``next`` continues it."""
+    """The treasury and one page of canisters (``canisters_from``, ``count``); ``next`` continues it. With
+    ``canister`` (a name): only that canister's row."""
     scopes = reader_scopes(principal)
-    got, nxt = page_of(Canister, args, "canisters")
+    if args.get("canister"):
+        got, nxt = [c for c in [Canister[args["canister"]]] if c is not None], None
+    else:
+        got, nxt = page_of(Canister, args, "canisters")
     return {"treasury": treasury(), "balances_at": orchestra().balances_at,
             "canisters": [row(c) for c in got if readable(scopes, f"stand:{c.stand.name}")],
             "next": {"canisters": nxt}}

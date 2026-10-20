@@ -14,17 +14,30 @@ CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "publi
 EVENTS_MAX = 2000
 
 
+def canister_view(c):
+    stand = c.stand
+    return {**{k: getattr(c, k) for k in CANISTER}, "stand": stand.name, "section": stand.section.name,
+            "stand_built_at": stand.built_at, "build_error": stand.build_error}
+
+
+def stand_view(s):
+    return {"name": s.name, "section": s.section.name, "description": s.description, "built_at": s.built_at,
+            "build_error": s.build_error, "members": s.members, "release": s.release}
+
+
 def tree(scopes, args):
     """The page of canisters ``args`` asks for (``canisters_from``, ``count``) that ``scopes`` reads, and
     where the next page starts."""
     got, nxt = page_of(Canister, args, "canisters")
-    out = []
-    for c in got:
-        stand, section = c.stand, c.stand.section
-        if readable(scopes, f"stand:{stand.name}"):
-            out.append({**{k: getattr(c, k) for k in CANISTER}, "stand": stand.name, "section": section.name,
-                        "stand_built_at": stand.built_at, "build_error": stand.build_error})
-    return out, nxt
+    return [canister_view(c) for c in got if readable(scopes, f"stand:{c.stand.name}")], nxt
+
+
+def one_stand(scopes, name):
+    """``stand``'s row and canisters, if ``scopes`` reads it: what a caller waiting on one stand needs."""
+    st = Stand[name]
+    if st is None or not readable(scopes, f"stand:{st.name}"):
+        return [], []
+    return [canister_view(c) for c in st.canisters], [stand_view(st)]
 
 
 def visible_sections(scopes):
@@ -44,19 +57,23 @@ def sees_contacts(principal):
 @op("reader", read=True)
 def orchestra_get(principal, args):
     """One page of each list (``canisters_from``, ``sections_from``, ``stands_from``, ``count``); ``next``
-    holds where each continues, None once a list is complete."""
+    holds where each continues, None once a list is complete. With ``stand``: only that stand and its
+    canisters, no sections."""
     o, scopes = orchestra(), reader_scopes(principal)
     shown = {k: getattr(o, k) for k in SHOWN}
-    canisters, next_canister = tree(scopes, args)
-    sections, next_section = page_of(Section, args, "sections")
-    stands, next_stand = page_of(Stand, args, "stands")
+    if args.get("stand"):
+        (canisters, stand_rows), sections = one_stand(scopes, args["stand"]), []
+        next_canister = next_section = next_stand = None
+    else:
+        canisters, next_canister = tree(scopes, args)
+        sections, next_section = page_of(Section, args, "sections")
+        stands, next_stand = page_of(Stand, args, "stands")
+        stand_rows = [stand_view(s) for s in stands if readable(scopes, f"stand:{s.name}")]
     seen = None if scopes is None else visible_sections(scopes)
     return {**shown, "canister_id": chain.self_id(), "scoped": scopes is not None, "canisters": canisters,
             "sections": [{"name": s.name, "description": s.description, "template": s.template} for s in sections
                          if seen is None or s.name in seen],
-            "stands": [{"name": s.name, "section": s.section.name, "description": s.description, "built_at": s.built_at,
-                        "build_error": s.build_error, "members": s.members, "release": s.release}
-                       for s in stands if readable(scopes, f"stand:{s.name}")],
+            "stands": stand_rows,
             "next": {"canisters": next_canister, "sections": next_section, "stands": next_stand},
             "email": o.contacts.get(principal, ""), "contacts": o.contacts if sees_contacts(principal) else {}}
 
