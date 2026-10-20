@@ -139,6 +139,22 @@ def test_sync_follows_what_the_baton_did():
     assert "unauthorized" in call("baton_sync", "bob", stand="d1")["error"]
 
 
+def test_sync_reads_the_full_record_behind_a_summary():
+    stand()
+    app2 = Wasm["app@2"].sha256
+    full = {"a1": {"action_id": "a1", "action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": 20,
+                   "payload": {"targets": [{"canister_id": "be-id", "wasm_hash": app2, "registry_path": "app@2.wasm.gz"}]}},
+            "a2": {"action_id": "a2", "action_type": "managed_upgrade", "status": "FAILED_STOP", "proposed_at": 30,
+                   "payload": {"targets": []}}}
+    summaries = [{k: v for k, v in a.items() if k != "payload"} for a in full.values()]
+    fetched = []
+    state["replies"][("bt-id", "list_actions")] = json.dumps(summaries)
+    state["replies"][("bt-id", "get_action")] = lambda aid: fetched.append(aid) or json.dumps(full[aid])
+    assert call("baton_sync", stand="d1")["updated"] == {"d1-backend": "app@2"}
+    assert fetched == ["a1"] and Stand["d1"].baton_synced == 20
+    assert call("baton_sync", stand="d1")["updated"] == {} and fetched == ["a1"]
+
+
 def test_a_release_proposal_syncs_first():
     seen = stand()
     actions = [{"action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": 5,

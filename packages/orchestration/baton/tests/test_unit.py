@@ -24,6 +24,7 @@ from models import (
     STATUS_PRE_FLIGHT,
     STATUS_REJECTED_PREFLIGHT,
     STATUS_UPGRADING,
+    action_summary,
     decode_record,
     encode_record,
     is_non_terminal,
@@ -104,6 +105,19 @@ class TestModels:
         rec = _sample_action()
         rec["phase_log"] = [phase_entry("PRE_FLIGHT", 100, "ok", "enter")]
         assert rec["phase_log"][0]["phase"] == "PRE_FLIGHT"
+
+    def test_summary_drops_the_payload_and_keeps_the_last_phase(self):
+        rec = _sample_action(2)
+        rec["status"] = STATUS_COMPLETE
+        rec["release_state"] = {"plan": ["x"] * 100}
+        rec["phase_log"] = [phase_entry("PRE_FLIGHT", 100, "ok"), phase_entry("FINALIZE", 200, "ok", "done")]
+        out = action_summary(rec)
+        assert "payload" not in out and "release_state" not in out
+        assert out["phase_log"] == [phase_entry("FINALIZE", 200, "ok", "done")] and out["phase_count"] == 2
+        assert {k: out[k] for k in ("action_id", "status", "proposed_at", "proposed_by", "affected_canisters")} == {
+            k: rec[k] for k in ("action_id", "status", "proposed_at", "proposed_by", "affected_canisters")}
+        assert len(rec["phase_log"]) == 2 and "payload" in rec
+        assert action_summary(_sample_action())["phase_log"] == []
 
 
 class TestPayloadValidation:
@@ -245,6 +259,12 @@ class TestBatonSourceShape:
                      "get_config", "get_action", "list_actions"):
             body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
             assert "_reader_refusal()" in body, name
+
+    def test_the_action_list_holds_summaries(self):
+        body = self.SRC_MAIN.split("def list_actions(", 1)[1].split("\n@", 1)[0]
+        assert "action_summary(decode_record(raw))" in body
+        body = self.SRC_MAIN.split("def get_action(", 1)[1].split("\n@", 1)[0]
+        assert "action_summary" not in body
 
     def test_action_ids_are_never_reused(self):
         assert self.SRC_MAIN.count("_new_action_id(params)") == 4

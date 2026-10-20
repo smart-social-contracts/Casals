@@ -147,6 +147,21 @@ def decode_record(raw: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
+# A stand release's payload carries every member's bundle manifest; listing a
+# few of them at full size exceeds the instruction limit of a query.
+SUMMARY_DROPPED = ("payload", "release_state")
+
+
+def action_summary(record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` without its payload and release state, and with only its last
+    phase entry (``phase_count`` says how many there were)."""
+    log = record.get("phase_log") or []
+    out = {k: v for k, v in record.items() if k not in SUMMARY_DROPPED}
+    out["phase_log"] = log[-1:]
+    out["phase_count"] = len(log)
+    return out
+
+
 def is_terminal(status: str) -> bool:
     return status in TERMINAL_STATUSES
 

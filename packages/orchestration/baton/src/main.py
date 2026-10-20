@@ -85,6 +85,7 @@ from models import (
     STATUS_STOPPING,
     STATUS_UPGRADING,
     STATUS_VERIFYING,
+    action_summary,
     append_phase_log,
     decode_record,
     encode_record,
@@ -1257,6 +1258,8 @@ def get_action(action_id: text) -> text:
 
 @query
 def list_actions() -> text:
+    """Every action as a summary (see models.action_summary); ``get_action``
+    returns one in full."""
     refusal = _reader_refusal()
     if refusal:
         return refusal
@@ -1264,7 +1267,7 @@ def list_actions() -> text:
     for key in sorted(_actions.keys()):
         raw = _actions.get(key)
         if raw:
-            out.append(decode_record(raw))
+            out.append(action_summary(decode_record(raw)))
     return json.dumps(out)
 
 

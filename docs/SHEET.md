@@ -216,7 +216,7 @@ frontend bundle costs it about 0.35 TC), so give the `{stand}-baton` member
 a minimum that covers a release with room to spare:
 
 ```json
-{"name": "{stand}-baton", "wasm": "orchestration-baton@2.0.1", "controllers": ["$multisig"],
+{"name": "{stand}-baton", "wasm": "orchestration-baton@2.1.0", "controllers": ["$multisig"],
  "cycles": {"min_balance_tc": 5}}
 ```
 

@@ -46,6 +46,10 @@ sheet's `environments.<env>.public_read` and `readers` to the operator who ran
 console and the monitor can read a baton that hands nothing to them.
 `read_cycle_balance` takes managed canisters only.
 
+Since 2.1.0 `list_actions` returns summaries: each record without `payload`
+and `release_state`, with only its last `phase_log` entry and a `phase_count`.
+`get_action` returns the full record.
+
 ## Approvals
 
 - The configured `upgrade_approval_policy` applies to every proposal. A

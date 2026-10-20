@@ -327,6 +327,8 @@ def sync_from_baton(stand):
     done = [a for a in (yield from read(baton, "list_actions"))
             if a.get("status") == "COMPLETE" and (a.get("proposed_at") or 0) > stand.baton_synced]
     for a in sorted(done, key=lambda a: a.get("proposed_at") or 0):
+        if "payload" not in a:
+            a = yield from read(baton, "get_action", a["action_id"])
         payload = a.get("payload") or {}
         if a.get("action_type") == "stand_release" and payload.get("release"):
             for name in apply_release(stand, payload):
