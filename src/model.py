@@ -79,6 +79,12 @@ class Stand(Entity):
             kw.setdefault("state", None if kw.get("built_at") else "failed" if kw.get("build_error") else "pending")
         super().__init__(**kw)
 
+    @classmethod
+    def migrate(cls, obj, from_version, to_version):
+        # ic-python-db rejects an upgrade adding a default-None field unless the entity has its own migrate().
+        # Stored rows load with state None; reindex_pending derives it.
+        return obj
+
 
 class Canister(Entity):
     __alias__ = "name"

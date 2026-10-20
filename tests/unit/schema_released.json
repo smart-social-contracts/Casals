@@ -1,0 +1,430 @@
+{
+ "Canister": {
+  "fields": {
+   "adopted": {
+    "default": false,
+    "kind": "property",
+    "type": "Boolean"
+   },
+   "assets_props": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "canister_id": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "config": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "content": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "controllers": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "cycles": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "files": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "install_arg": {
+    "default": "null",
+    "kind": "property",
+    "type": "Json"
+   },
+   "kind": {
+    "default": "backend",
+    "kind": "property",
+    "type": "String"
+   },
+   "name": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "policy": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "public": {
+    "default": false,
+    "kind": "property",
+    "type": "Boolean"
+   },
+   "snapshot": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "snapshot_labels": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "status": {
+    "default": "created",
+    "kind": "property",
+    "type": "String"
+   },
+   "tags": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "wasm": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "wasm_hash": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   }
+  },
+  "relationships": {
+   "stand": {
+    "inverse": "canisters",
+    "kind": "relationship",
+    "many": false,
+    "target": "Stand",
+    "type": "ManyToOne"
+   }
+  },
+  "version": 1
+ },
+ "Event": {
+  "fields": {
+   "caller": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "canister_id": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "payload": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "ts": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "type": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   }
+  },
+  "relationships": {},
+  "version": 1
+ },
+ "Grant": {
+  "fields": {
+   "calls": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "key": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "permissions": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "principal": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "scope": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   }
+  },
+  "relationships": {},
+  "version": 1
+ },
+ "Orchestra": {
+  "fields": {
+   "aliases": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "balances_at": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "built_at": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "contacts": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "creatable_subnets": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "currency": {
+    "default": "USD",
+    "kind": "property",
+    "type": "String"
+   },
+   "deployer": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "description": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "env": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "frontend_id": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "key": {
+    "default": "orchestra",
+    "kind": "property",
+    "type": "String"
+   },
+   "monitor": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "multisig_id": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "name": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "network": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "policy": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "reserve": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "snapshots_keep": {
+    "default": 2,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "store_id": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "subnets": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "subnets_at": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "vars": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   }
+  },
+  "relationships": {},
+  "version": 1
+ },
+ "Section": {
+  "fields": {
+   "description": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "name": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "policy": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "subnet": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "template": {
+    "default": "null",
+    "kind": "property",
+    "type": "Json"
+   }
+  },
+  "relationships": {
+   "stands": {
+    "inverse": "section",
+    "kind": "relationship",
+    "many": true,
+    "target": "Stand",
+    "type": "OneToMany"
+   }
+  },
+  "version": 1
+ },
+ "Stand": {
+  "fields": {
+   "baton_synced": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "build_error": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "built_at": {
+    "default": 0,
+    "kind": "property",
+    "type": "Integer"
+   },
+   "description": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "members": {
+    "default": "[]",
+    "kind": "property",
+    "type": "Json"
+   },
+   "name": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "policy": {
+    "default": "{}",
+    "kind": "property",
+    "type": "Json"
+   },
+   "release": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "subnet": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   }
+  },
+  "relationships": {
+   "canisters": {
+    "inverse": "stand",
+    "kind": "relationship",
+    "many": true,
+    "target": "Canister",
+    "type": "OneToMany"
+   },
+   "section": {
+    "inverse": "stands",
+    "kind": "relationship",
+    "many": false,
+    "target": "Section",
+    "type": "ManyToOne"
+   }
+  },
+  "version": 1
+ },
+ "Wasm": {
+  "fields": {
+   "key": {
+    "has_default": false,
+    "kind": "property",
+    "type": "String"
+   },
+   "kind": {
+    "default": "backend",
+    "kind": "property",
+    "type": "String"
+   },
+   "memory_keep": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "path": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "sha256": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   },
+   "type": {
+    "default": "",
+    "kind": "property",
+    "type": "String"
+   }
+  },
+  "relationships": {},
+  "version": 1
+ }
+}
