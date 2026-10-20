@@ -24,6 +24,7 @@ from casals_cli.multisig import propose
 from casals_cli.registry import ensure_registry_uploads
 from casals_cli.util import emit_error, load_json_file
 from casals_cli.wasm_store import ensure_commit
+from casals_cli.ic import query_all
 
 
 def _progress(msg: str) -> None:
@@ -108,7 +109,7 @@ def run_upgrade(ic, sheet_path: str, env: str, *, wasms: list[str], contents: li
     _upload_rows(ic, sheet, sheet_path=sheet_path, project_root=project_root, store_id=store_id, deployer=deployer,
                  wasm_families={f for f, _v in wanted}, namespaces=set(contents), meter=meter)
 
-    view = ic.query(backend_id, "orchestra_get", "{}")
+    view = query_all(ic, backend_id, "orchestra_get")
     if not _ok(view):
         raise RuntimeError(f"orchestra_get failed: {view}")
     canisters = {c["name"]: c for c in view["canisters"] if c.get("canister_id") and _in_selection(c, stands, sections)}

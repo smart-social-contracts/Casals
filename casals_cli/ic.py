@@ -137,6 +137,38 @@ class IcAccess(Protocol):
     def top_up(self, canister_id: str, cycles: int) -> None: ...
 
 
+def query_all(ic: Any, canister_id: str, method: str, args: dict | None = None) -> Any:
+    """A paged conductor list op (orchestra_get, orchestra_export, cycles_get, grant_list, wasm_list) read
+    whole: each reply's ``next`` goes back as the ``<list>_from`` cursors until all are null, and every list
+    of a later page is appended to the first. Export sections arrive split by page; they merge by name."""
+    args = dict(args or {})
+    out = got = ic.query(canister_id, method, json.dumps(args))
+    while isinstance(got, dict) and any((got.get("next") or {}).values()):
+        got = ic.query(canister_id, method, json.dumps({**args, **{f"{k}_from": v for k, v in got["next"].items()}}))
+        if not isinstance(got, dict):
+            return got
+        for key, value in got.items():
+            if isinstance(value, list):
+                out[key] = (out.get(key) or []) + value
+    if isinstance(out, dict):
+        out.pop("next", None)
+        if method == "orchestra_export":
+            out["sections"] = merge_sections(out.get("sections") or [])
+    return out
+
+
+def merge_sections(rows: list[dict]) -> list[dict]:
+    """Export sections merged by name, in the order of their full rows; a ``{"name", "stands"}`` row carries
+    stands whose section came on another page."""
+    full, stands = {}, {}
+    for row in rows:
+        stands.setdefault(row["name"], []).extend(row.get("stands") or [])
+        if set(row) - {"name", "stands"}:
+            full.setdefault(row["name"], row)
+    names = list(full) + [n for n in stands if n not in full]
+    return [{**full.get(n, {"name": n}), "stands": stands[n]} for n in names]
+
+
 class IcClient:
     """Production IC client: icp-cli + ic-py read_state."""
 

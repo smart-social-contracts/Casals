@@ -9,6 +9,7 @@ import type { BatonActionRecord, BatonSnapshot } from './batonClient';
 import { idlFactory } from './conductor';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
+import { appendPage, mergeSections, nextArgs, type Cursors } from './pages';
 
 export { icHost } from './ic-host';
 
@@ -263,17 +264,32 @@ async function _call<T>(method: string, args: object = {}, update = true, as?: I
 const query = <T>(method: string, args: object = {}, as?: Identity) => _call<T>(method, args, false, as);
 const update = <T = Ok>(method: string, args: object = {}) => _call<T>(method, args, true);
 
+/** The rest of a paged list op after its first reply `got`: `next` goes back until every list is complete. */
+async function _rest<T>(method: string, got: any, args: object = {}, as?: Identity): Promise<T> {
+  const out = { ...got };
+  for (let more = nextArgs(got.next as Cursors); more; more = nextArgs(got.next as Cursors)) {
+    got = await query<any>(method, { ...args, ...more }, as);
+    appendPage(out, got);
+  }
+  delete out.next;
+  return out as T;
+}
+/** A paged list op (orchestra_get, orchestra_export, cycles_get, grant_list, wasm_list) read whole. */
+const queryAll = async <T>(method: string, args: object = {}, as?: Identity) =>
+  _rest<T>(method, await query<any>(method, args, as), args, as);
+
 // ---------------------------------------------------------------------------
 // Conductor methods (same names as the conductor, camelCased)
 // ---------------------------------------------------------------------------
 
-export const orchestraGet = (as?: Identity) => query<Orchestra>('orchestra_get', {}, as);
+export const orchestraGet = (as?: Identity) => queryAll<Orchestra>('orchestra_get', {}, as);
 export const orchestraEvents = (args: { take?: number; type?: string; canister_id?: string } = {}) =>
   query<{ events: OrchestraEvent[] }>('orchestra_events', args).then((r) => r.events);
 export const orchestraResolve = (args: { name: string } | { path: string }) =>
   query<{ name: string; canister_id: string; stand: string; section: string }>('orchestra_resolve', args);
 /** The whole orchestra as an `orchestra_up` document (readers of everything only). */
-export const orchestraExport = () => query<ExportDoc>('orchestra_export');
+export const orchestraExport = () =>
+  queryAll<ExportDoc>('orchestra_export').then((doc) => ({ ...doc, sections: mergeSections(doc.sections) as ExportDoc['sections'] }));
 export const orchestraSet = (patch: Partial<Pick<Orchestra, 'name' | 'description' | 'currency' | 'subnets' | 'reserve' | 'policy' | 'monitor' | 'snapshots_keep'>>) =>
   update('orchestra_set', patch);
 export const aliasSet = (principal: string, name: string | null) => update('alias_set', { principal, name });
@@ -320,7 +336,7 @@ export const contentDeploy = (args: { canister: string; namespace?: string; bund
   update<ContentDeploy & { canister_id: string }>('content_deploy', args);
 export const contentStatus = () => query<{ deploys: ContentDeploy[] }>('content_status').then((r) => r.deploys);
 
-export const wasmList = () => query<{ wasms: Wasm[] }>('wasm_list').then((r) => r.wasms);
+export const wasmList = () => queryAll<{ wasms: Wasm[] }>('wasm_list').then((r) => r.wasms);
 export const wasmAuthorize = (args: { key: string; path?: string; sha256?: string; kind?: CanisterKind; type?: string; memory_keep?: string }) =>
   update<{ key: string; updated: boolean }>('wasm_authorize', args);
 export const wasmRevoke = (key: string) => update('wasm_revoke', { key });
@@ -329,7 +345,7 @@ export const wasmUploadBegin = () => update<{ store_id: string; expires_at: numb
 export const wasmUploadEnd = (prefix = '/') =>
   update<{ files: Record<string, { sha256: string; type: string }> }>('wasm_upload_end', { prefix });
 
-export const grantList = (as?: Identity) => query<{ grants: Grant[] }>('grant_list', {}, as).then((r) => r.grants);
+export const grantList = (as?: Identity) => queryAll<{ grants: Grant[] }>('grant_list', {}, as).then((r) => r.grants);
 export const grantSet = (args: { scope: string; principal: string; permissions: string[]; calls?: CallGrant[] }) =>
   update('grant_set', args);
 export const grantRemove = (scope: string, principal: string) => update('grant_remove', { scope, principal });
@@ -380,9 +396,9 @@ export const batonAbort = (stand: string, action_id: string) =>
 export const batonSync = (stand: string) =>
   update<{ stand: string; updated: Record<string, string> }>('baton_sync', { stand });
 
-export const cyclesGet = () => query<Cycles>('cycles_get');
+export const cyclesGet = () => queryAll<Cycles>('cycles_get');
 /** Converts the treasury's ICP and reads every balance live. */
-export const cyclesRefresh = () => update<Cycles>('cycles_refresh');
+export const cyclesRefresh = () => update<Cycles>('cycles_refresh').then((r) => _rest<Cycles>('cycles_get', r));
 export const cyclesTopUp = (args: ({ canister: string } | { stand: string }) & { amount?: number }) =>
   update<{ topped_up: { canister: string; topped_up: number }[]; treasury: Treasury }>('cycles_top_up', args);
 export const cyclesSend = (args: { canister_id: string; amount?: number; all?: boolean }) =>

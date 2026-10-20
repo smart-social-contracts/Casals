@@ -34,6 +34,7 @@ from casals_cli import bundle as _bundle
 from casals_cli.registry import LOCAL_ROOTS_ENV, RELEASE_RE, _http_get, release_asset_url, resolve_source, sha256_hex
 from casals_cli.sheetv2 import CONDUCTOR_NAMES, WASM_NAMESPACE, registry_path, store_key, validate, wasm_ref
 from casals_cli.util import emit_error, load_json_file
+from casals_cli.ic import query_all
 
 SCHEMA = 1
 MANIFEST_NAME = "casals-release.json"
@@ -372,7 +373,7 @@ def run_release_upgrade(ic, sheet_path: str, env: str, *, release: str, stands: 
     manifest, manifest_sha, base = load_manifest(release)
     name = label(manifest)
     _progress(f"release {name} (manifest sha256 {manifest_sha[:12]}…)")
-    view = ic.query(backend_id, "orchestra_get", "{}")
+    view = query_all(ic, backend_id, "orchestra_get")
     if not _ok(view):
         raise RuntimeError(f"orchestra_get failed: {view}")
     targets = _stands(view, stands, sections)
@@ -381,7 +382,7 @@ def run_release_upgrade(ic, sheet_path: str, env: str, *, release: str, stands: 
         if _ok(synced) and synced.get("updated"):
             _progress(f"  synced {stand} from its baton: "
                       + ", ".join(f"{k} → {v}" for k, v in synced["updated"].items()))
-    view = ic.query(backend_id, "orchestra_get", "{}")
+    view = query_all(ic, backend_id, "orchestra_get")
     baton_versions = {(e.get("sha256") or "").strip().lower(): (e.get("version") or "").strip()
                       for e in (sheet.get("registry") or {}).get("wasms") or []
                       if isinstance(e, dict) and (e.get("family") or "").strip() == "orchestration-baton"}

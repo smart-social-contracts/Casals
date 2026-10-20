@@ -3,6 +3,7 @@ import pathlib
 import re
 
 import model
+from casals_cli.ic import query_all
 from ic_python_db import Database
 from kit import call, grant, world
 from model import INDEXES, Canister, Grant, Section, Stand, Wasm, first, matching, reindex_batch, set_build
@@ -10,15 +11,15 @@ from model import INDEXES, Canister, Grant, Section, Stand, Wasm, first, matchin
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src"
 
 
-def pages(op, lists, **args):
-    """Every page of ``op`` merged: each list in ``lists`` concatenated, ``next`` passed back until all are None."""
-    out, cursors = None, {}
-    while True:
-        got = call(op, **args, **{f"{k}_from": v for k, v in cursors.items()})
-        out = got if out is None else {**out, **{k: out[k] + got[k] for k in lists}}
-        cursors = got["next"]
-        if not any(cursors.values()):
-            return out
+class Conductor:
+    """What ``casals_cli.ic.query_all`` reads through: each query is an op run in process."""
+
+    def query(self, canister_id, method, text_arg):
+        return call(method, **json.loads(text_arg))
+
+
+def pages(op, **args):
+    return query_all(Conductor(), "conductor", op, args)
 
 
 def many():
@@ -37,35 +38,24 @@ def test_list_ops_page_and_their_pages_add_up():
     assert whole["next"] == {"canisters": None, "sections": None, "stands": None}
     first_page = call("orchestra_get", count=3)
     assert len(first_page["canisters"]) == 3 and first_page["next"]["canisters"] == 4
-    merged = pages("orchestra_get", ("canisters", "sections", "stands"), count=3)
+    merged = pages("orchestra_get", count=3)
     for key in ("canisters", "sections", "stands"):
         assert merged[key] == whole[key], key
-    assert pages("cycles_get", ("canisters",), count=2)["canisters"] == call("cycles_get")["canisters"]
-    assert pages("grant_list", ("grants",), count=2)["grants"] == call("grant_list")["grants"]
-    assert pages("wasm_list", ("wasms",), count=2)["wasms"] == call("wasm_list")["wasms"]
+    assert "next" not in merged
+    assert pages("cycles_get", count=2)["canisters"] == call("cycles_get")["canisters"]
+    assert pages("grant_list", count=2)["grants"] == call("grant_list")["grants"]
+    assert pages("wasm_list", count=2)["wasms"] == call("wasm_list")["wasms"]
     assert call("wasm_list", count=10**6)["next"] == {"wasms": None}
 
 
 def test_export_pages_merge_by_section():
     many()
     whole = call("orchestra_export")
-    out, cursors = {"wasms": [], "grants": [], "sections": []}, {}
-    while True:
-        got = call("orchestra_export", count=2, **{f"{k}_from": v for k, v in cursors.items()})
-        out["wasms"], out["grants"] = out["wasms"] + got["wasms"], out["grants"] + got["grants"]
-        for sec in got["sections"]:
-            mine = next((s for s in out["sections"] if s["name"] == sec["name"]), None)
-            if mine is None:
-                out["sections"].append(dict(sec))
-            else:
-                mine.update({k: v for k, v in sec.items() if k != "stands"})
-                mine["stands"] = mine["stands"] + sec["stands"]
-        cursors = got["next"]
-        if not any(cursors.values()):
-            break
-    key = lambda s: s["name"]  # noqa: E731
-    assert sorted(out["sections"], key=key) == sorted(whole["sections"], key=key)
-    assert out["wasms"] == whole["wasms"] and out["grants"] == whole["grants"]
+    split = call("orchestra_export", count=2, sections_from=None, stands_from=3)
+    assert split["sections"] and all(set(sec) == {"name", "stands"} for sec in split["sections"])
+    out = pages("orchestra_export", count=2)
+    for key in ("wasms", "grants", "sections"):
+        assert out[key] == whole[key], key
 
 
 def test_lookups_follow_the_index():

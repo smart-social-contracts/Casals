@@ -178,7 +178,7 @@ def _install_backend(ic, root: str, env: str, sheet: str, meter: ProgressMeter) 
         return
     meter.set_label(f"installing backend wasm on {backend_id} (one mainnet call)")
     deployer = ic.deployer_principal()
-    multisig_id = ic.query(backend_id, "orchestra_get", "{}").get("multisig_id", "")
+    multisig_id = ic.query(backend_id, "orchestra_get", '{"count": 1}').get("multisig_id", "")
     ensure_control(ic, backend_id, deployer, multisig_id)
     ic.install_wasm(backend_id, wasm_path, mode="upgrade")
     meter.advance(BACKEND_INSTALL_UNITS, f"backend {backend_id} upgraded")

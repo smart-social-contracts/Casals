@@ -8,6 +8,7 @@ from casals_cli.bindings import Bindings, find_bindings_for_env, load_bindings, 
 from casals_cli.catalog import resolve_sheet
 from casals_cli.up import run_up
 from casals_cli.util import emit_error, emit_json
+from casals_cli.ic import query_all
 
 
 def _backend(args, sheet_name: str | None = None) -> tuple[str, Bindings | None]:
@@ -81,12 +82,12 @@ def cmd_bundle(args) -> None:
 
 def cmd_export(ic, args) -> None:
     backend, _ = _backend(args)
-    emit_json(ic.query(backend, "orchestra_export", "{}"))
+    emit_json(query_all(ic, backend, "orchestra_export"))
 
 
 def _call(ic, backend: str, method: str, payload: dict | None = None, *, query: bool = False, timeout: int = 900):
     arg = json.dumps(payload or {})
-    res = ic.query(backend, method, arg) if query else ic.call_update(backend, method, arg, timeout=timeout)
+    res = query_all(ic, backend, method, payload) if query else ic.call_update(backend, method, arg, timeout=timeout)
     if not (isinstance(res, dict) and res.get("ok")):
         raise RuntimeError(f"{method} failed: {res}")
     return res

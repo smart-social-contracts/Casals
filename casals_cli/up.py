@@ -24,6 +24,7 @@ from casals_cli.runlog import detail, logged_run, summary
 from casals_cli.sheetv2 import CONDUCTOR_NAMES, env_block, validate
 from casals_cli.util import cycles_to_tc, load_json_file, tc_to_cycles
 from casals_cli.wasm_store import ensure_commit
+from casals_cli.ic import query_all
 
 STEPS = [("validate", "check the sheet"), ("fund", "check the deployer's cycles"),
          ("conductor", "create the conductor, its UI and the store"), ("upload", "upload wasms and bundles"),
@@ -42,7 +43,7 @@ def _progress(msg: str) -> None:
 
 
 def conductor_balance(ic, backend_id: str) -> int:
-    res = ic.query(backend_id, "cycles_get", "{}")
+    res = ic.query(backend_id, "cycles_get", '{"count": 1}')
     return int(((res or {}).get("treasury") or {}).get("balance") or 0) if isinstance(res, dict) else 0
 
 
@@ -218,7 +219,7 @@ def fund_store(ic, sheet: dict, key: str, canister_id: str) -> None:
 
 
 def orchestra(ic, backend_id: str) -> dict:
-    res = ic.query(backend_id, "orchestra_get", "{}")
+    res = query_all(ic, backend_id, "orchestra_get")
     if not (isinstance(res, dict) and res.get("ok")):
         raise RuntimeError(f"orchestra_get failed: {res}")
     return res

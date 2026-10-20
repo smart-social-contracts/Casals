@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from casals_cli.sheetv2 import CONDUCTOR_NAMES
+from casals_cli.ic import query_all
 
 
 
@@ -112,7 +113,7 @@ def live_bindings(ic, sheet_name: str, env: str, conductor_override: str | None 
     if not backend:
         raise RuntimeError("no conductor; run casals up or pass --conductor")
     ids = dict(local.conductor) if local else {}
-    res = ic.query(backend, "orchestra_get", "{}")
+    res = query_all(ic, backend, "orchestra_get")
     if isinstance(res, dict) and res.get("ok"):
         ids.update({c["name"]: c["canister_id"] for c in res.get("canisters") or [] if c.get("canister_id")})
     ids[CONDUCTOR_NAMES["backend"]] = backend
