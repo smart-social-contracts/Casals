@@ -10,6 +10,7 @@
     cyclesTopUp,
     formatCycles,
     formatRelativeTime,
+    monitorCycles,
     monitorFlow,
     monitorHistory,
     monitorUrl,
@@ -22,7 +23,7 @@
     type TreasuryFlowPeriod,
   } from '$lib/api';
   import { isAuthenticated, isController } from '$lib/auth';
-  import { loadFx } from '$lib/fx.svelte';
+  import { fx, loadFx } from '$lib/fx.svelte';
   import Fiat from '$lib/Fiat.svelte';
   import { toasts } from '$lib/stores/toast';
   import { copyText } from '$lib/clipboard';
@@ -61,6 +62,16 @@
   let treemapMetric = $state<'balance' | 'burn'>('balance');
   let loading = $state(true);
   let refreshing = $state(false);
+  /** Monitor's saved treasury. The conductor's live balance is not painted on load. */
+  let shown = $state<{ balance: number; reserve: number; spendable: number; at: number } | null>(null);
+  let treasurySource = $state<'monitor' | 'refresh' | null>(null);
+  type LoadPhase = 'loading' | 'ready' | 'none' | 'error';
+  let treasuryPhase = $state<LoadPhase>('loading');
+  let historyPhase = $state<LoadPhase>('loading');
+  let flowPhase = $state<LoadPhase>('loading');
+  let historyReq = 0;
+  let flowReq = 0;
+  let treasuryReq = 0;
   let busy = $state(false);
   let error = $state('');
 
@@ -163,6 +174,16 @@
   });
 
   // ── Loading ────────────────────────────────────────────────────────────────
+  /** Balance and spendable come from the monitor sample. Reserve stays blank until that sample, then uses it. */
+  function tileAmount(key: (typeof TILES)[number]['key']): number | null {
+    if (key === 'reserve') {
+      if (shown) return shown.reserve;
+      if (treasuryPhase === 'loading') return null;
+      return report ? report.treasury.reserve : null;
+    }
+    return shown ? shown[key] : null;
+  }
+
   async function loadReport() {
     try {
       report = await cyclesGet();
@@ -172,35 +193,114 @@
     }
   }
 
+  async function loadMonitorTreasury() {
+    const req = ++treasuryReq;
+    treasuryPhase = 'loading';
+    try {
+      const m = await monitorCycles();
+      if (req !== treasuryReq) return;
+      if (!m?.treasury || typeof m.treasury.balance !== 'number') {
+        treasuryPhase = 'error';
+        return;
+      }
+      shown = {
+        balance: m.treasury.balance,
+        reserve: m.treasury.reserve,
+        spendable: m.treasury.spendable,
+        at: m.treasury.refreshed_at || m.cached_at || 0,
+      };
+      treasurySource = 'monitor';
+      treasuryPhase = 'ready';
+    } catch {
+      if (req === treasuryReq) treasuryPhase = 'error';
+    }
+  }
+
   async function loadHistory() {
-    const [h, evs] = await Promise.all([
-      monitorHistory(WINDOWS[chartWindow]),
-      orchestraEvents({ take: 200 }).catch(() => []),
-    ]);
-    history = h;
-    const since = h?.samples[0]?.ts ?? 0;
-    chartEvents = evs
-      .filter((e) => e.ts >= since)
-      .map((e) => orchestrationEventToMarker(e, names.get(e.canister_id)))
-      .filter((m): m is ChartEventMarker => !!m);
+    const req = ++historyReq;
+    const windowSecs = WINDOWS[chartWindow];
+    historyPhase = 'loading';
+    try {
+      const [h, evs] = await Promise.all([
+        monitorHistory(windowSecs),
+        orchestraEvents({ take: 200 }).catch(() => []),
+      ]);
+      if (req !== historyReq) return;
+      if (!h) {
+        history = null;
+        chartEvents = [];
+        historyPhase = 'error';
+        return;
+      }
+      history = h;
+      const since = h.samples[0]?.ts ?? 0;
+      chartEvents = evs
+        .filter((e) => e.ts >= since)
+        .map((e) => orchestrationEventToMarker(e, names.get(e.canister_id)))
+        .filter((m): m is ChartEventMarker => !!m);
+      historyPhase = 'ready';
+    } catch {
+      if (req !== historyReq) return;
+      history = null;
+      chartEvents = [];
+      historyPhase = 'error';
+    }
   }
 
   async function loadFlow() {
-    flow = await monitorFlow(flowPeriod);
+    const req = ++flowReq;
+    const period = flowPeriod;
+    flowPhase = 'loading';
+    try {
+      const next = await monitorFlow(period);
+      if (req !== flowReq) return;
+      if (!next) {
+        flow = null;
+        flowPhase = 'error';
+        return;
+      }
+      flow = next;
+      flowPhase = 'ready';
+    } catch {
+      if (req !== flowReq) return;
+      flow = null;
+      flowPhase = 'error';
+    }
   }
 
   onMount(async () => {
-    await loadReport();
-    loading = false;
-    hasMonitor = !!(await monitorUrl());
-    if (hasMonitor) await Promise.all([loadHistory(), loadFlow(), loadFx()]);
+    if (fx.microPerTcycle <= 0) fx.status = 'loading';
+    const reportP = loadReport().finally(() => {
+      loading = false;
+    });
+    const url = await monitorUrl();
+    hasMonitor = !!url;
+    if (!url) {
+      treasuryPhase = 'none';
+      historyPhase = 'none';
+      flowPhase = 'none';
+      if (fx.microPerTcycle <= 0) fx.status = 'unavailable';
+    } else {
+      await Promise.all([loadMonitorTreasury(), loadHistory(), loadFlow(), loadFx()]);
+    }
+    await reportP;
   });
 
   async function refresh() {
+    const req = ++treasuryReq;
     refreshing = true;
     try {
       const r = await cyclesRefresh();
+      if (req !== treasuryReq) return;
       report = r;
+      shown = {
+        balance: r.treasury.balance,
+        reserve: r.treasury.reserve,
+        spendable: r.treasury.spendable,
+        at: r.balances_at,
+      };
+      treasurySource = 'refresh';
+      treasuryPhase = 'ready';
       if (r.converted) toasts.success(`Converted ${r.converted / 1e8} ICP to cycles`);
     } catch (e: any) {
       toasts.error(e?.message ?? 'Refresh failed');
@@ -291,8 +391,8 @@
       <h1 class="text-2xl font-bold text-primary-900">Cycles</h1>
       <p class="text-sm text-primary-500 mt-1">Treasury & per-canister solvency across the orchestra</p>
     </div>
-    {#if report?.balances_at}
-      <span class="text-xs text-primary-400 italic self-start">balances · {formatRelativeTime(report.balances_at)}</span>
+    {#if shown?.at}
+      <span class="text-xs text-primary-400 italic self-start">balances · {formatRelativeTime(shown.at)}</span>
     {/if}
   </div>
 
@@ -300,18 +400,12 @@
     <div class="card border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
   {/if}
 
-  {#if loading && !report}
-    <div class="card p-5 space-y-4">
-      <div class="skeleton h-5 w-1/3"></div>
-      <div class="skeleton h-24 rounded-xl"></div>
-    </div>
-  {:else if report}
-    <!-- Treasury summary -->
+    <!-- Treasury summary. Balance and spendable wait for the monitor's saved sample. -->
     <div class="card p-5">
       <div class="flex items-start justify-between gap-3 mb-4">
         <div>
           <h2 class="text-sm font-semibold text-primary-900">Treasury balance</h2>
-          <p class="text-xs text-primary-400 mt-0.5">The conductor's own cycles. Refresh converts any ICP on its ledger account.</p>
+          <p class="text-xs text-primary-400 mt-0.5">Last sample saved by the monitor. Refresh reads it live and converts any ledger ICP.</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button class="btn-secondary btn-sm" onclick={refresh} disabled={refreshing || !$isAuthenticated}
@@ -329,19 +423,42 @@
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {#each TILES as t (t.key)}
-          <div class="rounded-xl border px-4 py-3.5 {t.box}">
+          {@const amount = tileAmount(t.key)}
+          <div class="rounded-xl border px-4 py-3.5 {t.box}" aria-busy={amount == null && treasuryPhase === 'loading'}>
             <p class="text-[11px] font-medium uppercase tracking-wide {t.label}">{t.title}</p>
-            <p class="text-2xl font-semibold font-mono mt-1 inline-flex items-center gap-1 {t.value}">
-              {formatCycles(report.treasury[t.key])}
-              {#if t.key === 'balance'}<CalculatedAtHint at={report.balances_at} label="Treasury read" />{/if}
-            </p>
-            <Fiat value={report.treasury[t.key]} block />
+            {#if amount != null}
+              <p class="text-2xl font-semibold font-mono mt-1 inline-flex items-center gap-1 {t.value}">
+                {formatCycles(amount)}
+                {#if t.key === 'balance'}
+                  <CalculatedAtHint at={shown?.at} label={treasurySource === 'refresh' ? 'Treasury read' : 'Treasury sample'} />
+                {/if}
+              </p>
+              <Fiat value={amount} block />
+            {:else if t.key !== 'reserve' && treasuryPhase === 'none'}
+              <p class="text-sm text-primary-400 mt-2">Needs a monitor</p>
+            {:else if t.key !== 'reserve' && treasuryPhase === 'error'}
+              <p class="text-sm text-primary-400 mt-2">Couldn't load</p>
+            {:else if t.key === 'reserve' && !loading && !report}
+              <p class="text-sm text-primary-400 mt-2">—</p>
+            {:else}
+              <div class="skeleton h-8 w-28 mt-2" role="status" aria-label="Loading {t.title}"></div>
+              <div class="skeleton h-3 w-16 mt-2"></div>
+            {/if}
           </div>
         {/each}
       </div>
     </div>
 
-    {#if !hasMonitor}
+    {#if treasuryPhase === 'loading' && !hasMonitor}
+      <div class="card p-5 space-y-3" role="status" aria-label="Loading cycle history">
+        <div class="skeleton h-5 w-40"></div>
+        <div class="skeleton rounded-xl" style="height:320px"></div>
+      </div>
+      <div class="card p-5 space-y-3" aria-label="Loading treasury flow">
+        <div class="skeleton h-5 w-40"></div>
+        <div class="skeleton rounded-xl" style="height:260px"></div>
+      </div>
+    {:else if !hasMonitor}
       <div class="card p-5 text-sm text-primary-500">
         Cycle history, treasury flow and burn need a monitor. Set its principal and URL in
         <a href="/settings" class="underline text-primary-700">Settings</a>.
@@ -366,7 +483,11 @@
             </div>
           </div>
         </div>
-        {#if chartSeries.length}
+        {#if historyPhase === 'loading'}
+          <div class="skeleton rounded-xl" style="height:320px" role="status" aria-label="Loading cycle history"></div>
+        {:else if historyPhase === 'error'}
+          <p class="text-sm text-primary-400 text-center py-8">Could not load cycle history.</p>
+        {:else if chartSeries.length}
           <CyclesAdvancedChart series={chartSeries} events={chartEvents} format={formatCycles}
             variant={chartMetric === 'burn' ? 'histogram' : 'line'} showLegend />
         {:else}
@@ -387,7 +508,19 @@
             {/each}
           </div>
         </div>
-        {#if flow && flowSeries.length}
+        {#if flowPhase === 'loading'}
+          <div class="grid grid-cols-3 gap-3 mb-4 text-center" role="status" aria-label="Loading treasury flow">
+            {#each ['Deposited', 'Converted', 'Consumed'] as name (name)}
+              <div class="rounded-lg bg-primary-50 px-3 py-2">
+                <p class="text-[11px] text-primary-600">{name}</p>
+                <div class="skeleton h-5 w-16 mx-auto mt-1"></div>
+              </div>
+            {/each}
+          </div>
+          <div class="skeleton rounded-xl" style="height:260px"></div>
+        {:else if flowPhase === 'error'}
+          <p class="text-sm text-primary-400 text-center py-8">Could not load treasury flow.</p>
+        {:else if flow && flowSeries.length}
           <div class="grid grid-cols-3 gap-3 mb-4 text-center">
             {#each flowSeries as s (s.name)}
               <div class="rounded-lg bg-primary-50 px-3 py-2">
@@ -404,7 +537,12 @@
     {/if}
 
     <!-- Treemap -->
-    {#if canisters.length}
+    {#if loading && !report}
+      <div class="card p-5 space-y-3" role="status" aria-label="Loading canisters">
+        <div class="skeleton h-5 w-64"></div>
+        <div class="skeleton h-48 rounded-xl"></div>
+      </div>
+    {:else if canisters.length}
       <div class="card p-5">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
           <h2 class="text-sm font-semibold text-primary-900">Cycles by section / stand / canister</h2>
@@ -415,7 +553,13 @@
             </div>
           {/if}
         </div>
-        <Treemap root={treemapRoot} format={formatCycles} />
+        {#if treemapMetric === 'burn' && historyPhase === 'loading'}
+          <div class="skeleton h-64 rounded-xl" role="status" aria-label="Loading burn"></div>
+        {:else if treemapMetric === 'burn' && historyPhase !== 'ready'}
+          <p class="text-sm text-primary-400 text-center py-8">Burn for this window isn't available.</p>
+        {:else}
+          <Treemap root={treemapRoot} format={formatCycles} />
+        {/if}
       </div>
     {/if}
 
@@ -434,7 +578,11 @@
             onclick={() => open('destroy')}>Destroy</button>
         </div>
       </div>
-      {#if !canisters.length}
+      {#if loading && !report}
+        <div class="p-5 space-y-3" role="status" aria-label="Loading canisters">
+          {#each [1, 2, 3] as n (n)}<div class="skeleton h-8 w-full"></div>{/each}
+        </div>
+      {:else if !canisters.length}
         <p class="text-sm text-primary-400 p-5">No canisters yet.</p>
       {:else}
         <div class="overflow-x-auto">
@@ -488,7 +636,6 @@
         </div>
       {/if}
     </div>
-  {/if}
 </div>
 
 {#if dialog}
