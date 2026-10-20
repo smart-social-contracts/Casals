@@ -1,6 +1,6 @@
 import chain
 from auth import find, is_monitor, reader_scopes, readable
-from model import Canister, Stand, orchestra, rows
+from model import Canister, Stand, each, orchestra, page_of
 from op import op
 
 SUBNET_SECS = 3600
@@ -36,15 +36,18 @@ def row(c):
 
 @op("reader", read=True)
 def cycles_get(principal, args):
+    """The treasury and one page of canisters (``canisters_from``, ``count``); ``next`` continues it."""
     scopes = reader_scopes(principal)
+    got, nxt = page_of(Canister, args, "canisters")
     return {"treasury": treasury(), "balances_at": orchestra().balances_at,
-            "canisters": [row(c) for c in rows(Canister) if readable(scopes, f"stand:{c.stand.name}")]}
+            "canisters": [row(c) for c in got if readable(scopes, f"stand:{c.stand.name}")],
+            "next": {"canisters": nxt}}
 
 
 @op("reader")
 def cycles_refresh(principal, args):
     converted = yield from chain.convert_icp()
-    for c in rows(Canister):
+    for c in each(Canister):
         if c.canister_id == chain.self_id():
             c.cycles = chain.balance()
         elif c.canister_id:

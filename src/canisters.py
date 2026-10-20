@@ -5,7 +5,7 @@ import snapshots
 import store
 from auth import Unauthorized, find, holds
 import sweeper
-from model import Canister, Stand, Wasm, orchestra, rename, resolve, rows
+from model import Canister, Stand, Wasm, each, orchestra, rename, resolve
 from op import op
 
 CREATE_CYCLES = 2_000_000_000_000
@@ -30,7 +30,7 @@ def viewers():
 def share_status():
     """Give every canister the conductor still controls the current viewer list; name the ones it cannot change."""
     unreachable = []
-    for c in rows(Canister):
+    for c in each(Canister):
         if c.canister_id and c.canister_id != chain.self_id():
             try:
                 yield from chain.update_settings(c.canister_id, viewers=viewers())

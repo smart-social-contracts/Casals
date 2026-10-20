@@ -4,7 +4,7 @@ import json
 import chain
 from auth import find, reader_scopes, readable
 from content import bundle_hash, wanted
-from model import Canister, Stand, Wasm, orchestra, resolve, rows
+from model import Canister, Stand, Wasm, first, matching, orchestra, page_of, resolve
 from op import op
 
 BATON = "orchestration-baton@"
@@ -40,7 +40,7 @@ def propose(baton, method, payload):
 
 
 def readable_baton(principal, canister_id):
-    c = next((c for c in rows(Canister) if c.canister_id == canister_id), None)
+    c = first(Canister, "canister_id", canister_id) if canister_id else None
     if c is None or not c.wasm.startswith(BATON) or not readable(reader_scopes(principal), f"stand:{c.stand.name}"):
         raise ValueError(f"no readable baton '{canister_id}'")
     return c
@@ -74,10 +74,12 @@ FAILED = frozenset({"REJECTED_PREFLIGHT", "FAILED_STOP", "FAILED_SNAPSHOT", "FAI
 
 @op("reader", quiet=True)
 def baton_failures(principal, args):
-    """Stand actions that ended badly after `since` (ns), on every stand the caller reads: what the monitor mails."""
+    """Stand actions that ended badly after `since` (ns), on the stands the caller reads whose batons are in
+    this page of canisters (``canisters_from``, ``count``): what the monitor mails. ``next`` continues it."""
     scopes, since = reader_scopes(principal), int(args.get("since") or 0)
     out, unread = [], []
-    for c in rows(Canister):
+    got, nxt = page_of(Canister, args, "canisters")
+    for c in got:
         if not (c.wasm.startswith(BATON) and c.canister_id and readable(scopes, f"stand:{c.stand.name}")):
             continue
         try:
@@ -93,7 +95,7 @@ def baton_failures(principal, args):
                             "action_type": a.get("action_type"), "label": a.get("release_label") or "",
                             "status": a["status"], "phase": last.get("phase", ""),
                             "detail": str(last.get("detail", ""))[:500], "at": at})
-    return {"failures": out, "unread": unread}
+    return {"failures": out, "unread": unread, "next": {"canisters": nxt}}
 
 
 @op("canister.deploy", at="stand")
@@ -303,7 +305,7 @@ def apply_release(stand, payload):
 
 def wasm_for(sha, hint=""):
     """The catalog row for a module hash, the one named `hint` first."""
-    found = sorted((w for w in rows(Wasm) if w.sha256 == sha), key=lambda w: w.key)
+    found = sorted(matching(Wasm, "sha256", sha), key=lambda w: w.key) if sha else []
     return next((w for w in found if w.key == hint), found[0] if found else None)
 
 

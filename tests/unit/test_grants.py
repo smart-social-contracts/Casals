@@ -1,7 +1,7 @@
 from fake_chain import ANONYMOUS
 from grants import checksum
 from kit import call, grant, world
-from model import Event, rows
+from model import Event, each
 
 
 def test_controller_sets_and_lists_a_grant():
@@ -52,7 +52,7 @@ def test_access_code_slot_is_hidden_then_claimed_once():
     assert call("grant_claim", "ann", code=" open sesame ")["claimed"] == ["section:s1"]
     assert call("grant_list", "ann")["grants"][0]["permissions"] == ["canister.deploy", "stand.create"]
     assert "already used" in call("grant_claim", "bob", code="open sesame")["error"]
-    assert all("open sesame" not in str(e.payload) for e in rows(Event))
+    assert all("open sesame" not in str(e.payload) for e in list(each(Event)))
 
 
 def test_claims_are_rate_limited():

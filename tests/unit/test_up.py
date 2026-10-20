@@ -74,6 +74,26 @@ def test_failed_up_resumes_on_the_next_up():
     assert orchestra().built_at and rounds.STEPS["up"][2]() == []
 
 
+def test_a_failed_stand_holds_the_round_and_token_grants_resolve_once_built():
+    setup()
+    state["fail"]["install"] = "trap"
+    call("orchestra_up", **sheet(grants=[{"scope": "section:App", "principal": "$canister:multisig",
+                                          "permissions": ["canister.deploy"]}]))
+    run_timers()
+    gen = rounds.STEPS["up"][0]("orchestra")
+    try:
+        next(gen)
+    except StopIteration as done:
+            assert done.value is True
+    state["fail"].pop("install", None)
+    call("orchestra_up", **sheet(grants=[{"scope": "section:App", "principal": "$canister:multisig",
+                                          "permissions": ["canister.deploy"]}]))
+    run_timers()
+    assert orchestra().built_at and orchestra().up_cursor == 0
+    assert Grant["section:App|$canister:multisig"] is None
+    assert Grant["section:App|can-1"].permissions == ["canister.deploy"]
+
+
 def test_unknown_permission_is_refused():
     bad = sheet(grants=[{"scope": "orchestra", "principal": "x", "permissions": ["root"]}])
     assert "unknown permissions: root" in call("orchestra_up", **bad)["error"]

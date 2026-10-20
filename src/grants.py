@@ -2,8 +2,8 @@ import hashlib
 import json
 
 import chain
-from auth import KEYS, Unauthorized, chain_of, check_delegation, find, holds, keys, reader_scopes, readable
-from model import Canister, Grant, rows
+from auth import KEYS, Unauthorized, chain_of, check_delegation, find, grants, holds, keys, reader_scopes, readable
+from model import Canister, Grant, matching, page_of
 from op import op
 
 CLAIM_LIMIT, CLAIM_WINDOW = 5, 3600
@@ -21,12 +21,11 @@ def upsert(scope, principal):
 
 
 def rescope(old, new):
-    for g in rows(Grant):
-        if g.scope == old:
-            if new:
-                moved = upsert(new, g.principal)
-                moved.permissions, moved.calls = g.permissions, g.calls
-            g.delete()
+    for g in matching(Grant, "scope", old):
+        if new:
+            moved = upsert(new, g.principal)
+            moved.permissions, moved.calls = g.permissions, g.calls
+        g.delete()
 
 
 def view(g, principal):
@@ -37,13 +36,15 @@ def view(g, principal):
 
 def held_calls(principal, scope):
     above = chain_of(scope)
-    return [c for g in rows(Grant) if g.principal == principal and g.scope in above for c in g.calls]
+    return [c for g in grants(principal) if g.scope in above for c in g.calls]
 
 
 @op("reader", read=True)
 def grant_list(principal, args):
+    """One page of grants (``grants_from``, ``count``); ``next`` continues it."""
     scopes = reader_scopes(principal)
-    return {"grants": [view(g, principal) for g in rows(Grant) if readable(scopes, g.scope)]}
+    got, nxt = page_of(Grant, args, "grants")
+    return {"grants": [view(g, principal) for g in got if readable(scopes, g.scope)], "next": {"grants": nxt}}
 
 
 @op("grant.assign", at="scope")
@@ -78,7 +79,7 @@ def grant_claim(principal, args):
     recent = [t for t in failures.get(principal, []) if now - t < CLAIM_WINDOW]
     if len(recent) >= CLAIM_LIMIT:
         raise Exception("too many wrong access codes; try again later")
-    slots = [g for g in rows(Grant) if g.principal == checksum(args["code"])]
+    slots = grants(checksum(args["code"]))
     if not slots:
         if len(failures) > 2000:
             failures.clear()

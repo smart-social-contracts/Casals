@@ -43,7 +43,7 @@ class HttpResponse(Record):
 
 
 def start():
-    rounds.resume(content.deploy_round, stands.build, up.build_all)
+    rounds.resume(content.deploy_round, orchestra.reindex, stands.build, up.build_all)
     chain.set_timer(0, cycles.refresh_subnets)
 
 

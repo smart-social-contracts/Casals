@@ -54,7 +54,7 @@ jobs:
       # Every op through the dispatcher against tests/unit/fake_chain.py, the
       # auth matrix, and the coverage gate (pyproject.toml). No replica.
       - name: Run unit tests
-        run: pip install pytest-cov ic-python-db==0.11.0 && make unit PYTEST_ARGS=-v
+        run: pip install pytest-cov ic-python-db==0.12.0 && make unit PYTEST_ARGS=-v
 
   cli-guard:
     name: CLI carries no principal tables

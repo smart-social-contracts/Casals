@@ -2,7 +2,7 @@ import chain
 from auth import KEYS
 from canisters import share_status
 from grants import upsert, view
-from model import Canister, Grant, Section, Stand, Wasm, orchestra, resolve, rows
+from model import Canister, Grant, Section, Stand, Wasm, first, matching, orchestra, page, page_of, resolve, set_build
 from op import op
 from orchestra import monitor_setting
 from rounds import schedule, step
@@ -64,14 +64,23 @@ def orchestra_up(principal, args):
             row = cls(**{cls.__alias__: key}, **fields)
             if parent is not None:
                 setattr(row, type(parent).__name__.lower(), parent)
-    for s in rows(Stand):
-        s.build_error = ""
+    for s in matching(Stand, "state", "failed"):
+        set_build(s)
+    o.up_cursor = 1
     schedule("up", "orchestra")
     return {"plan": todo}
 
 
 def up_failed(name, error):
-    build_failed(next(s.name for s in rows(Stand) if not s.built_at and not s.build_error), error)
+    s = first(Stand, "state", "pending")
+    if s:
+        build_failed(s.name, error)
+
+
+def next_unbuilt():
+    """The unbuilt stand with the lowest id, pending or failed."""
+    found = [s for s in (first(Stand, "state", "pending"), first(Stand, "state", "failed")) if s]
+    return min(found, key=lambda s: int(s._id), default=None)
 
 
 def up_pending():
@@ -80,19 +89,23 @@ def up_pending():
 
 @step("up", up_failed, up_pending)
 def build_all(name):
-    for s in rows(Stand):
-        if not s.built_at:
-            if s.build_error:
-                return True
-            yield from build(s.name)
-            return False
-    for g in rows(Grant):
-        if resolve(g.principal) != g.principal:
-            moved = upsert(g.scope, resolve(g.principal))
-            moved.permissions, moved.calls = g.permissions, g.calls
-            g.delete()
-    yield from share_status()
+    s = next_unbuilt()
+    if s:
+        if s.state == "failed":
+            return True
+        yield from build(s.name)
+        return False
     o = orchestra()
+    if o.up_cursor:
+        got, nxt = page(Grant, o.up_cursor)
+        o.up_cursor = nxt or 0
+        for g in got:
+            if resolve(g.principal) != g.principal:
+                moved = upsert(g.scope, resolve(g.principal))
+                moved.permissions, moved.calls = g.permissions, g.calls
+                g.delete()
+        return False
+    yield from share_status()
     o.multisig_id, o.built_at = resolve(o.multisig_id), chain.now()
     return True
 
@@ -103,10 +116,21 @@ def export_row(cls, row):
 
 @op("reader.all", read=True)
 def orchestra_export(principal, args):
+    """The settings and one page of each list (``wasms_from``, ``grants_from``, ``sections_from``,
+    ``stands_from``, ``count``); ``next`` continues each. A section holds the stands of this page that
+    belong to it, and a stand whose section is on another page comes under ``{"name"}`` alone: callers
+    merge sections by name."""
     o = orchestra()
+    wasms, next_wasm = page_of(Wasm, args, "wasms")
+    grants, next_grant = page_of(Grant, args, "grants")
+    sections, next_section = page_of(Section, args, "sections")
+    stands, next_stand = page_of(Stand, args, "stands")
+    by_section = {}
+    for st in stands:
+        by_section.setdefault(st.section.name, []).append(
+            {**export_row(Stand, st), "canisters": [export_row(Canister, c) for c in st.canisters]})
+    out = [{**export_row(Section, sec), "stands": by_section.pop(sec.name, [])} for sec in sections]
     return {**{k: getattr(o, k) for k in SETTINGS}, "deployer": o.deployer, "built_at": o.built_at,
-            "wasms": [export_row(Wasm, w) for w in rows(Wasm)],
-            "grants": [view(g, principal) for g in rows(Grant)],
-            "sections": [{**export_row(Section, sec), "stands": [
-                {**export_row(Stand, st), "canisters": [export_row(Canister, c) for c in st.canisters]}
-                for st in sec.stands]} for sec in rows(Section)]}
+            "wasms": [export_row(Wasm, w) for w in wasms], "grants": [view(g, principal) for g in grants],
+            "sections": out + [{"name": name, "stands": st} for name, st in by_section.items()],
+            "next": {"wasms": next_wasm, "grants": next_grant, "sections": next_section, "stands": next_stand}}

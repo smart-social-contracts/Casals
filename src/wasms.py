@@ -1,7 +1,7 @@
 import chain
 import store
 from auth import find
-from model import Wasm, orchestra, rows
+from model import Wasm, orchestra, page_of
 from op import op
 
 UPLOAD_SECS = 3600
@@ -12,7 +12,9 @@ FIELDS = ("path", "sha256", "kind", "type", "memory_keep")
 
 @op("reader", read=True)
 def wasm_list(principal, args):
-    return {"wasms": [{"key": w.key, **{k: getattr(w, k) for k in FIELDS}} for w in rows(Wasm)]}
+    """One page of wasm rows (``wasms_from``, ``count``); ``next`` continues it."""
+    got, nxt = page_of(Wasm, args, "wasms")
+    return {"wasms": [{"key": w.key, **{k: getattr(w, k) for k in FIELDS}} for w in got], "next": {"wasms": nxt}}
 
 
 @op("wasm.authorize")

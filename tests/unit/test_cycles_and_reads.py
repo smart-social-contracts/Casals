@@ -4,7 +4,7 @@ import cycles
 from batons import READS
 from fake_chain import ANONYMOUS, state
 from kit import call, grant
-from model import Canister, Event, orchestra, rows
+from model import Canister, Event, orchestra, each
 from op import run
 from test_canisters import catalog, created
 
@@ -218,4 +218,4 @@ def test_call_canister_and_browse():
     assert "no grant" in call("call_canister", "ann", canister="c1", method="drop")["error"]
     assert "__ methods" in call("call_canister", canister="c1", method="__shell__")["error"]
     assert call("canister_browse", "ann", canister="c1")["result"] == {"tables": []}
-    assert rows(Event)[-1].type == "canister_browse"
+    assert list(each(Event))[-1].type == "canister_browse"

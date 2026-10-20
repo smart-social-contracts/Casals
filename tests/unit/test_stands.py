@@ -1,7 +1,7 @@
 import rounds
 from fake_chain import run_timers, state
 from kit import call, grant
-from model import Canister, Event, Grant, Section, Stand, orchestra, rows
+from model import Canister, Event, Grant, Section, Stand, orchestra, each
 from test_canisters import catalog
 
 TEMPLATE = {
@@ -37,7 +37,7 @@ def test_template_stand_builds_itself():
     assert state["canisters"][worker]["controllers"] == ["conductor", "msig"]
     assert state["canisters"][front.canister_id]["assets"] == {"/ids.js": backend.canister_id.encode()}
     assert Grant[f"stand:t1|{backend.canister_id}"].permissions == ["stand.create"]
-    assert [e.type for e in rows(Event)][-1] == "stand_built"
+    assert [e.type for e in list(each(Event))][-1] == "stand_built"
 
 
 def test_failed_build_stops_and_create_retries():
@@ -46,7 +46,7 @@ def test_failed_build_stops_and_create_retries():
     call("stand_create", section="Tenants", name="t1")
     run_timers()
     assert "trap" in Stand["t1"].build_error and not Stand["t1"].built_at
-    assert rows(Event)[-1].type == "stand_build_failed"
+    assert list(each(Event))[-1].type == "stand_build_failed"
     assert rounds.STEPS["stand"][2]() == []
     call("stand_create", section="Tenants", name="t1")
     run_timers()

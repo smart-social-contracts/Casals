@@ -1,5 +1,5 @@
 import chain
-from model import Canister, Grant, Section, Stand, orchestra, rows
+from model import Canister, Grant, Section, Stand, matching, orchestra
 
 KEYS = {
     "canister.create", "canister.deploy", "canister.config", "canister.lifecycle",
@@ -48,7 +48,7 @@ def chain_of(scope):
 
 
 def grants(principal):
-    return [g for g in rows(Grant) if g.principal == principal]
+    return matching(Grant, "principal", principal)
 
 
 def keys(principal, scope):

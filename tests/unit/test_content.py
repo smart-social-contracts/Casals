@@ -3,7 +3,7 @@ import json
 
 from fake_chain import run_timers, state
 from kit import call, grant
-from model import Canister, Event, Wasm, rows
+from model import Canister, Event, Wasm, each
 from test_canisters import catalog
 
 
@@ -33,7 +33,7 @@ def test_deploy_runs_rounds_until_done():
     live = state["canisters"][cid]["assets"]
     assert live["/ids.js"] == f"id={cid}".encode() and len(live) == 13 and ".casals-bundle.json" not in str(live)
     assert call("content_status")["deploys"][0]["status"] == "done"
-    assert rows(Event)[-1].type == "content_done"
+    assert list(each(Event))[-1].type == "content_done"
 
 
 def test_new_bundle_replaces_and_deletes_stale_files():

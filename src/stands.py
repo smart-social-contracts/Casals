@@ -3,7 +3,7 @@ from auth import find
 from canisters import destroy, hand_off, provision, require_control
 from content import sync
 from grants import rescope, upsert
-from model import Canister, Event, Grant, Section, Stand, rename, resolve, rows
+from model import Canister, Event, Grant, Section, Stand, matching, rename, resolve, set_build
 from op import op
 from rounds import schedule, step
 
@@ -28,12 +28,12 @@ def member_row(stand, raw):
 
 
 def build_failed(name, error):
-    find(Stand, name).build_error = error[:1000]
+    set_build(find(Stand, name), 0, error[:1000])
     Event(type="stand_build_failed", payload={"stand": name, "error": error[:1000]}, ts=chain.now())
 
 
 def unbuilt():
-    return [s.name for s in rows(Stand) if s.section.template and not s.built_at and not s.build_error]
+    return [s.name for s in matching(Stand, "state", "pending") if s.section.template]
 
 
 @step("stand", build_failed, unbuilt)
@@ -53,15 +53,14 @@ def build(name):
             yield from hand_off(c, stand)
     for g in (stand.section.template or {}).get("commanders", []):
         upsert(f"stand:{stand.name}", resolve(g["principal"], stand)).permissions = g["permissions"]
-    stand.built_at = chain.now()
+    set_build(stand, chain.now())
     Event(type="stand_built", payload={"stand": name}, ts=chain.now())
     return True
 
 
 def forget(stand):
-    for g in rows(Grant):
-        if g.scope == f"stand:{stand.name}":
-            g.delete()
+    for g in matching(Grant, "scope", f"stand:{stand.name}"):
+        g.delete()
     for c in list(stand.canisters):
         c.delete()
     stand.delete()
@@ -109,7 +108,8 @@ def stand_create(principal, args):
         stand.section = section
     wanted = sorted(set(stand.members) | {m.replace("{stand}", stand.name) for m in args.get("members", [])})
     if section.template and (created or wanted != stand.members or stand.build_error):
-        stand.members, stand.built_at, stand.build_error = wanted, 0, ""
+        stand.members = wanted
+        set_build(stand)
         schedule("stand", stand.name)
     return {"name": stand.name, "members": stand.members, "created": created}
 

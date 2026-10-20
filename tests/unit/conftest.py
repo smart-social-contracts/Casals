@@ -26,10 +26,12 @@ for path in sorted(glob.glob(os.path.join(SRC, "*.py"))):
 def fresh():
     import content
     import grants
+    import model
     import rounds
     import wasms
 
     Database.get_instance().clear()
+    model._system("indexes", len(model.INDEXES))
     fake_chain.reset()
     for heap in (grants.failures, rounds.queue, rounds.armed, rounds.running, content.deploys, wasms.uploads):
         heap.clear()
