@@ -62,7 +62,7 @@ On execution the multisig sends this JSON on every iteration (UTF-8 text argumen
 
 Loop semantics: call `apply` → parse the Casals envelope; stop with proposal status `#failed` when `ok == false`, when `remaining` cannot be parsed, when the inter-canister call traps, or after **50** iterations; stop with `#executed` and a summary in `proposal.result` when `remaining == 0` or when `failed` is non-null (partial apply). Between iterations, `next_plan_hash` from the response replaces `plan_hash` when present. Summary text looks like `iterations=N applied=M remaining=R next_plan_hash=…`.
 
-Executed proposals expose the summary or call reply via `get_proposal(...).result` (`opt text`). Query `version()` returns `1.7.0`; the hardening and read rules of each version are in [`multisig/README.md`](multisig/README.md).
+Executed proposals expose the summary or call reply via `get_proposal(...).result` (`opt text`). Query `version()` returns `1.8.0`; the hardening and read rules of each version are in [`multisig/README.md`](multisig/README.md).
 
 ## Casals demo (opt-in)
 

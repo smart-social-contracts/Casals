@@ -3,6 +3,8 @@ import Blob "mo:core/Blob";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
 import IC "mo:core/InternetComputer";
+import List "mo:core/List";
+import Map "mo:core/Map";
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
 import Principal "mo:core/Principal";
@@ -32,15 +34,21 @@ persistent actor Self {
   // constants that follow. Drop them with a migration in a later major.
   private let VERSION : Text = "1.6.0"; // frozen legacy stable — do not read
   private let MAX_APPLY_ITERATIONS : Nat = 50; // frozen legacy stable — do not read
-  private transient let CODE_VERSION : Text = "1.7.0";
+  private transient let CODE_VERSION : Text = "1.8.0";
   private transient let APPLY_ITERATION_CAP : Nat = 50;
+  /// What ``list_proposals`` / ``list_events`` return; the ``*_page`` reads go further back.
+  private transient let LIST_LATEST : Nat = 100;
+  private transient let PAGE_MAX : Nat = 200;
 
   private stable var signers : [Principal] = [];
   private stable var threshold : Nat = 1;
   private stable var proposal_expiry_secs : Nat = 604800;
   private stable var next_proposal_id : Nat = 0;
+  // Storage up to 1.7.0, moved into ``proposals`` / ``events`` by ``postupgrade`` and left empty.
   private stable var proposal_entries : [(Nat, Proposal)] = [];
   private stable var event_log : [AuditEvent] = [];
+  private stable var proposals : Map.Map<Nat, Proposal> = Map.empty();
+  private stable var events : List.List<AuditEvent> = List.empty();
   /// Anyone may read proposals and events when true; otherwise only signers
   /// and controllers. ``set_public_read`` changes it.
   private stable var public_read : Bool = false;
@@ -48,7 +56,7 @@ persistent actor Self {
   private func now() : Timestamp { Time.now() };
 
   private func log(kind : Text, detail : Text) {
-    event_log := Array.concat(event_log, [{ at = now(); kind; detail }]);
+    List.add(events, { at = now(); kind; detail });
   };
 
   private func isSigner(p : Principal) : Bool {
@@ -100,22 +108,53 @@ persistent actor Self {
     #ok;
   };
 
+  system func postupgrade() {
+    for ((k, v) in proposal_entries.vals()) { Map.add(proposals, Nat.compare, k, v) };
+    proposal_entries := [];
+    for (e in event_log.vals()) { List.add(events, e) };
+    event_log := [];
+  };
+
   private func setProposal(id : Nat, p : Proposal) {
-    var out : [(Nat, Proposal)] = [];
-    var found = false;
-    for ((k, v) in proposal_entries.vals()) {
-      if (k == id) { out := Array.concat(out, [(k, p)]); found := true }
-      else { out := Array.concat(out, [(k, v)]) };
-    };
-    if (not found) { out := Array.concat(out, [(id, p)]) };
-    proposal_entries := out;
+    Map.add(proposals, Nat.compare, id, p);
   };
 
   private func getProposal(id : Nat) : ?Proposal {
-    for ((k, v) in proposal_entries.vals()) {
-      if (k == id) return ?v;
+    Map.get(proposals, Nat.compare, id);
+  };
+
+  /// Newest first: the proposals with an id below ``before`` (from the newest when null), at most
+  /// ``count``; ``next`` is the ``before`` of the page after, null at the oldest.
+  private func proposalsPage(before : ?Nat, count : Nat) : { proposals : [Proposal]; next : ?Nat } {
+    let n = Nat.min(Nat.max(count, 1), PAGE_MAX);
+    let it = switch (before) {
+      case null { Map.reverseEntries(proposals) };
+      case (?0) { return { proposals = []; next = null } };
+      case (?b) { Map.reverseEntriesFrom(proposals, Nat.compare, b - 1 : Nat) };
     };
-    null;
+    let out = List.empty<Proposal>();
+    var next : ?Nat = null;
+    label page for ((k, p) in it) {
+      if (List.size(out) == n) { next := ?(k + 1); break page };
+      List.add(out, p);
+    };
+    { proposals = List.toArray(out); next };
+  };
+
+  /// Newest first: the events logged before position ``before`` (from the newest when null), at most
+  /// ``count``; ``next`` is the ``before`` of the page after, null at the oldest.
+  private func eventsPage(before : ?Nat, count : Nat) : { events : [AuditEvent]; next : ?Nat } {
+    let n = Nat.min(Nat.max(count, 1), PAGE_MAX);
+    let size = List.size(events);
+    let hi = switch (before) { case null { size }; case (?b) { Nat.min(b, size) } };
+    let lo : Nat = if (hi > n) { hi - n } else { 0 };
+    let out = List.empty<AuditEvent>();
+    var i = hi;
+    while (i > lo) {
+      i -= 1;
+      switch (List.get(events, i)) { case (?e) { List.add(out, e) }; case null {} };
+    };
+    { events = List.toArray(out); next = if (lo > 0) { ?lo } else { null } };
   };
 
   private func hasApproved(p : Proposal, signer : Principal) : Bool {
@@ -827,13 +866,18 @@ persistent actor Self {
     getProposal(proposal_id);
   };
 
+  /// The newest ``LIST_LATEST`` proposals, newest first; ``list_proposals_page`` goes further back.
   public shared query ({ caller }) func list_proposals() : async [Proposal] {
     requireReader(caller);
-    var out : [Proposal] = [];
-    for ((_, p) in proposal_entries.vals()) {
-      out := Array.concat(out, [p]);
-    };
-    out;
+    proposalsPage(null, LIST_LATEST).proposals;
+  };
+
+  public shared query ({ caller }) func list_proposals_page(before : ?Nat, count : Nat) : async {
+    proposals : [Proposal];
+    next : ?Nat;
+  } {
+    requireReader(caller);
+    proposalsPage(before, count);
   };
 
   /// Public: the conductor plans against the signer set after it handed the
@@ -842,9 +886,18 @@ persistent actor Self {
     { signers; threshold };
   };
 
+  /// The newest ``LIST_LATEST`` events, oldest first; ``list_events_page`` goes further back.
   public shared query ({ caller }) func list_events() : async [AuditEvent] {
     requireReader(caller);
-    event_log;
+    Array.reverse(eventsPage(null, LIST_LATEST).events);
+  };
+
+  public shared query ({ caller }) func list_events_page(before : ?Nat, count : Nat) : async {
+    events : [AuditEvent];
+    next : ?Nat;
+  } {
+    requireReader(caller);
+    eventsPage(before, count);
   };
 
   public query func get_public_read() : async Bool {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 
 def validate_signers(threshold: int, signers: list) -> tuple[bool, str]:
     m = len(signers)
@@ -529,11 +531,23 @@ class TestMultisigV150Source:
         assert "IC.call" in main
         assert 'apply : shared Text -> async Text' in main
         assert "result : ?Text" in types
-        assert 'transient let CODE_VERSION : Text = "1.7.0"' in main  # persistent actor: a plain let is stable (frozen)
+        assert 'transient let CODE_VERSION : Text = "1.8.0"' in main  # persistent actor: a plain let is stable (frozen)
         assert "ApplySheet" in did
         assert "CallCanister" in did
         assert "result : opt text" in did
         assert "version : () -> (text) query" in did
+
+    def test_no_read_or_write_copies_every_proposal_or_event(self):
+        """Only the 1.7 -> 1.8 move in postupgrade touches the old arrays; lists are paged."""
+        main = open(os.path.join(os.path.dirname(__file__), "..", "src", "main.mo")).read()
+        moved = main.split("system func postupgrade()", 1)[1].split("\n  };\n", 1)[0]
+        rest = main.replace(moved, "")
+        assert "proposal_entries.vals()" in moved and "event_log.vals()" in moved
+        assert "proposal_entries.vals()" not in rest and "event_log.vals()" not in rest
+        assert "Array.concat(event_log" not in main and "Array.concat(out, [p])" not in main
+        for name in ("list_proposals", "list_events"):
+            body = main.split(f"func {name}()", 1)[1].split("\n  };\n", 1)[0]
+            assert "Page(null, LIST_LATEST)" in body, name
 
 
 class TestMultisigV170Hardening:

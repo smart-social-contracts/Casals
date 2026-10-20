@@ -1,6 +1,6 @@
 # Multisig
 
-Minimal n-of-m multisig canister (version 1.7.0). An IC controller of every
+Minimal n-of-m multisig canister (version 1.8.0). An IC controller of every
 Baton in the orchestra; Casals is the Batons' top commander.
 
 The canister takes no install argument. A controller calls
@@ -25,6 +25,7 @@ still a controller. A second call returns `already configured`.
   - Baton and Casals replies count as success only when their top-level JSON `ok` is `true`.
   - The sweeper's `sweep` is controller-only.
 - **Who can read (v1.7)** — `get_proposal`, `list_proposals` and `list_events` answer signers and controllers only, unless `public_read` is on. `list_signers`, `cycles_balance`, `version`, `default_proposal_expiry_secs` and `get_public_read` stay public: the conductor plans against the signer set after it handed the multisig its own controllers. `set_public_read("true" | "false")` is controller-only. Text in and out, so the committee can call it on itself with a `CallCanister` proposal. `casals up` sets it from the sheet's `environments.<env>.public_read`.
+- **Paged reads (v1.8)** — proposals live in a stable map and the audit log in a growable list, so a lookup or a new entry no longer copies every proposal. `list_proposals` returns the newest 100 (newest first) and `list_events` the newest 100 (oldest first). `list_proposals_page(before, count)` and `list_events_page(before, count)` go further back, newest first, at most 200 per page; `next` is the `before` of the page after, null at the oldest. The upgrade from 1.7 moves the stored proposals and events over once, in `postupgrade`.
 
 ## Build
 

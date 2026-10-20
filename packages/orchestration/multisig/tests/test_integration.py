@@ -154,6 +154,40 @@ class TestMultisigUpgradeSafety:
         signers_after = call(multisig_env["multisig_id"], "list_signers")
         assert str(signers_before) == str(signers_after)
 
+    def test_a_1_7_multisig_keeps_its_proposals_and_events_and_pages_them(self, replica):
+        import gzip
+        import tempfile
+
+        seed = os.path.join(CASALS_ROOT, "seed", "templates", "orchestration-multisig@1.7.0.wasm.gz")
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as tmp, gzip.open(seed) as gz:
+            tmp.write(gz.read())
+        ms = create_detached()
+        icp(["canister", "install", ms, "--wasm", tmp.name, "--mode", "install", "-n", "local", "-y"])
+        call(ms, "configure", f'(vec {{ principal "{identity_principal()}" }} : vec principal, 1 : nat, 604800 : nat)')
+        for _ in range(3):
+            _propose(ms, f'variant {{ CallCanister = record {{ canister = principal "{ms}"; '
+                         f'method = "set_public_read"; arg_json = "maybe" }} }}')
+        events = icp(["canister", "call", ms, "list_events", "()", "--query", "-n", "local"]).stdout
+
+        icp(["canister", "install", ms, "--wasm", build_multisig(), "--mode", "upgrade", "--args", "()",
+             "-n", "local", "-y"])
+
+        def page(method, args):
+            out = icp(["canister", "call", ms, method, args, "--query", "-n", "local"]).stdout
+            nxt = re.search(r"next = opt \(?([\d_]+)", out)
+            return out, (int(nxt.group(1).replace("_", "")) if nxt else None)
+
+        first, nxt = page("list_proposals_page", "(null, 2 : nat)")
+        assert re.findall(r"\bid = ([\d_]+)", first) == ["2", "1"] and nxt == 1, first
+        second, nxt = page("list_proposals_page", f"(opt ({nxt} : nat), 2 : nat)")
+        assert re.findall(r"\bid = ([\d_]+)", second) == ["0"] and nxt is None, second
+        assert _status(ms, 1) in ("executed", "failed")
+        logged = events.count("kind =")
+        assert icp(["canister", "call", ms, "list_events", "()", "--query", "-n", "local"]).stdout == events
+        newest, nxt = page("list_events_page", "(null, 1 : nat)")
+        assert newest.count("kind =") == 1 and nxt == logged - 1, newest
+        assert "1.8.0" in icp(["canister", "call", ms, "version", "()", "--query", "-n", "local"]).stdout
+
 
 def _status(multisig_id: str, proposal_id: int, identity=None) -> str:
     args = ["canister", "call", multisig_id, "get_proposal", f"({proposal_id} : nat)", "--query", "-n", "local"]

@@ -66,9 +66,13 @@ service : {
   approve : (nat) -> (Result);
   reject : (nat) -> (Result);
   get_proposal : (nat) -> (opt Proposal) query;
+  // The newest 100; list_proposals_page(before, count) goes further back, newest first.
   list_proposals : () -> (vec Proposal) query;
+  list_proposals_page : (opt nat, nat) -> (record { proposals : vec Proposal; next : opt nat }) query;
   list_signers : () -> (record { signers : vec principal; threshold : nat }) query;
+  // The newest 100, oldest first; list_events_page(before, count) goes further back, newest first.
   list_events : () -> (vec AuditEvent) query;
+  list_events_page : (opt nat, nat) -> (record { events : vec AuditEvent; next : opt nat }) query;
   default_proposal_expiry_secs : () -> (nat) query;
   get_public_read : () -> (bool) query;
   // Controller-only; "true" or "false". Replies {"ok": ...} JSON.
