@@ -26,6 +26,7 @@ from basilisk import (
 )
 from ic_python_logging import get_logger
 
+from action_index import LIST_LATEST, PAGE_MAX, newest, open_ids, track
 from auth import (
     AuthError,
     config_readers,
@@ -153,6 +154,9 @@ _managed = StableBTreeMap[str, str](memory_id=3, max_key_size=64, max_value_size
 _config = StableBTreeMap[str, str](memory_id=4, max_key_size=64, max_value_size=4096)
 # snapshot id (hex) → JSON {canister_id, action_id, action_type, label}: which action took a kept snapshot.
 _snapshot_origins = StableBTreeMap[str, str](memory_id=5, max_key_size=128, max_value_size=1024)
+# action_index: order key → action id (newest first), and the ids of non-terminal actions → seq.
+_order = StableBTreeMap[str, str](memory_id=6, max_key_size=32, max_value_size=160)
+_open = StableBTreeMap[str, str](memory_id=7, max_key_size=128, max_value_size=32)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -197,6 +201,7 @@ def _cfg_int(key: str, default: int) -> int:
 
 
 def _save_action(record: dict) -> None:
+    track(record, _order, _open, _config)
     _actions.insert(record["action_id"], encode_record(record))
 
 
@@ -219,7 +224,7 @@ def _expire_if_stale(record: dict) -> bool:
 
 
 def _active_action_id() -> str | None:
-    for aid in _actions.keys():
+    for aid in open_ids(_open):
         rec = _load_action(aid)
         if rec and is_non_terminal(rec.get("status", "")) and not _expire_if_stale(rec):
             return aid
@@ -618,7 +623,7 @@ def _execute_restore_gen(action_id: str, record: dict) -> Async[text]:
 
 
 def _scan_and_resume() -> None:
-    for aid in _actions.keys():
+    for aid in open_ids(_open):
         rec = _load_action(aid)
         if rec and is_non_terminal(rec.get("status", "")):
             if rec.get("status") == STATUS_FINALIZING:
@@ -647,9 +652,22 @@ def init_(args: InitArgs) -> void:
     _log.info(f"baton initialized; top_commander={top}{' (test hooks on)' if hooks is True else ''}")
 
 
+def _index_actions() -> None:
+    """Once, on the upgrade to 2.2.0: give the records filed before it their seq and index entries."""
+    if _config.get("action_index") == "1":
+        return
+    stamps = sorted((int((_load_action(aid) or {}).get("proposed_at") or 0), aid) for aid in _actions.keys())
+    for _, aid in stamps:
+        rec = _load_action(aid)
+        if rec and not rec.get("seq"):
+            _save_action(rec)
+    _config.insert("action_index", "1")
+
+
 @post_upgrade
 def post_upgrade_() -> void:
     _persist_config_defaults()
+    _index_actions()
     _scan_and_resume()
     _log.info("baton post_upgrade: resumed non-terminal actions if any")
 
@@ -1132,7 +1150,7 @@ def maintenance_status() -> text:
     """Public: the stand's upcoming or running maintenance window, if any.
     {state: none|scheduled|starting|in_progress|done, release, scheduled_at,
     started_at, until_ns, message, title}. Pending proposals are not shown."""
-    for aid in _actions.keys():
+    for aid in open_ids(_open):
         rec = _load_action(aid)
         if (rec and rec.get("action_type") == ACTION_TYPE_RELEASE
                 and is_non_terminal(rec.get("status", "")) and rec.get("status") != STATUS_PENDING):
@@ -1256,19 +1274,34 @@ def get_action(action_id: text) -> text:
     return json.dumps(record)
 
 
+def _summaries(ids: list[str]) -> list[dict]:
+    return [action_summary(decode_record(raw)) for raw in (_actions.get(aid) for aid in ids) if raw]
+
+
 @query
 def list_actions() -> text:
-    """Every action as a summary (see models.action_summary); ``get_action``
-    returns one in full."""
+    """The newest actions (at most action_index.LIST_LATEST), newest first, as summaries (see
+    models.action_summary); ``list_actions_page`` goes further back, ``get_action`` returns one in full."""
     refusal = _reader_refusal()
     if refusal:
         return refusal
-    out = []
-    for key in sorted(_actions.keys()):
-        raw = _actions.get(key)
-        if raw:
-            out.append(action_summary(decode_record(raw)))
-    return json.dumps(out)
+    return json.dumps(_summaries(newest(_order, None, LIST_LATEST)[0]))
+
+
+@query
+def list_actions_page(args: text) -> text:
+    """``{"before": seq, "count": n}``: summaries of the actions filed before ``before`` (from the newest
+    when absent), newest first, at most ``count`` (action_index.PAGE_MAX); ``next`` is the ``before`` of
+    the page after, null at the oldest."""
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
+    try:
+        params = json.loads(args or "{}")
+        ids, nxt = newest(_order, params.get("before"), params.get("count") or PAGE_MAX)
+    except Exception as e:
+        return _err(str(e))
+    return _ok(actions=_summaries(ids), next=nxt)
 
 
 def _status_fields_from_management(st, cid: str) -> dict:

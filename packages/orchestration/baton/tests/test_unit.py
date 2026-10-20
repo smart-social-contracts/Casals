@@ -261,10 +261,21 @@ class TestBatonSourceShape:
             assert "_reader_refusal()" in body, name
 
     def test_the_action_list_holds_summaries(self):
-        body = self.SRC_MAIN.split("def list_actions(", 1)[1].split("\n@", 1)[0]
+        body = self.SRC_MAIN.split("def _summaries(", 1)[1].split("\n@", 1)[0]
         assert "action_summary(decode_record(raw))" in body
-        body = self.SRC_MAIN.split("def get_action(", 1)[1].split("\n@", 1)[0]
-        assert "action_summary" not in body
+        for name in ("list_actions", "list_actions_page"):
+            body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
+            assert "_summaries(" in body and "_reader_refusal()" in body, name
+        body = self.SRC_MAIN.split("def get_action(", 1)[1].split("\n@", 1)[0].split("\ndef ", 1)[0]
+        assert "action_summary" not in body and "_summaries" not in body
+
+    def test_no_read_walks_every_action(self):
+        """Only the one-time backfill on the upgrade to 2.2.0 reads every record."""
+        assert self.SRC_MAIN.count("_actions.keys()") == 1
+        assert "_actions.keys()" in self.SRC_MAIN.split("def _index_actions(", 1)[1].split("\n\n\n", 1)[0]
+        assert "_actions.values()" not in self.SRC_MAIN and "_actions.items()" not in self.SRC_MAIN
+        assert self.SRC_MAIN.count("_actions.insert(") == 1
+        assert "track(record, _order, _open, _config)" in self.SRC_MAIN.split("def _save_action(", 1)[1].split("\n\n\n", 1)[0]
 
     def test_action_ids_are_never_reused(self):
         assert self.SRC_MAIN.count("_new_action_id(params)") == 4

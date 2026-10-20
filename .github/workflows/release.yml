@@ -67,7 +67,7 @@ jobs:
         run: |
           # Template versions consumer sheets install. Committed artifacts under seed/templates/.
           cp seed/templates/orchestration-baton@1.6.1.wasm.gz ./orchestration-baton@1.6.1.wasm.gz
-          cp seed/templates/orchestration-baton@2.1.0.wasm.gz ./orchestration-baton@2.1.0.wasm.gz
+          cp seed/templates/orchestration-baton@2.2.0.wasm.gz ./orchestration-baton@2.2.0.wasm.gz
           # The page stand frontends serve during a stand release (`casals upgrade --release`).
           cp seed/templates/casals-maintenance@1.0.0.wasm.gz ./casals-maintenance@1.0.0.wasm.gz
           cp seed/templates/orchestration-multisig@1.7.0.wasm.gz ./orchestration-multisig@1.7.0.wasm.gz
@@ -96,7 +96,7 @@ jobs:
                    casals_frontend.tar.gz casals_frontend.manifest.json \
                    certified-assets@0.3.0.wasm.gz \
                    certified-assets@1.0.0.wasm.gz \
-                   orchestration-baton@1.6.1.wasm.gz orchestration-baton@2.1.0.wasm.gz \
+                   orchestration-baton@1.6.1.wasm.gz orchestration-baton@2.2.0.wasm.gz \
                    casals-maintenance@1.0.0.wasm.gz orchestration-multisig@1.7.0.wasm.gz; do
             [ -f "$f" ] && sha256sum "$f" >> checksums.txt
           done
@@ -108,7 +108,7 @@ jobs:
               "certified-assets@0.3.0.wasm.gz",
               "certified-assets@1.0.0.wasm.gz",
               "orchestration-baton@1.6.1.wasm.gz",
-              "orchestration-baton@2.1.0.wasm.gz",
+              "orchestration-baton@2.2.0.wasm.gz",
               "casals-maintenance@1.0.0.wasm.gz",
               "orchestration-multisig@1.7.0.wasm.gz",
           ):
@@ -139,7 +139,7 @@ jobs:
             certified-assets@0.3.0.wasm.gz
             certified-assets@1.0.0.wasm.gz
             orchestration-baton@1.6.1.wasm.gz
-            orchestration-baton@2.1.0.wasm.gz
+            orchestration-baton@2.2.0.wasm.gz
             casals-maintenance@1.0.0.wasm.gz
             orchestration-multisig@1.7.0.wasm.gz
             checksums.txt

@@ -317,6 +317,30 @@ def baton_sync(principal, args):
     return {"stand": stand.name, "updated": (yield from sync_from_baton(stand))}
 
 
+def paged(version):
+    """Batons from 2.2.0 page their actions (``list_actions_page``); ``list_actions`` is the newest 100."""
+    try:
+        return tuple(int(x) for x in version.split(".")[:2]) >= (2, 2)
+    except ValueError:
+        return False
+
+
+def actions_since(baton, version, since):
+    """Summaries of the baton's actions filed after ``since`` (``proposed_at``, ns), newest first."""
+    if not paged(version):
+        return [a for a in (yield from read(baton, "list_actions")) if (a.get("proposed_at") or 0) > since]
+    out, before = [], None
+    while True:
+        page = yield from read(baton, "list_actions_page", json.dumps({"before": before} if before else {}))
+        for a in page["actions"]:
+            if (a.get("proposed_at") or 0) <= since:
+                return out
+            out.append(a)
+        before = page.get("next")
+        if not before:
+            return out
+
+
 def sync_from_baton(stand):
     baton = baton_of(stand)
     updated = {}
@@ -326,8 +350,7 @@ def sync_from_baton(stand):
         baton.wasm, baton.wasm_hash = w.key, w.sha256
         updated[baton.name] = w.key
     by_id = {c.canister_id: c for c in stand.canisters if c.canister_id}
-    done = [a for a in (yield from read(baton, "list_actions"))
-            if a.get("status") == "COMPLETE" and (a.get("proposed_at") or 0) > stand.baton_synced]
+    done = [a for a in (yield from actions_since(baton, version, stand.baton_synced)) if a.get("status") == "COMPLETE"]
     for a in sorted(done, key=lambda a: a.get("proposed_at") or 0):
         if "payload" not in a:
             a = yield from read(baton, "get_action", a["action_id"])

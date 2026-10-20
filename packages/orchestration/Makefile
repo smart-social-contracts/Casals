@@ -25,6 +25,7 @@ test: test-unit
 test-unit:
 	cd $(BATON_DIR) && $(PYTEST) \
 		tests/test_unit.py \
+		tests/test_action_index_unit.py \
 		tests/test_policy_unit.py \
 		tests/test_approval_policy_unit.py \
 		tests/test_smoke_unit.py \

@@ -50,6 +50,14 @@ Since 2.1.0 `list_actions` returns summaries: each record without `payload`
 and `release_state`, with only its last `phase_log` entry and a `phase_count`.
 `get_action` returns the full record.
 
+Since 2.2.0 no read decodes every record. `list_actions` returns the newest
+100, newest first. `list_actions_page('{"before": seq, "count": n}')` goes
+further back (at most 200 per page; `next` is the `before` of the following
+page, null at the oldest). Each record carries its `seq` (1, 2, … in filing
+order). The open action, `maintenance_status` and the resume after an upgrade
+come from an index of non-terminal actions. The upgrade to 2.2.0 numbers and
+indexes the existing records once, in `post_upgrade`.
+
 ## Approvals
 
 - The configured `upgrade_approval_policy` applies to every proposal. A

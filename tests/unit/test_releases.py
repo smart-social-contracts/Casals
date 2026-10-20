@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 
+import pytest
+
 from fake_chain import state
 from kit import call, grant
 from model import Canister, Stand, Wasm
@@ -153,6 +155,28 @@ def test_sync_reads_the_full_record_behind_a_summary():
     assert call("baton_sync", stand="d1")["updated"] == {"d1-backend": "app@2"}
     assert fetched == ["a1"] and Stand["d1"].baton_synced == 20
     assert call("baton_sync", stand="d1")["updated"] == {} and fetched == ["a1"]
+
+
+def test_sync_pages_back_to_the_last_synced_action_on_a_2_2_baton():
+    stand()
+    Stand["d1"].baton_synced = 15
+    app2 = Wasm["app@2"].sha256
+    acts = [{"action_id": f"a{n}", "action_type": "managed_upgrade", "status": "COMPLETE", "proposed_at": n * 10,
+             "seq": n, "payload": {"targets": [{"canister_id": "be-id", "wasm_hash": app2 if n == 3 else "ee" * 32,
+                                                "registry_path": "app@2.wasm.gz"}]}} for n in range(1, 6)]
+    asked = []
+
+    def page(arg):
+        before = json.loads(arg).get("before") or 6
+        asked.append(before)
+        got = [a for a in reversed(acts) if a["seq"] < before][:2]
+        return json.dumps({"ok": True, "actions": got, "next": got[-1]["seq"] if got and got[-1]["seq"] > 1 else None})
+
+    state["replies"][("bt-id", "get_config")] = '{"version": "2.2.0"}'
+    state["replies"][("bt-id", "list_actions_page")] = page
+    state["replies"][("bt-id", "list_actions")] = lambda a: pytest.fail("a 2.2 baton is read by pages")
+    call("baton_sync", stand="d1")
+    assert asked == [6, 4, 2] and Stand["d1"].baton_synced == 50
 
 
 def test_a_release_proposal_syncs_first():

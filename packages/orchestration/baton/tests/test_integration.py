@@ -744,3 +744,65 @@ class TestAssetProvisionManifest:
         ok(call(baton_id, "submit_approval", aid))
         action = _wait_terminal(baton_id, aid)
         assert action["status"] == "FAILED_PROVISION", action
+
+
+def _page_through(baton_id, count):
+    out, before = [], None
+    while True:
+        res = ok(call(baton_id, "list_actions_page", json.dumps({"count": count, **({"before": before} if before else {})})))
+        out += res["actions"]
+        before = res["next"]
+        if not before:
+            return out
+
+
+class TestActionIndex:
+    def test_pages_go_back_from_the_newest_like_the_list(self, baton_env):
+        listed = call(baton_env["baton_id"], "list_actions")
+        listed = json.loads(listed) if isinstance(listed, str) else listed
+        paged = _page_through(baton_env["baton_id"], 1)
+        assert [a["action_id"] for a in paged] == [a["action_id"] for a in listed]
+        assert [a["seq"] for a in paged] == sorted((a["seq"] for a in paged), reverse=True)
+
+    def test_upgrading_a_2_1_baton_indexes_its_actions(self, replica, deploy_principal, registry_env):
+        import gzip
+        import os
+        import tempfile
+
+        from conftest import CASALS_ROOT, build_baton
+
+        seed = os.path.join(CASALS_ROOT, "seed", "templates", "orchestration-baton@2.1.0.wasm.gz")
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as tmp, gzip.open(seed) as gz:
+            tmp.write(gz.read())
+        baton_id = create_detached()
+        icp(["canister", "install", baton_id, "--wasm", tmp.name, "--mode", "install",
+             "--args", f'(record {{ top_commander = principal "{deploy_principal}" }})', "-n", "local", "-y"])
+        ok(call(baton_id, "set_config", json.dumps({
+            "bake_window_seconds": 0, "install_cycles_buffer": 1_000_000_000,
+            "wasm_store_canister_id": registry_env["registry_id"]})))
+        ok(call(baton_id, "add_commander", json.dumps({
+            "principal": deploy_principal,
+            "capabilities": ["propose:managed_upgrade", "submit_approval:managed_upgrade"]})))
+        env = {**registry_env, "baton_id": baton_id}
+        cid, pre = setup_managed_canister(baton_id, MANAGED_V1)
+        post = wasm_file_hash(MANAGED_V2)
+        done = propose_upgrade(baton_id, [(cid, pre, post)], env)
+        finish_action(baton_id, done)
+        waiting = "waiting-" + done
+        ok(call(baton_id, "propose_managed_upgrade", json.dumps({
+            "action_id": waiting, "affected_canisters": [cid],
+            "payload": {"targets": [{"canister_id": cid, "expected_module_hash": post, "wasm_hash": pre,
+                                     "registry_namespace": env["namespace"], "registry_path": env["v1_path"],
+                                     "upgrade_args_hex": ""}]}})))
+
+        icp(["canister", "install", baton_id, "--wasm", build_baton(), "--mode", "upgrade", "--args", "()",
+             "-n", "local", "-y"])
+        paged = _page_through(baton_id, 1)
+        assert [(a["action_id"], a["seq"]) for a in paged] == [(waiting, 2), (done, 1)]
+        res = call(baton_id, "propose_managed_upgrade", json.dumps({
+            "action_id": "third", "affected_canisters": [cid],
+            "payload": {"targets": [{"canister_id": cid, "expected_module_hash": post, "wasm_hash": pre,
+                                     "registry_namespace": env["namespace"], "registry_path": env["v1_path"]}]}}))
+        assert res.get("ok") is False and "in progress" in res.get("error", ""), res
+        cfg = call(baton_id, "get_config")
+        assert (json.loads(cfg) if isinstance(cfg, str) else cfg)["version"] == "2.2.0"
