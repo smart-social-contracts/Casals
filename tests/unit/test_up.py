@@ -62,6 +62,40 @@ def test_every_canister_lets_the_conductor_and_monitor_read_its_status():
         assert state["canisters"][Canister[name].canister_id]["viewers"] == ["conductor", "mon"], name
 
 
+def test_content_and_config_resolve_canisters_of_later_stands():
+    setup()
+    doc = sheet()
+    doc["sections"][1]["stands"].insert(0, {"name": "Market", "canisters": [
+        {"name": "market", "wasm": "ms@1", "config": [{"method": "set_registry", "arg": '("$canister:hello")'}]},
+        {"name": "market-web", "wasm": "ms@1", "kind": "frontend", "files": {"/ids.js": "$canister:hello"}}]})
+    state["replies"][("can-2", "set_registry")] = "(variant { ok })"
+    call("orchestra_up", **doc)
+    run_timers()
+    hello = Canister["hello"].canister_id
+    assert orchestra().built_at and hello == "can-4"
+    assert ("call", "can-2", "set_registry", f'("{hello}")') in state["calls"]
+    assert state["canisters"][Canister["market-web"].canister_id]["assets"] == {"/ids.js": hello.encode()}
+
+
+def test_up_provisions_the_members_of_a_template_stand():
+    setup()
+    doc = sheet()
+    doc["sections"].append({"name": "Tenants", "template": {"canisters": [{"name": "{stand}-app", "wasm": "ms@1"}]},
+                            "stands": [{"name": "t1"}]})
+    call("orchestra_up", **doc)
+    run_timers()
+    assert orchestra().built_at and Canister["t1-app"].status == "ready" and Stand["t1"].built_at
+
+
+def test_a_config_failure_after_provisioning_fails_the_stand_being_built():
+    setup()
+    state["fail"]["call"] = "refused"
+    call("orchestra_up", **sheet())
+    run_timers()
+    assert "refused" in Stand["governance"].build_error and Canister["hello"].status == "installed"
+    assert not orchestra().built_at
+
+
 def test_failed_up_resumes_on_the_next_up():
     setup()
     state["fail"]["install"] = "trap"

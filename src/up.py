@@ -1,13 +1,13 @@
 import chain
 from auth import KEYS
-from canisters import share_status
+from canisters import provision, share_status
 from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, first, matching, orchestra, page, page_of, resolve, set_build
 from op import op
 from orchestra import monitor_setting
 from rounds import schedule, step
 from snapshots import check_keep
-from stands import build, build_failed
+from stands import build, build_failed, member_row, members
 
 SETTINGS = ("name", "description", "env", "network", "vars", "store_id", "frontend_id", "multisig_id",
             "reserve", "policy", "currency", "subnets", "monitor", "snapshots_keep")
@@ -87,12 +87,33 @@ def up_pending():
     return ["orchestra"] if orchestra().deployer and not orchestra().built_at else []
 
 
+def unprovisioned():
+    """A canister of a pending stand that is not on the chain yet. Content and config may name a canister
+    of a later stand (`$canister:<name>`), which resolves only once it exists, so `up` creates every
+    stand's canisters before it builds any stand."""
+    for s in matching(Stand, "state", "pending"):
+        for spec in members(s) if s.section.template else []:
+            Canister[spec["name"]] or member_row(s, spec)
+        for c in s.canisters:
+            if c.status == "created":
+                return c
+    return None
+
+
 @step("up", up_failed, up_pending)
 def build_all(name):
     s = next_unbuilt()
     if s:
         if s.state == "failed":
             return True
+        c = unprovisioned()
+        if c:
+            try:
+                yield from provision(c)
+            except Exception as e:
+                build_failed(c.stand.name, f"{c.name}: {e}")
+                return True
+            return False
         yield from build(s.name)
         return False
     o = orchestra()
