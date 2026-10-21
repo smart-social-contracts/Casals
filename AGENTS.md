@@ -423,6 +423,16 @@ canister (`content: <ns>`) serves exactly the bundle, plus its rendered `files`.
   any time). Shipping it is a release (below). Permission `wasm.upload`
   ("Upload files (WASMs, bundles) to the store").
 
+### Release candidates
+
+A `vX.Y.Z-rcN` tag is a build you expect to ship as `vX.Y.Z` unchanged.
+It is not how a fix reaches staging: build locally, point the staging sheet
+row at `local:<path>` in a working copy, and `casals upgrade --wasm` /
+`--content` it; cut the RC once the change works. Before the next RC, the
+previous one is published or deleted. An RC carries the release summary, is
+marked as a pre-release, and is never Latest (`release:…@latest` sources
+resolve to Latest).
+
 ### Releases: `casals upgrade` (issue #52)
 
 The sheet builds the orchestra once; a new build afterwards is an operation,
