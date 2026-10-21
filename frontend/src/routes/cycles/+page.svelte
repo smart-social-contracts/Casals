@@ -320,7 +320,11 @@
       topupAmount = targets[0].topup ? `${targets[0].topup / 1e12}t` : '';
     }
     if (d === 'deposit' && !depositAccount) {
-      ledgerAccountIdFromCanister(backendCanisterId()).then((a) => (depositAccount = a)).catch(() => {});
+      try {
+        depositAccount = ledgerAccountIdFromCanister(backendCanisterId());
+      } catch (e: any) {
+        toasts.error(e?.message ?? 'Could not derive the ICP account');
+      }
     }
   }
 

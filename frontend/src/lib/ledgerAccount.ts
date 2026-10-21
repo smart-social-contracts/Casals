@@ -1,4 +1,5 @@
 import { Principal } from '@dfinity/principal';
+import { sha224 } from '@noble/hashes/sha2';
 
 const ACCOUNT_DOMAIN = new TextEncoder().encode('\x0Aaccount-id');
 const DEFAULT_SUBACCOUNT = new Uint8Array(32);
@@ -20,14 +21,15 @@ function hex(bytes: Uint8Array): string {
 }
 
 /** Derive the 64-char hex ICP ledger account id for a canister's default account. */
-export async function ledgerAccountIdFromCanister(canisterId: string): Promise<string> {
+export function ledgerAccountIdFromCanister(canisterId: string): string {
   const principal = Principal.fromText(canisterId.trim());
   const payload = new Uint8Array([
     ...ACCOUNT_DOMAIN,
     ...principal.toUint8Array(),
     ...DEFAULT_SUBACCOUNT,
   ]);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-224', payload));
+  // Web Crypto has no SHA-224.
+  const digest = sha224(payload);
   const checksum = crc32(digest);
   const out = new Uint8Array(32);
   out[0] = (checksum >>> 24) & 0xff;
