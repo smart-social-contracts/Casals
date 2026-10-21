@@ -328,9 +328,9 @@
     }
   }
 
-  /** Cycles typed in a dialog field ("1.5t", "500b"); throws on bad input. */
+  /** Cycles typed in a dialog field ("1.5t", "500b"; a bare number is TC); throws on bad input. */
   function cycles(s: string, label: string): number {
-    const n = parseCycles(s);
+    const n = parseCycles(/^\s*[0-9.]+\s*$/.test(s) ? `${s.trim()}t` : s);
     if (!Number.isFinite(n) || n < 0) throw new Error(`${label}: enter an amount such as 1.5t or 500b`);
     return n;
   }
@@ -668,7 +668,7 @@
           <label class="block"><span class="label">Amount (blank sends everything spendable)</span>
             <input class="input w-full" bind:value={amount} placeholder="1.5t" /></label>
         {:else if dialog === 'topup'}
-          <label class="block"><span class="label">Amount per canister (blank uses each policy's top-up)</span>
+          <label class="block"><span class="label">Amount per canister in TC (blank uses each policy's top-up)</span>
             <input class="input w-full" bind:value={amount} placeholder="1t" /></label>
         {:else if dialog === 'policy'}
           <p class="text-xs text-primary-500">When a balance drops under the minimum, the monitor tops it up by the top-up amount. Leave both blank to inherit from the stand, section or orchestra.</p>

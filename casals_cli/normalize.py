@@ -88,6 +88,18 @@ def policy(cycles: dict | None) -> dict:
     return {"min": int(low * TC), "topup": int(float((cycles or {}).get("top_up_tc") or low) * TC)}
 
 
+def apply_kind_policies(sections: list[dict], cycles: dict) -> None:
+    """`cycles.backend` / `cycles.frontend` → the policy of every canister of that kind without its own
+    `cycles` block, stand templates and the conductor's companions included (not the treasury itself)."""
+    by_kind = {k: policy(cycles.get(k)) for k in ("backend", "frontend") if isinstance(cycles.get(k), dict)}
+    for sec in sections:
+        rows = list((sec.get("template") or {}).get("canisters") or [])
+        rows += [c for st in sec["stands"] for c in st["canisters"] if c["name"] != CONDUCTOR_NAMES["backend"]]
+        for c in rows:
+            if "policy" not in c and by_kind.get(c.get("kind", "backend")):
+                c["policy"] = by_kind[c.get("kind", "backend")]
+
+
 def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_id: str) -> dict:
     name = spec["name"]
     config = [text_call(c["method"], c.get("args", "")) for c in spec.get("config") or []]
@@ -180,6 +192,7 @@ def normalize(sheet: dict, env: str, *, deployer: str, ids: dict, uploads: list[
     cycles = {**(resolved.get("cycles") or {}), **(env_block(resolved, env).get("cycles") or {})}
     sections = [conductor_section(resolved, ids, keys, store_id)]
     sections += [section(s, keys, store_id, adopted) for s in resolved.get("sections") or []]
+    apply_kind_policies(sections, cycles)
     doc_grants = grants("orchestra", (resolved.get("conductor") or {}).get("commanders"))
     for sec in resolved.get("sections") or []:
         doc_grants += grants(f"section:{sec['name']}", sec.get("commanders"))

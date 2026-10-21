@@ -614,6 +614,9 @@ def validate(sheet: dict, env: str | None = None) -> list[str]:
     _validate_environments(sheet, env_targets, errors)
     _validate_registry(sheet, env, errors)
     _validate_cycles_block(sheet.get("cycles"), "cycles", errors)
+    for kind in ("backend", "frontend"):
+        if kind in (sheet.get("cycles") or {}):
+            _validate_cycles_block(sheet["cycles"][kind], f"cycles.{kind}", errors)
     _validate_snapshots_block(sheet.get("snapshots"), errors)
     conductor = sheet.get("conductor")
     if not isinstance(conductor, dict):

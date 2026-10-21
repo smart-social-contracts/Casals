@@ -340,6 +340,9 @@
   ],
   "cycles": {
     "min_balance_tc": 0.5,
+    "backend": {
+      "min_balance_tc": 1.0
+    },
     "conductor_min_balance_tc": 2.0
   }
 }

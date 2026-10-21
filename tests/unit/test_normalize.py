@@ -31,6 +31,27 @@ def test_a_canister_cycles_block_becomes_its_policy():
     assert web_row["policy"] == {"min": TC, "topup": int(2.5 * TC)} and "policy" not in api_row
 
 
+def test_a_kind_default_covers_canisters_without_their_own_policy():
+    baton = {"name": "{stand}-baton", "wasm": "b", "cycles": {"min_balance_tc": 5}}
+    tmpl_api = {"name": "{stand}-backend", "wasm": "w", "kind": "backend"}
+    sheet = {"version": 2, "name": "t", "environments": {"local": {"network": "local"}},
+             "cycles": {"min_balance_tc": 0.5, "backend": {"min_balance_tc": 1}},
+             "governance": {"multisig": {"wasm": "m", "signers": ["aaaaa-aa"]}},
+             "sections": [{"name": "Deployments", "arrangements": {"stand_template": {"canisters": [baton, tmpl_api]}},
+                           "stands": [{"name": "s1", "canisters": [{"name": "api", "wasm": "w"},
+                                                                   {"name": "web", "wasm": "w", "kind": "frontend"}]}]}]}
+    ids = {"casals-backend": "ryjl3-tyaaa-aaaaa-aaaba-cai", "casals-store": "r7inp-6aaaa-aaaaa-aaabq-cai"}
+    doc = normalize(sheet, "local", deployer="2vxsx-fae", ids=ids, uploads=[])
+    TC = 10**12
+    rows = {c["name"]: c for s in doc["sections"] for st in s["stands"] for c in st["canisters"]}
+    tmpl = {c["name"]: c for c in next(s for s in doc["sections"] if s["name"] == "Deployments")["template"]["canisters"]}
+    assert rows["api"]["policy"] == rows["multisig"]["policy"] == {"min": TC, "topup": TC}
+    assert tmpl["{stand}-backend"]["policy"] == {"min": TC, "topup": TC}
+    assert tmpl["{stand}-baton"]["policy"] == {"min": 5 * TC, "topup": 5 * TC}
+    assert "policy" not in rows["web"] and "policy" not in rows["casals-store"] and "policy" not in rows["casals-backend"]
+    assert doc["policy"] == {"min": TC // 2, "topup": TC // 2}
+
+
 def test_mainnet_defaults_to_the_hosted_monitor():
     from casals_cli.sheetv2 import HOSTED_MONITOR_URL, validate
 

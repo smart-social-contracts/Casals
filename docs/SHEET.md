@@ -208,6 +208,7 @@ member's too) is that canister's policy and wins over the default.
 |---|---|
 | `min_balance_tc` | Top a canister up when it drops below this. |
 | `top_up_tc` | How much each top-up adds. Default: `min_balance_tc`. |
+| `backend`, `frontend` | Top-level only. `{"min_balance_tc", "top_up_tc"?}` for every canister of that `kind` without its own `cycles` block (stand templates included). Backends hold state and pay for upgrades, so give them more than frontends, e.g. `"backend": {"min_balance_tc": 1}`. |
 | `conductor_min_balance_tc` | Top-level only. The treasury's reserve: top-ups and sends never take it below this. When the treasury is under it, `casals up` refills it from the deployer to `environments.<env>.cycles.budget_tc`. The conductor itself has no policy: it holds the treasury, so it is never topped up. |
 | `reuse_pool` | `true` lets new canisters come from the conductor's pool before fresh ones are created. |
 
