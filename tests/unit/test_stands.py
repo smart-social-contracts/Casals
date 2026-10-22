@@ -1,5 +1,5 @@
 import rounds
-from fake_chain import run_timers, state
+from fake_chain import run_timers, run_watchdogs, state
 from kit import call, grant
 from model import Canister, Event, Grant, Section, Stand, orchestra, each
 from test_canisters import catalog
@@ -106,3 +106,22 @@ def test_stand_rename_delete_destroy():
     assert out["swept"] > 0 and Stand["t1"] is None and not any(c in state["canisters"] for c in cids)
     call("stand_delete", stand="d7")
     assert Stand["d7"] is None and Canister["c1"] is None and Grant["stand:d7|ann"] is None
+
+
+def test_a_round_that_traps_fails_visibly_and_the_queue_goes_on():
+    tenants()
+    state["trap"]["create"] = "instruction limit"
+    call("stand_create", section="Tenants", name="t1")
+    call("stand_create", section="Tenants", name="t2")
+    run_timers()
+    assert not Stand["t1"].built_at and not Stand["t2"].built_at
+    run_watchdogs()
+    assert "trapped" in Stand["t1"].build_error
+    run_timers()
+    assert Stand["t2"].built_at and not Stand["t2"].build_error
+
+
+def test_no_second_round_starts_while_one_is_running():
+    rounds.running[("stand", "t1")] = 1
+    rounds.schedule("stand", "t2")
+    assert rounds.armed == [] and rounds.queue == [("stand", "t2")]

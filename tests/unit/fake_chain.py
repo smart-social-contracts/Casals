@@ -8,7 +8,26 @@ state = {}
 def reset():
     state.clear()
     state.update(caller=ANONYMOUS, controllers={"ctl"}, now=1_700_000_000, timers=[], balance=10**14,
-                 canisters={}, store={}, replies={}, fail={}, calls=[])
+                 canisters={}, store={}, replies={}, fail={}, trap={}, calls=[])
+
+
+class Trap(BaseException):
+    """A canister trap: no except clause sees it, and the message's changes since its last await are undone."""
+
+
+def _rounds_heap():
+    import rounds
+
+    return {"queue": list(rounds.queue), "armed": list(rounds.armed), "running": dict(rounds.running),
+            "timers": list(state["timers"])}
+
+
+def _roll_back(saved):
+    import rounds
+
+    rounds.queue[:], rounds.armed[:], state["timers"][:] = saved["queue"], saved["armed"], saved["timers"]
+    rounds.running.clear()
+    rounds.running.update(saved["running"])
 
 
 def gen(fn):
@@ -16,6 +35,8 @@ def gen(fn):
         state["calls"].append((fn.__name__,) + args)
         if fn.__name__ in state["fail"]:
             raise Exception(state["fail"].pop(fn.__name__))
+        if fn.__name__ in state["trap"]:
+            raise Trap(state["trap"].pop(fn.__name__))
         return fn(*args, **kwargs)
         yield
     run.__name__ = fn.__name__
@@ -51,7 +72,22 @@ def run_timers():
 
     while due := [t for t in state["timers"] if t[0] < 60]:
         state["timers"].remove(due[0])
-        op.run(due[0][1]())
+        state["committed"] = _rounds_heap()
+        try:
+            op.run(due[0][1]())
+        except Trap:
+            _roll_back(state["committed"])
+
+
+def run_watchdogs():
+    for t in [t for t in state["timers"] if t[0] >= 60]:
+        state["timers"].remove(t)
+        t[1]()
+
+
+@gen
+def commit():
+    state["committed"] = _rounds_heap()
 
 
 def canister(cid, need_control=True):

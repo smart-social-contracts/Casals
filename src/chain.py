@@ -30,6 +30,11 @@ def balance():
     return int(ic.canister_balance128())
 
 
+def commit():
+    """An await with no effect: state changed before it survives a trap after it."""
+    yield mgmt.raw_rand()
+
+
 def set_timer(secs, cb):
     return ic.set_timer(Duration(secs), cb)
 

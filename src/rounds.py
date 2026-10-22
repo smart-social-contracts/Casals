@@ -17,7 +17,8 @@ def step(kind, fail, pending):
 def schedule(kind, name):
     if (kind, name) not in queue:
         queue.append((kind, name))
-    if not armed:
+    # One round at a time: a round that is still running re-arms the timer when it ends.
+    if not armed and not running:
         armed.append(chain.set_timer(1, tick))
 
 
@@ -27,12 +28,17 @@ def tick():
     run, fail, _ = STEPS[kind]
     running[(kind, name)] = token = chain.now()
     chain.set_timer(WATCHDOG, lambda: watchdog(kind, name, token))
+    # A trap undoes the message back to its last await. Without this one, a round that traps
+    # before its own first await would also undo the lines above and leave `armed` holding a
+    # timer that already fired, so nothing could ever be scheduled again.
+    yield from chain.commit()
     try:
-        if not (yield from run(name)):
+        if not (yield from run(name)) and (kind, name) not in queue:
             queue.append((kind, name))
     except Exception as e:
         fail(name, str(e))
-    running.pop((kind, name), None)
+    if running.get((kind, name)) == token:
+        del running[(kind, name)]
     if queue:
         schedule(*queue[0])
 
