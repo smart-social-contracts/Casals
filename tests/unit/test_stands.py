@@ -1,3 +1,4 @@
+import op
 import rounds
 from fake_chain import run_timers, run_watchdogs, state
 from kit import call, grant
@@ -122,6 +123,38 @@ def test_a_round_that_traps_fails_visibly_and_the_queue_goes_on():
 
 
 def test_no_second_round_starts_while_one_is_running():
-    rounds.running[("stand", "t1")] = 1
+    rounds.running[("stand", "t1")] = state["now"]
     rounds.schedule("stand", "t2")
     assert rounds.armed == [] and rounds.queue == [("stand", "t2")]
+
+
+def test_a_dropped_timer_is_replaced_by_a_later_call():
+    tenants()
+    call("stand_create", section="Tenants", name="t1")
+    state["timers"].clear()  # the IC dropped it: the conductor was out of cycles when it was due
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert not Stand["t1"].built_at
+    state["now"] += rounds.LOST + 1
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert Stand["t1"].built_at
+
+
+def test_a_round_whose_watchdog_was_dropped_is_failed_by_a_later_call():
+    tenants()
+    rounds.running[("stand", "t9")] = state["now"]
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert not Stand["t1"].built_at
+    state["now"] += rounds.WATCHDOG + 1
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert Stand["t1"].built_at and rounds.running == {}
+
+
+def test_a_spare_timer_does_nothing():
+    rounds.queue.append(("stand", "t1"))
+    rounds.running[("stand", "t0")] = state["now"]
+    op.run(rounds.tick())
+    assert rounds.queue == [("stand", "t1")] and rounds.armed == []

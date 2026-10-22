@@ -1,6 +1,7 @@
 import json
 
 import chain
+import rounds
 from auth import authorize
 from model import Event
 
@@ -24,6 +25,8 @@ def dispatch(fn, arg):
     try:
         args = json.loads(arg or "{}")
         principal = chain.caller()
+        if not spec["read"]:
+            rounds.kick()
         authorize(principal, spec, args)
         out = spec["fn"](principal, args)
         if isinstance(out, GENERATOR):
