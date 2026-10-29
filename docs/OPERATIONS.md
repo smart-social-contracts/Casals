@@ -296,6 +296,12 @@ wasm, new bundle) reaches the existing stands with
 `casals upgrade --wasm` / `--content` (narrow with `--section <name>` or
 `--stand <name>`).
 
+A stand grows by its template's optional rows (a name with `{n}`, such as
+`{stand}-quarter-{n}`): `stand_grow {stand, members}` adds them and builds what
+is missing. It needs `stand.create` on the stand, which a template's
+`commanders` block can give the stand's own canister (`$stand.backend`), so a
+realm asks for its next quarter itself.
+
 ## Off-chain cycle monitor
 
 Balance checks and auto top-ups can run in casals-monitor, a hosted service, instead of the conductor's timers. The hosted service is `https://service.ic-casals.tech` (staging: `https://service.staging.ic-casals.tech`). A self-hosted monitor works the same way; its origin has to be in `connect-src` in `frontend/static/.ic-assets.json5`, or the two fields below are filled by hand.

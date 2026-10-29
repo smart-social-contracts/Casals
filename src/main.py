@@ -178,6 +178,8 @@ def section_set(args: text) -> Async[text]: return (yield from dispatch(stands.s
 @update
 def stand_create(args: text) -> Async[text]: return (yield from dispatch(stands.stand_create, args))
 @update
+def stand_grow(args: text) -> Async[text]: return (yield from dispatch(stands.stand_grow, args))
+@update
 def stand_delete(args: text) -> Async[text]: return (yield from dispatch(stands.stand_delete, args))
 @update
 def stand_destroy(args: text) -> Async[text]: return (yield from dispatch(stands.stand_destroy, args))

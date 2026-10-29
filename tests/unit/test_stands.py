@@ -70,6 +70,22 @@ def test_resume_after_upgrade_and_growth():
     assert Canister["t1-worker-2"].status == "ready"
 
 
+def test_the_stand_backend_grows_its_own_stand():
+    tenants()
+    call("stand_create", section="Tenants", name="t1")
+    call("stand_create", section="Tenants", name="t2")
+    run_timers()
+    backend = Canister["t1-backend"].canister_id
+    assert "error" in call("stand_create", backend, section="Tenants", name="t1", members=["t1-worker-1"])
+    out = call("stand_grow", backend, stand="t1", members=["{stand}-worker-1"])
+    assert out == {"ok": True, "name": "t1", "members": ["t1-worker-1"]}
+    run_timers()
+    assert Canister["t1-worker-1"].status == "ready" and Stand["t1"].built_at
+    assert "not an optional row" in call("stand_grow", backend, stand="t1", members=["t1-frontend"])["error"]
+    assert "error" in call("stand_grow", backend, stand="t2", members=["t2-worker-1"])
+    assert "has no template" in call("stand_grow", stand="d1", members=["x"])["error"]
+
+
 def test_stand_without_template_and_wrong_section():
     tenants()
     out = call("stand_create", section="s1", name="plain")

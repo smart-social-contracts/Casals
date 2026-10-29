@@ -106,12 +106,39 @@ def stand_create(principal, args):
     if created:
         stand = Stand(name=args["name"], description=args.get("description", ""), subnet=args.get("subnet", ""))
         stand.section = section
-    wanted = sorted(set(stand.members) | {m.replace("{stand}", stand.name) for m in args.get("members", [])})
-    if section.template and (created or wanted != stand.members or stand.build_error):
+    grow(stand, args.get("members", []), rebuild=created)
+    return {"name": stand.name, "members": stand.members, "created": created}
+
+
+@op("stand.create", at="stand")
+def stand_grow(principal, args):
+    """Add ``members`` (optional template rows, e.g. ``{stand}-quarter-2``) to the built ``stand``: what the
+    stand's own backend calls with the ``stand.create`` grant its template gives it on the stand."""
+    stand = find(Stand, args["stand"])
+    if not stand.section.template:
+        raise ValueError(f"stand '{stand.name}' has no template to grow from")
+    unknown = [m for m in args.get("members", []) if not optional(stand, m.replace("{stand}", stand.name))]
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)}: not an optional row of the '{stand.section.name}' template")
+    grow(stand, args.get("members", []))
+    return {"name": stand.name, "members": stand.members}
+
+
+def optional(stand, member):
+    for spec in stand.section.template["canisters"]:
+        pre, _, post = spec["name"].replace("{stand}", stand.name).partition("{n}")
+        if spec.get("optional") and member.startswith(pre) and member.endswith(post):
+            return True
+    return False
+
+
+def grow(stand, members, rebuild=False):
+    """Record ``members`` on ``stand`` and build what is missing; a failed build is retried."""
+    wanted = sorted(set(stand.members) | {m.replace("{stand}", stand.name) for m in members})
+    if stand.section.template and (rebuild or wanted != stand.members or stand.build_error):
         stand.members = wanted
         set_build(stand)
         schedule("stand", stand.name)
-    return {"name": stand.name, "members": stand.members, "created": created}
 
 
 @op("stand.edit", at="stand")

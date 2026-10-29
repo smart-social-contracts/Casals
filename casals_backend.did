@@ -157,6 +157,7 @@ service : {
   "section_delete" : (text) -> (text);
   "section_set" : (text) -> (text);
   "stand_create" : (text) -> (text);
+  "stand_grow" : (text) -> (text);
   "stand_delete" : (text) -> (text);
   "stand_destroy" : (text) -> (text);
   "stand_release_preview" : (text) -> (text) query;
