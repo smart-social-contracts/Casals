@@ -9,7 +9,7 @@ import type { BatonActionRecord, BatonSnapshot } from './batonClient';
 import { idlFactory } from './conductor';
 import { icHost, isLocalHost } from './ic-host';
 import { governanceConsoleUrl } from './orchestrationNav';
-import { appendPage, mergeSections, nextArgs, type Cursors } from './pages';
+import { mergeSections, readAll } from './pages';
 
 export { icHost } from './ic-host';
 
@@ -264,19 +264,12 @@ async function _call<T>(method: string, args: object = {}, update = true, as?: I
 const query = <T>(method: string, args: object = {}, as?: Identity) => _call<T>(method, args, false, as);
 const update = <T = Ok>(method: string, args: object = {}) => _call<T>(method, args, true);
 
-/** The rest of a paged list op after its first reply `got`: `next` goes back until every list is complete. */
-async function _rest<T>(method: string, got: any, args: object = {}, as?: Identity): Promise<T> {
-  const out = { ...got };
-  for (let more = nextArgs(got.next as Cursors); more; more = nextArgs(got.next as Cursors)) {
-    got = await query<any>(method, { ...args, ...more }, as);
-    appendPage(out, got);
-  }
-  delete out.next;
-  return out as T;
-}
+/** The rest of a paged list op after its first reply `got`. */
+const _rest = <T>(method: string, got: any, args: object = {}, as?: Identity) =>
+  readAll<T>((a) => query<any>(method, a, as), args as Record<string, unknown>, got);
 /** A paged list op (orchestra_get, orchestra_export, cycles_get, grant_list, wasm_list) read whole. */
-const queryAll = async <T>(method: string, args: object = {}, as?: Identity) =>
-  _rest<T>(method, await query<any>(method, args, as), args, as);
+const queryAll = <T>(method: string, args: object = {}, as?: Identity) =>
+  readAll<T>((a) => query<any>(method, a, as), args as Record<string, unknown>);
 
 // ---------------------------------------------------------------------------
 // Conductor methods (same names as the conductor, camelCased)

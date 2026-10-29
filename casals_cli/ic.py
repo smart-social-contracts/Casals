@@ -137,14 +137,34 @@ class IcAccess(Protocol):
     def top_up(self, canister_id: str, cycles: int) -> None: ...
 
 
+# Rows per list in one query. The conductor's default (500) is past the IC's instruction limit on a grown
+# orchestra: each canister row costs tens of millions of instructions.
+PAGE = 25
+LISTS = ("orchestra_get", "orchestra_export", "cycles_get", "grant_list", "wasm_list")
+
+
 def query_all(ic: Any, canister_id: str, method: str, args: dict | None = None) -> Any:
     """A paged conductor list op (orchestra_get, orchestra_export, cycles_get, grant_list, wasm_list) read
     whole: each reply's ``next`` goes back as the ``<list>_from`` cursors until all are null, and every list
-    of a later page is appended to the first. Export sections arrive split by page; they merge by name."""
+    of a later page is appended to the first. Export sections arrive split by page; they merge by name.
+    A list op's pages hold ``count`` rows (default ``PAGE``); one past the instruction limit is asked again
+    at half. Other queries pass through as asked."""
     args = dict(args or {})
-    out = got = ic.query(canister_id, method, json.dumps(args))
+    count = int(args.pop("count", PAGE)) if method in LISTS else None
+
+    def page(more: dict) -> Any:
+        nonlocal count
+        while True:
+            try:
+                return ic.query(canister_id, method, json.dumps({**args, **more, **({"count": count} if count else {})}))
+            except Exception as exc:
+                if not count or count <= 1 or "instruction" not in str(exc):
+                    raise
+                count = max(1, count // 2)
+
+    out = got = page({})
     while isinstance(got, dict) and any((got.get("next") or {}).values()):
-        got = ic.query(canister_id, method, json.dumps({**args, **{f"{k}_from": v for k, v in got["next"].items()}}))
+        got = page({f"{k}_from": v for k, v in got["next"].items()})
         if not isinstance(got, dict):
             return got
         for key, value in got.items():

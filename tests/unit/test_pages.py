@@ -48,6 +48,27 @@ def test_list_ops_page_and_their_pages_add_up():
     assert call("wasm_list", count=10**6)["next"] == {"wasms": None}
 
 
+def test_list_reads_default_to_small_pages_and_halve_past_the_instruction_limit():
+    many()
+    asked = []
+
+    class Limited(Conductor):
+        """Refuses a page of more than 2 rows, as the IC refuses a query past its instruction limit."""
+
+        def query(self, canister_id, method, text_arg):
+            asked.append(json.loads(text_arg).get("count"))
+            if asked[-1] and asked[-1] > 2:
+                raise RuntimeError("Canister exceeded the limit of 5000000000 instructions for single message execution.")
+            return super().query(canister_id, method, text_arg)
+
+    out = query_all(Limited(), "conductor", "orchestra_get")
+    assert out["canisters"] == call("orchestra_get")["canisters"]
+    assert asked[:4] == [25, 12, 6, 3] and set(asked[4:]) == {1}
+    asked.clear()
+    query_all(Limited(), "conductor", "orchestra_events", {"take": 5})
+    assert asked == [None]
+
+
 def test_export_pages_merge_by_section():
     many()
     whole = call("orchestra_export")
