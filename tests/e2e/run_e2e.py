@@ -55,9 +55,22 @@ class Orchestra:
                 here = os.path.join(self.sheet_dir, rel)
                 entry["source"] = "local:" + (here if os.path.exists(here) else os.path.join(REPO, rel))
         os.makedirs(self.home, exist_ok=True)
+        self.link_referenced_orchestras(sheet)
         path = os.path.join(self.home, name)
         json.dump(sheet, open(path, "w"), indent=2)
         return path
+
+    def link_referenced_orchestras(self, sheet: dict) -> None:
+        """`$orchestra:<sheet>/<canister>` reads <sheet>.<env>.json from this orchestra's home:
+        link the sibling orchestra's bindings (CASALS_E2E_ROOT/<sheet>) so a stack can build on another."""
+        root = os.environ.get("CASALS_E2E_ROOT")
+        if not root:
+            return
+        for other in set(re.findall(r"\$orchestra:([^/\"]+)/", json.dumps(sheet.get("environments", {})))):
+            src = os.path.join(root, other, f"{other}.{ENV}.json")
+            dst = os.path.join(self.home, f"{other}.{ENV}.json")
+            if os.path.exists(src) and not os.path.lexists(dst):
+                os.symlink(src, dst)
 
     def adopt_foreign_code(self) -> dict:
         """Adopted canisters are someone else's: install them as the deployer and declare their ids."""
@@ -133,6 +146,18 @@ def ensure_cycles(min_tc: int = 500) -> None:
         sh("icp", "cycles", "mint", "--cycles", f"{min_tc * 2}t", "-e", ENV, "--identity", IDENTITY)
 
 
+def selected(scenarios: list) -> list:
+    """SCENARIOS=fresh,runtime_stand limits the run to those scenarios (in the order given)."""
+    want = [n.strip() for n in os.environ.get("SCENARIOS", "").split(",") if n.strip()]
+    if not want:
+        return scenarios
+    by_name = {s.__name__: s for s in scenarios}
+    unknown = [n for n in want if n not in by_name]
+    if unknown:
+        raise SystemExit(f"SCENARIOS: unknown {unknown}; known: {sorted(by_name)}")
+    return [by_name[n] for n in want]
+
+
 def run(names: list[str]) -> list[tuple]:
     from scenarios import SCENARIOS
 
@@ -144,7 +169,7 @@ def run(names: list[str]) -> list[tuple]:
         ensure_cycles()
         o, status, t0 = Orchestra(sheet_name, path, home), "PASS", time.time()
         print(f"{sheet_name}", flush=True)
-        for scenario in SCENARIOS:
+        for scenario in selected(SCENARIOS):
             print(f"  - {scenario.__name__}", flush=True)
             try:
                 scenario(o)
