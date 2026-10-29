@@ -270,15 +270,18 @@ class TestBatonSourceShape:
         assert "action_summary" not in body and "_summaries" not in body
 
     def test_no_read_walks_every_action(self):
-        """Only the one-time backfill on the upgrade to 2.2.0 reads every record."""
-        assert self.SRC_MAIN.count("_actions.keys()") == 1
-        assert "_actions.keys()" in self.SRC_MAIN.split("def _index_actions(", 1)[1].split("\n\n\n", 1)[0]
+        """Only the one-time backfills (2.2.0's index, 2.3.0's summaries) read every record."""
+        assert self.SRC_MAIN.count("_actions.keys()") == 2
+        for name in ("_index_actions", "_index_summaries"):
+            assert "_actions.keys()" in self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n\n\n", 1)[0]
         assert "_actions.values()" not in self.SRC_MAIN and "_actions.items()" not in self.SRC_MAIN
         assert self.SRC_MAIN.count("_actions.insert(") == 1
-        assert "track(record, _order, _open, _config)" in self.SRC_MAIN.split("def _save_action(", 1)[1].split("\n\n\n", 1)[0]
+        save = self.SRC_MAIN.split("def _save_action(", 1)[1].split("\n\n\n", 1)[0]
+        assert "track(record, _order, _open, _config)" in save and "_summary.insert(" in save
+        assert "_summary.get(aid)" in self.SRC_MAIN.split("def _summaries(", 1)[1].split("\n\n\n", 1)[0]
 
     def test_action_ids_are_never_reused(self):
-        assert self.SRC_MAIN.count("_new_action_id(params)") == 4
+        assert self.SRC_MAIN.count("_new_action_id(params)") == 5
         assert "action_id already used" in self.SRC_MAIN
 
     def test_cycle_reads_are_managed_only(self):
@@ -291,7 +294,8 @@ class TestBatonSourceShape:
         assert "test_hooks: Opt[bool]" in self.SRC_MAIN
 
     def test_overrides_are_checked_when_filed(self):
-        for name in ("propose_managed_upgrade", "propose_asset_provision", "propose_release", "propose_snapshot_restore"):
+        for name in ("propose_managed_upgrade", "propose_asset_provision", "propose_release", "propose_snapshot_restore",
+                     "propose_controller_grant"):
             body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
             assert 'effective_approval_policy({"payload": payload}, _config)' in body, name
 

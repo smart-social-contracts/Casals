@@ -805,4 +805,4 @@ class TestActionIndex:
                                      "registry_namespace": env["namespace"], "registry_path": env["v1_path"]}]}}))
         assert res.get("ok") is False and "in progress" in res.get("error", ""), res
         cfg = call(baton_id, "get_config")
-        assert (json.loads(cfg) if isinstance(cfg, str) else cfg)["version"] == "2.2.0"
+        assert (json.loads(cfg) if isinstance(cfg, str) else cfg)["version"] == "2.3.0"

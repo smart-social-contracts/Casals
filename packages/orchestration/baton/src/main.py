@@ -53,6 +53,7 @@ from config import (
 )
 from models import (
     ACTION_TYPE_ASSET_PROVISION,
+    ACTION_TYPE_CONTROLLER_GRANT,
     ACTION_TYPE_MANAGED_UPGRADE,
     ACTION_TYPE_RELEASE,
     ACTION_TYPE_SNAPSHOT_RESTORE,
@@ -108,6 +109,14 @@ from assets import (
     pin_manifests_gen,
     validate_asset_payload,
 )
+from controllers import (
+    add_grants,
+    apply_grant_gen,
+    drop_grants,
+    expire_gen,
+    next_due,
+    validate_grant_payload,
+)
 from registry import list_registry_files_gen
 from release import (
     abandon_staging_gen,
@@ -157,12 +166,16 @@ _snapshot_origins = StableBTreeMap[str, str](memory_id=5, max_key_size=128, max_
 # action_index: order key → action id (newest first), and the ids of non-terminal actions → seq.
 _order = StableBTreeMap[str, str](memory_id=6, max_key_size=32, max_value_size=160)
 _open = StableBTreeMap[str, str](memory_id=7, max_key_size=128, max_value_size=32)
+# action id → its summary (models.action_summary): listing never decodes a full record.
+_summary = StableBTreeMap[str, str](memory_id=8, max_key_size=128, max_value_size=64_000)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
 _post_upgrade_hook = None
 
 _active_timer = None
+_grant_timer = None
+GRANT_RETRY_SECS = 60
 
 # One pipeline phase of an action runs at a time. Each phase arms a resume
 # timer, and an operator (or a test loop) may call execute_action meanwhile;
@@ -203,6 +216,7 @@ def _cfg_int(key: str, default: int) -> int:
 def _save_action(record: dict) -> None:
     track(record, _order, _open, _config)
     _actions.insert(record["action_id"], encode_record(record))
+    _summary.insert(record["action_id"], encode_record(action_summary(record)))
 
 
 def _load_action(action_id: str) -> dict | None:
@@ -346,6 +360,8 @@ def _run_phase_gen(action_id: str, record: dict) -> Async[text]:
         return (yield from _execute_release_gen(action_id, record))
     if action_type == ACTION_TYPE_SNAPSHOT_RESTORE:
         return (yield from _execute_restore_gen(action_id, record))
+    if action_type == ACTION_TYPE_CONTROLLER_GRANT:
+        return (yield from _execute_controller_grant_gen(action_id, record))
 
     status = record.get("status", "")
     if status == STATUS_APPROVED:
@@ -622,6 +638,74 @@ def _execute_restore_gen(action_id: str, record: dict) -> Async[text]:
     return _err("; ".join(record.get("problems") or []) or "restore failed")
 
 
+def _grants() -> list[dict]:
+    return json.loads(_config.get("controller_grants") or "[]")
+
+
+def _set_grants(grants: list[dict]) -> None:
+    _config.insert("controller_grants", json.dumps(grants, separators=(",", ":")))
+
+
+def _arm_grant_timer() -> None:
+    """One timer for the soonest grant expiry; a due grant whose removal failed is retried a minute on."""
+    global _grant_timer
+    if _grant_timer is not None:
+        try:
+            ic.clear_timer(_grant_timer)
+        except Exception:  # pragma: no cover - already fired or cleared
+            pass
+        _grant_timer = None
+    due = next_due(_grants())
+    if due is None:
+        return
+    secs = (due - _now()) // 1_000_000_000
+
+    def _tick():
+        from basilisk.canisters.management import management_canister
+
+        global _grant_timer
+        _grant_timer = None
+        try:
+            remaining, done = yield from expire_gen(management_canister, _grants(), _now())
+            _set_grants(remaining)
+            for g, result, detail in done:
+                rec = _load_action(g["action_id"])
+                if rec is not None:
+                    append_phase_log(rec, phase_entry("EXPIRE", _now(), result, detail))
+                    _save_action(rec)
+                _log.info(detail)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.error(f"grant expiry failed: {exc}")
+        _arm_grant_timer()
+
+    _grant_timer = ic.set_timer(Duration(secs if secs >= 0 else GRANT_RETRY_SECS), _tick)
+
+
+def _execute_controller_grant_gen(action_id: str, record: dict) -> Async[text]:
+    """A controller grant runs in one go once approved; re-running it is harmless."""
+    from basilisk.canisters.management import management_canister
+
+    if record.get("status") != STATUS_APPROVED:
+        return _err(f"unexpected status: {record.get('status')}")
+    payload = record["payload"]
+
+    def log(phase, detail, result="ok"):
+        append_phase_log(record, phase_entry(phase, _now(), result, detail))
+
+    granted, problems = yield from apply_grant_gen(management_canister, payload, log)
+    if payload.get("revoke"):
+        _set_grants(drop_grants(_grants(), payload["targets"], payload["principal"]))
+    elif granted and payload.get("expires_at"):
+        _set_grants(add_grants(_grants(), granted, payload["principal"], payload["expires_at"], action_id))
+    _arm_grant_timer()
+    record["problems"] = problems
+    record["status"] = STATUS_NEEDS_ATTENTION if problems else STATUS_COMPLETE
+    _save_action(record)
+    if problems:
+        return _err("; ".join(problems))
+    return _ok(action_id=action_id, status=STATUS_COMPLETE)
+
+
 def _scan_and_resume() -> None:
     for aid in open_ids(_open):
         rec = _load_action(aid)
@@ -664,11 +748,25 @@ def _index_actions() -> None:
     _config.insert("action_index", "1")
 
 
+def _index_summaries() -> None:
+    """Once, on the upgrade to 2.3.0: a summary for every record filed before it."""
+    if _config.get("action_summaries") == "1":
+        return
+    for aid in _actions.keys():
+        if not _summary.contains_key(aid):
+            rec = _load_action(aid)
+            if rec:
+                _summary.insert(aid, encode_record(action_summary(rec)))
+    _config.insert("action_summaries", "1")
+
+
 @post_upgrade
 def post_upgrade_() -> void:
     _persist_config_defaults()
     _index_actions()
+    _index_summaries()
     _scan_and_resume()
+    _arm_grant_timer()
     _log.info("baton post_upgrade: resumed non-terminal actions if any")
 
 
@@ -908,6 +1006,7 @@ def get_config() -> text:
         "public_read": _public_read(),
         "readers": config_readers(_config),
         "test_hooks": _config.get("test_hooks") == "1",
+        "controller_grants": _grants(),
     })
 
 
@@ -1069,6 +1168,40 @@ def propose_snapshot_restore(args: text) -> Async[text]:
         )
         _save_action(record)
         return _ok(action_id=action_id, status=STATUS_PENDING, action_type=ACTION_TYPE_SNAPSHOT_RESTORE)
+    except AuthError as e:
+        return _err(str(e))
+    except Exception as e:
+        return _err(str(e))
+
+
+@update
+def propose_controller_grant(args: text) -> text:
+    """Requires propose:managed_upgrade. JSON: {payload, action_id?}.
+
+    payload: {targets: [canister_id], principal, revoke?, expires_at?, reason?}.
+    Once approved (same policy as upgrades) ``principal`` becomes a controller of
+    every target, or stops being one with ``revoke``. With ``expires_at`` (ns) the
+    baton removes it again then, where this action added it."""
+    try:
+        caller = _caller()
+        require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        if _active_action_id():
+            return _err("another action is in progress")
+        params = json.loads(args)
+        payload = params["payload"]
+        affected = validate_grant_payload(payload, set(_managed.keys()), ic.id().to_str(), _now())
+        effective_approval_policy({"payload": payload}, _config)
+        action_id = _new_action_id(params)
+        record = new_action_record(
+            action_id=action_id,
+            proposed_by=caller,
+            proposed_at=_now(),
+            affected_canisters=affected,
+            payload=payload,
+            action_type=ACTION_TYPE_CONTROLLER_GRANT,
+        )
+        _save_action(record)
+        return _ok(action_id=action_id, status=STATUS_PENDING, action_type=ACTION_TYPE_CONTROLLER_GRANT)
     except AuthError as e:
         return _err(str(e))
     except Exception as e:
@@ -1275,7 +1408,17 @@ def get_action(action_id: text) -> text:
 
 
 def _summaries(ids: list[str]) -> list[dict]:
-    return [action_summary(decode_record(raw)) for raw in (_actions.get(aid) for aid in ids) if raw]
+    out = []
+    for aid in ids:
+        raw = _summary.get(aid)
+        if raw is None:
+            raw = _actions.get(aid)
+            if raw is None:
+                continue
+            out.append(action_summary(decode_record(raw)))
+        else:
+            out.append(decode_record(raw))
+    return out
 
 
 @query
