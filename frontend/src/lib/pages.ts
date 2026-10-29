@@ -7,6 +7,41 @@ export function nextArgs(next: Cursors | undefined): Record<string, number | nul
   return Object.fromEntries(Object.entries(next).map(([k, v]) => [`${k}_from`, v]));
 }
 
+/** Rows per list in one query. The conductor's default (500) is past the IC's instruction limit on a grown
+ *  orchestra: each canister row costs tens of millions of instructions. */
+export const PAGE = 25;
+
+const overLimit = (e: unknown) => /instruction/i.test(String((e as Error)?.message ?? e));
+
+/** A paged list op read whole through `ask` (one query), from its first reply `got` when the caller has it:
+ *  `next` goes back until every list is complete. Pages hold `count` rows (default `PAGE`); one past the
+ *  instruction limit is asked again with half. */
+export async function readAll<T>(
+  ask: (args: Record<string, unknown>) => Promise<any>,
+  args: Record<string, unknown> = {},
+  got?: any,
+): Promise<T> {
+  let count = Number(args.count ?? PAGE);
+  const page = async (more: Record<string, unknown>) => {
+    for (;;) {
+      try {
+        return await ask({ ...args, ...more, count });
+      } catch (e) {
+        if (count <= 1 || !overLimit(e)) throw e;
+        count = Math.max(1, Math.floor(count / 2));
+      }
+    }
+  };
+  got ??= await page({});
+  const out = { ...got };
+  for (let more = nextArgs(got.next as Cursors); more; more = nextArgs(got.next as Cursors)) {
+    got = await page(more);
+    appendPage(out, got);
+  }
+  delete out.next;
+  return out as T;
+}
+
 /** Every list of a later page appended to the reply so far. */
 export function appendPage(out: Record<string, any>, page: Record<string, any>): Record<string, any> {
   for (const [k, v] of Object.entries(page)) if (Array.isArray(v)) out[k] = [...(out[k] ?? []), ...v];
