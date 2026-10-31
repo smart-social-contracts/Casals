@@ -4,6 +4,7 @@ import type { Identity } from '@dfinity/agent';
 import { checkIsCanisterController } from './controllerAccess';
 import { checkCommanderAccess, holdsPermission } from './commanderAccess';
 import { grantClaim } from './api';
+import { toasts } from './stores/toast';
 
 export const identity = writable<Identity | null>(null);
 export const isAuthenticated = writable(false);
@@ -111,6 +112,12 @@ async function _verifyLoginAccess(id: Identity, backendCanisterId?: string): Pro
     checkCommanderAccess(caller, id),
     backendCanisterId ? checkIsCanisterController(id, backendCanisterId) : Promise.resolve(false),
   ]);
+  if (access.error) {
+    // Not a denial: keep the II delegation and show no access-code dialog, so a
+    // reload (or signing in again) retries the check.
+    toasts.error(`Couldn't check access: ${access.error}. Reload or sign in again to retry.`, 15000);
+    return false;
+  }
   const commander = access.commander;
 
   isCommander.set(commander);

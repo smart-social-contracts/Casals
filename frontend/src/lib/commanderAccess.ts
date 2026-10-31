@@ -2,6 +2,7 @@ import type { Identity } from '@dfinity/agent';
 import type { Grant, OrchestraView } from './api';
 import { loadView } from './api';
 import { isCodeChecksum } from './accessCode';
+import { settleAccess } from './accessCheck';
 
 /** A `sha256:` slot nobody has redeemed yet — it grants nothing. */
 export function isUnclaimed(grant: Grant): boolean {
@@ -35,15 +36,15 @@ export function holdsPermission(perms: Set<string> | '*' | null, key: string): b
 export interface CommanderAccess {
   commander: boolean;
   permissions: Set<string> | '*';
+  /** Set when the grants could not be read: `commander` is then unknown, not false. */
+  error?: string;
 }
 
 /** Whether `principal` holds a grant, and which keys. Pass `as` when the identity is not the session's yet. */
 export async function checkCommanderAccess(principal: string, as?: Identity): Promise<CommanderAccess> {
   if (!principal.trim()) return { commander: false, permissions: new Set() };
-  try {
+  return settleAccess(async () => {
     const view = await loadView(as);
     return { commander: grantHolders(view).has(principal.trim()), permissions: callerPermissions(view, principal) };
-  } catch {
-    return { commander: false, permissions: new Set() };
-  }
+  });
 }
