@@ -1,7 +1,7 @@
 # Baton orchestrator
 
 Application-agnostic managed-canister upgrade orchestrator (Basilisk / Python),
-version 1.6.1 (`BATON_VERSION` in `src/config.py`; `get_config` reports it).
+version 2.4.0 (`BATON_VERSION` in `src/config.py`; `get_config` reports it).
 
 See [issue #9](https://github.com/smart-social-contracts/Casals/issues/9).
 
@@ -71,7 +71,8 @@ can delete a canister, so this is held back three ways:
 
 - It is off: `set_config {"controller_grants": true}` (top commander) turns the
   proposal on, and it is meant for test and staging batons only. While it is off
-  the proposal is refused, and so is the execution of one filed earlier.
+  the proposal is refused, and so is the execution of one filed earlier. That
+  includes revoking: a permanent grant can only be revoked with the flag back on.
 - It has its own capability, `propose:controller_grant`, which no commander
   holds unless the top commander adds it to one.
 - It has its own approval policy, `controller_grant_approval_policy` (default
@@ -79,7 +80,7 @@ can delete a canister, so this is held back three ways:
   commanders can approve it.
 
 `payload`: `{targets, principal, revoke?, expires_at?}`. With `expires_at` (ns)
-the baton removes the principal again then. Grants are kept one row per
+the baton removes the principal again then (at most a year ahead). Grants are kept one row per
 canister and principal (`list_controller_grants`); a repeated grant sets the new
 expiry, and one without `expires_at` makes it permanent. `revoke` removes only a
 principal a grant added, so the multisig, the conductor and the baton stay

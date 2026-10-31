@@ -39,7 +39,7 @@ placeholder can read (`$env.website_host`, `$env.flags.x`).
 |---|---|
 | `network` | Required. `"local"` for a local replica, `"ic"` for mainnet. |
 | `public_read` | `true` lets anyone read the orchestra (tree, sheet, events, cycles) and its Batons and multisig. Default `false`: only controllers, commanders and the enabled monitor. |
-| `controller_grants` | `true` lets this environment's Batons accept controller-grant proposals (a commander holding `propose:controller_grant`, two approvals; see the Baton README). Default `false`; validation refuses `true` on `production`. |
+| `controller_grants` | `true` lets this environment's Batons accept controller-grant proposals (a commander holding `propose:controller_grant`, two approvals; see the Baton README). Default `false`; validation refuses `true` on `production`, which guards against mistakes: a raw `set_config` or the top commander can still turn it on. |
 | `principals` | Alias → principal text, `"$deployer"`, `"sha256:<hex>"` (an access-code slot, see below), or `"$new_access_code"`: `casals up` mints a code, stores only its checksum, and prints the code once at the end of that run; later runs reuse the checksum the conductor holds. Referenced as `$principal:<alias>`. |
 | `monitor` | `{"principal": …, "url": …}`: the off-chain cycle monitor. `url` is the service base, without `/v1/…`; the conductor stores `<url>/v1/<its id>`. On `ic` the default is the hosted service, `https://service.ic-casals.tech`; `false` runs without a monitor. |
 | `cycles` | `{"budget_tc": …}`: what `casals up` refills the conductor treasury to (see `cycles` below). |

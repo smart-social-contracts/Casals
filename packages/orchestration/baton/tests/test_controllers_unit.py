@@ -16,6 +16,7 @@ from basilisk import Principal  # noqa: E402
 from approval_policy import configured_approval_policy, effective_approval_policy  # noqa: E402
 from auth import AuthError  # noqa: E402
 from controllers import (  # noqa: E402
+    MAX_GRANT_NS,
     apply_grant_gen,
     controller_grants_enabled,
     expire_gen,
@@ -119,6 +120,15 @@ def test_payload_is_checked_and_normalised():
                 {"targets": [A], "principal": DEV, "revoke": "yes"}):
         with pytest.raises(Exception):
             validate_grant_payload(bad, {A, B}, BATON, TOP, 5)
+
+
+def test_an_expiry_is_at_most_a_year_away():
+    now = 10**18
+    for ok in (now + 1, now + MAX_GRANT_NS):
+        validate_grant_payload({"targets": [A], "principal": DEV, "expires_at": ok}, {A}, BATON, TOP, now)
+    for bad in (now + MAX_GRANT_NS + 1, 2**64, 2**64 + now):
+        with pytest.raises(ValueError, match="within the next year"):
+            validate_grant_payload({"targets": [A], "principal": DEV, "expires_at": bad}, {A}, BATON, TOP, now)
 
 
 def test_the_top_commander_is_not_revocable():

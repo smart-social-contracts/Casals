@@ -35,6 +35,10 @@ def _field(obj, name, default=None):
     return getattr(obj, name, default)
 
 
+# An expiry is armed as a timer, whose delay must fit a u64: a far one would trap every upgrade.
+MAX_GRANT_NS = 365 * 86_400 * 1_000_000_000
+
+
 def controller_grants_enabled(config_store) -> bool:
     """The ``controller_grants`` config, off unless the top commander turned it on: a
     baton that manages production canisters leaves it off."""
@@ -61,8 +65,8 @@ def validate_grant_payload(payload: dict, managed: set[str], self_id: str, top_c
         raise ValueError("the top commander's controllership is not revocable")
     expires_at = payload.get("expires_at")
     if expires_at is not None:
-        if revoke or isinstance(expires_at, bool) or int(expires_at) <= now:
-            raise ValueError("expires_at must be a future time (ns) on a grant")
+        if revoke or isinstance(expires_at, bool) or not now < int(expires_at) <= now + MAX_GRANT_NS:
+            raise ValueError("expires_at must be a time (ns) within the next year on a grant")
         payload["expires_at"] = int(expires_at)
     return targets
 
