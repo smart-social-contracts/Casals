@@ -149,7 +149,7 @@ def decode_record(raw: str) -> dict[str, Any]:
 
 # A stand release's payload carries every member's bundle manifest; listing a
 # few of them at full size exceeds the instruction limit of a query.
-SUMMARY_DROPPED = ("payload", "release_state")
+SUMMARY_DROPPED = ("payload", "release_state", "provision")
 
 
 def action_summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +160,17 @@ def action_summary(record: dict[str, Any]) -> dict[str, Any]:
     out["phase_log"] = log[-1:]
     out["phase_count"] = len(log)
     return out
+
+
+# Size of a summary's slot in the baton's index (bytes).
+SUMMARY_MAX_BYTES = 64_000
+
+
+def encode_summary(record: dict[str, Any]) -> str | None:
+    """The record's summary as stored in the index, or None when it would not fit its slot
+    (a very long problems list, say): listing then decodes the full record instead."""
+    raw = encode_record(action_summary(record))
+    return raw if len(raw.encode()) <= SUMMARY_MAX_BYTES else None
 
 
 def is_terminal(status: str) -> bool:

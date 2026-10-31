@@ -1,6 +1,6 @@
 """Per-Baton configuration defaults (overridable by top commander)."""
 
-BATON_VERSION = "2.2.0"
+BATON_VERSION = "2.3.0"
 
 # Seconds to wait after verify before deleting snapshots (bake window).
 DEFAULT_BAKE_WINDOW_SECONDS = 0

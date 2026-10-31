@@ -86,10 +86,12 @@ from models import (
     STATUS_STOPPING,
     STATUS_UPGRADING,
     STATUS_VERIFYING,
+    SUMMARY_MAX_BYTES,
     action_summary,
     append_phase_log,
     decode_record,
     encode_record,
+    encode_summary,
     is_non_terminal,
     is_terminal,
     new_action_record,
@@ -157,6 +159,8 @@ _snapshot_origins = StableBTreeMap[str, str](memory_id=5, max_key_size=128, max_
 # action_index: order key → action id (newest first), and the ids of non-terminal actions → seq.
 _order = StableBTreeMap[str, str](memory_id=6, max_key_size=32, max_value_size=160)
 _open = StableBTreeMap[str, str](memory_id=7, max_key_size=128, max_value_size=32)
+# action id → its summary (models.action_summary): listing never decodes a full record.
+_summary = StableBTreeMap[str, str](memory_id=8, max_key_size=128, max_value_size=SUMMARY_MAX_BYTES)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -203,6 +207,15 @@ def _cfg_int(key: str, default: int) -> int:
 def _save_action(record: dict) -> None:
     track(record, _order, _open, _config)
     _actions.insert(record["action_id"], encode_record(record))
+    _store_summary(record)
+
+
+def _store_summary(record: dict) -> None:
+    summary = encode_summary(record)
+    if summary is None:
+        _summary.remove(record["action_id"])
+    else:
+        _summary.insert(record["action_id"], summary)
 
 
 def _load_action(action_id: str) -> dict | None:
@@ -664,10 +677,23 @@ def _index_actions() -> None:
     _config.insert("action_index", "1")
 
 
+def _index_summaries() -> None:
+    """Once, on the upgrade to 2.3.0: a summary for every record filed before it."""
+    if _config.get("action_summaries") == "1":
+        return
+    for aid in _actions.keys():
+        if not _summary.contains_key(aid):
+            rec = _load_action(aid)
+            if rec:
+                _store_summary(rec)
+    _config.insert("action_summaries", "1")
+
+
 @post_upgrade
 def post_upgrade_() -> void:
     _persist_config_defaults()
     _index_actions()
+    _index_summaries()
     _scan_and_resume()
     _log.info("baton post_upgrade: resumed non-terminal actions if any")
 
@@ -1275,7 +1301,17 @@ def get_action(action_id: text) -> text:
 
 
 def _summaries(ids: list[str]) -> list[dict]:
-    return [action_summary(decode_record(raw)) for raw in (_actions.get(aid) for aid in ids) if raw]
+    out = []
+    for aid in ids:
+        raw = _summary.get(aid)
+        if raw is None:
+            raw = _actions.get(aid)
+            if raw is None:
+                continue
+            out.append(action_summary(decode_record(raw)))
+        else:
+            out.append(decode_record(raw))
+    return out
 
 
 @query
