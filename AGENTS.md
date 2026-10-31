@@ -69,7 +69,7 @@ seed/sheets/         — sheets (day-one orchestras), e.g. demo.json
 seed/assets/         — frontend asset files (index.html) uploaded into frontend canisters
 scripts/             — build_templates.sh, casals.py (thin CLI wrapper);
                        examples/wire_monitor.py (off-chain monitor wiring example)
-tests/               — pytest unit + integration suites (incl. test_cli_unit.py); tests/e2e/ corpus
+tests/               — tests/unit: replica-free pytest suites (`make unit`); tests/e2e/ corpus
 dist/                — SvelteKit static build output (repo root; consumed by icp.yaml)
 ```
 
