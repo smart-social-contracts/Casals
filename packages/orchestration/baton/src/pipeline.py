@@ -8,6 +8,7 @@ from basilisk.canisters.management import management_canister
 
 from config import DEFAULT_INSTALL_CYCLES_BUFFER
 from models import (
+    ACTION_TYPE_CONTROLLER_GRANT,
     STATUS_APPROVED,
     STATUS_PENDING,
     STATUS_PRE_FLIGHT,
@@ -154,6 +155,8 @@ def action_expired(record: dict[str, Any], expiry_days: int, now: int) -> bool:
 
 
 def accelerant_eligible(record: dict[str, Any], accelerant_days: int, now: int) -> bool:
+    if record.get("action_type") == ACTION_TYPE_CONTROLLER_GRANT:
+        return False  # only its commanders can approve a controller grant
     if record.get("approval_path"):
         return False
     if record.get("status") != STATUS_PENDING:

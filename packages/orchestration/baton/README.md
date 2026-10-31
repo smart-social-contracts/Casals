@@ -63,6 +63,30 @@ listing reads those instead of decoding records (the upgrade to 2.3.0 fills
 them in once). Summaries also drop `provision`. A summary over 64 KB is not
 stored; listing then builds it from the full record.
 
+## Controller grants (not for production)
+
+Since 2.4.0 `propose_controller_grant` files an action that makes a principal a
+controller of managed canisters (or, with `revoke`, removes one). A controller
+can delete a canister, so this is held back three ways:
+
+- It is off: `set_config {"controller_grants": true}` (top commander) turns the
+  proposal on, and it is meant for test and staging batons only. While it is off
+  the proposal is refused, and so is the execution of one filed earlier.
+- It has its own capability, `propose:controller_grant`, which no commander
+  holds unless the top commander adds it to one.
+- It has its own approval policy, `controller_grant_approval_policy` (default
+  threshold 2; a proposal may only tighten it), and no accelerant: only the
+  commanders can approve it.
+
+`payload`: `{targets, principal, revoke?, expires_at?}`. With `expires_at` (ns)
+the baton removes the principal again then. Grants are kept one row per
+canister and principal (`list_controller_grants`); a repeated grant sets the new
+expiry, and one without `expires_at` makes it permanent. `revoke` removes only a
+principal a grant added, so the multisig, the conductor and the baton stay
+controllers, and the top commander is refused outright. The baton cannot stop a
+controller from removing the baton meanwhile: expiry guards against forgetting,
+not against the grantee. No CLI or UI files these yet.
+
 ## Approvals
 
 - The configured `upgrade_approval_policy` applies to every proposal. A

@@ -294,7 +294,7 @@ class TestBatonSourceShape:
         assert "_summary.get(aid)" in self.SRC_MAIN.split("def _summaries(", 1)[1].split("\n\n\n", 1)[0]
 
     def test_action_ids_are_never_reused(self):
-        assert self.SRC_MAIN.count("_new_action_id(params)") == 4
+        assert self.SRC_MAIN.count("_new_action_id(params)") == 5
         assert "action_id already used" in self.SRC_MAIN
 
     def test_cycle_reads_are_managed_only(self):
@@ -310,6 +310,14 @@ class TestBatonSourceShape:
         for name in ("propose_managed_upgrade", "propose_asset_provision", "propose_release", "propose_snapshot_restore"):
             body = self.SRC_MAIN.split(f"def {name}(", 1)[1].split("\n@", 1)[0]
             assert 'effective_approval_policy({"payload": payload}, _config)' in body, name
+
+    def test_controller_grants_need_their_capability_and_the_flag_and_their_own_policy(self):
+        body = self.SRC_MAIN.split("def propose_controller_grant(", 1)[1].split("\n@", 1)[0]
+        assert body.index("require_capability(caller, CAP_PROPOSE_CONTROLLER_GRANT") < body.index("controller_grants_enabled(_config)")
+        assert body.index("controller_grants_enabled(_config)") < body.index("validate_grant_payload(")
+        assert 'effective_approval_policy({"payload": payload, "action_type": ACTION_TYPE_CONTROLLER_GRANT}, _config)' in body
+        run = self.SRC_MAIN.split("def _execute_controller_grant_gen(", 1)[1].split("\ndef ", 1)[0]
+        assert "controller_grants_enabled(_config)" in run
 
     def test_expiry_on_approve_and_execute(self):
         for name in ("submit_approval", "submit_multisig_accelerant", "_execute_action_gen"):

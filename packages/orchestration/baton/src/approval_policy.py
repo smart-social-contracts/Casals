@@ -6,10 +6,19 @@ import json
 from typing import Any
 
 from auth import AuthError, get_commander
-from models import CAP_SUBMIT_APPROVAL, commander_weight
+from models import ACTION_TYPE_CONTROLLER_GRANT, CAP_SUBMIT_APPROVAL, commander_weight
 
 DEFAULT_UPGRADE_APPROVAL_POLICY: dict[str, Any] = {
     "threshold": 1,
+    "eligible": [],
+    "required": [],
+}
+
+
+# A controller grant hands out full control of a canister: two weighed approvals
+# unless the top commander configures otherwise.
+DEFAULT_CONTROLLER_GRANT_APPROVAL_POLICY: dict[str, Any] = {
+    "threshold": 2,
     "eligible": [],
     "required": [],
 }
@@ -19,12 +28,15 @@ def _norm_principal(p: str) -> str:
     return (p or "").strip().lower()
 
 
-def parse_approval_policy(raw: str | dict[str, Any] | None) -> dict[str, Any]:
+def parse_approval_policy(
+    raw: str | dict[str, Any] | None,
+    default: dict[str, Any] = DEFAULT_UPGRADE_APPROVAL_POLICY,
+) -> dict[str, Any]:
     if raw is None:
-        return dict(DEFAULT_UPGRADE_APPROVAL_POLICY)
+        return dict(default)
     if isinstance(raw, str):
         if not raw.strip():
-            return dict(DEFAULT_UPGRADE_APPROVAL_POLICY)
+            return dict(default)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -100,11 +112,20 @@ def weaker_policy_reason(policy: dict[str, Any], base: dict[str, Any]) -> str | 
     return None
 
 
+def configured_approval_policy(record: dict[str, Any], config_store) -> dict[str, Any]:
+    """The policy configured for the record's kind of action: controller grants
+    have their own, every other action shares ``upgrade_approval_policy``."""
+    if record.get("action_type") == ACTION_TYPE_CONTROLLER_GRANT:
+        return parse_approval_policy(
+            config_store.get("controller_grant_approval_policy"), DEFAULT_CONTROLLER_GRANT_APPROVAL_POLICY)
+    return parse_approval_policy(config_store.get("upgrade_approval_policy"))
+
+
 def effective_approval_policy(record: dict[str, Any], config_store) -> dict[str, Any]:
     """The configured policy, or the proposal's own ``approval_policy`` when that
     is at least as strict. A laxer override raises: a proposer must not lower
     the bar its own proposal has to clear."""
-    base = parse_approval_policy(config_store.get("upgrade_approval_policy"))
+    base = configured_approval_policy(record, config_store)
     payload = record.get("payload") or {}
     override = payload.get("approval_policy")
     if override is None:
