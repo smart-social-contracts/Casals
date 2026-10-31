@@ -11,6 +11,7 @@ export function nextArgs(next: Cursors | undefined): Record<string, number | nul
  *  orchestra: each canister row costs tens of millions of instructions. */
 export const PAGE = 25;
 
+// IC0522 ("instruction limit") is the reject a query too big for one call gets.
 const overLimit = (e: unknown) => /instruction/i.test(String((e as Error)?.message ?? e));
 
 /** A paged list op read whole through `ask` (one query), from its first reply `got` when the caller has it:

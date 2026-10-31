@@ -158,6 +158,7 @@ def query_all(ic: Any, canister_id: str, method: str, args: dict | None = None) 
             try:
                 return ic.query(canister_id, method, json.dumps({**args, **more, **({"count": count} if count else {})}))
             except Exception as exc:
+                # IC0522: the query ran past the instruction limit; any other error is not ours to retry.
                 if not count or count <= 1 or "instruction" not in str(exc):
                     raise
                 count = max(1, count // 2)
