@@ -27,9 +27,9 @@
       "$comment_public_read": "The public demo: anyone may read the orchestra. Other environments keep the private default.",
       "public_read": true,
       "dns": {
-        "provider": "cloudflare",
+        "$comment": "DNS for ic-casals.tech is at Infomaniak; records are edited by hand (docs/OPERATIONS.md, DNS).",
+        "provider": "manual",
         "zone": "ic-casals.tech",
-        "token_env": "CLOUDFLARE_API_TOKEN",
         "ttl": 60
       },
       "website_host": "ic-casals.tech",
@@ -55,9 +55,9 @@
     "staging": {
       "network": "ic",
       "dns": {
-        "provider": "cloudflare",
+        "$comment": "DNS for ic-casals.tech is at Infomaniak; records are edited by hand (docs/OPERATIONS.md, DNS).",
+        "provider": "manual",
         "zone": "ic-casals.tech",
-        "token_env": "CLOUDFLARE_API_TOKEN",
         "ttl": 60
       },
       "website_host": "staging.ic-casals.tech",

@@ -302,6 +302,23 @@ is missing. It needs `stand.create` on the stand, which a template's
 `commanders` block can give the stand's own canister (`$stand.backend`), so a
 realm asks for its next quarter itself.
 
+## DNS
+
+`casals up` does not write DNS records; the `dns` block in `environments.<env>` is read only by product CLIs. Since 2026-10-29 the registrar and DNS for `ic-casals.tech` are at Infomaniak (`ns11.infomaniak.ch`, `ns12.infomaniak.ch`). Edit records at manager.infomaniak.com → Domain → DNS zone → **Advanced view**.
+
+Infomaniak cannot put a CNAME at the zone apex, so an IC custom domain's apex uses A records for what `icp1.io` resolves to:
+
+| Type | Name | Value |
+|---|---|---|
+| A | `@` | `195.5.171.242` |
+| A | `@` | `212.71.124.188` |
+| TXT | `_canister-id` | the canister id |
+| CNAME | `_acme-challenge` | `_acme-challenge.<domain>.icp2.io` |
+
+A subdomain keeps `CNAME <host>.icp1.io`, with the same `_canister-id` and `_acme-challenge` records. The hosted monitor's `service` records are in [casals-monitor's deploy README](https://github.com/smart-social-contracts/casals-monitor/blob/main/deploy/README.md#dns).
+
+`realmsgos.dev` is the exception: its services run on Cloudflare Tunnels, so its DNS stays on Cloudflare.
+
 ## Off-chain cycle monitor
 
 Balance checks and auto top-ups can run in casals-monitor, a hosted service, instead of the conductor's timers. The hosted service is `https://service.ic-casals.tech` (staging: `https://service.staging.ic-casals.tech`). A self-hosted monitor works the same way; its origin has to be in `connect-src` in `frontend/static/.ic-assets.json5`, or the two fields below are filled by hand.
