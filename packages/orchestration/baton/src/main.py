@@ -36,9 +36,11 @@ from auth import (
     require_top_commander,
 )
 from approval_policy import (
+    DEFAULT_CONTROLLER_GRANT_APPROVAL_POLICY,
     DEFAULT_UPGRADE_APPROVAL_POLICY,
     append_approval,
     approval_progress,
+    configured_approval_policy,
     effective_approval_policy,
     is_approval_eligible,
     parse_approval_policy,
@@ -65,6 +67,7 @@ from models import (
     ALL_CAPABILITIES,
     CAP_MANAGE_MANAGED,
     CAP_PROPOSE,
+    CAP_PROPOSE_CONTROLLER_GRANT,
     CAP_EXECUTE,
     CAP_READ_CYCLE_BALANCE,
     CAP_SUBMIT_APPROVAL,
@@ -112,11 +115,12 @@ from assets import (
     validate_asset_payload,
 )
 from controllers import (
-    add_grants,
     apply_grant_gen,
-    drop_grants,
+    controller_grants_enabled,
     expire_gen,
+    list_grants,
     next_due,
+    not_revocable,
     validate_grant_payload,
 )
 from registry import list_registry_files_gen
@@ -170,6 +174,8 @@ _order = StableBTreeMap[str, str](memory_id=6, max_key_size=32, max_value_size=1
 _open = StableBTreeMap[str, str](memory_id=7, max_key_size=128, max_value_size=32)
 # action id → its summary (models.action_summary): listing never decodes a full record.
 _summary = StableBTreeMap[str, str](memory_id=8, max_key_size=128, max_value_size=SUMMARY_MAX_BYTES)
+# "<canister>|<principal>" → JSON {expires_at, action_id}: one row per controller a grant added (controllers.py).
+_grants = StableBTreeMap[str, str](memory_id=9, max_key_size=128, max_value_size=256)
 
 # Optional post-upgrade validation hook — integration point for application layer.
 # TODO: gate on post-upgrade validation hook registration mechanism.
@@ -648,14 +654,6 @@ def _execute_restore_gen(action_id: str, record: dict) -> Async[text]:
     return _err("; ".join(record.get("problems") or []) or "restore failed")
 
 
-def _grants() -> list[dict]:
-    return json.loads(_config.get("controller_grants") or "[]")
-
-
-def _set_grants(grants: list[dict]) -> None:
-    _config.insert("controller_grants", json.dumps(grants, separators=(",", ":")))
-
-
 def _arm_grant_timer() -> None:
     """One timer for the soonest grant expiry; a due grant whose removal failed is retried a minute on."""
     global _grant_timer
@@ -665,7 +663,7 @@ def _arm_grant_timer() -> None:
         except Exception:  # pragma: no cover - already fired or cleared
             pass
         _grant_timer = None
-    due = next_due(_grants())
+    due = next_due(list_grants(_grants))
     if due is None:
         return
     secs = (due - _now()) // 1_000_000_000
@@ -676,8 +674,7 @@ def _arm_grant_timer() -> None:
         global _grant_timer
         _grant_timer = None
         try:
-            remaining, done = yield from expire_gen(management_canister, _grants(), _now())
-            _set_grants(remaining)
+            done = yield from expire_gen(management_canister, _grants, _now())
             for g, result, detail in done:
                 rec = _load_action(g["action_id"])
                 if rec is not None:
@@ -697,16 +694,17 @@ def _execute_controller_grant_gen(action_id: str, record: dict) -> Async[text]:
 
     if record.get("status") != STATUS_APPROVED:
         return _err(f"unexpected status: {record.get('status')}")
-    payload = record["payload"]
+    if not controller_grants_enabled(_config):
+        # Turned off since it was filed: nothing may be granted, nothing is left waiting.
+        record["problems"] = ["controller grants are not enabled on this baton"]
+        record["status"] = STATUS_NEEDS_ATTENTION
+        _save_action(record)
+        return _err(record["problems"][0])
 
     def log(phase, detail, result="ok"):
         append_phase_log(record, phase_entry(phase, _now(), result, detail))
 
-    granted, problems = yield from apply_grant_gen(management_canister, payload, log)
-    if payload.get("revoke"):
-        _set_grants(drop_grants(_grants(), payload["targets"], payload["principal"]))
-    elif granted and payload.get("expires_at"):
-        _set_grants(add_grants(_grants(), granted, payload["principal"], payload["expires_at"], action_id))
+    problems = yield from apply_grant_gen(management_canister, _grants, record["payload"], action_id, log)
     _arm_grant_timer()
     record["problems"] = problems
     record["status"] = STATUS_NEEDS_ATTENTION if problems else STATUS_COMPLETE
@@ -946,7 +944,11 @@ def list_managed_canisters() -> text:
 def set_config(args: text) -> text:
     """Top commander only. JSON: {bake_window_seconds?, accelerant_days?, action_expiry_days?,
     install_cycles_buffer?, snapshots_keep?, wasm_store_canister_id?, upgrade_approval_policy?,
-    public_read?, readers?}.
+    controller_grants?, controller_grant_approval_policy?, public_read?, readers?}.
+
+    ``controller_grants`` (bool, default off) lets ``propose_controller_grant`` file
+    anything: leave it off wherever production canisters are managed.
+    ``controller_grant_approval_policy`` is the policy those actions need.
 
     ``wasm_store_canister_id`` is Casals' `casals-store` certified-assets store,
     the source of every WASM / bundle Baton installs. ``snapshots_keep`` is how
@@ -968,6 +970,10 @@ def set_config(args: text) -> text:
             if not isinstance(params["public_read"], bool):
                 return _err("public_read must be true or false")
             _config.insert("public_read", "1" if params["public_read"] else "0")
+        if "controller_grants" in params:
+            if not isinstance(params["controller_grants"], bool):
+                return _err("controller_grants must be true or false")
+            _config.insert("controller_grants", "1" if params["controller_grants"] else "0")
         if "readers" in params:
             try:
                 readers = parse_readers(params["readers"])
@@ -980,6 +986,10 @@ def set_config(args: text) -> text:
                 "upgrade_approval_policy",
                 json.dumps(policy, separators=(",", ":")),
             )
+        if "controller_grant_approval_policy" in params:
+            policy = parse_approval_policy(
+                params["controller_grant_approval_policy"], DEFAULT_CONTROLLER_GRANT_APPROVAL_POLICY)
+            _config.insert("controller_grant_approval_policy", json.dumps(policy, separators=(",", ":")))
         if "wasm_store_canister_id" in params:
             val = (params.get("wasm_store_canister_id") or "").strip()
             if val:
@@ -1013,10 +1023,12 @@ def get_config() -> text:
         "snapshots_keep": snapshots_keep(None, _config),
         "wasm_store_canister_id": _config.get("wasm_store_canister_id"),
         "upgrade_approval_policy": approval_policy,
+        "controller_grants": controller_grants_enabled(_config),
+        "controller_grant_approval_policy": configured_approval_policy(
+            {"action_type": ACTION_TYPE_CONTROLLER_GRANT}, _config),
         "public_read": _public_read(),
         "readers": config_readers(_config),
         "test_hooks": _config.get("test_hooks") == "1",
-        "controller_grants": _grants(),
     })
 
 
@@ -1186,21 +1198,29 @@ def propose_snapshot_restore(args: text) -> Async[text]:
 
 @update
 def propose_controller_grant(args: text) -> text:
-    """Requires propose:managed_upgrade. JSON: {payload, action_id?}.
+    """Requires propose:controller_grant, and the ``controller_grants`` config on. JSON: {payload, action_id?}.
 
     payload: {targets: [canister_id], principal, revoke?, expires_at?, reason?}.
-    Once approved (same policy as upgrades) ``principal`` becomes a controller of
-    every target, or stops being one with ``revoke``. With ``expires_at`` (ns) the
-    baton removes it again then, where this action added it."""
+    Once approved under the controller-grant policy (never the accelerant)
+    ``principal`` becomes a controller of every target, or with ``revoke`` stops
+    being one if a grant made it so. With ``expires_at`` (ns) the baton removes it
+    again then."""
     try:
         caller = _caller()
-        require_capability(caller, CAP_PROPOSE, _commanders, _config)
+        require_capability(caller, CAP_PROPOSE_CONTROLLER_GRANT, _commanders, _config)
+        if not controller_grants_enabled(_config):
+            return _err("controller grants are not enabled on this baton")
         if _active_action_id():
             return _err("another action is in progress")
         params = json.loads(args)
         payload = params["payload"]
-        affected = validate_grant_payload(payload, set(_managed.keys()), ic.id().to_str(), _now())
-        effective_approval_policy({"payload": payload}, _config)
+        affected = validate_grant_payload(
+            payload, set(_managed.keys()), ic.id().to_str(), _config.get("top_commander"), _now())
+        if payload.get("revoke"):
+            ungranted = not_revocable(_grants, payload)
+            if ungranted:
+                raise ValueError(f"{payload['principal']} was not granted by this baton on: {', '.join(ungranted)}")
+        effective_approval_policy({"payload": payload, "action_type": ACTION_TYPE_CONTROLLER_GRANT}, _config)
         action_id = _new_action_id(params)
         record = new_action_record(
             action_id=action_id,
@@ -1216,6 +1236,15 @@ def propose_controller_grant(args: text) -> text:
         return _err(str(e))
     except Exception as e:
         return _err(str(e))
+
+
+@query
+def list_controller_grants() -> text:
+    """The controllers grants added: [{canister_id, principal, expires_at, action_id}]."""
+    refusal = _reader_refusal()
+    if refusal:
+        return refusal
+    return json.dumps(list_grants(_grants))
 
 
 @update

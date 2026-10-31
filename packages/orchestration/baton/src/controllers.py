@@ -1,13 +1,17 @@
 """Controller grants: a governed action that adds a principal to (or removes it
 from) the controllers of managed canisters.
 
-A grant may carry ``expires_at`` (ns); the baton then removes the principal
-again when it falls due. The baton cannot stop a controller from removing the
-baton meanwhile: expiry guards against forgetting, not against the grantee.
-Callers pass the management canister so the unit tests can swap in a fake.
+Every grant is kept as a row (canister + principal) in the baton's grant store,
+with the ``expires_at`` (ns) it was given, if any. The baton removes the
+principal again when the expiry falls due, and ``revoke`` removes only a
+principal with a row: what a grant added, never the multisig, the conductor or
+any other controller that was there before. The baton cannot stop a controller
+from removing the baton meanwhile: expiry guards against forgetting, not
+against the grantee. Callers pass the management canister and the store so the
+unit tests can swap in fakes.
 """
 
-from typing import Any
+import json
 
 from basilisk import Async, Principal
 
@@ -31,7 +35,13 @@ def _field(obj, name, default=None):
     return getattr(obj, name, default)
 
 
-def validate_grant_payload(payload: dict, managed: set[str], self_id: str, now: int) -> list[str]:
+def controller_grants_enabled(config_store) -> bool:
+    """The ``controller_grants`` config, off unless the top commander turned it on: a
+    baton that manages production canisters leaves it off."""
+    return config_store.get("controller_grants") == "1"
+
+
+def validate_grant_payload(payload: dict, managed: set[str], self_id: str, top_commander: str, now: int) -> list[str]:
     """``{targets: [canister_id], principal, revoke?, expires_at?}``; returns the targets."""
     targets = [str(t).strip() for t in payload.get("targets") or []]
     if not targets or len(set(targets)) != len(targets):
@@ -47,12 +57,42 @@ def validate_grant_payload(payload: dict, managed: set[str], self_id: str, now: 
     revoke = payload.get("revoke", False)
     if not isinstance(revoke, bool):
         raise ValueError("revoke must be true or false")
+    if revoke and principal == top_commander:
+        raise ValueError("the top commander's controllership is not revocable")
     expires_at = payload.get("expires_at")
     if expires_at is not None:
         if revoke or isinstance(expires_at, bool) or int(expires_at) <= now:
             raise ValueError("expires_at must be a future time (ns) on a grant")
         payload["expires_at"] = int(expires_at)
     return targets
+
+
+# Grant rows: key "<canister>|<principal>", value {expires_at, action_id}.
+
+def _key(cid: str, principal: str) -> str:
+    return f"{cid}|{principal}"
+
+
+def _track(store, cid: str, principal: str, expires_at: int | None, action_id: str) -> None:
+    store.insert(_key(cid, principal), json.dumps({"expires_at": expires_at, "action_id": action_id}, separators=(",", ":")))
+
+
+def list_grants(store) -> list[dict]:
+    """Every row as ``{canister_id, principal, expires_at, action_id}``."""
+    rows = []
+    for key in store.keys():
+        cid, principal = key.split("|", 1)
+        rows.append({"canister_id": cid, "principal": principal, **json.loads(store.get(key))})
+    return rows
+
+
+def next_due(rows: list[dict]) -> int | None:
+    return min((int(r["expires_at"]) for r in rows if r["expires_at"] is not None), default=None)
+
+
+def not_revocable(store, payload: dict) -> list[str]:
+    """The targets of a revoke on which no grant added ``payload.principal``."""
+    return [t for t in payload["targets"] if not store.contains_key(_key(t, payload["principal"]))]
 
 
 def controllers_gen(mgmt, cid: str) -> Async[list[str]]:
@@ -72,66 +112,65 @@ def set_controllers_gen(mgmt, cid: str, controllers: list[str]) -> Async[None]:
     })))
 
 
-def apply_grant_gen(mgmt, payload: dict, log) -> Async[tuple[list[str], list[str]]]:
-    """Add or remove ``payload.principal`` on every target. Returns (granted, problems):
-    ``granted`` the targets where this action made it a controller (so its expiry may remove it)."""
+def apply_grant_gen(mgmt, store, payload: dict, action_id: str, log) -> Async[list[str]]:
+    """Add or remove ``payload.principal`` on every target; returns the problems.
+
+    A grant writes its row before it changes the controllers, so a run cut short
+    after the change still has its expiry, and re-running it is harmless. A
+    principal already a controller keeps no new row, but a row it has gets the new
+    expiry (none clears it): a permanent re-grant makes an expiring one permanent."""
     principal, revoke = payload["principal"], payload.get("revoke", False)
-    granted, problems = [], []
+    expires_at = payload.get("expires_at")
+    problems = []
     for cid in payload["targets"]:
+        row = _key(cid, principal)
         try:
             current = yield from controllers_gen(mgmt, cid)
             if revoke:
-                if principal not in current:
-                    log("REVOKE", f"{cid}: {principal} is not a controller")
-                    continue
-                yield from set_controllers_gen(mgmt, cid, [p for p in current if p != principal])
-                log("REVOKE", f"{cid}: removed {principal}")
-            else:
+                if not store.contains_key(row):
+                    raise RuntimeError(f"{principal} was not granted by this baton")
                 if principal in current:
+                    yield from set_controllers_gen(mgmt, cid, [p for p in current if p != principal])
+                    log("REVOKE", f"{cid}: removed {principal}")
+                else:
+                    log("REVOKE", f"{cid}: {principal} is not a controller")
+                store.remove(row)
+            elif principal in current:
+                if store.contains_key(row):
+                    _track(store, cid, principal, expires_at, action_id)
+                    log("GRANT", f"{cid}: {principal} is already a controller; expiry set to {expires_at or 'none'}")
+                else:
                     log("GRANT", f"{cid}: {principal} is already a controller; left as is")
-                    continue
-                yield from set_controllers_gen(mgmt, cid, current + [principal])
-                granted.append(cid)
+            else:
+                _track(store, cid, principal, expires_at, action_id)
+                try:
+                    yield from set_controllers_gen(mgmt, cid, current + [principal])
+                except Exception:
+                    store.remove(row)
+                    raise
                 log("GRANT", f"{cid}: added {principal}")
         except Exception as exc:
             problems.append(f"{cid}: {exc}")
             log("REVOKE" if revoke else "GRANT", f"{cid}: {exc}", "failed")
-    return granted, problems
+    return problems
 
 
-# Open grants with an expiry, kept in config as a JSON list of
-# {canister_id, principal, expires_at, action_id}.
-
-def add_grants(grants: list[dict], cids: list[str], principal: str, expires_at: int, action_id: str) -> list[dict]:
-    kept = [g for g in grants if not (g["canister_id"] in cids and g["principal"] == principal)]
-    return kept + [{"canister_id": c, "principal": principal, "expires_at": expires_at, "action_id": action_id}
-                   for c in cids]
-
-
-def drop_grants(grants: list[dict], cids: list[str], principal: str) -> list[dict]:
-    return [g for g in grants if not (g["canister_id"] in cids and g["principal"] == principal)]
-
-
-def next_due(grants: list[dict]) -> int | None:
-    return min((int(g["expires_at"]) for g in grants), default=None)
-
-
-def expire_gen(mgmt, grants: list[dict], now: int) -> Async[tuple[list[dict], list[tuple[dict, str, str]]]]:
-    """Remove every grant due by ``now``. Returns (grants still open, [(grant, result, detail)]).
-    A grant whose removal fails stays open and is retried at the next tick."""
-    remaining, done = [], []
-    for g in grants:
-        if int(g["expires_at"]) > now:
-            remaining.append(g)
+def expire_gen(mgmt, store, now: int) -> Async[list[tuple[dict, str, str]]]:
+    """Remove every grant due by ``now``. Returns [(grant, result, detail)].
+    A grant whose removal fails keeps its row and is retried at the next tick."""
+    done = []
+    for g in list_grants(store):
+        if g["expires_at"] is None or int(g["expires_at"]) > now:
             continue
+        cid, principal = g["canister_id"], g["principal"]
         try:
-            current = yield from controllers_gen(mgmt, g["canister_id"])
-            if g["principal"] in current:
-                yield from set_controllers_gen(mgmt, g["canister_id"], [p for p in current if p != g["principal"]])
-                done.append((g, "ok", f"{g['canister_id']}: grant expired, removed {g['principal']}"))
+            current = yield from controllers_gen(mgmt, cid)
+            if principal in current:
+                yield from set_controllers_gen(mgmt, cid, [p for p in current if p != principal])
+                done.append((g, "ok", f"{cid}: grant expired, removed {principal}"))
             else:
-                done.append((g, "ok", f"{g['canister_id']}: grant expired, {g['principal']} was already gone"))
+                done.append((g, "ok", f"{cid}: grant expired, {principal} was already gone"))
+            store.remove(_key(cid, principal))
         except Exception as exc:
-            remaining.append(g)
-            done.append((g, "failed", f"{g['canister_id']}: could not remove {g['principal']}: {exc}"))
-    return remaining, done
+            done.append((g, "failed", f"{cid}: could not remove {principal}: {exc}"))
+    return done

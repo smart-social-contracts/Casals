@@ -139,6 +139,7 @@ service : (InitArgs) -> {
   "propose_release" : (text) -> (text);
   "propose_snapshot_restore" : (text) -> (text);
   "propose_controller_grant" : (text) -> (text);
+  "list_controller_grants" : () -> (text) query;
   "list_snapshots" : (text) -> (text);
   "abort_action" : (text) -> (text);
   "maintenance_status" : () -> (text) query;

@@ -74,6 +74,8 @@ ACTION_TYPE_CONTROLLER_GRANT = "controller_grant"
 
 # Capability strings (stored on Commander records).
 CAP_PROPOSE = "propose:managed_upgrade"
+# Held by nobody unless the top commander grants it: it can make anyone a full controller.
+CAP_PROPOSE_CONTROLLER_GRANT = "propose:controller_grant"
 CAP_SUBMIT_APPROVAL = "submit_approval:managed_upgrade"
 CAP_EXECUTE = "execute:managed_upgrade"
 CAP_READ_CYCLE_BALANCE = "read_cycle_balance"
@@ -82,6 +84,7 @@ CAP_MANAGE_MANAGED = "manage_managed_canisters"
 
 ALL_CAPABILITIES = frozenset({
     CAP_PROPOSE,
+    CAP_PROPOSE_CONTROLLER_GRANT,
     CAP_SUBMIT_APPROVAL,
     CAP_EXECUTE,
     CAP_READ_CYCLE_BALANCE,
