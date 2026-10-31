@@ -163,6 +163,17 @@ def action_summary(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Size of a summary's slot in the baton's index (bytes).
+SUMMARY_MAX_BYTES = 64_000
+
+
+def encode_summary(record: dict[str, Any]) -> str | None:
+    """The record's summary as stored in the index, or None when it would not fit its slot
+    (a very long problems list, say): listing then decodes the full record instead."""
+    raw = encode_record(action_summary(record))
+    return raw if len(raw.encode()) <= SUMMARY_MAX_BYTES else None
+
+
 def is_terminal(status: str) -> bool:
     return status in TERMINAL_STATUSES
 

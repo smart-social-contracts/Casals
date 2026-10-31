@@ -58,6 +58,11 @@ order). The open action, `maintenance_status` and the resume after an upgrade
 come from an index of non-terminal actions. The upgrade to 2.2.0 numbers and
 indexes the existing records once, in `post_upgrade`.
 
+Since 2.3.0 each record's summary is stored when the record is saved, and
+listing reads those instead of decoding records (the upgrade to 2.3.0 fills
+them in once). Summaries also drop `provision`. A summary over 64 KB is not
+stored; listing then builds it from the full record.
+
 ## Approvals
 
 - The configured `upgrade_approval_policy` applies to every proposal. A
