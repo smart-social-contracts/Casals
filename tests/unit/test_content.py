@@ -36,6 +36,29 @@ def test_deploy_runs_rounds_until_done():
     assert list(each(Event))[-1].type == "content_done"
 
 
+def store_listings():
+    return [c for c in state["calls"] if c[:2] == ("files", "store")]
+
+
+def test_the_rounds_of_a_deploy_list_the_store_once():
+    frontend(25)
+    call("content_deploy", canister="web", namespace="web/v1")
+    run_timers()
+    assert call("content_status")["deploys"][0]["status"] == "done" and len(store_listings()) == 1
+    call("content_deploy", canister="web", namespace="web/v1")
+    assert len(store_listings()) == 2  # a new deploy reads the store afresh
+
+
+def test_a_listing_older_than_the_ttl_is_read_again():
+    import content
+
+    frontend(25)
+    call("content_deploy", canister="web", namespace="web/v1")
+    state["now"] += content.BUNDLE_TTL + 1
+    run_timers()
+    assert len(store_listings()) == 2
+
+
 def test_new_bundle_replaces_and_deletes_stale_files():
     cid = frontend(2)
     call("content_deploy", canister="web", namespace="web/v1")

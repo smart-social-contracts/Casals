@@ -33,5 +33,5 @@ def fresh():
     Database.get_instance().clear()
     model._system("indexes", len(model.INDEXES))
     fake_chain.reset()
-    for heap in (grants.failures, rounds.queue, rounds.armed, rounds.running, content.deploys, wasms.uploads):
+    for heap in (grants.failures, rounds.queue, rounds.armed, rounds.running, content.deploys, content.bundles, wasms.uploads):
         heap.clear()
