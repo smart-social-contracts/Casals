@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { copyText } from '$lib/clipboard';
   import { toasts } from '$lib/stores/toast';
 
@@ -11,6 +12,9 @@
   let { text, label }: Props = $props();
 
   let copied = $state(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  onDestroy(() => clearTimeout(timer));
 
   async function copy() {
     if (!(await copyText(text))) {
@@ -18,7 +22,9 @@
       return;
     }
     copied = true;
-    setTimeout(() => {
+    // A second click restarts the full 1.5 s instead of cutting it short.
+    clearTimeout(timer);
+    timer = setTimeout(() => {
       copied = false;
     }, 1500);
   }
@@ -26,7 +32,7 @@
 
 <button
   type="button"
-  class="icon-btn shrink-0 {copied ? 'text-emerald-600' : ''}"
+  class="icon-btn shrink-0 {copied ? '!text-emerald-600' : ''}"
   aria-label={copied ? 'Copied' : `Copy ${label}`}
   onclick={copy}
 >
