@@ -95,6 +95,19 @@ def test_checksum_mismatch_and_failed_round():
     assert call("content_status", "ann")["deploys"] == []
 
 
+def test_a_failed_deploy_leaves_the_canister_on_its_bundle():
+    frontend()
+    call("content_deploy", canister="web", namespace="web/v1")
+    run_timers()
+    state["store"]["/web/v2/f00.js"] = b"v2"
+    assert "is empty" in call("content_deploy", canister="web", namespace="web/none")["error"]
+    assert Canister["web"].content == "web/v1"
+    assert "expected" in call("content_deploy", canister="web", namespace="web/v2", bundle_sha256="0" * 64)["error"]
+    assert Canister["web"].content == "web/v1"
+    call("content_deploy", canister="web", namespace="web/v2")
+    assert Canister["web"].content == "web/v2"
+
+
 def test_watchdog_fails_a_round_that_trapped(monkeypatch):
     import content
     import op

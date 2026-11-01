@@ -45,19 +45,21 @@ def wanted(c, content=None):
     return {k: {**v, "props": props.get(k, {})} for k, v in want.items()}
 
 
-def listed(c):
-    key = (c.name, c.content)
+def listed(c, content):
+    key = (c.name, content)
     when, want = bundles.get(key, (0, None))
     if want is None or chain.now() - when > BUNDLE_TTL:
-        want = yield from wanted(c)
+        want = yield from wanted(c, content)
         bundles[key] = (chain.now(), want)
     return want
 
 
-def sync(c, expected=""):
-    want = yield from listed(c)
+def sync(c, expected="", content=None):
+    """Write up to MAX_FILES files of `content` (the row's own by default) to `c`; returns how many are left."""
+    content = c.content if content is None else content
+    want = yield from listed(c, content)
     if expected and bundle_hash(want) != expected:
-        raise ValueError(f"store bundle {c.content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
+        raise ValueError(f"store bundle {content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
     live = yield from store.files(c.canister_id)
     applied = c.assets_props  # each read of a Json field parses it again
     writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]
@@ -65,7 +67,7 @@ def sync(c, expected=""):
     puts = []
     for key in writes[:MAX_FILES]:
         data = want[key]["text"].encode() if "text" in want[key] else (
-            yield from store.read(orchestra().store_id, f"/{c.content}{key}"))
+            yield from store.read(orchestra().store_id, f"/{content}{key}"))
         puts.append({**want[key], "key": key, "data": data, "replace": key in live})
     deletes = sorted(set(live) - set(want)) if len(writes) == len(puts) else []
     if puts or deletes:
@@ -74,7 +76,7 @@ def sync(c, expected=""):
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
     remaining = len(writes) - len(puts)
     if not remaining:
-        bundles.pop((c.name, c.content), None)
+        bundles.pop((c.name, content), None)
     return remaining
 
 
@@ -102,9 +104,10 @@ def content_deploy(principal, args):
     c = find(Canister, args["canister"])
     if deploys.get(c.name, {}).get("status") == "running":
         raise ValueError(f"a content deploy of '{c.name}' is already running")
-    c.content = args.get("namespace", c.content)
-    bundles.pop((c.name, c.content), None)
-    remaining = yield from sync(c, args.get("bundle_sha256", ""))
+    namespace = args.get("namespace", c.content)
+    bundles.pop((c.name, namespace), None)
+    remaining = yield from sync(c, args.get("bundle_sha256", ""), namespace)
+    c.content = namespace
     if remaining:
         schedule("content", c.name)
     return {**record(c.name, remaining), "canister_id": c.canister_id}
