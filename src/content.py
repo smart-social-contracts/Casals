@@ -34,6 +34,8 @@ def wanted(c, content=None):
     if prefix + "/" + PROPERTIES in published:
         props = json.loads((yield from store.read(orchestra().store_id, prefix + "/" + PROPERTIES)))
     want = {k[len(prefix):]: v for k, v in published.items() if not k.endswith((MANIFEST, PROPERTIES))}
+    if content and not want:
+        raise ValueError(f"store namespace {content} is empty: upload the bundle first (casals upgrade --content {content})")
     for key, text in resolve(c.files, c.stand, c.canister_id).items():
         replaced = {"bundle_sha256": want[key]["sha256"]} if key in want else {}
         want[key] = {"sha256": sha(text.encode()), "type": TYPES.get(key.rsplit(".", 1)[-1], "text/plain"), "text": text,

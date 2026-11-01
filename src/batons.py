@@ -194,8 +194,6 @@ def release_bundle(c, ns, spec):
     want = yield from wanted(c, ns)
     if spec.get("bundle_sha256") and bundle_hash(want) != spec["bundle_sha256"]:
         raise ValueError(f"store bundle {ns} is {bundle_hash(want)[:12]}, expected {spec['bundle_sha256'][:12]}")
-    if not any("text" not in v for v in want.values()):
-        raise ValueError(f"store namespace {ns} is empty")
     return {"namespace": ns,
             "manifest": {k[1:]: v["sha256"] for k, v in want.items() if "text" not in v},
             "props": {k: v["props"] for k, v in want.items() if v["props"]},
