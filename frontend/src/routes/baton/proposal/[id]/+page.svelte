@@ -51,6 +51,7 @@
     batonStatusClass,
   } from '$lib/batonProposalView';
   import { copyText } from '$lib/clipboard';
+  import CopyButton from '$lib/components/CopyButton.svelte';
   import { toasts } from '$lib/stores/toast';
 
   let loading = $state(true);
@@ -459,6 +460,7 @@
           <p class="font-mono text-xs text-primary-800 break-all mt-1">
             {action.proposed_by || '—'}
             {#if action.proposed_by && you(action.proposed_by)}<span class="text-emerald-700"> you</span>{/if}
+            {#if action.proposed_by}<CopyButton text={action.proposed_by} label="proposer principal" />{/if}
           </p>
         </div>
         <div>
@@ -467,7 +469,7 @@
         </div>
         <div>
           <p class="text-[10px] font-semibold uppercase tracking-wider text-primary-400">Baton</p>
-          <p class="font-mono text-xs text-primary-800 break-all mt-1">{canisterId}</p>
+          <p class="font-mono text-xs text-primary-800 break-all mt-1">{canisterId} <CopyButton text={canisterId} label="Baton canister id" /></p>
         </div>
         {#if action.approval_path}
           <div>
@@ -498,7 +500,7 @@
         <div class="space-y-2">
           {#each targets as target (target.canisterId)}
             <div class="rounded-lg border border-[var(--color-border-primary)] bg-white">
-              <p class="px-4 py-2 font-mono text-xs text-primary-800 break-all border-b border-[var(--color-border-primary)]">{target.canisterId}</p>
+              <p class="px-4 py-2 font-mono text-xs text-primary-800 break-all border-b border-[var(--color-border-primary)]">{target.canisterId} <CopyButton text={target.canisterId} label="canister id" /></p>
               <dl class="divide-y divide-[var(--color-border-primary)]">
                 {#each target.fields as field (field.label)}
                   <div class="px-4 py-3 grid gap-1 sm:grid-cols-[11rem_1fr] sm:gap-4">

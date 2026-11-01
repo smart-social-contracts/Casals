@@ -30,6 +30,7 @@
   import LineChart from '$lib/components/LineChart.svelte';
   import CyclesAdvancedChart from '$lib/components/CyclesAdvancedChart.svelte';
   import Treemap from '$lib/components/Treemap.svelte';
+  import CopyButton from '$lib/components/CopyButton.svelte';
   import CalculatedAtHint from '$lib/components/CalculatedAtHint.svelte';
   import { ledgerAccountIdFromCanister } from '$lib/ledgerAccount';
   import {
@@ -650,9 +651,15 @@
         <p class="text-sm text-primary-600">Send cycles to the conductor with <span class="font-mono">deposit_cycles</span>, or ICP to its ledger account; Refresh converts the ICP.</p>
         <div class="space-y-2 text-xs">
           <div><span class="label">Conductor</span>
-            <button class="font-mono break-all text-primary-700 hover:text-primary-900" onclick={() => copy(backendCanisterId())}>{backendCanisterId()}</button></div>
+            <div class="flex items-center gap-1">
+              <span class="font-mono break-all text-primary-700">{backendCanisterId()}</span>
+              <CopyButton text={backendCanisterId()} label="conductor id" />
+            </div></div>
           <div><span class="label">ICP account</span>
-            <button class="font-mono break-all text-primary-700 hover:text-primary-900" onclick={() => depositAccount && copy(depositAccount)}>{depositAccount || '…'}</button></div>
+            <div class="flex items-center gap-1">
+              <span class="font-mono break-all text-primary-700">{depositAccount || '…'}</span>
+              {#if depositAccount}<CopyButton text={depositAccount} label="ICP account" />{/if}
+            </div></div>
         </div>
         <div class="flex justify-end"><button class="btn-secondary btn-sm" onclick={() => (dialog = null)}>Close</button></div>
       {:else}
