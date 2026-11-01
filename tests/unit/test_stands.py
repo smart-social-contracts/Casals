@@ -56,6 +56,20 @@ def test_failed_build_stops_and_create_retries():
     assert [t for t in state["timers"] if t[0] != rounds.WATCHDOG] == []
 
 
+def test_missing_bundle_fails_the_build_with_its_name():
+    tenants()
+    template = {**TEMPLATE, "canisters": [{**c, "content": "web/v9"} if c["name"].endswith("frontend") else c
+                                          for c in TEMPLATE["canisters"]]}
+    assert call("section_set", section="Tenants", template=template)["ok"]
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert "store namespace web/v9 is empty" in Stand["t1"].build_error and not Stand["t1"].built_at
+    state["store"]["/web/v9/index.html"] = b"<html>"
+    call("stand_create", section="Tenants", name="t1")
+    run_timers()
+    assert Stand["t1"].built_at and not Stand["t1"].build_error
+
+
 def test_resume_after_upgrade_and_growth():
     tenants()
     call("stand_create", section="Tenants", name="t1")
