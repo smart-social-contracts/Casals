@@ -99,10 +99,11 @@ def test_a_failed_deploy_leaves_the_canister_on_its_bundle():
     frontend()
     call("content_deploy", canister="web", namespace="web/v1")
     run_timers()
-    assert "is empty" in call("content_deploy", canister="web", namespace="web/none")["error"]
-    assert "expected" in call("content_deploy", canister="web", namespace="web/v1", bundle_sha256="0" * 64)["error"]
-    assert Canister["web"].content == "web/v1"
     state["store"]["/web/v2/f00.js"] = b"v2"
+    assert "is empty" in call("content_deploy", canister="web", namespace="web/none")["error"]
+    assert Canister["web"].content == "web/v1"
+    assert "expected" in call("content_deploy", canister="web", namespace="web/v2", bundle_sha256="0" * 64)["error"]
+    assert Canister["web"].content == "web/v1"
     call("content_deploy", canister="web", namespace="web/v2")
     assert Canister["web"].content == "web/v2"
 
