@@ -41,10 +41,14 @@ def store_listings():
 
 
 def test_the_rounds_of_a_deploy_list_the_store_once():
+    import content
+
     frontend(25)
     call("content_deploy", canister="web", namespace="web/v1")
+    assert len(content.bundles) == 1  # kept for the rounds still to come
     run_timers()
     assert call("content_status")["deploys"][0]["status"] == "done" and len(store_listings()) == 1
+    assert content.bundles == {}
     call("content_deploy", canister="web", namespace="web/v1")
     assert len(store_listings()) == 2  # a new deploy reads the store afresh
 

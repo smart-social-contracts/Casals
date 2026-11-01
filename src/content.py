@@ -13,8 +13,8 @@ MANIFEST = ".casals-bundle.json"
 PROPERTIES = ".casals-assets.json"  # the bundle's .ic-assets.json5, resolved per file by the CLI
 TYPES = {"js": "text/javascript", "json": "application/json", "html": "text/html", "css": "text/css"}
 deploys = {}
-bundles = {}  # (canister, namespace) -> (when, wanted): listing the store costs a call per 100 keys, so a deploy's rounds share it
-BUNDLE_TTL = 300  # seconds; a bundle uploaded again mid-deploy is picked up by the next one
+bundles = {}  # (canister, namespace) -> (when, wanted): listing the store costs a call per 100 keys, so a deploy's rounds share it; dropped when its sync finishes
+BUNDLE_TTL = 300  # seconds; a bundle uploaded again mid-deploy is picked up by the next listing after at most this, or by the next content_deploy
 
 
 def sha(data):
@@ -72,7 +72,10 @@ def sync(c, expected=""):
         yield from store.apply(c.canister_id, puts, deletes)
     kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
-    return len(writes) - len(puts)
+    remaining = len(writes) - len(puts)
+    if not remaining:
+        bundles.pop((c.name, c.content), None)
+    return remaining
 
 
 def record(name, remaining, error=""):
