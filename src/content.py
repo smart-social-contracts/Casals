@@ -13,6 +13,8 @@ MANIFEST = ".casals-bundle.json"
 PROPERTIES = ".casals-assets.json"  # the bundle's .ic-assets.json5, resolved per file by the CLI
 TYPES = {"js": "text/javascript", "json": "application/json", "html": "text/html", "css": "text/css"}
 deploys = {}
+bundles = {}  # (canister, namespace) -> (when, wanted): listing the store costs a call per 100 keys, so a deploy's rounds share it; dropped when its sync finishes
+BUNDLE_TTL = 300  # seconds; a bundle uploaded again mid-deploy is picked up by the next listing after at most this, or by the next content_deploy
 
 
 def sha(data):
@@ -43,8 +45,17 @@ def wanted(c, content=None):
     return {k: {**v, "props": props.get(k, {})} for k, v in want.items()}
 
 
+def listed(c):
+    key = (c.name, c.content)
+    when, want = bundles.get(key, (0, None))
+    if want is None or chain.now() - when > BUNDLE_TTL:
+        want = yield from wanted(c)
+        bundles[key] = (chain.now(), want)
+    return want
+
+
 def sync(c, expected=""):
-    want = yield from wanted(c)
+    want = yield from listed(c)
     if expected and bundle_hash(want) != expected:
         raise ValueError(f"store bundle {c.content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
     live = yield from store.files(c.canister_id)
@@ -61,7 +72,10 @@ def sync(c, expected=""):
         yield from store.apply(c.canister_id, puts, deletes)
     kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
-    return len(writes) - len(puts)
+    remaining = len(writes) - len(puts)
+    if not remaining:
+        bundles.pop((c.name, c.content), None)
+    return remaining
 
 
 def record(name, remaining, error=""):
@@ -89,6 +103,7 @@ def content_deploy(principal, args):
     if deploys.get(c.name, {}).get("status") == "running":
         raise ValueError(f"a content deploy of '{c.name}' is already running")
     c.content = args.get("namespace", c.content)
+    bundles.pop((c.name, c.content), None)
     remaining = yield from sync(c, args.get("bundle_sha256", ""))
     if remaining:
         schedule("content", c.name)
