@@ -61,8 +61,6 @@ def orchestra_get(principal, args):
     canisters, no sections."""
     o, scopes = orchestra(), reader_scopes(principal)
     shown = {k: getattr(o, k) for k in SHOWN}
-    if scopes is None and o.monitor_read_key:  # the monitor reports on the whole orchestra, so only its readers get the key
-        shown["monitor"] = {**o.monitor, "read_key": o.monitor_read_key}
     if args.get("stand"):
         (canisters, stand_rows), sections = one_stand(scopes, args["stand"]), []
         next_canister = next_section = next_stand = None
@@ -137,21 +135,32 @@ def new_read_key():
     return key.hex()
 
 
+def key_for(monitor, before, current):
+    """The key a monitor setting leaves: a monitor that is new, or that never got a key (set before keys
+    existed), gets a new one; the same monitor keeps its key; no monitor, no key."""
+    if not monitor:
+        return ""
+    if monitor["principal"] != before or not current:
+        return (yield from new_read_key())
+    return current
+
+
 @op("orchestra.settings")
 def orchestra_set(principal, args):
     if "snapshots_keep" in args:
         check_keep(args["snapshots_keep"])
     o = orchestra()
     before = o.monitor.get("principal")
+    # Draw the key before the new monitor is assigned: the monitor may read the key as soon as it is set, and an
+    # await in between (or a failed raw_rand) would leave it able to read the old one.
+    key_after = None
+    if "monitor" in args:
+        key_after = yield from key_for(monitor_setting(args["monitor"]), before, o.monitor_read_key)
     for key in SETTABLE:
         if key in args:
             setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])
-    if "monitor" in args:
-        # A monitor that is new, or that never got a key (set before keys existed), gets one; no monitor, no key.
-        if not o.monitor:
-            o.monitor_read_key = ""
-        elif o.monitor["principal"] != before or not o.monitor_read_key:
-            o.monitor_read_key = yield from new_read_key()
+    if key_after is not None:
+        o.monitor_read_key = key_after
     if o.monitor.get("principal") != before:
         return {"monitor": o.monitor, "unreachable": (yield from share_status())}
 
@@ -185,7 +194,8 @@ def monitor_key_rotate(principal, args):
     o.monitor_read_key = yield from new_read_key()
 
 
-@op("controller", read=True, monitor=True)
+@op("reader.all", read=True)
 def monitor_key_get(principal, args):
-    """What the monitor checks the bearer of a per-instance route against."""
+    """What the monitor checks the bearer of a per-instance route against; the monitor and readers of the whole
+    orchestra (whose frontend sends it) may ask. It is not part of any view, so no cache or export holds it."""
     return {"key": orchestra().monitor_read_key}

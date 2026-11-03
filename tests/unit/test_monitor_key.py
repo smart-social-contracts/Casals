@@ -1,6 +1,7 @@
-"""The monitor's read key: made when a monitor is set, rotated on request, dropped with the monitor, and shown
-only to the monitor and to readers of the whole orchestra."""
+"""The monitor's read key: made when a monitor is set, rotated on request, dropped with the monitor, and given
+only through `monitor_key_get`, to the monitor and to readers of the whole orchestra."""
 
+import fake_chain
 from kit import call, grant, world
 from model import Event, each, orchestra
 
@@ -55,26 +56,42 @@ def test_switching_the_monitor_off_removes_the_key():
     assert call("monitor_key_get")["key"] == "" and call("monitor_key_get", "mon")["error"].startswith("unauthorized")
 
 
-def test_only_the_monitor_and_controllers_read_the_key():
+def test_the_monitor_and_readers_of_the_whole_orchestra_read_the_key():
     world()
     monitor_on()
     key = orchestra().monitor_read_key
-    grant("ann", "orchestra", "*")
-    assert call("monitor_key_get", "mon")["key"] == key and call("monitor_key_get")["key"] == key
-    for who in ("ann", "nobody"):
+    grant("all", "orchestra", "canister.browse")
+    for who in ("mon", "all", "ctl"):
+        assert call("monitor_key_get", who)["key"] == key, who
+
+
+def test_a_scoped_reader_and_a_stranger_are_refused_the_key():
+    world()
+    monitor_on()
+    grant("part", "stand:d1", "canister.browse")
+    for who in ("part", "nobody"):
         assert call("monitor_key_get", who)["error"].startswith("unauthorized"), who
 
 
-def test_orchestra_get_shows_the_key_only_to_readers_of_the_whole_orchestra():
+def test_no_view_carries_the_key():
     world()
     monitor_on()
     key = orchestra().monitor_read_key
     grant("all", "orchestra", "canister.browse")
     grant("part", "stand:d1", "canister.browse")
-    for who in ("mon", "all", "ctl"):
-        assert call("orchestra_get", who)["monitor"]["read_key"] == key, who
-    assert "read_key" not in call("orchestra_get", "part")["monitor"]
-    assert key not in call("orchestra_export")["monitor"].values()
+    for who in ("mon", "all", "ctl", "part"):
+        assert key not in str(call("orchestra_get", who)), who
+    assert key not in str(call("orchestra_export"))
+
+
+def test_a_new_monitor_cannot_read_the_old_key_when_drawing_the_new_one_fails():
+    world()
+    monitor_on()
+    key = orchestra().monitor_read_key
+    fake_chain.state["fail"]["random_bytes"] = "raw_rand failed"
+    assert "raw_rand failed" in call("orchestra_set", monitor={"principal": "mon2", "url": "https://mon.example"})["error"]
+    assert orchestra().monitor["principal"] == "mon" and orchestra().monitor_read_key == key
+    assert call("monitor_key_get", "mon2")["error"].startswith("unauthorized")
 
 
 def test_the_key_stays_out_of_the_settings_reply_and_the_audit_trail():

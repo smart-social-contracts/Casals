@@ -5,6 +5,7 @@
     formatCycles,
     loadView,
     meSet,
+    monitorKeyGet,
     monitorKeyRotate,
     orchestraSet,
     parseCycles,
@@ -85,7 +86,7 @@
       [monitorUrl, monitorPrincipal] = [x.monitor.url ?? '', x.monitor.principal ?? ''];
       hostedBase = monitorBaseFromInstanceUrl(monitorUrl) || HOSTED_MONITOR_BASE;
       email = x.email;
-      readKey = x.monitor.read_key ?? '';
+      readKey = await monitorKeyGet();
       if (monitorUrl) monitorStatus = await fetchMonitorInstanceStatus(monitorUrl, fetch, readKey).catch(() => null);
       await checkEmail();
     } catch (e: any) {
@@ -297,7 +298,7 @@
           {#if o.monitor.url}
             <div>
               <button type="button" class="btn-secondary btn-sm" onclick={rotateReadKey} disabled={rotating}>{rotating ? 'Rotating…' : 'Rotate read key'}</button>
-              <p class="text-xs text-primary-400 mt-1">The monitor refuses reports about this conductor to anyone without the read key; readers of the whole orchestra get it from the conductor. {o.monitor.read_key ? 'Rotate it if it may have leaked.' : 'This conductor has none yet: rotate to make the first one.'}</p>
+              <p class="text-xs text-primary-400 mt-1">The monitor refuses reports about this conductor to anyone without the read key; readers of the whole orchestra get it from the conductor. {readKey ? 'Rotate it if it may have leaked.' : 'This conductor has none yet: rotate to make the first one.'}</p>
             </div>
           {/if}
           {#if monitorNote}<p class="text-xs text-primary-600">{monitorNote}</p>{/if}

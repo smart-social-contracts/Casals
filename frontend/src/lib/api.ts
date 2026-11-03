@@ -71,8 +71,8 @@ export interface Orchestra {
   subnets: string[];
   creatable_subnets: string[];
   subnets_at: number;
-  /** `read_key` is the bearer for the monitor's per-instance routes; only readers of the whole orchestra get it. */
-  monitor: { principal?: string; url?: string; read_key?: string };
+  /** The read key is not part of the view: `monitorKeyGet` asks the conductor for it when it is needed. */
+  monitor: { principal?: string; url?: string };
   /** snapshots each canister keeps, newest first (1–9) */
   snapshots_keep: number;
   aliases: Record<string, string>;
@@ -515,24 +515,28 @@ export interface FxInfo {
   fx_error: string;
 }
 
-let _monitorAccess: Promise<{ url: string; key: string }> | null = null;
-
-/** Where the conductor's monitor is and the key its per-instance routes ask for; both '' when there is none. */
-function monitorAccess() {
-  return (_monitorAccess ??= orchestraGet()
-    .then((o) => ({ url: (o.monitor?.url || '').trim().replace(/\/$/, ''), key: o.monitor?.read_key || '' }))
-    .catch(() => ((_monitorAccess = null), { url: '', key: '' })));
-}
-
 /** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
-export const monitorUrl = () => monitorAccess().then((a) => a.url);
+export const monitorUrl = () =>
+  orchestraGet()
+    .then((o) => (o.monitor?.url || '').trim().replace(/\/$/, ''))
+    .catch(() => '');
 
-/** A new read key; the monitor takes it on its next poll, and this page asks the conductor for it again. */
-export const monitorKeyRotate = () => update('monitor_key_rotate', {}).then(() => void (_monitorAccess = null));
+/**
+ * The key the monitor's per-instance routes ask for; '' when there is none or this reader may not have it.
+ * Asked for on every use and never stored, so it is not in a cached view and a rotation takes effect at once.
+ */
+export const monitorKeyGet = () =>
+  query<{ key: string }>('monitor_key_get')
+    .then((r) => r.key)
+    .catch(() => '');
+
+/** A new read key; the monitor takes it on its next poll. */
+export const monitorKeyRotate = () => update('monitor_key_rotate', {});
 
 async function _monitor<T>(path: string, post = false): Promise<T | null> {
-  const { url: base, key } = await monitorAccess();
+  const base = await monitorUrl();
   if (!base) return null;
+  const key = await monitorKeyGet();
   try {
     const res = await fetch(base + path, {
       method: post ? 'POST' : 'GET',

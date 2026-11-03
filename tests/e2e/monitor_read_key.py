@@ -6,9 +6,11 @@
 It bundles the real `frontend/src/lib/api.ts` with esbuild, stubbing only the IC transport (the conductor
 answers `orchestra_get` from the page), loads it in headless Chromium from one origin and lets it call a
 monitor started on a random local port (8100-8999, so the browser makes a CORS preflight for the
-Authorization header). The monitor enforces read keys. A reader of the whole orchestra gets the key from
-`orchestra_get` and the reports; a scoped reader gets none and is refused. Needs `npm ci` in frontend/ and
-Playwright's Chromium. Leaves a screenshot and a video in the out dir (default: a temp dir, printed).
+Authorization header). The monitor enforces read keys. A reader of the whole orchestra asks the conductor for
+the key with `monitor_key_get` and gets the reports; a scoped reader is refused the key and the reports. The
+key is asked for on every use: changing it at the conductor changes what the next request sends. The cached
+orchestra tree in localStorage holds no key. Needs `npm ci` in frontend/ and Playwright's Chromium. Leaves a
+screenshot and a video in the out dir (default: a temp dir, printed).
 """
 
 import json
@@ -30,20 +32,39 @@ KEY = "5e" * 32
 
 AGENT_STUB = """
 export class HttpAgent { async fetchRootKey() {} }
+const reply = (r) => JSON.stringify({ ok: true, ...r });
 export const Actor = { createActor: () => ({
-  orchestra_get: async () => JSON.stringify({ ok: true, ...window.__orchestra, next: {} }),
+  orchestra_get: async () => reply({ monitor: window.__world.monitor, sections: [], stands: [], canisters: [], aliases: {}, next: {} }),
+  grant_list: async () => reply({ grants: [], next: {} }),
+  monitor_key_get: async () => window.__world.whole
+    ? reply({ key: window.__world.key })
+    : JSON.stringify({ ok: false, error: 'unauthorized: needs read access to the whole orchestra' }),
 }) };
 """
 ASYNC_AGENT_STUB = "export const createHttpAgent = () => ({ fetchRootKey: async () => {} });"
 AUTH_STUB = "import { writable } from 'svelte/store'; export const identity = writable(null);"
 ENTRY = """
-import { monitorFx, monitorHistory } from '%(api)s';
+import { backendCanisterId, loadView, monitorFx, monitorHistory, monitorKeyGet } from '%(api)s';
+import { browserTreeStorage, treeCacheKey, writeCachedTree } from '%(cache)s';
 import { fetchMonitorInstanceStatus } from '%(hosted)s';
-window.run = async () => ({
-  fx: await monitorFx(),
-  history: await monitorHistory(),
-  status: await fetchMonitorInstanceStatus(window.__orchestra.monitor.url, fetch, window.__orchestra.monitor.read_key || ''),
-});
+window.run = async () => {
+  const world = window.__world;
+  writeCachedTree(backendCanisterId(), await loadView(), browserTreeStorage());
+  const reports = async () => ({
+    fx: await monitorFx(),
+    history: await monitorHistory(),
+    status: await fetchMonitorInstanceStatus(world.monitor.url, fetch, await monitorKeyGet()),
+  });
+  const result = { reports: await reports() };
+  const good = world.key;
+  world.key = 'rotated-at-the-conductor';
+  result.afterRotation = await monitorFx();
+  world.key = good;
+  result.afterRestore = await monitorFx();
+  result.cached = localStorage.getItem(treeCacheKey(backendCanisterId()));
+  result.storage = JSON.stringify({ ...localStorage, ...sessionStorage });
+  return result;
+};
 """
 BUILD = """
 const esbuild = require('%(esbuild)s');
@@ -70,7 +91,7 @@ def free_port() -> int:
 
 def bundle(work: str) -> None:
     files = {"agent.js": AGENT_STUB, "asyncAgent.ts": ASYNC_AGENT_STUB, "auth.ts": AUTH_STUB,
-             "entry.ts": ENTRY % {"api": f"{FRONTEND}/src/lib/api.ts", "hosted": f"{FRONTEND}/src/lib/hostedMonitor.ts"},
+             "entry.ts": ENTRY % {"api": f"{FRONTEND}/src/lib/api.ts", "cache": f"{FRONTEND}/src/lib/treeCache.ts", "hosted": f"{FRONTEND}/src/lib/hostedMonitor.ts"},
              "build.cjs": BUILD % {"esbuild": f"{FRONTEND}/node_modules/esbuild", "dir": work, "cid": CONDUCTOR, "modules": f"{FRONTEND}/node_modules"}}
     for name, text in files.items():
         with open(os.path.join(work, name), "w") as f:
@@ -100,18 +121,19 @@ def start_monitor(work: str, port: int) -> subprocess.Popen:
     raise RuntimeError("the monitor did not start")
 
 
-def run_page(playwright, page_url: str, monitor_url: str, key: str, out: str, shot: str):
+def run_page(playwright, page_url: str, monitor_url: str, whole: bool, out: str, shot: str):
     browser = playwright.chromium.launch()
     ctx = browser.new_context(record_video_dir=out)
     page = ctx.new_page()
     seen = []
     page.on("request", lambda r: seen.append((r.url, r.headers.get("authorization"))) if monitor_url in r.url else None)
-    orchestra = {"monitor": {"principal": "p", "url": f"{monitor_url}/v1/{CONDUCTOR}", **({"read_key": key} if key else {})}}
-    page.add_init_script(f"window.__orchestra = {json.dumps(orchestra)}")
+    world = {"monitor": {"principal": "p", "url": f"{monitor_url}/v1/{CONDUCTOR}"}, "key": KEY, "whole": whole}
+    page.add_init_script(f"window.__world = {json.dumps(world)}")
     page.goto(page_url)
     page.add_script_tag(url=f"{page_url}bundle.js")
     result = page.evaluate("window.run()")
-    page.evaluate("(r) => { document.getElementById('out').textContent = JSON.stringify(r, null, 1) }", result)
+    shown = {k: v for k, v in result.items() if k not in ("cached", "storage")}
+    page.evaluate("(r) => { document.getElementById('out').textContent = JSON.stringify(r, null, 1) }", shown)
     page.screenshot(path=shot)
     ctx.close()
     browser.close()
@@ -133,13 +155,16 @@ def main() -> None:
         # `localhost`, not 127.0.0.1: the app treats only localhost as a local host.
         page_url, monitor_url = f"http://localhost:{page_port}/", f"http://127.0.0.1:{monitor_port}"
         with sync_playwright() as p:
-            whole, seen = run_page(p, page_url, monitor_url, KEY, os.path.join(out, "whole"), os.path.join(out, "whole.png"))
-            scoped, _ = run_page(p, page_url, monitor_url, "", os.path.join(out, "scoped"), os.path.join(out, "scoped.png"))
+            whole, seen = run_page(p, page_url, monitor_url, True, os.path.join(out, "whole"), os.path.join(out, "whole.png"))
+            scoped, _ = run_page(p, page_url, monitor_url, False, os.path.join(out, "scoped"), os.path.join(out, "scoped.png"))
         sent = [auth for url, auth in seen if f"/v1/{CONDUCTOR}/" in url]
-        assert sent and all(a == f"Bearer {KEY}" for a in sent), seen
-        assert whole["fx"] and whole["history"] and whole["status"]["id"] == CONDUCTOR, whole
-        assert scoped == {"fx": None, "history": None, "status": None}, scoped
-        print(f"ok: {len(sent)} requests carried the bearer and were accepted; a reader without the key got nothing.")
+        assert sent and {f"Bearer {KEY}", "Bearer rotated-at-the-conductor"} >= set(sent), seen
+        reports = whole["reports"]
+        assert reports["fx"] and reports["history"] and reports["status"]["id"] == CONDUCTOR, whole
+        assert whole["afterRotation"] is None and whole["afterRestore"], "the key must be asked for again on every use"
+        assert whole["cached"] and KEY not in whole["storage"], "the cached tree and the browser storage must hold no key"
+        assert scoped["reports"] == {"fx": None, "history": None, "status": None} and scoped["afterRestore"] is None, scoped
+        print(f"ok: {len(sent)} requests carried the bearer; a rotated key took effect at once; the cache held no key; a scoped reader got nothing.")
         print(f"screenshots and video in {out}")
     finally:
         pages.kill()
