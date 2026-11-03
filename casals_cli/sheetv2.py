@@ -274,6 +274,12 @@ def env_public_read(sheet: dict, env: str) -> bool:
     return env_block(sheet, env).get("public_read") is True
 
 
+def env_controller_grants(sheet: dict, env: str) -> bool:
+    """``environments.<env>.controller_grants``: the Batons accept controller-grant
+    proposals. Missing is ``False``; validation refuses it on ``production``."""
+    return env_block(sheet, env).get("controller_grants") is True
+
+
 def declared_subnet(spec: dict | None) -> tuple[str, str]:
     """``(subnet, subnet_type)`` written on one section or stand. Missing is empty."""
     if not isinstance(spec, dict):
@@ -1128,6 +1134,11 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
             errors.append(f"{path}.network is required")
         if "public_read" in block and not isinstance(block["public_read"], bool):
             errors.append(f"{path}.public_read must be true or false")
+        if "controller_grants" in block:
+            if not isinstance(block["controller_grants"], bool):
+                errors.append(f"{path}.controller_grants must be true or false")
+            elif block["controller_grants"] and env_name == "production":
+                errors.append(f"{path}.controller_grants is not allowed in production")
         if "cycles" in block and isinstance(block["cycles"], dict):
             _validate_cycles_block(block["cycles"], f"{path}.cycles", errors)
         if "monitor" in block:

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -123,3 +124,34 @@ def test_the_sheet_sets_how_many_snapshots_to_keep():
                          ([], "snapshots must be an object")):
         assert any(message in e for e in validate({**sheet, "snapshots": bad})), bad
     assert not any("snapshots" in e for e in validate(sheet))
+
+
+def _baton_sheet(env_cfg):
+    baton = {"commanders": ["aaaaa-aa"], "threshold": 1, "manages": "*", "hand_off": True}
+    return {"version": 2, "name": "t", "environments": {"staging": {"network": "local", **env_cfg}},
+            "sections": [{"name": "S", "stands": [{"name": "s1", "baton": baton, "canisters": [
+                {"name": "s1-baton", "wasm": "b"}]}]}]}
+
+
+def _baton_set_config(sheet):
+    doc = normalize(sheet, "staging", deployer="2vxsx-fae", ids={}, uploads=[])
+    calls = next(c for s in doc["sections"] for st in s["stands"] for c in st["canisters"])["config"]
+    return [json.loads(c["arg"]) for c in calls if c["method"] == "set_config"][0]
+
+
+def test_the_environment_decides_whether_batons_take_controller_grants():
+    assert _baton_set_config(_baton_sheet({}))["controller_grants"] is False
+    assert _baton_set_config(_baton_sheet({"controller_grants": True}))["controller_grants"] is True
+
+
+def test_controller_grants_are_refused_in_production():
+    from casals_cli.sheetv2 import validate
+
+    def grant_errors(env, value):
+        sheet = _baton_sheet({"controller_grants": value})
+        sheet["environments"] = {env: {"network": "local", "controller_grants": value}}
+        return [e for e in validate(sheet, env) if "controller_grants" in e]
+
+    assert grant_errors("staging", True) == [] and grant_errors("production", False) == []
+    assert grant_errors("production", True) == ["environments.production.controller_grants is not allowed in production"]
+    assert grant_errors("staging", "yes") == ["environments.staging.controller_grants must be true or false"]

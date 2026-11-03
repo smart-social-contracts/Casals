@@ -12,9 +12,9 @@ from __future__ import annotations
 import json
 
 from casals_cli.sheetv2 import (
-    CONDUCTOR_NAMES, MULTISIG_NAME, WASM_NAMESPACE, ResolveContext, baton_commanders, env_block, env_monitor,
-    find_placeholder_tokens, registry_path, resolve_partial, section_arrangement, stand_member, store_key,
-    strip_comments,
+    CONDUCTOR_NAMES, MULTISIG_NAME, WASM_NAMESPACE, ResolveContext, baton_commanders, env_block,
+    env_controller_grants, env_monitor, find_placeholder_tokens, registry_path, resolve_partial, section_arrangement,
+    stand_member, store_key, strip_comments,
 )
 
 KEYS = ("canister.create", "canister.deploy", "canister.config", "canister.lifecycle", "canister.delete",
@@ -74,8 +74,8 @@ def manages(baton: dict, name: str) -> bool:
     return any(name.endswith(f"-{r}") or f"-{r}-" in name for r in roles or [])
 
 
-def baton_config(baton: dict, store_id: str) -> list[dict]:
-    calls = [text_call("set_config", {"wasm_store_canister_id": store_id})]
+def baton_config(baton: dict, store_id: str, controller_grants: bool) -> list[dict]:
+    calls = [text_call("set_config", {"wasm_store_canister_id": store_id, "controller_grants": controller_grants})]
     calls += [text_call("add_commander", {**c, "capabilities": BATON_CAPS}) for c in baton_commanders(baton)]
     return calls + [text_call("set_config", {"upgrade_approval_policy": {"threshold": int(baton.get("threshold") or 1)}})]
 
@@ -100,7 +100,7 @@ def apply_kind_policies(sections: list[dict], cycles: dict) -> None:
                 c["policy"] = by_kind[c.get("kind", "backend")]
 
 
-def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_id: str) -> dict:
+def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_id: str, controller_grants: bool) -> dict:
     name = spec["name"]
     config = [text_call(c["method"], c.get("args", "")) for c in spec.get("config") or []]
     config += [{"method": "grant_permission", "arg": f'(record {{ to_principal = principal "{g["principal"]}"; '
@@ -110,7 +110,7 @@ def canister(spec: dict, keys: dict, baton: dict | None, baton_ref: str, store_i
         controllers += [baton_ref] * (baton_ref not in controllers)
         config.append(text_call("add_managed_canister", "$this", baton_ref))
     if baton and name.endswith("-baton"):
-        config = baton_config(baton, store_id) + config
+        config = baton_config(baton, store_id, controller_grants) + config
     out = {"name": name, "kind": spec.get("kind", "backend"), "wasm": keys.get(spec.get("wasm", ""), spec.get("wasm", "")),
            "public": bool(spec.get("public")), "install_arg": install_arg(spec.get("install_arg")),
            "content": spec.get("content", ""), "files": spec.get("files") or {}, "controllers": controllers,
@@ -132,12 +132,12 @@ def bind_stand_roles(stand: dict) -> dict:
     return json.loads(text)
 
 
-def section(sec: dict, keys: dict, store_id: str, adopted: dict) -> dict:
+def section(sec: dict, keys: dict, store_id: str, adopted: dict, controller_grants: bool) -> dict:
     out = {"name": sec["name"], "description": sec.get("description", ""), "subnet": sec.get("subnet", ""), "stands": []}
     tmpl = section_arrangement(sec)
     if tmpl:
         baton = tmpl.get("baton")
-        out["template"] = {"canisters": [canister(c, keys, baton, "$stand.baton", store_id) for c in tmpl["canisters"]],
+        out["template"] = {"canisters": [canister(c, keys, baton, "$stand.baton", store_id, controller_grants) for c in tmpl["canisters"]],
                            "commanders": [{"principal": g["principal"], "permissions": g["permissions"]}
                                           for g in grants("", tmpl.get("commanders"))]}
     for st in sec.get("stands") or []:
@@ -145,7 +145,7 @@ def section(sec: dict, keys: dict, store_id: str, adopted: dict) -> dict:
         baton = st.get("baton")
         member = stand_member(st, "baton") if baton else None
         ref = f"$canister:{member['name']}" if member else ""
-        rows = [canister({**c, "canister_id": adopted.get(c["name"], "")}, keys, baton, ref, store_id)
+        rows = [canister({**c, "canister_id": adopted.get(c["name"], "")}, keys, baton, ref, store_id, controller_grants)
                 for c in st.get("canisters") or [] if not c.get("retire")]
         out["stands"].append({"name": st["name"], "description": st.get("description", ""),
                               "subnet": st.get("subnet", ""), "canisters": rows})
@@ -191,7 +191,7 @@ def normalize(sheet: dict, env: str, *, deployer: str, ids: dict, uploads: list[
     adopted = {**(env_block(resolved, env).get("bindings") or {}), **ids}
     cycles = {**(resolved.get("cycles") or {}), **(env_block(resolved, env).get("cycles") or {})}
     sections = [conductor_section(resolved, ids, keys, store_id)]
-    sections += [section(s, keys, store_id, adopted) for s in resolved.get("sections") or []]
+    sections += [section(s, keys, store_id, adopted, env_controller_grants(resolved, env)) for s in resolved.get("sections") or []]
     apply_kind_policies(sections, cycles)
     doc_grants = grants("orchestra", (resolved.get("conductor") or {}).get("commanders"))
     for sec in resolved.get("sections") or []:
