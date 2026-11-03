@@ -5,6 +5,7 @@
     formatCycles,
     loadView,
     meSet,
+    monitorKeyRotate,
     orchestraSet,
     parseCycles,
     type OrchestraView,
@@ -53,6 +54,8 @@
   let monitorPrincipal = $state('');
   let monitorStatus = $state<MonitorInstanceStatus | null>(null);
   let monitorNote = $state('');
+  let readKey = $state('');
+  let rotating = $state(false);
 
   let email = $state('');
   let emailConfirmed = $state<boolean | null>(null);
@@ -82,7 +85,8 @@
       [monitorUrl, monitorPrincipal] = [x.monitor.url ?? '', x.monitor.principal ?? ''];
       hostedBase = monitorBaseFromInstanceUrl(monitorUrl) || HOSTED_MONITOR_BASE;
       email = x.email;
-      if (monitorUrl) monitorStatus = await fetchMonitorInstanceStatus(monitorUrl).catch(() => null);
+      readKey = x.monitor.read_key ?? '';
+      if (monitorUrl) monitorStatus = await fetchMonitorInstanceStatus(monitorUrl, fetch, readKey).catch(() => null);
       await checkEmail();
     } catch (e: any) {
       error = e?.message ?? String(e);
@@ -97,7 +101,7 @@
 
   async function checkEmail() {
     const base = monitorBaseFromInstanceUrl(monitorUrl);
-    emailConfirmed = email && base ? await notificationEmailConfirmed(base, backendCanisterId(), email, get(principal)) : null;
+    emailConfirmed = email && base ? await notificationEmailConfirmed(base, backendCanisterId(), email, get(principal), fetch, readKey) : null;
   }
 
   async function lookUpService() {
@@ -140,6 +144,20 @@
     }
   }
 
+  async function rotateReadKey() {
+    rotating = true;
+    try {
+      await monitorKeyRotate();
+      monitorNote = 'New read key made. The monitor takes it on its next poll; until then its reports may be refused.';
+      toasts.success('Read key rotated');
+      await load();
+    } catch (e: any) {
+      toasts.error(e?.message ?? 'Could not rotate the read key');
+    } finally {
+      rotating = false;
+    }
+  }
+
   async function saveEmail(event: Event) {
     event.preventDefault();
     const value = email.trim();
@@ -150,7 +168,7 @@
       emailNote = '';
       const base = monitorBaseFromInstanceUrl(monitorUrl);
       if (value && base) {
-        const res = await requestNotificationConfirmation(base, backendCanisterId(), value, get(principal));
+        const res = await requestNotificationConfirmation(base, backendCanisterId(), value, get(principal), fetch, readKey);
         emailNote = res.ok ? `Confirmation sent to ${value}. Open the link in that message.` : res.detail || 'Could not send the confirmation email';
       }
       toasts.success(value ? 'Email saved' : 'Email removed');
@@ -276,6 +294,12 @@
           </div>
           <div><label class="label" for="murl">Instance URL</label><input id="murl" class="input font-mono text-xs" bind:value={monitorUrl} /></div>
           <div><label class="label" for="mpr">Monitor principal</label><input id="mpr" class="input font-mono text-xs" bind:value={monitorPrincipal} /></div>
+          {#if o.monitor.url}
+            <div>
+              <button type="button" class="btn-secondary btn-sm" onclick={rotateReadKey} disabled={rotating}>{rotating ? 'Rotating…' : 'Rotate read key'}</button>
+              <p class="text-xs text-primary-400 mt-1">The monitor refuses reports about this conductor to anyone without the read key; readers of the whole orchestra get it from the conductor. {o.monitor.read_key ? 'Rotate it if it may have leaked.' : 'This conductor has none yet: rotate to make the first one.'}</p>
+            </div>
+          {/if}
           {#if monitorNote}<p class="text-xs text-primary-600">{monitorNote}</p>{/if}
         </fieldset>
         {#if canEdit}

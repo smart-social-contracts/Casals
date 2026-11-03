@@ -61,6 +61,8 @@ def orchestra_get(principal, args):
     canisters, no sections."""
     o, scopes = orchestra(), reader_scopes(principal)
     shown = {k: getattr(o, k) for k in SHOWN}
+    if scopes is None and o.monitor_read_key:  # the monitor reports on the whole orchestra, so only its readers get the key
+        shown["monitor"] = {**o.monitor, "read_key": o.monitor_read_key}
     if args.get("stand"):
         (canisters, stand_rows), sections = one_stand(scopes, args["stand"]), []
         next_canister = next_section = next_stand = None
@@ -130,6 +132,11 @@ def monitor_setting(m):
     return {"principal": principal, "url": url} if principal else {}
 
 
+def new_read_key():
+    key = yield from chain.random_bytes()
+    return key.hex()
+
+
 @op("orchestra.settings")
 def orchestra_set(principal, args):
     if "snapshots_keep" in args:
@@ -139,6 +146,12 @@ def orchestra_set(principal, args):
     for key in SETTABLE:
         if key in args:
             setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])
+    if "monitor" in args:
+        # A monitor that is new, or that never got a key (set before keys existed), gets one; no monitor, no key.
+        if not o.monitor:
+            o.monitor_read_key = ""
+        elif o.monitor["principal"] != before or not o.monitor_read_key:
+            o.monitor_read_key = yield from new_read_key()
     if o.monitor.get("principal") != before:
         return {"monitor": o.monitor, "unreachable": (yield from share_status())}
 
@@ -161,3 +174,18 @@ def me_set(principal, args):
     else:
         contacts.pop(principal, None)
     orchestra().contacts = contacts
+
+
+@op("orchestra.settings")
+def monitor_key_rotate(principal, args):
+    """A new read key; the monitor takes it on its next poll and the old one stops working."""
+    o = orchestra()
+    if not o.monitor:
+        raise ValueError("no monitor is set")
+    o.monitor_read_key = yield from new_read_key()
+
+
+@op("controller", read=True, monitor=True)
+def monitor_key_get(principal, args):
+    """What the monitor checks the bearer of a per-instance route against."""
+    return {"key": orchestra().monitor_read_key}

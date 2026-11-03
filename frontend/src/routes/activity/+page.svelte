@@ -69,6 +69,7 @@
       case 'content_done': return `Content deployed to ${p.canister}`;
       case 'content_failed': return `Content deploy to ${p.canister} failed: ${p.error ?? ''}`;
       case 'stand_build_failed': return `Stand ${p.stand} build failed: ${p.error ?? ''}`;
+      case 'monitor_key_rotate': return 'Monitor read key rotated';
       case 'orchestra_set': return `Settings changed: ${Object.keys(p).join(', ')}`;
       default: return String(subject);
     }

@@ -1,4 +1,5 @@
 import hashlib
+import os
 
 ANONYMOUS = "2vxsx-fae"
 SELF = "conductor"
@@ -103,6 +104,11 @@ def sha(data):
 
 def encode(candid):
     return candid.encode()
+
+
+@gen
+def random_bytes():
+    return os.urandom(32)
 
 
 @gen

@@ -4,7 +4,7 @@ from canisters import provision, share_status
 from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, first, matching, orchestra, page, page_of, resolve, set_build
 from op import op
-from orchestra import monitor_setting
+from orchestra import monitor_setting, new_read_key
 from rounds import schedule, step
 from snapshots import check_keep
 from stands import build, build_failed, member_row, members
@@ -55,6 +55,8 @@ def orchestra_up(principal, args):
     todo = plan(args)
     if args.get("dry_run"):
         return {"plan": todo}
+    if monitor_setting(args.get("monitor")):
+        o.monitor_read_key = yield from new_read_key()
     for key in SETTINGS:
         if key in args:
             setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])

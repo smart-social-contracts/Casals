@@ -71,7 +71,8 @@ export interface Orchestra {
   subnets: string[];
   creatable_subnets: string[];
   subnets_at: number;
-  monitor: { principal?: string; url?: string };
+  /** `read_key` is the bearer for the monitor's per-instance routes; only readers of the whole orchestra get it. */
+  monitor: { principal?: string; url?: string; read_key?: string };
   /** snapshots each canister keeps, newest first (1–9) */
   snapshots_keep: number;
   aliases: Record<string, string>;
@@ -514,22 +515,32 @@ export interface FxInfo {
   fx_error: string;
 }
 
-let _monitorUrl: Promise<string> | null = null;
+let _monitorAccess: Promise<{ url: string; key: string }> | null = null;
 
-/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
-export function monitorUrl(): Promise<string> {
-  return (_monitorUrl ??= orchestraGet()
-    .then((o) => (o.monitor?.url || '').trim().replace(/\/$/, ''))
-    .catch(() => ((_monitorUrl = null), '')));
+/** Where the conductor's monitor is and the key its per-instance routes ask for; both '' when there is none. */
+function monitorAccess() {
+  return (_monitorAccess ??= orchestraGet()
+    .then((o) => ({ url: (o.monitor?.url || '').trim().replace(/\/$/, ''), key: o.monitor?.read_key || '' }))
+    .catch(() => ((_monitorAccess = null), { url: '', key: '' })));
 }
 
+/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
+export const monitorUrl = () => monitorAccess().then((a) => a.url);
+
+/** A new read key; the monitor takes it on its next poll, and this page asks the conductor for it again. */
+export const monitorKeyRotate = () => update('monitor_key_rotate', {}).then(() => void (_monitorAccess = null));
+
 async function _monitor<T>(path: string, post = false): Promise<T | null> {
-  const base = await monitorUrl();
+  const { url: base, key } = await monitorAccess();
   if (!base) return null;
   try {
     const res = await fetch(base + path, {
       method: post ? 'POST' : 'GET',
-      headers: { accept: 'application/json', ...(post ? { 'content-type': 'application/json' } : {}) },
+      headers: {
+        accept: 'application/json',
+        ...(post ? { 'content-type': 'application/json' } : {}),
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
       ...(post ? { body: '{}' } : {}),
       signal: AbortSignal.timeout(post ? 90_000 : 20_000),
     });

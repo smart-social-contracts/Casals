@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   describeMonitorState,
+  fetchMonitorInstanceStatus,
   fetchMonitorService,
   instanceIdFromInstanceUrl,
   instanceUrlFor,
   isHostedUrlFor,
   monitorBaseFromInstanceUrl,
   normalizeMonitorBase,
+  notificationEmailConfirmed,
   registerWithMonitor,
+  requestNotificationConfirmation,
   serviceLookupNeeded,
   type MonitorInstanceStatus,
 } from './hostedMonitor.ts';
@@ -113,5 +116,36 @@ describe('service + registration fetches', () => {
     const plain = await registerWithMonitor('https://m.example', CID, {}, fakeFetch(429, { detail: 'too many' }));
     assert.deepEqual(plain, { ok: false, status: 429, detail: 'too many' });
     assert.equal((await registerWithMonitor('', CID)).status, 0);
+  });
+});
+
+describe('the conductor read key', () => {
+  const recorder = () => {
+    const seen: { input: string; headers: Record<string, string> }[] = [];
+    const fetchFn = async (input: string, init?: RequestInit) => {
+      seen.push({ input, headers: { ...(init?.headers as Record<string, string>) } });
+      return new Response(JSON.stringify({ id: 'x', confirmed: true }), { status: 200 });
+    };
+    return { seen, fetchFn };
+  };
+
+  it('is sent as a bearer on the per-instance status', async () => {
+    const { seen, fetchFn } = recorder();
+    await fetchMonitorInstanceStatus(`https://m.example/v1/${CID}`, fetchFn, 'k3y');
+    assert.equal(seen[0].input, `https://m.example/v1/${CID}/status`);
+    assert.equal(seen[0].headers.authorization, 'Bearer k3y');
+  });
+
+  it('is sent on the notification email routes', async () => {
+    const { seen, fetchFn } = recorder();
+    await requestNotificationConfirmation('https://m.example', CID, 'a@b.org', 'prin', fetchFn, 'k3y');
+    assert.equal(await notificationEmailConfirmed('https://m.example', CID, 'a@b.org', 'prin', fetchFn, 'k3y'), true);
+    assert.deepEqual(seen.map((s) => s.headers.authorization), ['Bearer k3y', 'Bearer k3y']);
+  });
+
+  it('is left out when the conductor has none', async () => {
+    const { seen, fetchFn } = recorder();
+    await fetchMonitorInstanceStatus(`https://m.example/v1/${CID}`, fetchFn);
+    assert.equal('authorization' in seen[0].headers, false);
   });
 });

@@ -114,6 +114,11 @@ export function describeMonitorState(st: MonitorInstanceStatus | null | undefine
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** The monitor's per-instance routes take the conductor's read key as a bearer. */
+function _bearer(readKey: string): Record<string, string> {
+  return readKey ? { authorization: `Bearer ${readKey}` } : {};
+}
+
 function _signal(ms: number): AbortSignal | undefined {
   if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) return AbortSignal.timeout(ms);
   return undefined;
@@ -186,13 +191,14 @@ export async function requestNotificationConfirmation(
   email: string,
   principal: string,
   fetchFn: FetchLike = fetch,
+  readKey = '',
 ): Promise<NotificationConfirmResult> {
   const b = normalizeMonitorBase(base);
   if (!b) return { ok: false, status: 'error', detail: 'no monitor' };
   try {
     const res = await fetchFn(`${b}/v1/notification-email/request`, {
       method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      headers: { accept: 'application/json', 'content-type': 'application/json', ..._bearer(readKey) },
       body: JSON.stringify({ canister_id: canisterId, email, principal }),
       signal: _signal(30_000),
     });
@@ -218,13 +224,14 @@ export async function notificationEmailConfirmed(
   email: string,
   principal: string,
   fetchFn: FetchLike = fetch,
+  readKey = '',
 ): Promise<boolean> {
   const b = normalizeMonitorBase(base);
   if (!b || !email || !principal) return false;
   try {
     const q = new URLSearchParams({ canister_id: canisterId, email, principal });
     const res = await fetchFn(`${b}/v1/notification-email/status?${q}`, {
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', ..._bearer(readKey) },
       signal: _signal(15_000),
     });
     if (!res.ok) return false;
@@ -239,11 +246,12 @@ export async function notificationEmailConfirmed(
 export async function fetchMonitorInstanceStatus(
   instanceUrl: string,
   fetchFn: FetchLike = fetch,
+  readKey = '',
 ): Promise<MonitorInstanceStatus | null> {
   const u = (instanceUrl || '').trim().replace(/\/$/, '');
   if (!u) return null;
   try {
-    const res = await fetchFn(`${u}/status`, { headers: { accept: 'application/json' }, signal: _signal(15_000) });
+    const res = await fetchFn(`${u}/status`, { headers: { accept: 'application/json', ..._bearer(readKey) }, signal: _signal(15_000) });
     if (!res.ok) return null;
     return (await res.json()) as MonitorInstanceStatus;
   } catch {
