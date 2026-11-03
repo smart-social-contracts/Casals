@@ -515,11 +515,14 @@ export interface FxInfo {
   fx_error: string;
 }
 
-/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
-export const monitorUrl = () =>
-  orchestraGet()
+let _monitorUrl: Promise<string> | null = null;
+
+/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. Memoised: it costs a whole-orchestra read. */
+export function monitorUrl(): Promise<string> {
+  return (_monitorUrl ??= orchestraGet()
     .then((o) => (o.monitor?.url || '').trim().replace(/\/$/, ''))
-    .catch(() => '');
+    .catch(() => ((_monitorUrl = null), '')));
+}
 
 /**
  * The key the monitor's per-instance routes ask for; '' when there is none or this reader may not have it.

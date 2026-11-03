@@ -8,7 +8,7 @@ answers `orchestra_get` from the page), loads it in headless Chromium from one o
 monitor started on a random local port (8100-8999, so the browser makes a CORS preflight for the
 Authorization header). The monitor enforces read keys. A reader of the whole orchestra asks the conductor for
 the key with `monitor_key_get` and gets the reports; a scoped reader is refused the key and the reports. The
-key is asked for on every use: changing it at the conductor changes what the next request sends. The cached
+monitor URL comes from one `orchestra_get` per page load. The key is asked for on every use: changing it at the conductor changes what the next request sends. The cached
 orchestra tree in localStorage holds no key. Needs `npm ci` in frontend/ and Playwright's Chromium. Leaves a
 screenshot and a video in the out dir (default: a temp dir, printed).
 """
@@ -34,7 +34,10 @@ AGENT_STUB = """
 export class HttpAgent { async fetchRootKey() {} }
 const reply = (r) => JSON.stringify({ ok: true, ...r });
 export const Actor = { createActor: () => ({
-  orchestra_get: async () => reply({ monitor: window.__world.monitor, sections: [], stands: [], canisters: [], aliases: {}, next: {} }),
+  orchestra_get: async () => {
+    window.__orchestraGets = (window.__orchestraGets || 0) + 1;
+    return reply({ monitor: window.__world.monitor, sections: [], stands: [], canisters: [], aliases: {}, next: {} });
+  },
   grant_list: async () => reply({ grants: [], next: {} }),
   monitor_key_get: async () => window.__world.whole
     ? reply({ key: window.__world.key })
@@ -44,18 +47,22 @@ export const Actor = { createActor: () => ({
 ASYNC_AGENT_STUB = "export const createHttpAgent = () => ({ fetchRootKey: async () => {} });"
 AUTH_STUB = "import { writable } from 'svelte/store'; export const identity = writable(null);"
 ENTRY = """
-import { backendCanisterId, loadView, monitorFx, monitorHistory, monitorKeyGet } from '%(api)s';
+import { backendCanisterId, loadView, monitorCycles, monitorFlow, monitorFx, monitorHistory, monitorKeyGet } from '%(api)s';
 import { browserTreeStorage, treeCacheKey, writeCachedTree } from '%(cache)s';
 import { fetchMonitorInstanceStatus } from '%(hosted)s';
 window.run = async () => {
   const world = window.__world;
   writeCachedTree(backendCanisterId(), await loadView(), browserTreeStorage());
+  const getsBefore = window.__orchestraGets || 0;
   const reports = async () => ({
     fx: await monitorFx(),
     history: await monitorHistory(),
     status: await fetchMonitorInstanceStatus(world.monitor.url, fetch, await monitorKeyGet()),
   });
   const result = { reports: await reports() };
+  // A page load makes several monitor requests; the monitor URL costs a whole-orchestra read, so it must be one.
+  await Promise.all([monitorCycles(), monitorHistory(), monitorFlow(), monitorFx()]);
+  result.orchestraGets = (window.__orchestraGets || 0) - getsBefore;
   const good = world.key;
   world.key = 'rotated-at-the-conductor';
   result.afterRotation = await monitorFx();
@@ -103,7 +110,9 @@ def bundle(work: str) -> None:
 
 def start_monitor(work: str, port: int) -> subprocess.Popen:
     env = {**os.environ, "DB_PATH": f"{work}/monitor.db", "SCHEDULER_ENABLED": "false", "ALERTS_ENABLED": "false",
-           "INSTANCES_FILE": f"{work}/none.json", "TENANT_READ_ENFORCE": "true", "OPS_READ_TOKEN": "x" * 32}
+           "INSTANCES_FILE": f"{work}/none.json", "TENANT_READ_ENFORCE": "true", "OPS_READ_TOKEN": "x" * 32,
+           # A refused key makes the monitor re-sync through the CLI; /bin/false: it must never call a real conductor from this test.
+           "IC_CLI": "/bin/false"}
     seed = ("from app import db; from app.read_key import key_hash; db.init_db(); "
             f"db.upsert_instance(id='{CONDUCTOR}', canister_id='{CONDUCTOR}'); "
             f"db.set_instance_read_key_hash('{CONDUCTOR}', key_hash('{KEY}'))")
@@ -161,10 +170,11 @@ def main() -> None:
         assert sent and {f"Bearer {KEY}", "Bearer rotated-at-the-conductor"} >= set(sent), seen
         reports = whole["reports"]
         assert reports["fx"] and reports["history"] and reports["status"]["id"] == CONDUCTOR, whole
+        assert whole["orchestraGets"] == 1, "one page load must read the whole orchestra once"
         assert whole["afterRotation"] is None and whole["afterRestore"], "the key must be asked for again on every use"
         assert whole["cached"] and KEY not in whole["storage"], "the cached tree and the browser storage must hold no key"
         assert scoped["reports"] == {"fx": None, "history": None, "status": None} and scoped["afterRestore"] is None, scoped
-        print(f"ok: {len(sent)} requests carried the bearer; a rotated key took effect at once; the cache held no key; a scoped reader got nothing.")
+        print(f"ok: {len(sent)} requests carried the bearer; the orchestra was read once; after the key changed at the conductor the frontend sent the new key at once and the monitor refused it; the cache held no key; a scoped reader got nothing.")
         print(f"screenshots and video in {out}")
     finally:
         pages.kill()
