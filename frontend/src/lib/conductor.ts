@@ -5,7 +5,7 @@ const QUERIES = [
   'grant_list', 'cycles_get', 'subnet_list', 'stand_release_preview',
 ];
 const UPDATES = [
-  'orchestra_up', 'orchestra_set', 'alias_set', 'me_set', 'section_create', 'section_set', 'section_delete',
+  'orchestra_up', 'orchestra_set', 'monitor_key_rotate', 'alias_set', 'me_set', 'section_create', 'section_set', 'section_delete',
   'stand_create', 'stand_set', 'stand_delete', 'stand_destroy', 'canister_create', 'canister_register',
   'canister_set', 'canister_upgrade', 'canister_controllers', 'canister_start', 'canister_stop',
   'canister_snapshot', 'canister_snapshots', 'canister_restore', 'canister_delete', 'canister_destroy', 'canister_browse',

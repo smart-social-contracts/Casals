@@ -158,6 +158,10 @@ def grant_set(args: text) -> Async[text]: return (yield from dispatch(grants.gra
 @update
 def me_set(args: text) -> Async[text]: return (yield from dispatch(orchestra.me_set, args))
 @query
+def monitor_key_get(args: text) -> text: return run(dispatch(orchestra.monitor_key_get, args))
+@update
+def monitor_key_rotate(args: text) -> Async[text]: return (yield from dispatch(orchestra.monitor_key_rotate, args))
+@query
 def orchestra_events(args: text) -> text: return run(dispatch(orchestra.orchestra_events, args))
 @query
 def orchestra_export(args: text) -> text: return run(dispatch(up.orchestra_export, args))

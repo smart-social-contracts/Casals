@@ -35,6 +35,11 @@ def commit():
     yield mgmt.raw_rand()
 
 
+def random_bytes():
+    """32 bytes from the management canister's `raw_rand`."""
+    return bytes(ok((yield mgmt.raw_rand())))
+
+
 def set_timer(secs, cb):
     return ic.set_timer(Duration(secs), cb)
 

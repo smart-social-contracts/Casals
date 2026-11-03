@@ -71,6 +71,7 @@ export interface Orchestra {
   subnets: string[];
   creatable_subnets: string[];
   subnets_at: number;
+  /** The read key is not part of the view: `monitorKeyGet` asks the conductor for it when it is needed. */
   monitor: { principal?: string; url?: string };
   /** snapshots each canister keeps, newest first (1–9) */
   snapshots_keep: number;
@@ -516,20 +517,37 @@ export interface FxInfo {
 
 let _monitorUrl: Promise<string> | null = null;
 
-/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. */
+/** `<service>/v1/<instance>` from the conductor's settings; '' when there is no monitor. Memoised: it costs a whole-orchestra read. */
 export function monitorUrl(): Promise<string> {
   return (_monitorUrl ??= orchestraGet()
     .then((o) => (o.monitor?.url || '').trim().replace(/\/$/, ''))
     .catch(() => ((_monitorUrl = null), '')));
 }
 
+/**
+ * The key the monitor's per-instance routes ask for; '' when there is none or this reader may not have it.
+ * Asked for on every use and never stored, so it is not in a cached view and a rotation takes effect at once.
+ */
+export const monitorKeyGet = () =>
+  query<{ key: string }>('monitor_key_get')
+    .then((r) => r.key)
+    .catch(() => '');
+
+/** A new read key; the monitor takes it on its next poll. */
+export const monitorKeyRotate = () => update('monitor_key_rotate', {});
+
 async function _monitor<T>(path: string, post = false): Promise<T | null> {
   const base = await monitorUrl();
   if (!base) return null;
+  const key = await monitorKeyGet();
   try {
     const res = await fetch(base + path, {
       method: post ? 'POST' : 'GET',
-      headers: { accept: 'application/json', ...(post ? { 'content-type': 'application/json' } : {}) },
+      headers: {
+        accept: 'application/json',
+        ...(post ? { 'content-type': 'application/json' } : {}),
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
       ...(post ? { body: '{}' } : {}),
       signal: AbortSignal.timeout(post ? 90_000 : 20_000),
     });

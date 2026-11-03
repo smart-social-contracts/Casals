@@ -40,6 +40,9 @@ class Orchestra(Entity):
     creatable_subnets = Json([])
     subnets_at = Integer(default=0)
     monitor = Json({})
+    # Bearer the monitor's per-instance routes ask for; "" while there is no monitor. A field of its own so
+    # no view or export of `monitor` can carry it.
+    monitor_read_key = String(default="")
     aliases = Json({})
     contacts = Json({})
     snapshots_keep = Integer(default=2)
