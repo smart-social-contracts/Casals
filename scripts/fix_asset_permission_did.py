@@ -7,16 +7,19 @@ import re
 import sys
 from pathlib import Path
 
-_BROKEN = re.compile(
-    r"variant\s*\{\s*Commit\s*:\s*;\s*Prepare\s*:\s*;\s*ManagePermissions\s*:\s*\s*\}"
-)
-_FIXED = "variant { Commit; Prepare; ManagePermissions }"
+# A record field always has a type, so `Name :` straight before `;` or `}` is a variant case without one.
+_UNIT_VARIANT = re.compile(r"(\w+)\s*:\s*([;}])")
+
+
+def _unit(match: re.Match) -> str:
+    name, end = match.groups()
+    return f"{name};" if end == ";" else f"{name} }}"
 
 
 def fix_file(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
-    new_text, count = _BROKEN.subn(_FIXED, text)
-    if count == 0:
+    new_text = _UNIT_VARIANT.sub(_unit, text)
+    if new_text == text:
         return False
     path.write_text(new_text, encoding="utf-8")
     return True
@@ -32,7 +35,7 @@ def main() -> int:
             print(f"missing {path}", file=sys.stderr)
             return 1
         if fix_file(path):
-            print(f"fixed AssetPermission in {path}")
+            print(f"fixed unit variants in {path}")
     return 0
 
 
