@@ -7,7 +7,7 @@ from model import Canister, Event, Wasm, each
 from test_canisters import catalog
 
 
-def frontend(files=12):
+def frontend(files=30):
     catalog()
     Wasm["app@1"].kind = "frontend"
     for i in range(files):
@@ -27,11 +27,11 @@ def bundle(prefix):
 def test_deploy_runs_rounds_until_done():
     cid = frontend()
     out = call("content_deploy", canister="web", namespace="web/v1", bundle_sha256=bundle("/web/v1"))
-    assert (out["status"], out["remaining"]) == ("running", 3)
+    assert (out["status"], out["remaining"]) == ("running", 6)
     assert "already running" in call("content_deploy", canister="web")["error"]
     run_timers()
     live = state["canisters"][cid]["assets"]
-    assert live["/ids.js"] == f"id={cid}".encode() and len(live) == 13 and ".casals-bundle.json" not in str(live)
+    assert live["/ids.js"] == f"id={cid}".encode() and len(live) == 31 and ".casals-bundle.json" not in str(live)
     assert call("content_status")["deploys"][0]["status"] == "done"
     assert list(each(Event))[-1].type == "content_done"
 
@@ -61,6 +61,25 @@ def test_a_listing_older_than_the_ttl_is_read_again():
     state["now"] += content.BUNDLE_TTL + 1
     run_timers()
     assert len(store_listings()) == 2
+
+
+def test_a_round_reads_the_files_it_writes_together():
+    import content
+
+    frontend(60)
+    call("content_deploy", canister="web", namespace="web/v1")
+    run_timers()
+    assert [c[1] for c in state["calls"] if c[0] == "gather"] == [content.MAX_FILES, content.MAX_FILES, 11]
+
+
+def test_a_failed_read_does_not_stop_the_other_reads_of_its_round():
+    import content
+
+    cid = frontend()
+    state["fail"]["read"] = "store unreachable"
+    assert call("content_deploy", canister="web", namespace="web/v1")["error"] == "store unreachable"
+    assert len([c for c in state["calls"] if c[0] == "read" and c[2].startswith("/web/v1/")]) == content.MAX_FILES
+    assert state["canisters"][cid]["assets"] == {}  # the round failed before it wrote
 
 
 def test_new_bundle_replaces_and_deletes_stale_files():

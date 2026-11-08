@@ -196,10 +196,12 @@ def content_change(o) -> None:
     open(os.path.join(new_dir, "v2.txt"), "w").write("only in v2\n")
     # Past a list page (100 keys), each file carrying its .ic-assets headers, and one file of two chunks:
     # the realm frontend (138 files) stalled at 100 when every round re-parsed the applied properties.
+    # A round writes its files at the same time: every one must come back with its own bytes.
     os.makedirs(os.path.join(new_dir, "bulk"), exist_ok=True)
-    for i in range(150):
-        open(os.path.join(new_dir, "bulk", f"f{i:03}.js"), "w").write(f"export const n = {i};\n")
-    open(os.path.join(new_dir, "bulk", "big.bin"), "wb").write(bytes(range(256)) * 10_000)
+    bulk = {f"/bulk/f{i:03}.js": f"export const n = {i};\n".encode() for i in range(150)}
+    bulk["/bulk/big.bin"] = bytes(range(256)) * 10_000
+    for page, data in bulk.items():
+        open(new_dir + page, "wb").write(data)
     packed = o.casals("bundle", new_dir, "-o", os.path.join(o.home, "v2.tgz"))
     changed = json.loads(json.dumps(o.sheet))
     changed["registry"]["bundles"].append({"path": entry["path"] + "-v2", "source": "local:" + os.path.join(o.home, "v2.tgz"),
@@ -219,6 +221,10 @@ def content_change(o) -> None:
             for page in ("/v2.txt", "/bulk/f149.js", "/bulk/big.bin"):
                 if (o.serves(name, page) is not None) is not present:
                     raise Fail(f"{name}: {page} {'missing' if present else 'still served'} after {ns}")
+        for name in frontends if present else []:
+            wrong = [page for page, data in bulk.items() if o.serves(name, page) != data]
+            if wrong:
+                raise Fail(f"{name}: {len(wrong)} files differ from the bundle after {ns}, e.g. {wrong[:3]}")
         if present and os.path.exists(os.path.join(new_dir, ".ic-assets.json5")):
             for name in frontends:
                 for page in ("/index.html", "/v2.txt"):

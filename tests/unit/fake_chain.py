@@ -91,6 +91,21 @@ def commit():
     state["committed"] = _rounds_heap()
 
 
+def gather(gens):
+    """One after another, so a test sees a fixed order; as chain.gather does, every one runs before an error is raised."""
+    state["calls"].append(("gather", len(gens)))
+    results = []
+    for g in gens:
+        try:
+            results.append((yield from g))
+        except Exception as e:
+            results.append(e)
+    failed = [r for r in results if isinstance(r, Exception)]
+    if failed:
+        raise failed[0]
+    return results
+
+
 def canister(cid, need_control=True):
     c = state["canisters"][cid]
     if need_control and SELF not in c["controllers"]:

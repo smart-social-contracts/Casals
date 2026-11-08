@@ -8,7 +8,7 @@ from model import Canister, Event, orchestra, resolve
 from op import op
 from rounds import schedule, step
 
-MAX_FILES = 10
+MAX_FILES = 25  # files written, with their reads and uploads in flight together, per round
 MANIFEST = ".casals-bundle.json"
 PROPERTIES = ".casals-assets.json"  # the bundle's .ic-assets.json5, resolved per file by the CLI
 TYPES = {"js": "text/javascript", "json": "application/json", "html": "text/html", "css": "text/css"}
@@ -54,6 +54,13 @@ def listed(c, content):
     return want
 
 
+def body(file, content, key):
+    """A file's bytes: a per-deployment file's text is in hand, any other is read from the store."""
+    if "text" in file:
+        return file["text"].encode()
+    return (yield from store.read(orchestra().store_id, f"/{content}{key}"))
+
+
 def sync(c, expected="", content=None):
     """Write up to MAX_FILES files of `content` (the row's own by default) to `c`; returns how many are left."""
     content = c.content if content is None else content
@@ -64,11 +71,9 @@ def sync(c, expected="", content=None):
     applied = c.assets_props  # each read of a Json field parses it again
     writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]
               or applied.get(k, {}) != want[k]["props"]]
-    puts = []
-    for key in writes[:MAX_FILES]:
-        data = want[key]["text"].encode() if "text" in want[key] else (
-            yield from store.read(orchestra().store_id, f"/{content}{key}"))
-        puts.append({**want[key], "key": key, "data": data, "replace": key in live})
+    keys = writes[:MAX_FILES]
+    bodies = yield from chain.gather([body(want[key], content, key) for key in keys])
+    puts = [{**want[key], "key": key, "data": data, "replace": key in live} for key, data in zip(keys, bodies)]
     deletes = sorted(set(live) - set(want)) if len(writes) == len(puts) else []
     if puts or deletes:
         yield from store.apply(c.canister_id, puts, deletes)

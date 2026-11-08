@@ -44,6 +44,34 @@ def set_timer(secs, cb):
     return ic.set_timer(Duration(secs), cb)
 
 
+def gather(gens):
+    """The results of the generators `gens`, run at the same time; once all have finished, the first error is raised."""
+    # A generator awaits one call at a time, but a timer callback that is a generator runs as a task of its own
+    # (rounds.tick relies on it too), so each one started from a timer keeps its calls in flight beside the others'.
+    # A task cannot wake this one, so it polls with commit(). The timers keep their callbacks, and so `outcomes`,
+    # which holds every result: it is emptied before this returns.
+    outcomes = {}
+
+    def start(i, gen):
+        def task():
+            try:
+                outcomes[i] = yield from gen
+            except Exception as e:
+                outcomes[i] = e
+        set_timer(0, task)
+
+    for i, gen in enumerate(gens):
+        start(i, gen)
+    while len(outcomes) < len(gens):
+        yield from commit()
+    results = [outcomes[i] for i in range(len(gens))]
+    outcomes.clear()
+    failed = [r for r in results if isinstance(r, Exception)]
+    if failed:
+        raise failed[0]
+    return results
+
+
 def ok(res):
     if getattr(res, "Err", None) is not None:
         raise Exception(f"call failed: {res.Err}")
