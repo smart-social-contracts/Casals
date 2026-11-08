@@ -81,6 +81,7 @@ jobs:
         run: |
           export PATH="$PWD/.venv-basilisk/bin:$PATH"
           export CANISTER_CANDID_PATH="$(pwd)/casals_backend.did"
+          rm casals_backend.did  # a Basilisk that wrote it elsewhere then shows as a deletion, not a clean diff
           python -m basilisk casals_backend src/main.py
           python3 scripts/fix_asset_permission_did.py casals_backend.did
 

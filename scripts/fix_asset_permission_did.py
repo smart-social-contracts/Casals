@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite Basilisk's invalid unit-variant Candid (`Commit : ;`) to `Commit;`."""
+"""Rewrite Basilisk's invalid unit-variant Candid (`Commit : ;`) to `Commit : null;`."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ import re
 import sys
 from pathlib import Path
 
-# A record field always has a type, so `Name :` straight before `;` or `}` is a variant case without one.
+# Basilisk writes a variant case with no payload as `Name :` and nothing after it; `null` is the type it means.
 _UNIT_VARIANT = re.compile(r"(\w+)\s*:\s*([;}])")
 
 
 def _unit(match: re.Match) -> str:
     name, end = match.groups()
-    return f"{name};" if end == ";" else f"{name} }}"
+    return f"{name} : null;" if end == ";" else f"{name} : null }}"
 
 
 def fix_file(path: Path) -> bool:
