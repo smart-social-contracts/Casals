@@ -8,6 +8,7 @@ LEDGER = "ryjl3-tyaaa-aaaaa-aaaba-cai"
 CYCLES_LEDGER = "um5iw-rqaaa-aaaaq-qaaba-cai"
 ICP_FEE = 10_000
 ESCAPES = {"n": b"\n", "r": b"\r", "t": b"\t", '"': b'"', "\\": b"\\", "'": b"'"}
+GATHER_LIMIT = 600  # seconds; under rounds.WATCHDOG (900), which this module cannot import
 
 
 def caller():
@@ -48,8 +49,9 @@ def gather(gens):
     """The results of the generators `gens`, run at the same time; once all have finished, the first error is raised."""
     # A generator awaits one call at a time, but a timer callback that is a generator runs as a task of its own
     # (rounds.tick relies on it too), so each one started from a timer keeps its calls in flight beside the others'.
-    # A task cannot wake this one, so it polls with commit(). The timers keep their callbacks, and so `outcomes`,
-    # which holds every result: it is emptied before this returns.
+    # A task cannot wake this one, so it polls with commit(); a task that traps never reports, so the wait ends after
+    # GATHER_LIMIT. The timers keep their callbacks, and so `outcomes`, which holds every result: it is emptied
+    # before this returns or raises.
     outcomes = {}
 
     def start(i, gen):
@@ -62,7 +64,12 @@ def gather(gens):
 
     for i, gen in enumerate(gens):
         start(i, gen)
+    started = now()
     while len(outcomes) < len(gens):
+        if now() - started > GATHER_LIMIT:
+            missing = len(gens) - len(outcomes)
+            outcomes.clear()
+            raise Exception(f"{missing} of {len(gens)} tasks never finished")
         yield from commit()
     results = [outcomes[i] for i in range(len(gens))]
     outcomes.clear()
