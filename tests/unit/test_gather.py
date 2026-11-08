@@ -34,7 +34,7 @@ def run(ic, gens):
     """gather(gens) as the IC runs it: each time it awaits, a second passes and every started task takes one step."""
     gathering, tasks = ic.chain.gather(gens), []
     try:
-        while True:
+        for _ in range(2 * ic.chain.GATHER_LIMIT):  # a gather that never ends fails here instead of hanging the suite
             next(gathering)
             ic.seconds += 1
             tasks += [callback() for callback in ic.timers]
@@ -46,6 +46,7 @@ def run(ic, gens):
                     tasks.remove(task)
     except StopIteration as done:
         return done.value
+    raise AssertionError("gather was still waiting after twice GATHER_LIMIT")
 
 
 def steps(count, result=None):
