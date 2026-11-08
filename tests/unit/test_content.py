@@ -3,16 +3,20 @@ import json
 
 from fake_chain import run_timers, state
 from kit import call, grant
-from model import Canister, Event, Wasm, each
+from model import Canister, Event, Stand, Wasm, each
 from test_canisters import catalog
+
+
+def bundle_files(namespace, files):
+    for i in range(files):
+        state["store"][f"/{namespace}/f{i:02}.js"] = f"v1-{i}".encode()
+    state["store"][f"/{namespace}/.casals-bundle.json"] = b"{}"
 
 
 def frontend(files=30):
     catalog()
     Wasm["app@1"].kind = "frontend"
-    for i in range(files):
-        state["store"][f"/web/v1/f{i:02}.js"] = f"v1-{i}".encode()
-    state["store"]["/web/v1/.casals-bundle.json"] = b"{}"
+    bundle_files("web/v1", files)
     cid = call("canister_create", stand="d1", name="web", wasm="app@1", controllers=["conductor"])["canister_id"]
     Canister["web"].files = {"/ids.js": "id=$canister:web"}
     return cid
@@ -34,6 +38,19 @@ def test_deploy_runs_rounds_until_done():
     assert live["/ids.js"] == f"id={cid}".encode() and len(live) == 31 and ".casals-bundle.json" not in str(live)
     assert call("content_status")["deploys"][0]["status"] == "done"
     assert list(each(Event))[-1].type == "content_done"
+
+
+def test_a_content_deploy_notes_no_build_progress():
+    import progress
+
+    frontend(60)
+    call("content_deploy", canister="web", namespace="web/v1")  # d1 is not built: still not a build
+    run_timers()
+    assert progress.builds == {}
+    Stand["d1"].build_error = "install failed"  # a failed stand: casals upgrade --content is the runbook's fix
+    state["store"]["/web/v1/f00.js"] = b"changed"
+    call("content_deploy", canister="web", namespace="web/v1")
+    assert progress.builds == {}
 
 
 def store_listings():

@@ -27,11 +27,12 @@ def fresh():
     import content
     import grants
     import model
+    import progress
     import rounds
     import wasms
 
     Database.get_instance().clear()
     model._system("indexes", len(model.INDEXES))
     fake_chain.reset()
-    for heap in (grants.failures, rounds.queue, rounds.armed, rounds.running, content.deploys, content.bundles, wasms.uploads):
+    for heap in (grants.failures, rounds.queue, rounds.armed, rounds.running, content.deploys, content.bundles, progress.builds, wasms.uploads):
         heap.clear()
