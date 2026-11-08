@@ -40,15 +40,16 @@ def test_deploy_runs_rounds_until_done():
     assert list(each(Event))[-1].type == "content_done"
 
 
-def test_a_deploy_to_a_built_stand_is_not_a_build():
+def test_a_content_deploy_notes_no_build_progress():
     import progress
 
-    frontend(25)
-    call("content_deploy", canister="web", namespace="web/v1")
-    assert progress.of("d1")["done"] == 10  # the stand has not been built yet
-    progress.clear("d1")
-    Stand["d1"].built_at = 1
+    frontend(60)
+    call("content_deploy", canister="web", namespace="web/v1")  # d1 is not built: still not a build
     run_timers()
+    assert progress.builds == {}
+    Stand["d1"].build_error = "install failed"  # a failed stand: casals upgrade --content is the runbook's fix
+    state["store"]["/web/v1/f00.js"] = b"changed"
+    call("content_deploy", canister="web", namespace="web/v1")
     assert progress.builds == {}
 
 

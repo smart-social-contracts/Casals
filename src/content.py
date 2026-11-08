@@ -55,8 +55,9 @@ def listed(c, content):
     return want
 
 
-def sync(c, expected="", content=None):
-    """Write up to MAX_FILES files of `content` (the row's own by default) to `c`; returns how many are left."""
+def sync(c, expected="", content=None, build=""):
+    """Write up to MAX_FILES files of `content` (the row's own by default) to `c`; returns how many are left.
+    `build` names the stand whose build this is, if it is one: its progress is noted."""
     content = c.content if content is None else content
     want = yield from listed(c, content)
     if expected and bundle_hash(want) != expected:
@@ -76,8 +77,8 @@ def sync(c, expected="", content=None):
     kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
     remaining = len(writes) - len(puts)
-    if not c.stand.built_at:  # a deploy to a built stand is not a build
-        progress.note(c.stand.name, "content", c.name, len(want) - remaining, len(want))
+    if build:
+        progress.note(build, "content", c.name, len(want) - remaining, len(want))
     if not remaining:
         bundles.pop((c.name, content), None)
     return remaining

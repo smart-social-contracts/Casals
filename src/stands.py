@@ -50,7 +50,7 @@ def build(name):
             yield from provision(c)
             return False
     for c in stand.canisters:
-        if c.status == "installed" and (c.content or c.files) and (yield from sync(c)):
+        if c.status == "installed" and (c.content or c.files) and (yield from sync(c, build=name)):
             return False
     unhanded = [c for c in stand.canisters if c.status == "installed"]
     for done, c in enumerate(unhanded):
