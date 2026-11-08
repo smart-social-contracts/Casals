@@ -142,19 +142,24 @@ def asset_content(f, chunk_ids):
             f'sha256 = opt blob {chain.blob(bytes.fromhex(f["sha256"]))} }})')
 
 
-def apply(canister_id, puts, deletes):
-    """Each file in `puts` recreated with its properties (only create_asset sets them all), then `deletes` removed."""
+def put(canister_id, batch, f):
+    """One file: its chunks, then its asset with its properties (only create_asset sets them all)."""
+    svc = Assets(Principal.from_str(canister_id))
+    ids = []
+    for i in range(0, max(len(f["data"]), 1), CHUNK):
+        ids.append(chain.ok((yield svc.create_chunk({"batch_id": batch, "content": f["data"][i:i + CHUNK]})))["chunk_id"])
+    if f["replace"]:
+        chain.ok((yield svc.delete_asset({"key": f["key"]})))
     # Candid text: Basilisk's typed encoding lost the optional header list.
+    yield from chain.call(canister_id, "create_asset", new_asset(f))
+    yield from chain.call(canister_id, "set_asset_content", asset_content(f, ids))
+
+
+def apply(canister_id, puts, deletes):
+    """Every file in `puts` uploaded at the same time, then `deletes` removed."""
     svc = Assets(Principal.from_str(canister_id))
     batch = chain.number((yield from chain.call(canister_id, "create_batch", "(record {})")), "=") if puts else 0
-    for f in puts:
-        ids = []
-        for i in range(0, max(len(f["data"]), 1), CHUNK):
-            ids.append(chain.ok((yield svc.create_chunk({"batch_id": batch, "content": f["data"][i:i + CHUNK]})))["chunk_id"])
-        if f["replace"]:
-            chain.ok((yield svc.delete_asset({"key": f["key"]})))
-        yield from chain.call(canister_id, "create_asset", new_asset(f))
-        yield from chain.call(canister_id, "set_asset_content", asset_content(f, ids))
+    yield from chain.gather([put(canister_id, batch, f) for f in puts])
     for key in deletes:
         chain.ok((yield svc.delete_asset({"key": key})))
 

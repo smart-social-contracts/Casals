@@ -32,12 +32,16 @@ def run_rounds(stand, limit=None):
 
 
 def test_a_stand_reports_each_step_of_its_build():
-    with_bundle(25)
+    import content
+
+    files = 2 * content.MAX_FILES  # and the stand's own ids.js: the last round writes one file
+    with_bundle(files)
     call("stand_create", section="Tenants", name="t1")
     seen = run_rounds("t1")
     steps = [(p["step"], p["canister"], p["done"], p["total"]) for p in seen[:-1]]
     assert steps == [("provision", "t1-backend", 0, 2), ("provision", "t1-frontend", 1, 2),
-                     ("content", "t1-frontend", 10, 26), ("content", "t1-frontend", 20, 26)]
+                     ("content", "t1-frontend", content.MAX_FILES, files + 1),
+                     ("content", "t1-frontend", files, files + 1)]
     assert [p["at"] for p in seen[:-1]] == sorted({p["at"] for p in seen[:-1]})
     assert seen[-1] == {} and Stand["t1"].built_at
 
