@@ -1,4 +1,5 @@
 import chain
+import progress
 from auth import grants, holds, is_monitor, reader_scopes, readable
 from canisters import share_status
 from model import Canister, Event, Section, Stand, first, orchestra, page_of, reindex_batch, reindex_pending
@@ -22,7 +23,7 @@ def canister_view(c):
 
 def stand_view(s):
     return {"name": s.name, "section": s.section.name, "description": s.description, "built_at": s.built_at,
-            "build_error": s.build_error, "members": s.members, "release": s.release}
+            "build_error": s.build_error, "members": s.members, "release": s.release, "progress": progress.of(s.name)}
 
 
 def tree(scopes, args):
