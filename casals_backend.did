@@ -92,7 +92,7 @@ type DecimalsResult = record { decimals : nat32 };
 type Header = record { 0 : text; 1 : text };
 type HttpRequest = record { method : text; url : text; headers : vec Header; body : blob };
 type HttpResponse = record { status_code : nat16; headers : vec Header; body : blob; streaming_strategy : opt text; upgrade : opt bool };
-type Permission = variant { Commit };
+type Permission = variant { Commit : null };
 type GrantArg = record { to_principal : principal; permission : Permission };
 type RevokeArg = record { of_principal : principal; permission : Permission };
 type ListArgs = record { start : opt nat; length : opt nat };
@@ -147,6 +147,8 @@ service : {
   "grant_remove" : (text) -> (text);
   "grant_set" : (text) -> (text);
   "me_set" : (text) -> (text);
+  "monitor_key_get" : (text) -> (text) query;
+  "monitor_key_rotate" : (text) -> (text);
   "orchestra_events" : (text) -> (text) query;
   "orchestra_export" : (text) -> (text) query;
   "orchestra_get" : (text) -> (text) query;
@@ -157,9 +159,9 @@ service : {
   "section_delete" : (text) -> (text);
   "section_set" : (text) -> (text);
   "stand_create" : (text) -> (text);
-  "stand_grow" : (text) -> (text);
   "stand_delete" : (text) -> (text);
   "stand_destroy" : (text) -> (text);
+  "stand_grow" : (text) -> (text);
   "stand_release_preview" : (text) -> (text) query;
   "stand_set" : (text) -> (text);
   "subnet_list" : (text) -> (text) query;

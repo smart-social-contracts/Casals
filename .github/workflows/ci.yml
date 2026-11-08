@@ -56,6 +56,42 @@ jobs:
       - name: Run unit tests
         run: pip install pytest-cov ic-python-db==0.12.0 && make unit PYTEST_ARGS=-v
 
+  backend-did:
+    name: casals_backend.did is what a build emits
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      # The release workflow's toolchain (keep the pins in step with release.yml), so the
+      # committed file is the Candid a release publishes.
+      - name: Basilisk venv
+        run: |
+          python3 -m venv .venv-basilisk
+          .venv-basilisk/bin/pip install --upgrade pip
+          .venv-basilisk/bin/pip install \
+            ic-basilisk==0.14.2 ic-basilisk-toolkit==0.5.3 \
+            ic-python-db==0.12.0 ic-python-logging==0.3.4
+
+      - name: Build the conductor
+        run: |
+          export PATH="$PWD/.venv-basilisk/bin:$PATH"
+          export CANISTER_CANDID_PATH="$(pwd)/casals_backend.did"
+          rm casals_backend.did  # a Basilisk that wrote it elsewhere then shows as a deletion, not a clean diff
+          python -m basilisk casals_backend src/main.py
+          python3 scripts/fix_asset_permission_did.py casals_backend.did
+
+      - name: The committed Candid is unchanged by the build
+        run: |
+          git diff --exit-code -- casals_backend.did || {
+            echo "::error::casals_backend.did is out of date: build with the Basilisk version pinned in release.yml and commit it"
+            exit 1
+          }
+
   cli-guard:
     name: CLI carries no principal tables
     runs-on: ubuntu-latest
