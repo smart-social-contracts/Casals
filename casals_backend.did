@@ -147,8 +147,6 @@ service : {
   "grant_remove" : (text) -> (text);
   "grant_set" : (text) -> (text);
   "me_set" : (text) -> (text);
-  "monitor_key_get" : (text) -> (text) query;
-  "monitor_key_rotate" : (text) -> (text);
   "orchestra_events" : (text) -> (text) query;
   "orchestra_export" : (text) -> (text) query;
   "orchestra_get" : (text) -> (text) query;
@@ -159,9 +157,9 @@ service : {
   "section_delete" : (text) -> (text);
   "section_set" : (text) -> (text);
   "stand_create" : (text) -> (text);
+  "stand_grow" : (text) -> (text);
   "stand_delete" : (text) -> (text);
   "stand_destroy" : (text) -> (text);
-  "stand_grow" : (text) -> (text);
   "stand_release_preview" : (text) -> (text) query;
   "stand_set" : (text) -> (text);
   "subnet_list" : (text) -> (text) query;
