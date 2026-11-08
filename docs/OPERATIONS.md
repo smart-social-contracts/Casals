@@ -372,6 +372,13 @@ orchestra between runs.
 - A runtime stand stays unbuilt: `casals tree` shows its `build_error`; fix
   the cause (usually a missing/unauthorized wasm or an empty store namespace)
   and call `create_stand` for it again.
+- A runtime stand is slow to build, or looks stuck: its `progress` in `orchestra_get`
+  names the step (`provision`, `content`, `hand_off`), the canister, `done` of `total`
+  (canisters installed, or files in place on a frontend) and `at`, the time it last
+  moved. A frontend with a hundred files takes many rounds; an `at` that has not
+  advanced for several minutes is a stall (a trapped round is failed after 15 minutes,
+  with a `stand_build_failed` event). Progress is kept in the heap, so it is empty
+  right after an upgrade until the next round.
 - Frontend serves 404 for a file the sheet declares: `casals upgrade
   --content <namespace>` syncs the store's bundle to every frontend that uses
   it.

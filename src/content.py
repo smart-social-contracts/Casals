@@ -2,6 +2,7 @@ import hashlib
 import json
 
 import chain
+import progress
 import store
 from auth import find, reader_scopes, readable
 from model import Canister, Event, orchestra, resolve
@@ -75,6 +76,8 @@ def sync(c, expected="", content=None):
     kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
     c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
     remaining = len(writes) - len(puts)
+    if not c.stand.built_at:  # a deploy to a built stand is not a build
+        progress.note(c.stand.name, "content", c.name, len(want) - remaining, len(want))
     if not remaining:
         bundles.pop((c.name, content), None)
     return remaining

@@ -1,4 +1,5 @@
 import chain
+import progress
 from auth import find
 from canisters import destroy, hand_off, provision, require_control
 from content import sync
@@ -29,6 +30,7 @@ def member_row(stand, raw):
 
 def build_failed(name, error):
     set_build(find(Stand, name), 0, error[:1000])
+    progress.clear(name)
     Event(type="stand_build_failed", payload={"stand": name, "error": error[:1000]}, ts=chain.now())
 
 
@@ -43,22 +45,27 @@ def build(name):
         Canister[spec["name"]] or member_row(stand, spec)
     for c in stand.canisters:
         if c.status == "created":
+            installed = sum(m.status != "created" for m in stand.canisters)
+            progress.note(name, "provision", c.name, installed, len(stand.canisters))
             yield from provision(c)
             return False
     for c in stand.canisters:
         if c.status == "installed" and (c.content or c.files) and (yield from sync(c)):
             return False
-    for c in stand.canisters:
-        if c.status == "installed":
-            yield from hand_off(c, stand)
+    unhanded = [c for c in stand.canisters if c.status == "installed"]
+    for done, c in enumerate(unhanded):
+        progress.note(name, "hand_off", c.name, done, len(unhanded))
+        yield from hand_off(c, stand)
     for g in (stand.section.template or {}).get("commanders", []):
         upsert(f"stand:{stand.name}", resolve(g["principal"], stand)).permissions = g["permissions"]
     set_build(stand, chain.now())
+    progress.clear(name)
     Event(type="stand_built", payload={"stand": name}, ts=chain.now())
     return True
 
 
 def forget(stand):
+    progress.clear(stand.name)
     for g in matching(Grant, "scope", f"stand:{stand.name}"):
         g.delete()
     for c in list(stand.canisters):
