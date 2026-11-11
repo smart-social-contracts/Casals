@@ -166,7 +166,7 @@ def test_applied_props_live_beside_the_row_and_leave_it_when_set_again():
     props = props_of(3)
     c.set_applied_props(props)
     assert c.applied_props() == props and model.AssetProps.load(c._id).props == props
-    assert "/_app" not in Database.get_instance().load(c._type, c._id).get("assets_props", "")
+    assert Database.get_instance().load(c._type, c._id)["assets_props"] == {}
     c.set_applied_props({"/a": {}})
     assert Canister.load(c._id).applied_props() == {"/a": {}}
     c.delete()
@@ -191,13 +191,31 @@ def test_applied_props_kept_in_the_row_by_an_earlier_conductor_are_read_and_move
     for c, want in ((held, props), (other, {"/b": {"headers": {}}})):
         row = Canister.load(c._id)
         assert row.assets_props == {} and row.applied_props() == want
-        assert len(Database.get_instance().load(row._type, row._id)["assets_props"]) < 10
+        assert Database.get_instance().load(row._type, row._id)["assets_props"] == {}
     assert Canister["x4-be"].applied_props() == {} and model.AssetProps.load(Canister["x4-be"]._id) is None
     # a sync that runs before the backfill reaches a row moves its props itself
     late = Canister["x5-be"]
     late.assets_props = props
     late.set_applied_props({**props, "/new": {}})
     assert late.assets_props == {} and late.applied_props() == {**props, "/new": {}}
+
+
+def test_props_written_in_the_row_by_an_older_conductor_after_a_downgrade_win_over_the_row_beside_it():
+    world()
+    st = Stand(name="fe")
+    st.section = Section["s1"]
+    c = Canister(name="fe-front", canister_id="fe-id", kind="frontend")
+    c.stand = st
+    c.set_applied_props({"/a.js": {"headers": {"x": "v1"}}})
+    c.assets_props = {"/a.js": {"headers": {"x": "v2"}}}  # a conductor from before AssetProps syncs the frontend again
+    assert Canister.load(c._id).applied_props() == {"/a.js": {"headers": {"x": "v2"}}}
+    model._system("props_moved", 0)
+    for _ in range(20):
+        if reindex_batch():
+            break
+    moved = Canister.load(c._id)
+    assert moved.assets_props == {} and moved.applied_props() == {"/a.js": {"headers": {"x": "v2"}}}
+    assert model.AssetProps.load(c._id).props == {"/a.js": {"headers": {"x": "v2"}}}
 
 
 READ_BUDGET = 250_000  # stored bytes one page may decode: ~3,400 instructions each on the IC (measured on PocketIC), < 1 B
@@ -221,7 +239,7 @@ def bytes_read(monkeypatch, run):
 
 
 def test_a_default_page_of_a_big_orchestra_stays_under_the_read_budget(monkeypatch):
-    # 100 canisters, 30 of them frontends with 200 assets each: before AssetProps their rows held ~260 KB each,
+    # 160 canisters, 30 of them frontends with 200 assets each: before AssetProps their rows held ~260 KB each,
     # 7.8 MB for the page, and the staging conductor rejected it past 5 billion instructions.
     world()
     for n in range(100):

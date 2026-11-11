@@ -5,7 +5,9 @@ from ic_python_db import Boolean, Database, Entity, Integer, ManyToOne, OneToMan
 
 PAGE = 200
 PAGE_MAX = 500
-PROPS_BATCH = 2  # a row that still holds its applied props is up to ~300 KB: two fit in a message
+# Rows the backfill moves per message. One 289 KB row (the largest on the staging snapshot) took 5.8 billion
+# instructions of the 40 billion an update may run; the median row took 7 million (PocketIC, 11 Nov 2026).
+PROPS_BATCH = 1
 
 
 class Json(String):
@@ -115,8 +117,11 @@ class Canister(Entity):
 
     def applied_props(self):
         """The props (headers, aliasing) content sync applied to this frontend's assets, ``{asset key: props}``."""
+        held = self.assets_props  # only a conductor from before AssetProps fills it, so when it does it is the newest
+        if held:
+            return held
         row = AssetProps.load(self._id)
-        return row.props if row else self.assets_props
+        return row.props if row else {}
 
     def set_applied_props(self, props):
         row = AssetProps.load(self._id)
@@ -256,8 +261,9 @@ def move_props_batch():
     start = _system("props_from") or 1
     rows, nxt = page(Canister, start, PROPS_BATCH)
     for c in rows:
-        if c.assets_props:
-            c.set_applied_props(c.assets_props)
+        held = c.assets_props  # each read of a Json field parses it again
+        if held:
+            c.set_applied_props(held)
     _system("props_from", nxt or 1)
     if not nxt:
         _system("props_moved", 1)
