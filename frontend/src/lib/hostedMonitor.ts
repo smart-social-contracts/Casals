@@ -22,7 +22,8 @@ export interface MonitorServiceInfo {
   how_to_consent?: { monitor_enabled: boolean; monitor_principal: string; monitor_service_url: string };
 }
 
-export type MonitorInstanceState = 'ok' | 'revoked' | 'unreachable';
+/** `stale`: no balance was stored for three polls in a row (casals-monitor#17); the monitor pauses top-ups. */
+export type MonitorInstanceState = 'ok' | 'revoked' | 'unreachable' | 'stale';
 
 export interface MonitorInstanceStatus {
   id: string;
@@ -44,6 +45,8 @@ export interface MonitorInstanceStatus {
   last_paymaster_ts?: number;
   canisters?: { total: number; ok: number; deleted: number; sampled: number };
   latest_sample_ts?: number;
+  /** Seconds since the newest balance sample (or since registration while there is none). */
+  sample_age_secs?: number;
   now?: number;
 }
 
@@ -97,6 +100,13 @@ export function isHostedUrlFor(url: string, base: string, canisterId: string): b
   return Boolean(url) && url.trim().replace(/\/$/, '') === instanceUrlFor(base, canisterId);
 }
 
+function formatAge(secs: number): string {
+  const days = Math.floor(secs / 86_400);
+  if (days >= 1) return `${days} day${days > 1 ? 's' : ''}`;
+  const hours = Math.floor(secs / 3_600);
+  return hours >= 1 ? `${hours} hour${hours > 1 ? 's' : ''}` : `${Math.max(1, Math.round(secs / 60))} minutes`;
+}
+
 export function describeMonitorState(st: MonitorInstanceStatus | null | undefined): string {
   if (!st) return 'not registered';
   if (!st.enabled) return 'disabled (consent withdrawn)';
@@ -107,6 +117,8 @@ export function describeMonitorState(st: MonitorInstanceStatus | null | undefine
       return `consent revoked — ${st.consent?.reason || st.state_detail || 'settings changed'}`;
     case 'unreachable':
       return 'conductor unreachable from the monitor';
+    case 'stale':
+      return `balances not read${st.sample_age_secs ? ` for ${formatAge(st.sample_age_secs)}` : ''} — top-ups paused`;
     default:
       return String(st.state);
   }
