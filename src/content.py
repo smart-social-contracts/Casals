@@ -70,7 +70,7 @@ def sync(c, expected="", content=None, build=""):
     if expected and bundle_hash(want) != expected:
         raise ValueError(f"store bundle {content} is {bundle_hash(want)[:12]}, expected {expected[:12]}")
     live = yield from store.files(c.canister_id)
-    applied = c.assets_props  # each read of a Json field parses it again
+    applied = c.applied_props()  # each read of a Json field parses it again
     writes = [k for k in sorted(want) if live.get(k, {}).get("sha256") != want[k]["sha256"]
               or applied.get(k, {}) != want[k]["props"]]
     keys = writes[:MAX_FILES]
@@ -80,7 +80,7 @@ def sync(c, expected="", content=None, build=""):
     if puts or deletes:
         yield from store.apply(c.canister_id, puts, deletes)
     kept = {k: p for k, p in applied.items() if k not in deletes and k not in writes[:MAX_FILES]}
-    c.assets_props = {**kept, **{f["key"]: f["props"] for f in puts if f["props"]}}
+    c.set_applied_props({**kept, **{f["key"]: f["props"] for f in puts if f["props"]}})
     remaining = len(writes) - len(puts)
     if build:
         progress.note(build, "content", c.name, len(want) - remaining, len(want))

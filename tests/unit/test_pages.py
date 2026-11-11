@@ -146,3 +146,114 @@ def test_no_canister_code_reads_a_whole_table():
             if banned.search(line)]
     assert hits == [], hits
     assert json.dumps(call("orchestra_get")["next"])
+
+
+def props_of(n, headers=1_300):
+    """What content sync records for a realm frontend: the same long headers on each of ~200 assets."""
+    csp = "default-src 'self';" + "script-src 'self' https://*.icp0.io;" * (headers // 36)
+    return {f"/_app/immutable/chunks/{i}.js": {"headers": {"Content-Security-Policy": csp}} for i in range(n)}
+
+
+def test_applied_props_live_beside_the_row_and_leave_it_when_set_again():
+    world()
+    st = Stand(name="fe")
+    st.section = Section["s1"]
+    c = Canister(name="fe-front", canister_id="fe-id", kind="frontend")
+    c.stand = st
+    assert c.applied_props() == {} and model.AssetProps.load(c._id) is None
+    c.set_applied_props({})
+    assert model.AssetProps.load(c._id) is None  # nothing to keep
+    props = props_of(3)
+    c.set_applied_props(props)
+    assert c.applied_props() == props and model.AssetProps.load(c._id).props == props
+    assert Database.get_instance().load(c._type, c._id)["assets_props"] == {}
+    c.set_applied_props({"/a": {}})
+    assert Canister.load(c._id).applied_props() == {"/a": {}}
+    c.delete()
+    assert model.AssetProps.load(c._id) is None
+
+
+def test_applied_props_kept_in_the_row_by_an_earlier_conductor_are_read_and_moved_by_the_backfill():
+    many()
+    props = props_of(5)
+    held = Canister["x2-be"]
+    held.assets_props = props  # as an earlier conductor stored it
+    other = Canister["x3-be"]
+    other.assets_props = {"/b": {"headers": {}}}
+    model._system("props_moved", 0)
+    assert held.applied_props() == props and model.reindex_pending() == ["indexes"]
+    done = False
+    for _ in range(20):
+        done = reindex_batch()
+        if done:
+            break
+    assert done and model.reindex_pending() == []
+    for c, want in ((held, props), (other, {"/b": {"headers": {}}})):
+        row = Canister.load(c._id)
+        assert row.assets_props == {} and row.applied_props() == want
+        assert Database.get_instance().load(row._type, row._id)["assets_props"] == {}
+    assert Canister["x4-be"].applied_props() == {} and model.AssetProps.load(Canister["x4-be"]._id) is None
+    # a sync that runs before the backfill reaches a row moves its props itself
+    late = Canister["x5-be"]
+    late.assets_props = props
+    late.set_applied_props({**props, "/new": {}})
+    assert late.assets_props == {} and late.applied_props() == {**props, "/new": {}}
+
+
+def test_props_written_in_the_row_by_an_older_conductor_after_a_downgrade_win_over_the_row_beside_it():
+    world()
+    st = Stand(name="fe")
+    st.section = Section["s1"]
+    c = Canister(name="fe-front", canister_id="fe-id", kind="frontend")
+    c.stand = st
+    c.set_applied_props({"/a.js": {"headers": {"x": "v1"}}})
+    c.assets_props = {"/a.js": {"headers": {"x": "v2"}}}  # a conductor from before AssetProps syncs the frontend again
+    assert Canister.load(c._id).applied_props() == {"/a.js": {"headers": {"x": "v2"}}}
+    model._system("props_moved", 0)
+    for _ in range(20):
+        if reindex_batch():
+            break
+    moved = Canister.load(c._id)
+    assert moved.assets_props == {} and moved.applied_props() == {"/a.js": {"headers": {"x": "v2"}}}
+    assert model.AssetProps.load(c._id).props == {"/a.js": {"headers": {"x": "v2"}}}
+
+
+READ_BUDGET = 250_000  # stored bytes one page may decode: ~3,400 instructions each on the IC (measured on PocketIC), < 1 B
+
+
+def bytes_read(monkeypatch, run):
+    """The stored bytes the storage hands out while ``run`` executes."""
+    storage = Database.get_instance()._db_storage
+    seen = []
+    plain_get, plain_range = storage.get, storage.range
+    monkeypatch.setattr(storage, "get", lambda key, *a: seen.append(len(plain_get(key, *a) or "")) or plain_get(key, *a))
+
+    def ranged(*a, **k):
+        out = plain_range(*a, **k)
+        seen.extend(len(v) for _, v in out)
+        return out
+
+    monkeypatch.setattr(storage, "range", ranged)
+    run()
+    return sum(seen)
+
+
+def test_a_default_page_of_a_big_orchestra_stays_under_the_read_budget(monkeypatch):
+    # 160 canisters, 30 of them frontends with 200 assets each: before AssetProps their rows held ~260 KB each,
+    # 7.8 MB for the page, and the staging conductor rejected it past 5 billion instructions.
+    world()
+    for n in range(100):
+        st = Stand(name=f"s{n}")
+        st.section = Section["s1"]
+        for kind in ("backend", "baton", "frontend") if n < 30 else ("backend",):
+            c = Canister(name=f"s{n}-{kind}", canister_id=f"s{n}{kind}-id", kind="frontend" if kind == "frontend" else "backend")
+            c.stand = st
+            if kind == "frontend":
+                c.set_applied_props(props_of(200))
+    total = Canister.max_id()
+    assert total > 150
+    for op in ("orchestra_get", "cycles_get"):
+        got = []
+        read = bytes_read(monkeypatch, lambda: got.append(call(op)))
+        assert len(got[0]["canisters"]) == total
+        assert read < READ_BUDGET, f"{op} read {read:,} bytes"

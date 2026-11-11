@@ -5,6 +5,9 @@ from ic_python_db import Boolean, Database, Entity, Integer, ManyToOne, OneToMan
 
 PAGE = 200
 PAGE_MAX = 500
+# Rows the backfill moves per message. One 289 KB row (the largest on the staging snapshot) took 5.8 billion
+# instructions of the 40 billion an update may run; the median row took 7 million (PocketIC, 11 Nov 2026).
+PROPS_BATCH = 1
 
 
 class Json(String):
@@ -102,7 +105,7 @@ class Canister(Entity):
     public = Boolean(default=False)
     install_arg = Json(None)
     content = String(default="")
-    assets_props = Json({})
+    assets_props = Json({})  # empty: earlier conductors kept the applied props here, see applied_props
     files = Json({})
     controllers = Json([])
     config = Json([])
@@ -111,6 +114,37 @@ class Canister(Entity):
     cycles = Integer(default=0)
     snapshot = String(default="")
     snapshot_labels = Json({})  # snapshot id → what took it, for the snapshots the conductor took
+
+    def applied_props(self):
+        """The props (headers, aliasing) content sync applied to this frontend's assets, ``{asset key: props}``."""
+        held = self.assets_props  # only a conductor from before AssetProps fills it, so when it does it is the newest
+        if held:
+            return held
+        row = AssetProps.load(self._id)
+        return row.props if row else {}
+
+    def set_applied_props(self, props):
+        row = AssetProps.load(self._id)
+        if row:
+            row.props = props
+        elif props:
+            AssetProps(_id=self._id, props=props)
+        if self.assets_props:  # the copy an earlier conductor kept in this row
+            self.assets_props = {}
+
+    def delete(self):
+        row = AssetProps.load(self._id)
+        if row:
+            row.delete()
+        super().delete()
+
+
+class AssetProps(Entity):
+    """The props content sync applied to one frontend's assets, apart from its Canister row, with that row's id.
+    A realm frontend has ~200 assets that repeat the same headers: 150-300 KB. A list read decodes every
+    Canister row it returns, about 3,400 instructions per byte, so seven such rows kept `orchestra_get` and
+    `cycles_get` of the staging conductor over the 5 billion instructions a query may run (11 Nov)."""
+    props = Json({})
 
 
 class Wasm(Entity):
@@ -218,12 +252,27 @@ def first(cls, field, value):
 
 
 def reindex_pending():
-    return ["indexes"] if _system("indexes") < len(INDEXES) else []
+    return ["indexes"] if _system("indexes") < len(INDEXES) or not _system("props_moved") else []
+
+
+def move_props_batch():
+    """One batch of the backfill that moves the applied asset props of rows from before AssetProps existed out of
+    their Canister row. Until a row is moved, applied_props() reads the copy in it."""
+    start = _system("props_from") or 1
+    rows, nxt = page(Canister, start, PROPS_BATCH)
+    for c in rows:
+        held = c.assets_props  # each read of a Json field parses it again
+        if held:
+            c.set_applied_props(held)
+    _system("props_from", nxt or 1)
+    if not nxt:
+        _system("props_moved", 1)
 
 
 def reindex_batch():
-    """One batch of the backfill that adds rows from before an index existed to it; True once every
-    index in INDEXES is complete. Until then matching() reads that field by paging through rows."""
+    """One batch of the backfill that adds rows from before an index existed to it, then of the one that moves
+    applied asset props; True once both are complete. Until then matching() reads an index's field by paging
+    through rows."""
     done = _system("indexes")
     if done < len(INDEXES):
         cls, field, derive = INDEXES[done]
@@ -235,7 +284,9 @@ def reindex_batch():
         _system("index_from", nxt or 1)
         if not nxt:
             _system("indexes", done + 1)
-    return _system("indexes") >= len(INDEXES)
+    elif not _system("props_moved"):
+        move_props_batch()
+    return _system("indexes") >= len(INDEXES) and bool(_system("props_moved"))
 
 
 def rename(row, name):

@@ -207,6 +207,6 @@ def test_settle_records_what_the_stand_runs():
     assert out["updated"] == ["d1-backend", "d1-frontend"] and out["release"] == "app@2"
     be, fe = Canister["d1-backend"], Canister["d1-frontend"]
     assert (be.wasm, be.wasm_hash) == ("app@2", Wasm["app@2"].sha256)
-    assert fe.content == "rel/v2" and fe.assets_props == {"/index.html": {"headers": {"x-frame-options": "DENY"}}}
+    assert fe.content == "rel/v2" and fe.applied_props() == {"/index.html": {"headers": {"x-frame-options": "DENY"}}}
     assert Stand["d1"].release == "app@2"
     assert "already runs" in call("stand_release_preview", **RELEASE)["error"]
