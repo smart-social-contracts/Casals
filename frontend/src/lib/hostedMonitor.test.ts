@@ -74,6 +74,15 @@ describe('describeMonitorState', () => {
     );
     assert.ok(String(describeMonitorState({ ...base, state: 'unreachable' })).includes('unreachable'));
     assert.ok(String(describeMonitorState({ ...base, enabled: false })).includes('disabled'));
+    assert.equal(describeMonitorState({ ...base, state: 'stale' }), 'balances not read — top-ups paused');
+    assert.equal(
+      describeMonitorState({ ...base, state: 'stale', sample_age_secs: 9 * 86_400 + 5 }),
+      'balances not read for 9 days — top-ups paused',
+    );
+    assert.equal(
+      describeMonitorState({ ...base, state: 'stale', sample_age_secs: 2 * 3_600 }),
+      'balances not read for 2 hours — top-ups paused',
+    );
   });
 });
 
