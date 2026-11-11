@@ -294,7 +294,7 @@ def apply_release(stand, payload):
             c.wasm, c.wasm_hash = m["wasm"]["key"], m["wasm"]["module_hash"]
         if m.get("bundle"):
             c.content = m["bundle"]["namespace"]
-            c.assets_props = m["bundle"].get("props") or {}
+            c.set_applied_props(m["bundle"].get("props") or {})
         if m.get("wasm") or m.get("bundle"):
             updated.append(c.name)
     stand.release = payload["release"]["label"]
