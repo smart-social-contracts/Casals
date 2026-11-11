@@ -74,6 +74,8 @@ def reader_scopes(principal):
         return None
     mine = {g.scope for g in grants(principal)}
     if not mine:
+        # The hosted monitor (casals-monitor, casals_v07.NOT_A_READER) matches "not a reader" in this reply to tell a
+        # withdrawn consent (monitor.principal cleared) from a failed read: reword it together with the monitor.
         raise Unauthorized("not a reader of this orchestra")
     return None if "orchestra" in mine else mine
 
