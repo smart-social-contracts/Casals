@@ -75,4 +75,6 @@ def test_scoped_reader_sees_only_its_scope():
     grant("bob", "stand:d1", "canister.deploy")
     assert [g["principal"] for g in call("grant_list", "ann")["grants"]] == ["ann"]
     assert "not a reader" in call("grant_list", "zed")["error"]
+    # the hosted monitor reads this reply of orchestra_get as a withdrawn consent (casals-monitor NOT_A_READER)
+    assert call("orchestra_get", "zed") == {"ok": False, "error": "unauthorized: not a reader of this orchestra"}
     assert "sign in" in call("grant_claim", ANONYMOUS, code="x")["error"]
