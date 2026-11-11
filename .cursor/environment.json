@@ -1,0 +1,5 @@
+{
+  "name": "Casals",
+  "install": "cd /agent/repos/Casals && bash .cursor/install.sh",
+  "start": "cd /agent/repos/Casals && bash .cursor/start.sh"
+}
