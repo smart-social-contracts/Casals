@@ -1,6 +1,6 @@
 import chain
 import progress
-from auth import grants, holds, is_monitor, reader_scopes, readable
+from auth import Unauthorized, grants, holds, is_monitor, reader_scopes, readable
 from canisters import share_viewers
 from model import Canister, Event, Section, Stand, first, orchestra, page_of, reindex_batch, reindex_pending
 from op import op
@@ -149,6 +149,10 @@ def key_for(monitor, before, current):
 
 @op("orchestra.settings")
 def orchestra_set(principal, args):
+    # The log viewer reads what every canister prints. Choosing it is the conductor's controllers' decision, not one
+    # a narrower orchestra.settings grant (a cycles operator, say) should carry.
+    if "log_viewer" in args and not chain.is_controller(principal):
+        raise Unauthorized("only a controller of the conductor sets the log viewer")
     if "snapshots_keep" in args:
         check_keep(args["snapshots_keep"])
     o = orchestra()

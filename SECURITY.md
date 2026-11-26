@@ -45,7 +45,8 @@ Who can do what:
   approval policy.
 - **The multisig** executes a proposal once its threshold of signers approve.
 - **The log viewer** (`environments.<env>.log_viewer`) can read the logs of the canisters the conductor
-  creates, and nothing else. Without one, only a canister's controllers can; canister logs are never public.
+  creates, and nothing else. Without one, only a canister's controllers can; Casals never makes canister logs
+  public. Only a controller of the conductor names the log viewer, and adopted canisters keep their own setting.
 - **Everyone else** can only read, and only when the sheet turns
   `public_read` on. It is off by default: reading an orchestra then needs a
   commander or a controller. Update calls from the anonymous principal are

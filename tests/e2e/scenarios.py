@@ -10,6 +10,7 @@ import urllib.request
 from casals_cli.multisig import propose
 from casals_cli.release import TERMINAL
 from casals_cli.replica import canister_http_url
+from casals_cli.sheetv2 import CONDUCTOR_NAMES
 from run_e2e import REPO, Fail, sh
 
 ACCESS_CODE_ALIAS, ACCESS_CODE, CLAIMER = "invited_operator", "casals", "casals-e2e-claimer"
@@ -39,9 +40,32 @@ def idempotent(o) -> None:
         raise Fail("a second up changed canisters")
 
 
+def set_log_viewer(o, value: str) -> None:
+    """Only a controller of the conductor names the log viewer: the deployer directly where it is one, else the
+    multisig, through a `CallCanister` proposal (the corpus multisigs execute at one signature)."""
+    args = {"log_viewer": value}
+    res = o.call("orchestra_set", args)
+    if res.get("ok"):
+        return
+    if "only a controller" not in res.get("error", ""):
+        raise Fail(f"orchestra_set log_viewer={value!r}: {res}")
+    pid, status = propose(o.ic, o.view()["multisig_id"],
+                          f'variant {{ CallCanister = record {{ canister = principal "{o.backend()}"; '
+                          f'method = "orchestra_set"; arg_json = {json.dumps(json.dumps(args))} }} }}')
+    if status != "executed":
+        raise Fail(f"multisig proposal #{pid} (log_viewer={value!r}) is {status}")
+
+
+def adopted_names(o) -> set[str]:
+    """Rows Casals did not create: the conductor's own canisters and the sheet's `mode: adopted` members."""
+    members = {c["name"] for s in o.sheet.get("sections") or [] for st in s.get("stands") or []
+               for c in st.get("canisters") or [] if c.get("mode") == "adopted"}
+    return set(CONDUCTOR_NAMES.values()) | members
+
+
 def private_logs(o) -> None:
-    """No canister of the orchestra shows its logs to the anonymous principal; the log viewer reads the logs of
-    the canisters the conductor controls once it is saved, and stops when it is cleared."""
+    """No canister of the orchestra shows its logs to the anonymous principal. Once the log viewer is saved it reads
+    the logs of every canister the conductor created and controls, and of no adopted one; cleared, it reads none."""
     def reads(cid: str, identity: str) -> bool:
         return o.icp("canister", "logs", cid, identity=identity, check=False).returncode == 0
 
@@ -51,15 +75,15 @@ def private_logs(o) -> None:
         raise Fail(f"the anonymous principal reads the logs of {public}")
     sh("icp", "identity", "new", LOG_VIEWER, "--storage", "plaintext", check=False)
     viewer = sh("icp", "identity", "principal", "--identity", LOG_VIEWER).stdout.strip()
-    target = next(c for c in canisters if o.backend() in (o.ic.read_controllers(c["canister_id"]) or [])
-                  and c["canister_id"] != o.backend())
-    for value, readable in (("", False), (viewer, True), ("", False)):
-        res = o.call("orchestra_set", {"log_viewer": value})
-        if not res.get("ok") or target["name"] in res["unreachable"]:
-            raise Fail(f"orchestra_set log_viewer={value!r}: {res}")
-        if reads(target["canister_id"], LOG_VIEWER) is not readable:
-            raise Fail(f"{target['name']}: the log viewer {'cannot' if readable else 'can'} read its logs "
-                       f"with log_viewer={value!r}")
+    adopted = adopted_names(o)
+    controlled = [c for c in canisters if c["canister_id"] and c["canister_id"] != o.backend()
+                  and o.backend() in (o.ic.read_controllers(c["canister_id"]) or [])]
+    for value in (viewer, ""):
+        set_log_viewer(o, value)
+        wrong = [c["name"] for c in controlled
+                 if reads(c["canister_id"], LOG_VIEWER) is not (bool(value) and c["name"] not in adopted)]
+        if wrong:
+            raise Fail(f"log_viewer={value!r}: the log viewer's access is wrong on {wrong} (adopted: {sorted(adopted)})")
 
 
 def export_roundtrip(o) -> None:

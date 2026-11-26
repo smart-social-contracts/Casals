@@ -35,13 +35,15 @@ def log_viewers():
 
 
 def share_viewers():
-    """Give every canister the conductor still controls the current status and log viewers; name the ones it
-    cannot change."""
+    """Give every canister the conductor still controls the current status viewers, and the log viewer to those it
+    created: an adopted canister's logs say what its owner's code prints, so they stay as the owner set them. Name
+    the canisters it cannot change."""
     unreachable = []
     for c in each(Canister):
         if c.canister_id and c.canister_id != chain.self_id():
             try:
-                yield from chain.update_settings(c.canister_id, viewers=viewers(), log_viewers=log_viewers())
+                yield from chain.update_settings(c.canister_id, viewers=viewers(),
+                                                 log_viewers=None if c.adopted else log_viewers())
             except Exception:
                 unreachable.append(c.name)
     return unreachable

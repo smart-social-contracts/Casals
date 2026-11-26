@@ -40,18 +40,30 @@ def test_logs_are_never_public_and_the_log_viewer_reads_them():
     assert state["canisters"][cid]["viewers"] == ["conductor", "mon"]
 
 
-def test_saving_the_log_viewer_reapplies_it_to_every_canister_the_conductor_controls():
+def test_saving_the_log_viewer_reapplies_it_to_every_canister_the_conductor_created():
     catalog()
     old = call("canister_create", stand="d1", name="old", wasm="app@1")["canister_id"]
     state["canisters"][old]["logs"] = "public"  # made by a Casals that published logs
     call("canister_register", stand="d1", name="foreign", canister_id="nobody-controls-this")
+    state["canisters"]["owned-id"] = {"controllers": ["conductor"], "cycles": 1, "viewers": [], "logs": "public"}
+    call("canister_register", stand="d1", name="theirs", canister_id="owned-id")
     out = call("orchestra_set", log_viewer="viewer")
     assert out["log_viewer"] == "viewer" and "foreign" in out["unreachable"] and "old" not in out["unreachable"]
     assert state["canisters"][old]["logs"] == ["viewer"] and orchestra().log_viewer == "viewer"
+    assert state["canisters"]["owned-id"]["logs"] == "public"  # adopted: its owner's setting
+    assert state["canisters"]["owned-id"]["viewers"] == ["conductor", "mon"]
     assert call("orchestra_get")["log_viewer"] == "viewer"
     assert "foreign" in call("orchestra_set", log_viewer="")["unreachable"]
     assert state["canisters"][old]["logs"] == "controllers"
     assert "unreachable" not in call("orchestra_set", name="renamed")
+
+
+def test_only_a_controller_of_the_conductor_names_the_log_viewer():
+    catalog()
+    grant("ops", "orchestra", "*")
+    assert "only a controller" in call("orchestra_set", "ops", log_viewer="ops")["error"]
+    assert orchestra().log_viewer == ""
+    assert call("orchestra_set", "ops", monitor={"principal": "mon2"})["ok"]
 
 
 def test_config_calls_run_before_controllers():

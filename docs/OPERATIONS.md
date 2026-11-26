@@ -364,20 +364,26 @@ Declare it on a fresh orchestra:
 }
 ```
 
-On a built orchestra, set or change it with `orchestra_set` (`orchestra.settings`):
+On a built orchestra, a controller of the conductor sets or changes it with `orchestra_set`. Holding
+`orchestra.settings` is not enough: the log viewer reads what every canister prints, so choosing it stays with
+the controllers. On a governed orchestra that is the platform committee, as a `CallCanister` of the conductor's
+`orchestra_set` with `arg_json` `{"log_viewer": "<viewer principal>"}`. Where you are a controller yourself:
 
 ```bash
 icp canister call <casals-backend id> orchestra_set '("{\"log_viewer\": \"<viewer principal>\"}")' \
-  -n ic --identity <operator>
+  -n ic --identity <controller>
 ```
 
-Saving it, even unchanged, applies it again to every canister the conductor still controls, adopted ones
-included; the reply names the others as `unreachable`. Their own controllers change them directly:
+Saving it, even unchanged, applies it again to every canister the conductor created and still controls; the
+reply names the canisters it cannot change as `unreachable`, and their own controllers change them directly:
 
 ```bash
 icp canister settings update <canister id> --set-log-viewer <viewer principal> -n ic --identity <controller>
 # or, controllers only:  --log-visibility controllers
 ```
+
+Adopted canisters, the conductor's own three among them, keep the log setting their owner chose: Casals sets
+log visibility only on canisters it created.
 
 `"log_viewer": ""` leaves the logs to the controllers alone. Casals before this setting made the logs of the
 canisters it created public; saving the setting once after upgrading the conductor makes them private.
