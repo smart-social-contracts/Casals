@@ -68,6 +68,20 @@ def test_mainnet_defaults_to_the_hosted_monitor():
     assert monitor({"network": "ic", "monitor": own}) == own
 
 
+def test_the_environment_names_who_reads_canister_logs():
+    from casals_cli.sheetv2 import validate
+
+    def log_viewer(env_cfg):
+        sheet = {"version": 2, "name": "t", "environments": {"e": env_cfg}, "sections": []}
+        errors = [e for e in validate(sheet, "e") if "log_viewer" in e]
+        return errors or normalize(sheet, "e", deployer="2vxsx-fae", ids={}, uploads=[])["log_viewer"]
+
+    assert log_viewer({"network": "ic"}) == ""
+    assert log_viewer({"network": "ic", "log_viewer": "aaaaa-aa"}) == "aaaaa-aa"
+    assert log_viewer({"network": "ic", "log_viewer": "ops"}) == ["environments.e.log_viewer must be a principal"]
+    assert log_viewer({"network": "ic", "log_viewer": None}) == ["environments.e.log_viewer must be a principal"]
+
+
 def test_up_asks_the_monitor_for_its_principal_and_registers(monkeypatch):
     import io
     import json

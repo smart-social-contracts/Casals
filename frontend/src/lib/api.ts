@@ -565,7 +565,7 @@ export const monitorFx = () => _monitor<FxInfo>('/fx');
 export const monitorRefreshFx = () => _monitor('/poll/fx', true);
 
 // ---------------------------------------------------------------------------
-// Canister logs, straight from the management canister (public logs only)
+// Canister logs, straight from the management canister (its controllers and the orchestra's log viewer only)
 // ---------------------------------------------------------------------------
 
 export interface CanisterLogRecord {

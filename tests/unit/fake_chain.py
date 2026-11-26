@@ -131,7 +131,7 @@ def create(controllers, cycles, subnet=""):
     cid = f"can-{len(state['canisters']) + 1}"
     state["balance"] -= cycles
     state["canisters"][cid] = {"controllers": list(controllers), "cycles": cycles, "module_hash": "", "status": "running",
-                               "subnet": subnet, "snapshots": {}, "viewers": [], "logs": False, "arg": None}
+                               "subnet": subnet, "snapshots": {}, "viewers": [], "logs": "controllers", "arg": None}
     return cid
 
 
@@ -142,11 +142,12 @@ def status(cid):
 
 
 @gen
-def update_settings(cid, controllers=None, freezing=None, viewers=None, public_logs=False):
+def update_settings(cid, controllers=None, freezing=None, viewers=None, log_viewers=None):
     c = canister(cid)
     c["controllers"] = list(controllers) if controllers is not None else c["controllers"]
     c["viewers"] = viewers or c["viewers"]
-    c["logs"] = public_logs or c["logs"]
+    # "public", "controllers" (the IC's default), or the allowed viewers besides the controllers.
+    c["logs"] = (list(log_viewers) or "controllers") if log_viewers is not None else c["logs"]
 
 
 @gen

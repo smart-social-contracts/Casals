@@ -1,15 +1,16 @@
 import chain
 import progress
-from auth import grants, holds, is_monitor, reader_scopes, readable
-from canisters import share_status
+from auth import Unauthorized, grants, holds, is_monitor, reader_scopes, readable
+from canisters import share_viewers
 from model import Canister, Event, Section, Stand, first, orchestra, page_of, reindex_batch, reindex_pending
 from op import op
 from rounds import step
 from snapshots import check_keep
 
-SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor", "snapshots_keep")
+SETTABLE = ("name", "description", "currency", "subnets", "reserve", "policy", "monitor", "log_viewer", "snapshots_keep")
 SHOWN = ("name", "description", "currency", "reserve", "policy", "subnets", "creatable_subnets", "subnets_at",
-         "monitor", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id", "snapshots_keep")
+         "monitor", "log_viewer", "aliases", "built_at", "balances_at", "store_id", "frontend_id", "multisig_id",
+         "snapshots_keep")
 CANISTER = ("name", "canister_id", "kind", "wasm", "wasm_hash", "status", "public", "tags", "controllers", "cycles",
             "content", "snapshot")
 EVENTS_MAX = 2000
@@ -148,6 +149,10 @@ def key_for(monitor, before, current):
 
 @op("orchestra.settings")
 def orchestra_set(principal, args):
+    # The log viewer reads what every canister prints. Choosing it is the conductor's controllers' decision, not one
+    # a narrower orchestra.settings grant (a cycles operator, say) should carry.
+    if "log_viewer" in args and not chain.is_controller(principal):
+        raise Unauthorized("only a controller of the conductor sets the log viewer")
     if "snapshots_keep" in args:
         check_keep(args["snapshots_keep"])
     o = orchestra()
@@ -162,8 +167,10 @@ def orchestra_set(principal, args):
             setattr(o, key, monitor_setting(args[key]) if key == "monitor" else args[key])
     if key_after is not None:
         o.monitor_read_key = key_after
-    if o.monitor.get("principal") != before:
-        return {"monitor": o.monitor, "unreachable": (yield from share_status())}
+    # Saving the log viewer re-applies it even when unchanged: that is how canisters made before it was set
+    # (or before Casals kept logs private) get it.
+    if o.monitor.get("principal") != before or "log_viewer" in args:
+        return {"monitor": o.monitor, "log_viewer": o.log_viewer, "unreachable": (yield from share_viewers())}
 
 
 @op("alias.manage")

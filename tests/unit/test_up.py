@@ -62,6 +62,21 @@ def test_every_canister_lets_the_conductor_and_monitor_read_its_status():
         assert state["canisters"][Canister[name].canister_id]["viewers"] == ["conductor", "mon"], name
 
 
+def test_the_sheet_log_viewer_reads_the_logs_of_the_canisters_casals_creates():
+    setup()
+    state["canisters"]["adopted-id"] = {"controllers": ["conductor"], "cycles": 1, "viewers": [], "logs": "public"}
+    state["replies"][("can-2", "configure")] = "(variant { ok })"
+    doc = sheet(log_viewer="viewer")
+    doc["sections"][1]["stands"][0]["canisters"].append(
+        {"name": "old", "canister_id": "adopted-id", "adopted": True, "status": "ready"})
+    call("orchestra_up", **doc)
+    run_timers()
+    assert orchestra().built_at and orchestra().log_viewer == "viewer"
+    for name in ("multisig", "hello"):
+        assert state["canisters"][Canister[name].canister_id]["logs"] == ["viewer"], name
+    assert state["canisters"]["adopted-id"]["logs"] == "public"  # adopted: its owner's setting
+
+
 def test_content_and_config_resolve_canisters_of_later_stands():
     setup()
     doc = sheet()

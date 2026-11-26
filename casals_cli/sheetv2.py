@@ -1143,6 +1143,8 @@ def _validate_environments(sheet: dict, env_targets: list[str], errors: list[str
             _validate_cycles_block(block["cycles"], f"{path}.cycles", errors)
         if "monitor" in block:
             _validate_monitor_block(block["monitor"], f"{path}.monitor", errors)
+        if "log_viewer" in block and not (isinstance(block["log_viewer"], str) and _is_principal_text(block["log_viewer"])):
+            errors.append(f"{path}.log_viewer must be a principal")
         # `bindings` names the ids of adopted canisters: code Casals never installs.
         bindings = block.get("bindings", {})
         if not isinstance(bindings, dict):

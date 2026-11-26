@@ -1,6 +1,6 @@
 import chain
 from auth import KEYS
-from canisters import provision, share_status
+from canisters import provision, share_viewers
 from grants import upsert, view
 from model import Canister, Grant, Section, Stand, Wasm, first, matching, orchestra, page, page_of, resolve, set_build
 from op import op
@@ -10,7 +10,7 @@ from snapshots import check_keep
 from stands import build, build_failed, member_row, members
 
 SETTINGS = ("name", "description", "env", "network", "vars", "store_id", "frontend_id", "multisig_id",
-            "reserve", "policy", "currency", "subnets", "monitor", "snapshots_keep")
+            "reserve", "policy", "currency", "subnets", "monitor", "log_viewer", "snapshots_keep")
 FIELDS = {
     Wasm: ("path", "sha256", "kind", "type", "memory_keep"),
     Grant: ("scope", "principal", "permissions", "calls"),
@@ -128,7 +128,7 @@ def build_all(name):
                 moved.permissions, moved.calls = g.permissions, g.calls
                 g.delete()
         return False
-    yield from share_status()
+    yield from share_viewers()
     o.multisig_id, o.built_at = resolve(o.multisig_id), chain.now()
     return True
 
