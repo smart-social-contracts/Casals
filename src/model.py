@@ -46,6 +46,7 @@ class Orchestra(Entity):
     # Bearer the monitor's per-instance routes ask for; "" while there is no monitor. A field of its own so
     # no view or export of `monitor` can carry it.
     monitor_read_key = String(default="")
+    log_viewer = String(default="")  # reads every canister's logs besides its controllers; "" for no one
     aliases = Json({})
     contacts = Json({})
     snapshots_keep = Integer(default=2)

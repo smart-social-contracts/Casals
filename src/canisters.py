@@ -27,13 +27,21 @@ def viewers():
     return [chain.self_id()] + [monitor] * bool(monitor)
 
 
-def share_status():
-    """Give every canister the conductor still controls the current viewer list; name the ones it cannot change."""
+def log_viewers():
+    """Canister logs carry whatever a canister's code writes into them, so they are never public: the
+    controllers and the orchestra's log viewer, if one is set, read them."""
+    viewer = orchestra().log_viewer
+    return [viewer] * bool(viewer)
+
+
+def share_viewers():
+    """Give every canister the conductor still controls the current status and log viewers; name the ones it
+    cannot change."""
     unreachable = []
     for c in each(Canister):
         if c.canister_id and c.canister_id != chain.self_id():
             try:
-                yield from chain.update_settings(c.canister_id, viewers=viewers())
+                yield from chain.update_settings(c.canister_id, viewers=viewers(), log_viewers=log_viewers())
             except Exception:
                 unreachable.append(c.name)
     return unreachable
@@ -47,7 +55,7 @@ def provision(c):
             raise ValueError(f"subnet '{subnet}' is not in the whitelist")
         c.canister_id = yield from chain.create([chain.self_id()], CREATE_CYCLES, subnet)
     yield from install(c, find(Wasm, c.wasm), "reinstall" if c.wasm_hash else "install")
-    yield from chain.update_settings(c.canister_id, viewers=viewers(), public_logs=True)
+    yield from chain.update_settings(c.canister_id, viewers=viewers(), log_viewers=log_viewers())
     c.status = "installed"
 
 

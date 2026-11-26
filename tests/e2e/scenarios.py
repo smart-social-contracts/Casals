@@ -13,6 +13,7 @@ from casals_cli.replica import canister_http_url
 from run_e2e import REPO, Fail, sh
 
 ACCESS_CODE_ALIAS, ACCESS_CODE, CLAIMER = "invited_operator", "casals", "casals-e2e-claimer"
+LOG_VIEWER = "casals-e2e-log-viewer"
 
 
 def check_controllers(o) -> None:
@@ -36,6 +37,29 @@ def idempotent(o) -> None:
         raise Fail("a second up did not report the orchestra as built")
     if o.ids() != ids or o.hashes() != hashes:
         raise Fail("a second up changed canisters")
+
+
+def private_logs(o) -> None:
+    """No canister of the orchestra shows its logs to the anonymous principal; the log viewer reads the logs of
+    the canisters the conductor controls once it is saved, and stops when it is cleared."""
+    def reads(cid: str, identity: str) -> bool:
+        return o.icp("canister", "logs", cid, identity=identity, check=False).returncode == 0
+
+    canisters = o.view()["canisters"]
+    public = [c["name"] for c in canisters if reads(c["canister_id"], "anonymous")]
+    if public:
+        raise Fail(f"the anonymous principal reads the logs of {public}")
+    sh("icp", "identity", "new", LOG_VIEWER, "--storage", "plaintext", check=False)
+    viewer = sh("icp", "identity", "principal", "--identity", LOG_VIEWER).stdout.strip()
+    target = next(c for c in canisters if o.backend() in (o.ic.read_controllers(c["canister_id"]) or [])
+                  and c["canister_id"] != o.backend())
+    for value, readable in (("", False), (viewer, True), ("", False)):
+        res = o.call("orchestra_set", {"log_viewer": value})
+        if not res.get("ok") or target["name"] in res["unreachable"]:
+            raise Fail(f"orchestra_set log_viewer={value!r}: {res}")
+        if reads(target["canister_id"], LOG_VIEWER) is not readable:
+            raise Fail(f"{target['name']}: the log viewer {'cannot' if readable else 'can'} read its logs "
+                       f"with log_viewer={value!r}")
 
 
 def export_roundtrip(o) -> None:
@@ -274,5 +298,5 @@ def cycles_and_snapshot(o) -> None:
         raise Fail("restoring the last snapshot changed the module")
 
 
-SCENARIOS = [fresh, idempotent, stand_release, content_change, runtime_stand, baton_upgrade, access_code,
-             cycles_and_snapshot, export_roundtrip]
+SCENARIOS = [fresh, idempotent, private_logs, stand_release, content_change, runtime_stand, baton_upgrade,
+             access_code, cycles_and_snapshot, export_roundtrip]

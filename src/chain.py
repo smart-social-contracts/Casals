@@ -161,11 +161,16 @@ def status(cid):
             "controllers": [c.to_str() for c in s["settings"]["controllers"]]}
 
 
-def update_settings(cid, controllers=None, freezing=None, viewers=None, public_logs=False):
+def log_visibility(viewers):
+    return f"variant {{ allowed_viewers = {principals(viewers)} }}" if viewers else "variant { controllers }"
+
+
+def update_settings(cid, controllers=None, freezing=None, viewers=None, log_viewers=None):
+    """``log_viewers``: who besides the controllers reads the canister's logs ([] for no one); None leaves it."""
     parts = [f"controllers = opt {principals(controllers)}" if controllers is not None else "",
              f"freezing_threshold = opt ({freezing} : nat)" if freezing is not None else "",
              f"status_visibility = opt variant {{ allowed_viewers = {principals(viewers)} }}" if viewers else "",
-             "log_visibility = opt variant { public }" if public_logs else ""]
+             f"log_visibility = opt {log_visibility(log_viewers)}" if log_viewers is not None else ""]
     settings = "; ".join(p for p in parts if p)
     yield from call(MGMT, "update_settings",
                     f'(record {{ canister_id = principal "{cid}"; settings = record {{ {settings} }} }})')

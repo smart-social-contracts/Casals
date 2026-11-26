@@ -257,7 +257,7 @@ ones by area:
 | `upgrade_to` | snapshot → upgrade → verify |
 | `create_snapshot` / `revert_snapshot` | snapshot management |
 | `stop_canister` / `start_canister` | IC lifecycle |
-| `set_canister_controllers` / `set_log_visibility` | IC settings |
+| `set_canister_controllers` | IC settings (canister logs: the `log_viewer` setting, `docs/OPERATIONS.md`) |
 | `canister_browse` / `canister_exec` | inspect / call target canisters |
 | `provision_assets` | (re)upload frontend bundle from registry (batched) |
 | `grant_stand_backend_commit` | repair: grant `Commit` on a frontend to the paired stand backend (idempotent; commander + `canister.deploy`) |

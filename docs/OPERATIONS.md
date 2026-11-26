@@ -348,6 +348,40 @@ Declare it on a fresh orchestra so the first canisters are created with the gran
 
 Each signed-in user can save a **Notification email** under Settings → Your settings. The monitor mails operational notices (treasury cannot fund a top-up, consent withdrawn, and later notices of the same kind). `scripts/examples/wire_monitor.py` does the same wiring from a JSON config.
 
+## Canister logs
+
+A canister's log holds whatever its code prints, so Casals never makes it public. Every canister the
+conductor creates gets `log_visibility = allowed_viewers` with the environment's `log_viewer`, or
+`controllers` when there is none: only the canister's controllers and that one principal can fetch its logs
+(`icp canister logs`, the Orchestra page's *Canister logs* panel). Make the viewer a dedicated identity that
+controls nothing, so that reading logs is all it can do.
+
+Declare it on a fresh orchestra:
+
+```json
+"environments": {
+  "production": { "log_viewer": "<viewer principal>" }
+}
+```
+
+On a built orchestra, set or change it with `orchestra_set` (`orchestra.settings`):
+
+```bash
+icp canister call <casals-backend id> orchestra_set '("{\"log_viewer\": \"<viewer principal>\"}")' \
+  -n ic --identity <operator>
+```
+
+Saving it, even unchanged, applies it again to every canister the conductor still controls, adopted ones
+included; the reply names the others as `unreachable`. Their own controllers change them directly:
+
+```bash
+icp canister settings update <canister id> --set-log-viewer <viewer principal> -n ic --identity <controller>
+# or, controllers only:  --log-visibility controllers
+```
+
+`"log_viewer": ""` leaves the logs to the controllers alone. Casals before this setting made the logs of the
+canisters it created public; saving the setting once after upgrading the conductor makes them private.
+
 ## Testing
 
 ```sh
